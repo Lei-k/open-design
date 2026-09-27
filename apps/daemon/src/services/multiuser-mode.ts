@@ -31,7 +31,7 @@ import type { ScryptParams } from './auth-passwords.js';
 export const MULTIUSER_NOT_LAUNCH_READY_ACK =
   'I acknowledge OpenDesign multi-user mode is not launch-ready: #3/#4 authorization gate only; run isolation (#5) and the deployment gate (#7/#8) are not done' as const;
 
-/** Environment names that look like a multi-user switch; any non-empty value refuses startup. */
+/** Representative forbidden names; startup scans all environment keys. */
 export const MULTIUSER_ENV_SWITCH_NAMES: readonly string[] = [
   'OD_MULTIUSER_MODE',
   'OD_MULTIUSER',
@@ -39,6 +39,12 @@ export const MULTIUSER_ENV_SWITCH_NAMES: readonly string[] = [
   'OD_MULTI_USER_MODE',
   'OD_AUTH_MODE',
 ];
+
+function isMultiUserEnvironmentSwitch(name: string): boolean {
+  if (!name.toUpperCase().startsWith('OD_')) return false;
+  const normalized = name.toUpperCase().replace(/[_-]/g, '');
+  return normalized.includes('MULTIUSER') || normalized === 'ODAUTHMODE';
+}
 
 export interface MultiUserAuthServiceOverrides {
   /** Test-only KDF cost override; production keeps the auth-service default. */
@@ -99,8 +105,8 @@ export function resolveMultiUserMode(input: {
   host: string;
 }): ResolvedMultiUserMode | null {
   const { options, env, host } = input;
-  for (const name of MULTIUSER_ENV_SWITCH_NAMES) {
-    if (String(env[name] ?? '').trim().length > 0) {
+  for (const [name, value] of Object.entries(env)) {
+    if (isMultiUserEnvironmentSwitch(name) && String(value ?? '').trim().length > 0) {
       throw new MultiUserModeRefusal(
         `${name} is set, but this build has no environment switch for multi-user mode ` +
         '(it is test-only and not launch-ready); unset it to run the single-user daemon',

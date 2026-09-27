@@ -43,7 +43,7 @@ const daemonSrc = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 /** Read the production global JSON parser limit from server.ts itself. */
 function productionGlobalJsonLimit(): string {
   const server = readFileSync(path.join(daemonSrc, 'server.ts'), 'utf8');
-  const match = /^\s*app\.use\(express\.json\(\{ limit: '(\d+(?:kb|mb))' \}\)\);/m.exec(server);
+  const match = /^\s*app\.use\(acknowledgePathlessUse\(express\.json\(\{ limit: '(\d+(?:kb|mb))' \}\), 'json-parser'\)\);/m.exec(server);
   if (!match) throw new Error('server.ts global express.json parser not found; update this test deliberately');
   return match[1]!;
 }

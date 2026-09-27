@@ -73,6 +73,24 @@ describe('resolveMultiUserMode (pure rule table)', () => {
     }
   });
 
+  it('refuses new multi-user switch spellings without catching unrelated OD variables', () => {
+    for (const name of ['OD_MULTIUSER_ENABLED', 'OD_ENABLE_MULTI_USER', 'OD_MULTI-USER-FLAG']) {
+      expect(() => resolveMultiUserMode({ ...base, env: { [name]: 'true' }, options: undefined }), name)
+        .toThrow(MultiUserModeRefusal);
+      expect(() => resolveMultiUserMode({ ...base, env: { [name]: '1' }, options: ok() }), name)
+        .toThrow(MultiUserModeRefusal);
+      expect(resolveMultiUserMode({ ...base, env: { [name]: '  ' }, options: undefined })).toBeNull();
+    }
+    const realEnv = {
+      OD_DATA_DIR: '/unused',
+      OD_BIND_HOST: '127.0.0.1',
+      OD_APP_CHANNEL: 'beta',
+      OD_WORKSPACE_CONTEXT_SOURCE: 'local',
+      OD_DISABLE_API_AUTH: '0',
+    };
+    expect(resolveMultiUserMode({ ...base, env: realEnv, options: undefined })).toBeNull();
+  });
+
   it('refuses the single-tenant substitutes for per-user sessions', () => {
     expect(() => resolveMultiUserMode({ ...base, env: { OD_API_TOKEN: 'x'.repeat(32) }, options: ok() }))
       .toThrow(/OD_API_TOKEN/);
@@ -114,6 +132,7 @@ describe('startServer mode switch', () => {
     const started = (await mod.startServer({ port: 0, returnServer: true })) as import('../../src/server.js').StartServerResult;
     try {
       const keys = started.routeInventory.map((route) => `${route.method} ${route.path}`);
+      expect(started.pathlessRouteInventory).toBeUndefined();
       expect(keys.some((key) => key.includes('/api/auth'))).toBe(false);
       const me = await rawRequest(started.url, { path: '/api/auth/me' });
       expect(me.status).toBe(404);

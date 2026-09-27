@@ -7,8 +7,8 @@ Plan context: `specs/current/web-multiuser-ec2-plan.md` (milestone 2). Data path
 ## Mode switch
 
 - Default **off**. Off composes the daemon exactly as before: no auth routes, no gate, no auth store, no ownership table. Desktop/local single-user behaviour is unchanged.
-- On **only** through the programmatic `startServer({ multiUser })` option, carrying the exact `MULTIUSER_NOT_LAUNCH_READY_ACK` literal (`apps/daemon/src/services/multiuser-mode.ts`). No production entrypoint (cli, sidecar, daemon-startup) passes it; `tests/auth/auth-not-wired.test.ts` is the tripwire.
-- There is **no environment switch**. Setting `OD_MULTIUSER_MODE` (or a look-alike name) refuses startup in either mode, so an operator can never believe they enabled isolation while actually running a single-tenant daemon.
+- On **only** through the direct, test-harness `startServer({ multiUser })` option, carrying the exact `MULTIUSER_NOT_LAUNCH_READY_ACK` literal (`apps/daemon/src/services/multiuser-mode.ts`). The exported production `startDaemonRuntime` helper rejects any supplied `multiUser` property before importing `startServer` or opening a listener; CLI and sidecar use that helper. The direct `startServer` path remains for tests.
+- There is **no environment switch**. Any non-empty `OD_*` variable whose name contains `MULTIUSER` after uppercasing and stripping `_`/`-`, plus `OD_AUTH_MODE`, refuses startup in either mode. This includes `OD_MULTIUSER_ENABLED` and `OD_ENABLE_MULTI_USER`, so an operator cannot believe isolation is enabled while running a single-tenant daemon.
 - In multi-user mode, startup refuses when:
   - `OD_API_TOKEN` is set: the single-tenant token and its loopback bypass would substitute for per-user sessions;
   - `OD_DISABLE_API_AUTH` is truthy: proxy-delegated auth would substitute for per-user sessions;
@@ -45,7 +45,7 @@ Registry: `apps/daemon/src/http/multiuser-route-classes.ts` (declarative, one re
 | `blocked-in-multiuser` | denied to everyone, admins included |
 | `middleware` | non-terminal `app.use` entry; never authorizes |
 
-Coverage: the string inventory, routes registered with a RegExp or a path array (recorded separately by `route-registration-guard.ts`), and the static mounts. The SPA catch-all (`GET /*splat`) is blocked and never used to classify a request. `tests/auth/multiuser-gate-http.test.ts` starts the real daemon and fails on any unclassified or stale entry.
+Coverage: the string inventory, routes registered with a RegExp or a path array, pathless `app.use` middleware (recorded separately and explicitly acknowledged), and the static mounts. A new unacknowledged pathless middleware fails multi-user startup. The root static handler is inert in multi-user mode even when its directory exists, so it cannot shadow an allowed API route. The SPA catch-all (`GET /*splat`) is blocked and never used to classify a request. `tests/auth/multiuser-gate-http.test.ts` starts the real daemon and fails on any unclassified or stale entry.
 
 ### Allowed (the whole list)
 

@@ -5,6 +5,7 @@
 // real HTTP from a loopback peer, which must NOT act as a bypass.
 
 import { randomUUID } from 'node:crypto';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -32,9 +33,12 @@ const SAVED_ENV = {
 
 let daemon: StartedMultiUserDaemon;
 let dataRoot: string;
+let staticDir: string;
 let admin: Principal;
 let alice: Principal;
 let bob: Principal;
+const plantedProjectId = randomUUID();
+const plantedFile = 'STATIC_FILE_MUST_NOT_WIN';
 
 interface CreatedProject {
   id: string;
@@ -64,7 +68,11 @@ beforeAll(async () => {
   delete process.env.OD_DISABLE_API_AUTH;
   delete process.env.OD_BIND_HOST;
   ({ dataRoot } = await loadIsolatedServerModule());
-  daemon = await startMultiUserDaemon();
+  staticDir = path.join(dataRoot, 'static-fixture');
+  mkdirSync(path.join(staticDir, 'api', 'projects'), { recursive: true });
+  writeFileSync(path.join(staticDir, 'api', 'projects', 'index.html'), plantedFile);
+  writeFileSync(path.join(staticDir, 'api', 'projects', plantedProjectId), plantedFile);
+  daemon = await startMultiUserDaemon(undefined, staticDir);
   const accounts = await provisionAccounts(daemon, ['alice', 'bob']);
   admin = accounts.admin;
   [alice, bob] = accounts.users as [Principal, Principal];
@@ -81,7 +89,8 @@ afterAll(async () => {
 
 describe('route classification covers the real inventory', () => {
   it('classifies every registered route and has no stale entries', () => {
-    const registrations = [...daemon.routeInventory, ...daemon.patternRouteInventory];
+    const registrations = [...daemon.routeInventory, ...daemon.patternRouteInventory, ...daemon.pathlessRouteInventory];
+    expect(daemon.pathlessRouteInventory.length).toBeGreaterThan(0);
     expect(findUnclassifiedRegistrations(registrations)).toEqual([]);
     expect(findStaleClassifications(registrations)).toEqual([]);
   });
@@ -163,6 +172,43 @@ describe('route classification covers the real inventory', () => {
         }
       }
     }
+  });
+});
+
+describe('static files cannot shadow project authorization', () => {
+  it('serves actor-filtered JSON and gate denials over planted API files', async () => {
+    const created = await daemon.request({
+      method: 'POST', path: '/api/projects', cookie: alice.cookie,
+      body: { id: plantedProjectId, name: 'owner project' },
+    });
+    expect(created.status, created.text).toBe(200);
+
+    const ownList = await daemon.request({ path: '/api/projects', cookie: alice.cookie });
+    expect(ownList.status).toBe(200);
+    expect(ownList.json.projects.map((project: { id: string }) => project.id)).toContain(plantedProjectId);
+    expect(ownList.text).not.toContain(plantedFile);
+
+    const otherList = await daemon.request({ path: '/api/projects', cookie: bob.cookie });
+    expect(otherList.status).toBe(200);
+    expect(otherList.json.projects.map((project: { id: string }) => project.id)).not.toContain(plantedProjectId);
+    expect(otherList.text).not.toContain(plantedFile);
+
+    const ownDetail = await daemon.request({ path: `/api/projects/${plantedProjectId}`, cookie: alice.cookie });
+    expect(ownDetail.status).toBe(200);
+    expect(ownDetail.text).not.toContain(plantedFile);
+    const otherDetail = await daemon.request({ path: `/api/projects/${plantedProjectId}`, cookie: bob.cookie });
+    expect(otherDetail.status).toBe(404);
+    expect(otherDetail.json.error.code).toBe('PROJECT_NOT_FOUND');
+    expect((await daemon.request({ path: '/api/projects' })).status).toBe(401);
+
+    // The filesystem cannot hold a file and a directory at the same path.
+    // Replace the nested fixture with a literal api/projects file as well.
+    rmSync(path.join(staticDir, 'api', 'projects'), { recursive: true });
+    writeFileSync(path.join(staticDir, 'api', 'projects'), plantedFile);
+    const flatList = await daemon.request({ path: '/api/projects', cookie: alice.cookie });
+    expect(flatList.status).toBe(200);
+    expect(flatList.json.projects.map((project: { id: string }) => project.id)).toContain(plantedProjectId);
+    expect(flatList.text).not.toContain(plantedFile);
   });
 });
 

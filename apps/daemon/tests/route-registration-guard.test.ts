@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   guardedRouteKey,
+  getPathlessRouteRegistrationInventory,
   installRouteRegistrationGuard,
 } from '../src/route-registration-guard.js';
+import { findUnclassifiedRegistrations } from '../src/http/multiuser-route-classes.js';
 
 describe('route registration guard', () => {
   it('tracks the sensitive extracted routes', () => {
@@ -36,5 +38,14 @@ describe('route registration guard', () => {
     expect(() => {
       app.get('/api/runs', (_req, res) => res.end());
     }).not.toThrow();
+  });
+
+  it('records pathless use separately and refuses an unacknowledged middleware in multi-user mode', () => {
+    const app = express();
+    installRouteRegistrationGuard(app);
+    app.use((_req, _res, next) => next());
+    const registrations = getPathlessRouteRegistrationInventory(app);
+    expect(registrations).toHaveLength(1);
+    expect(findUnclassifiedRegistrations(registrations)).toEqual(['USE <pathless:unclassified:1>']);
   });
 });

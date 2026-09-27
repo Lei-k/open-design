@@ -91,12 +91,14 @@ export interface StartedMultiUserDaemon {
   baseUrl: string;
   routeInventory: Array<{ method: string; path: string }>;
   patternRouteInventory: Array<{ method: string; path: string }>;
+  pathlessRouteInventory: Array<{ method: string; path: string }>;
   request: (req: RawRequest) => Promise<RawResponse>;
   close: () => Promise<void>;
 }
 
 export async function startMultiUserDaemon(
   options: MultiUserModeOptions = multiUserOptions(),
+  staticDir?: string,
 ): Promise<StartedMultiUserDaemon> {
   const { mod } = await loadIsolatedServerModule();
   const started = (await mod.startServer({
@@ -104,12 +106,14 @@ export async function startMultiUserDaemon(
     host: '127.0.0.1',
     returnServer: true,
     multiUser: options,
+    ...(staticDir === undefined ? {} : { staticDir }),
   })) as import('../../src/server.js').StartServerResult;
   const baseUrl = started.url;
   return {
     baseUrl,
     routeInventory: started.routeInventory,
     patternRouteInventory: started.patternRouteInventory,
+    pathlessRouteInventory: started.pathlessRouteInventory ?? [],
     request: (req) => rawRequest(baseUrl, req),
     close: async () => {
       await Promise.resolve(started.shutdown());

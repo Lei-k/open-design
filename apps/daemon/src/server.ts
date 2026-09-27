@@ -1152,6 +1152,8 @@ import { resolveAmrModelProbe } from './runtimes/amr-model-probe.js';
 import { createPluginInstallationHelpers, normalizeProjectPluginFolderPath, resolveProjectChildDirectory } from './services/plugin-installation.js';
 import { createPluginShareTaskStore } from './services/plugin-share-tasks.js';
 import {
+  acknowledgePathlessUse,
+  getPathlessRouteRegistrationInventory,
   getPatternRouteRegistrationInventory,
   getRouteRegistrationInventory,
   installRouteRegistrationGuard,
@@ -3140,6 +3142,8 @@ export interface StartServerResult {
   routeInventory: import('./route-registration-guard.js').RouteRegistration[];
   /** Routes registered with a RegExp/array path (`String(path)`), kept out of `routeInventory`. */
   patternRouteInventory: import('./route-registration-guard.js').RouteRegistration[];
+  /** Present only in multi-user mode; pathless app.use registrations. */
+  pathlessRouteInventory?: import('./route-registration-guard.js').RouteRegistration[];
 }
 
 export async function startServer({
@@ -3246,7 +3250,7 @@ export async function startServer({
   // exactly the incidents it was built for, and silently: the uploader reports
   // `res.ok` and the export continues without the evidence.
   app.use(CHAT_SCROLL_FORENSICS_PATH, chatScrollForensicsBodyParser);
-  app.use(express.json({ limit: '4mb' }));
+  app.use(acknowledgePathlessUse(express.json({ limit: '4mb' }), 'json-parser'));
   multiUserFront?.installBodyPolicy(app);
   const projectPreviewScopes = createProjectPreviewScopeRegistry();
 
@@ -3767,7 +3771,12 @@ export async function startServer({
   });
 
   if (fs.existsSync(staticDir)) {
-    app.use(express.static(staticDir));
+    // The root static tree can contain API-looking paths. Keep the registration
+    // visible to the startup audit, but let no static file answer in multi-user mode.
+    app.use(acknowledgePathlessUse(
+      multiUserMode ? (_req, _res, next) => next() : express.static(staticDir),
+      'root-static',
+    ));
   }
 
   // ---- Projects (DB-backed) -------------------------------------------------
@@ -18141,6 +18150,7 @@ export async function startServer({
       multiUserFront?.assertReady([
         ...getRouteRegistrationInventory(app),
         ...getPatternRouteRegistrationInventory(app),
+        ...getPathlessRouteRegistrationInventory(app),
       ]);
       server = app.listen(port, host);
       server.once('listening', () => {
@@ -18212,6 +18222,7 @@ export async function startServer({
           shutdown: shutdownDaemonRuns,
           routeInventory: getRouteRegistrationInventory(app),
           patternRouteInventory: getPatternRouteRegistrationInventory(app),
+          ...(multiUserMode ? { pathlessRouteInventory: getPathlessRouteRegistrationInventory(app) } : {}),
         } : url);
       });
     } catch (error) {

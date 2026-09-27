@@ -136,6 +136,10 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'USE /api/diagnostics/chat-scroll-forensics',
   ]),
   ...group('middleware', 'global /api browser-origin guard; not an endpoint', ['USE /api']),
+  ...group('middleware', 'pathless authorization gate; never authorizes on its own', ['USE <pathless:authorization-gate:1>']),
+  ...group('middleware', 'pathless global JSON parser; never authorizes on its own', ['USE <pathless:json-parser:1>']),
+  ...group('middleware', 'pathless project body policy; never authorizes on its own', ['USE <pathless:body-policy:1>']),
+  ...group('middleware', 'root static middleware is disabled for requests in multi-user mode', ['USE <pathless:root-static:1>']),
 
   // Projects: the minimum allowed set -------------------------------------------
   ...group('actor-scoped', 'lists only projects the actor owns (ProjectOwnershipRouteHooks.filterVisibleProjects)', [

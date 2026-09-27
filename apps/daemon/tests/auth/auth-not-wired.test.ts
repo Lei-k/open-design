@@ -71,7 +71,8 @@ describe('multi-user mode is not a production switch', () => {
   });
 
   it('no production module supplies the multiUser option or the acknowledgement', () => {
-    const allowed = new Set(['server.ts', 'services/multiuser-mode.ts', 'http/multiuser-gate.ts']);
+    // daemon-startup.ts names the option only to reject it before importing startServer.
+    const allowed = new Set(['server.ts', 'services/multiuser-mode.ts', 'http/multiuser-gate.ts', 'daemon-startup.ts']);
     const offenders = sources
       .filter((s) => !allowed.has(s.file))
       .filter((s) => /\bmultiUser\b|MULTIUSER_NOT_LAUNCH_READY_ACK|not launch-ready/.test(s.text))

@@ -35,6 +35,7 @@ import { AuthService, type AuthActor } from '../services/auth-service.js';
 import type { ResolvedMultiUserMode } from '../services/multiuser-mode.js';
 import { AuthStore } from '../storage/auth-store.js';
 import { ProjectOwnershipStore } from '../storage/project-ownership.js';
+import { acknowledgePathlessUse } from '../route-registration-guard.js';
 import {
   findStaleNonBlockedClassifications,
   findUnclassifiedRegistrations,
@@ -303,11 +304,11 @@ export function installMultiUserFront(
   let ownership: ProjectOwnershipStore | null = null;
   let bodyPolicyInstalled = false;
 
-  app.use(createMultiUserGate({
+  app.use(acknowledgePathlessUse(createMultiUserGate({
     auth,
     allowedOrigins: mode.allowedOrigins,
     isProjectOwner: (projectId, accountId) => ownership?.isOwnedBy(projectId, accountId) ?? false,
-  }));
+  }), 'authorization-gate'));
   // Mounted before any global body parser (resolves the parser-order residual
   // risk documented in routes/auth.ts).
   registerAuthRoutes(app, {
@@ -336,7 +337,7 @@ export function installMultiUserFront(
       ownership = new ProjectOwnershipStore(db);
     },
     installBodyPolicy(target) {
-      target.use(createMultiUserBodyPolicy());
+      target.use(acknowledgePathlessUse(createMultiUserBodyPolicy(), 'body-policy'));
       bodyPolicyInstalled = true;
     },
     assertReady(registrations) {
