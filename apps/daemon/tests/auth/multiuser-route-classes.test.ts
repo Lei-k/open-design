@@ -45,6 +45,12 @@ describe('classification registry is well formed', () => {
     }
   });
 
+  it('declares a run param for every run-owner route', () => {
+    const owned = MULTIUSER_ROUTE_CLASSIFICATION.filter((e) => e.routeClass === 'owner-scoped-run');
+    expect(owned.length).toBe(3);
+    for (const entry of owned) expect(entry.path.split('/')).toContain(`:${entry.runParam}`);
+  });
+
   it('never marks a parameterless project route owner-scoped or a project-param route actor-scoped', () => {
     for (const entry of MULTIUSER_ROUTE_CLASSIFICATION) {
       if (entry.routeClass === 'actor-scoped') {
@@ -97,6 +103,16 @@ describe('matcher mirrors Express routing permissively enough to fail closed', (
     expect(compileRoutePattern('/api/{optional}')).toBeNull();
     expect(compileRoutePattern('/api/x(y)')).toBeNull();
     expect(compileRoutePattern('relative')).toBeNull();
+  });
+});
+
+describe('run-owner gate', () => {
+  it('refuses a foreign run for users and admins before the handler', () => {
+    const matches = matchMultiUserRoute('GET', '/api/runs/run-a/events');
+    for (const role of ['user', 'admin'] as const) {
+      expect(decideMultiUserAccess({ matches, actor: actor(role), isProjectOwner: () => true,
+        isRunOwner: () => false })).toEqual({ kind: 'run-not-found' });
+    }
   });
 });
 

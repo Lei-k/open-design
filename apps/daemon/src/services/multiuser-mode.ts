@@ -61,12 +61,15 @@ export interface MultiUserModeOptions {
   /** One-time first-admin bootstrap secret; null/empty disables bootstrap. */
   bootstrapSecret?: string | null;
   auth?: MultiUserAuthServiceOverrides;
+  /** Direct startServer test harness only; must resolve to the repository mock. */
+  testMockAgentScript?: string;
 }
 
 export interface ResolvedMultiUserMode {
   allowedOrigins: readonly string[];
   bootstrapSecret: string | null;
   auth: MultiUserAuthServiceOverrides;
+  testMockAgentScript?: string;
 }
 
 export class MultiUserModeRefusal extends Error {
@@ -134,5 +137,6 @@ export function resolveMultiUserMode(input: {
   const allowedOrigins = assertExactOrigins(options.allowedOrigins);
   const bootstrapSecret =
     typeof options.bootstrapSecret === 'string' && options.bootstrapSecret.length > 0 ? options.bootstrapSecret : null;
-  return { allowedOrigins, bootstrapSecret, auth: { ...(options.auth ?? {}) } };
+  return { allowedOrigins, bootstrapSecret, auth: { ...(options.auth ?? {}) },
+    ...(options.testMockAgentScript ? { testMockAgentScript: options.testMockAgentScript } : {}) };
 }
