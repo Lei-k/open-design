@@ -2,8 +2,9 @@
 //
 // Scope: WHO is calling. This service authenticates accounts and manages
 // opaque server-side sessions; it does not (yet) scope any project,
-// conversation, run or file to that actor — that is #3/#4/#5, and until it
-// lands the route registrar must stay unmounted in the production server.
+// conversation, run or file to that actor. Resource authorization (#3/#4) is
+// enforced by `http/multiuser-gate.ts`, the only place this service is
+// composed into the daemon, and only in the test-only multi-user mode.
 //
 // Invariants:
 // - There is no self-registration. The first admin is created exactly once

@@ -6,6 +6,7 @@ export interface RouteRegistration {
 }
 
 const routeInventorySymbol = Symbol.for('open-design.routeInventory');
+const patternRouteInventorySymbol = Symbol.for('open-design.patternRouteInventory');
 
 const guardedRouteKeys = new Set([
   'POST /api/projects/:id/export/pdf',
@@ -23,13 +24,21 @@ export function guardedRouteKey(method: string, path: unknown): string | null {
 export function installRouteRegistrationGuard(app: Express): void {
   const seen = new Set<string>();
   const inventory: RouteRegistration[] = [];
+  // Routes registered with a RegExp (or an array of paths) are not part of
+  // the string inventory; they are recorded separately (as `String(path)`) so
+  // reviewers — and the multi-user route classification — can see them.
+  const patternInventory: RouteRegistration[] = [];
   (app as unknown as { [routeInventorySymbol]: RouteRegistration[] })[routeInventorySymbol] = inventory;
+  (app as unknown as { [patternRouteInventorySymbol]: RouteRegistration[] })[patternRouteInventorySymbol] =
+    patternInventory;
 
   for (const method of guardedMethods) {
     const original = (app as any)[method].bind(app) as (...args: unknown[]) => unknown;
     (app as any)[method] = (path: unknown, ...handlers: unknown[]) => {
       if (typeof path === 'string') {
         inventory.push({ method: method.toUpperCase(), path });
+      } else if (path instanceof RegExp || Array.isArray(path)) {
+        patternInventory.push({ method: method.toUpperCase(), path: String(path) });
       }
       const key = guardedRouteKey(method, path);
       if (key) {
@@ -46,5 +55,11 @@ export function installRouteRegistrationGuard(app: Express): void {
 export function getRouteRegistrationInventory(app: Express): RouteRegistration[] {
   return [
     ...((app as unknown as { [routeInventorySymbol]?: RouteRegistration[] })[routeInventorySymbol] ?? []),
+  ];
+}
+
+export function getPatternRouteRegistrationInventory(app: Express): RouteRegistration[] {
+  return [
+    ...((app as unknown as { [patternRouteInventorySymbol]?: RouteRegistration[] })[patternRouteInventorySymbol] ?? []),
   ];
 }

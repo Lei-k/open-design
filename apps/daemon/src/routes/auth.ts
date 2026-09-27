@@ -1,9 +1,10 @@
-// Multi-user auth routes (issue #2) — ISOLATED REGISTRAR, NOT MOUNTED.
+// Multi-user auth routes (issue #2) — mounted ONLY by the multi-user gate.
 //
-// This registrar authenticates who is calling; nothing else in the daemon is
-// scoped to that actor yet (projects, conversations, runs, files, previews and
-// static serving are still global). It must not be registered in
-// `src/server.ts` until the #3/#4/#5 ownership/authorization work lands; see
+// This registrar authenticates who is calling. It is mounted exclusively by
+// `src/http/multiuser-gate.ts` (`installMultiUserFront`) when the test-only,
+// not-launch-ready multi-user mode is on; server.ts never imports it directly
+// and single-user mode never mounts it. Resource authorization (#3/#4) lives
+// in that gate; run isolation (#5) is still open. See
 // tests/auth/auth-not-wired.test.ts, which is the deliberate tripwire.
 //
 // HTTP surface (all under /api/auth, all `Cache-Control: no-store`):
@@ -108,7 +109,7 @@ function sessionCookie(token: string, maxAgeSeconds: number): string {
   return `${AUTH_SESSION_COOKIE}=${token}; Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; Secure; SameSite=Strict`;
 }
 
-function clearedSessionCookie(): string {
+export function clearedSessionCookie(): string {
   return `${AUTH_SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict`;
 }
 
@@ -200,7 +201,8 @@ function actorOf(res: Response): AuthActor {
 /**
  * Middleware resolving the session cookie into `res.locals.authActor`, or
  * answering 401 (and clearing a presented-but-dead cookie). Exported for the
- * future #3/#4/#5 wiring; it grants identity only, not resource access.
+ * auth routes; it grants identity only, not resource access (the multi-user
+ * gate resolves sessions itself before any non-auth route).
  */
 export function createRequireSession(auth: Pick<AuthRouteService, 'resolveSession'>): RequestHandler {
   return (req, res, next) => {
@@ -326,10 +328,11 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
   const requireSession = createRequireSession(auth);
   const p = AUTH_ROUTE_PREFIX;
 
-  // Required mount order (see checkAuthBodyBound): prefer registering this
-  // registrar BEFORE any global body parser, so its bounded parser reads the
-  // body. If a global parser runs first, the hardening middleware still
-  // enforces the raw-byte bound and refuses unmeasurable (chunked) bodies.
+  // Required mount order (see checkAuthBodyBound): register this registrar
+  // BEFORE any global body parser, so its bounded parser reads the body. The
+  // multi-user gate does exactly that in the production composition. If a
+  // global parser ever runs first, the hardening middleware still enforces the
+  // raw-byte bound and refuses unmeasurable (chunked) bodies.
   app.use(p, createRequestHardening(allowedOrigins));
   app.use(p, express.json({ limit: AUTH_BODY_LIMIT_BYTES, strict: true, type: 'application/json' }));
 
