@@ -122,6 +122,19 @@ describe('multi-user run isolation over HTTP', () => {
     } finally { delete process.env.MULTIUSER_TEST_API_KEY; }
   });
 
+  it('rejects escaped input larger than the child stdin budget before spawning', async () => {
+    const a = await project(alice);
+    const before = await daemon.request({ path: '/api/runs', cookie: alice.cookie });
+    // JSON escapes each control character into six bytes, even though the
+    // JavaScript string remains below the character-count limit.
+    const oversized = await daemon.request({ method: 'POST', path: '/api/runs', cookie: alice.cookie,
+      body: { projectId: a.id, conversationId: a.conversationId, agentId: 'test-mock', message: '\u0001'.repeat(64_000) } });
+    expect(oversized.status).toBe(400);
+    expect(oversized.json.error.code).toBe('BAD_REQUEST');
+    const listed = await daemon.request({ path: '/api/runs', cookie: alice.cookie });
+    expect(listed.json.runs).toHaveLength(before.json.runs.length);
+  });
+
   it('cancels one active run without changing another actor\'s concurrent run', async () => {
     const a = await project(alice);
     const b = await project(bob);

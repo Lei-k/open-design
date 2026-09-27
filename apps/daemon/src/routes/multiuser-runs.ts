@@ -118,6 +118,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         (inputBody.delayMs !== undefined && (!Number.isInteger(inputBody.delayMs) || Number(inputBody.delayMs) < 0 || Number(inputBody.delayMs) > 2000))) {
       return sendApiError(res, 400, 'BAD_REQUEST', 'invalid mock request');
     }
+    const mockRequest = JSON.stringify({ message: inputBody.message, delayMs: inputBody.delayMs });
+    if (Buffer.byteLength(mockRequest, 'utf8') > 64 * 1024) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'mock request is too large');
+    }
     const id = randomUUID();
     const now = Date.now();
     const actorDir = createHash('sha256').update(actor(res)).digest('hex');
@@ -140,6 +144,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     let stdout = '';
     child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
     child.stderr.on('data', () => {});
+    // A cancelled child may close its pipe while a write is still pending.
+    // Handle EPIPE instead of letting a stream error terminate the daemon.
+    child.stdin.on('error', () => { child.kill('SIGTERM'); finish(id, 'failed'); });
     child.on('error', () => finish(id, 'failed'));
     child.on('close', (code) => {
       if (code !== 0) return finish(id, 'failed');
@@ -149,7 +156,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         finish(id, 'succeeded', output);
       } catch { finish(id, 'failed'); }
     });
-    child.stdin.end(JSON.stringify({ message: inputBody.message, delayMs: inputBody.delayMs }));
+    child.stdin.end(mockRequest);
     res.status(202).json({ run: body(row(id)!) });
   });
   app.get('/api/runs', (req, res) => {
