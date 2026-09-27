@@ -91,6 +91,7 @@ export interface RegisterAuthRoutesDeps {
   bootstrapSecret: string | null;
   /** Exact browser origins allowed to make state-changing requests. */
   allowedOrigins: readonly string[];
+  onAccountSessionsRevoked?: (accountId: string) => void;
 }
 
 const STATUS_BY_AUTH_CODE: Record<AuthErrorCode, { status: number; code: ApiErrorCode }> = {
@@ -373,7 +374,9 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
 
   app.post(`${p}/logout`, handle((req, res) => {
     const { token } = readSessionCookie(req.headers.cookie);
+    const accountId = token ? auth.resolveSession(token)?.accountId : null;
     if (token) auth.logout(token);
+    if (accountId) deps.onAccountSessionsRevoked?.(accountId);
     res.setHeader('Set-Cookie', clearedSessionCookie());
     res.status(204).end();
   }));
@@ -396,11 +399,13 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
   }));
 
   app.post(`${p}/password`, requireSession, handle(async (req, res) => {
+    const accountId = actorOf(res).accountId;
     const body = bodyObject(req);
     const session = await auth.changeOwnPassword(actorOf(res), {
       currentPassword: stringField(body, 'currentPassword'),
       newPassword: stringField(body, 'newPassword'),
     });
+    deps.onAccountSessionsRevoked?.(accountId);
     setSession(res, auth, session);
     res.status(200).json({ session: { expiresAt: session.expiresAt } });
   }));
@@ -424,17 +429,23 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
     const body = bodyObject(req);
     // Authorization first (non-admins get 403 regardless of body), then the
     // service validates the patch shape.
+    const prior = auth.listAccounts(actor).find((entry) => entry.id === String(req.params.id));
     const account = auth.updateAccount(actor, String(req.params.id), (body ?? []) as UpdateAccountPatch);
+    if (prior && (prior.role !== account.role || (prior.active && !account.active))) {
+      deps.onAccountSessionsRevoked?.(String(req.params.id));
+    }
     res.status(200).json({ account });
   }));
 
   app.post(`${p}/users/:id/sessions/revoke`, requireSession, handle((req, res) => {
     const revoked = auth.revokeAccountSessions(actorOf(res), String(req.params.id));
+    deps.onAccountSessionsRevoked?.(String(req.params.id));
     res.status(200).json({ revoked });
   }));
 
   app.post(`${p}/users/:id/password`, requireSession, handle(async (req, res) => {
     await auth.resetPassword(actorOf(res), String(req.params.id), stringField(bodyObject(req), 'password'));
+    deps.onAccountSessionsRevoked?.(String(req.params.id));
     res.status(204).end();
   }));
 

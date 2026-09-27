@@ -937,6 +937,7 @@ import { EmptyTranscriptError, synthesizeHandoffPrompt } from './design/index.js
 import { TranscriptExportLockedError } from './transcript-export.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerRunRoutes } from './routes/runs.js';
+import { registerMultiUserRunRoutes } from './routes/multiuser-runs.js';
 import { registerStrategyRolloutRoutes } from './routes/strategy-rollout.js';
 import { registerTerminalRoutes } from './routes/terminal.js';
 import { registerBrowserSessionRoutes } from './routes/browser-sessions.js';
@@ -17507,6 +17508,12 @@ export async function startServer({
     };
   });
 
+  const multiUserRuns = multiUserMode ? registerMultiUserRunRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
+    ...(multiUserMode.testMockAgentScript ? { mockAgentScript: multiUserMode.testMockAgentScript } : {}),
+  }) : null;
+  if (multiUserRuns) multiUserFront?.setCancelAccountRuns(multiUserRuns.cancelAccountRuns);
+  if (multiUserRuns) multiUserFront?.setIsRunOwner(multiUserRuns.isRunOwner);
   registerRunRoutes(app, {
     db,
     design,
@@ -18124,6 +18131,7 @@ export async function startServer({
       collabPublishWatcher.dispose();
       collabCloud?.dispose();
       multiUserFront?.close();
+      multiUserRuns?.shutdown();
     };
     const shutdownDaemonRuns = async () => {
       if (daemonShutdownStarted) return;
