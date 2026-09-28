@@ -16,11 +16,11 @@ Only managed project directories under `PROJECTS_DIR` are eligible; imported fol
 
 The mock does not create or resume native provider sessions. A run must prove both project ownership and conversation membership before it can execute, and all resume-related request fields are refused. A planted foreign `agent_sessions` row is covered by the HTTP test. Future real provider resume must additionally key its persisted native session by actor and repeat this authorization at the resume lookup.
 
-Cancellation targets only the selected run's child. Account session revocation, account deactivation, role changes and admin password resets cancel that account's active mock runs through the auth route hook. On startup, rows left active by a prior daemon process become failed; terminal rows are unchanged.
+Cancellation targets only the selected run's child. Account session revocation, account deactivation, role changes and admin password resets cancel that account's active and queued mock runs through the auth route hook. On startup, rows left active by a prior daemon process become failed with their quota ledger entry closed; ordinary queued rows remain available for dispatch. Terminal rows are unchanged. See `web-multiuser-pool.md`.
 
 ## Remaining gates
 
-- #11: fair scheduling, quota, provider slot accounting and approved credential supply.
+- #11: real provider enrollment and credential isolation remain blocked; the test-mock pool proof is in `web-multiuser-pool.md`.
 - #6: Web login and run UX. Multi-user still has no served SPA shell.
 - #7/#8: deployment controls. This remains loopback-only and test-only.
 - Native provider session ownership and process isolation for same-UID children need separate proof before real providers can run. A daemon crash can briefly leave a test mock child alive until its bounded delay ends; production process reaping must be included with provider enablement.

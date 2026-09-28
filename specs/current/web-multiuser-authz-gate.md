@@ -39,7 +39,7 @@ Registry: `apps/daemon/src/http/multiuser-route-classes.ts` (declarative, one re
 | --- | --- |
 | `public-probe` | no session; liveness/readiness/version only |
 | `auth` | the auth registrar enforces its own session/admin checks and hardening |
-| `admin-only` | session + persisted `admin` role (no entries yet; reserved for #10) |
+| `admin-only` | session + persisted `admin` role (test pool operations only) |
 | `owner-scoped-project` | session + the declared project param must be owned by the actor; **no admin override** |
 | `actor-scoped` | session; the handler scopes to the actor (list filter / create bind) |
 | `blocked-in-multiuser` | denied to everyone, admins included |
@@ -54,6 +54,7 @@ Coverage: the string inventory, routes registered with a RegExp or a path array,
 - Projects: `GET /api/projects` (the actor's own only), `POST /api/projects`, `GET|PATCH|DELETE /api/projects/:id`.
 - Conversations: `GET|POST /api/projects/:id/conversations`, `GET /api/projects/:id/conversations/:cid/messages`.
 - Test mock runs: `POST|GET /api/runs`, `GET /api/runs/:id`, `GET /api/runs/:id/events`, `POST /api/runs/:id/cancel` (see `web-multiuser-run-isolation.md`).
+- Admin pool operations: `GET /api/admin/pool`, `PUT /api/admin/pool/providers/:providerId`, `PUT /api/admin/pool/users/:id/quota` (see `web-multiuser-pool.md`).
 
 Project create/patch body policy: only `id`, `name`, `metadata`, `pendingPrompt`, `customInstructions`, `skipDiscoveryBrief`, `conversationMode`/`sessionMode` and `automaticStrategyTaskProfile` (create); `name`, `metadata`, `pendingPrompt` and `customInstructions` (patch). `metadata` may carry only descriptive keys, and `kind` must be one of prototype, deck, other, image, video or audio. Refused fields include host paths (`linkedDirs`, `baseDir`, project locations), templates, plugins, skills and design systems.
 
@@ -72,8 +73,8 @@ Real-provider execution and all execution routes outside the test mock run set a
 
 - **#5 run isolation**: the test-only mock run proof is documented in `web-multiuser-run-isolation.md`; real provider execution and every other execution surface remain blocked.
 - **SSE/static/preview scoping**: project and other event streams, file/preview/raw/export routes and static mounts stay blocked until they are provably actor-scoped. The test mock run event stream is owner-scoped.
-- **#10 admin API/UX**: only the #2 account management routes exist. `admin-only` has no entries, and admins have no project-content view by design.
-- **#11 pool + quota**: no scheduling, reservations or ledger are wired. Provider access stays blocked.
+- **#10 admin API/UX**: account management routes and test pool operations exist, but no admin UI exists; admins have no project-content view by design.
+- **#11 pool + quota**: the test-mock queue and ledger are wired; real provider enrollment and credential isolation remain blocked.
 - **#6 Web UX**: no login UI and no SPA shell in multi-user mode.
 - **#7/#8 deployment gate**: loopback-only bind, no TLS/proxy/rate-limit/backup work. The origin allowlist is exercised only in tests.
 - Residual: `POST /api/projects` with a client-chosen id that already exists fails with a conflict. That reveals the id exists, but ids are client-generated UUIDs. `GET /api/projects/:id` still returns the daemon-side `resolvedDir`.

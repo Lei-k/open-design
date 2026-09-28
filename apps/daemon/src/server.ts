@@ -17511,6 +17511,7 @@ export async function startServer({
   const multiUserRuns = multiUserMode ? registerMultiUserRunRoutes(app, {
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
     ...(multiUserMode.testMockAgentScript ? { mockAgentScript: multiUserMode.testMockAgentScript } : {}),
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
   }) : null;
   if (multiUserRuns) multiUserFront?.setCancelAccountRuns(multiUserRuns.cancelAccountRuns);
   if (multiUserRuns) multiUserFront?.setIsRunOwner(multiUserRuns.isRunOwner);
@@ -18131,12 +18132,16 @@ export async function startServer({
       collabPublishWatcher.dispose();
       collabCloud?.dispose();
       multiUserFront?.close();
-      multiUserRuns?.shutdown();
+      void multiUserRuns?.shutdown();
     };
     const shutdownDaemonRuns = async () => {
       if (daemonShutdownStarted) return;
       daemonShutdownStarted = true;
       daemonShuttingDown = true;
+      if (multiUserRuns) {
+        multiUserRuns.beginShutdown();
+        await multiUserRuns.shutdown();
+      }
       amrTerminalReportDelivery.stop();
       clearTerminalTelemetryFallbackTimers();
       const shutdownGraceMs = resolveChatRunShutdownGraceMs();

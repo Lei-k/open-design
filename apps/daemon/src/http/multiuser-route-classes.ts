@@ -306,6 +306,11 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
   ),
 
   // Execution --------------------------------------------------------------------
+  ...group('admin-only', 'aggregate pool operations; no project or run content', [
+    'GET /api/admin/pool',
+    'PUT /api/admin/pool/providers/:providerId',
+    'PUT /api/admin/pool/users/:id/quota',
+  ]),
   ...group('actor-scoped', 'test mock only; create binds the trusted actor, owned managed project and conversation in one SQLite insert', [
     'POST /api/runs',
     'GET /api/runs',
