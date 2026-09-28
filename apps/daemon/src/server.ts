@@ -18132,12 +18132,16 @@ export async function startServer({
       collabPublishWatcher.dispose();
       collabCloud?.dispose();
       multiUserFront?.close();
-      multiUserRuns?.shutdown();
+      void multiUserRuns?.shutdown();
     };
     const shutdownDaemonRuns = async () => {
       if (daemonShutdownStarted) return;
       daemonShutdownStarted = true;
       daemonShuttingDown = true;
+      if (multiUserRuns) {
+        multiUserRuns.beginShutdown();
+        await multiUserRuns.shutdown();
+      }
       amrTerminalReportDelivery.stop();
       clearTerminalTelemetryFallbackTimers();
       const shutdownGraceMs = resolveChatRunShutdownGraceMs();

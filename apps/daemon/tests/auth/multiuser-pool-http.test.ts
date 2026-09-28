@@ -116,7 +116,7 @@ it('rechecks queued quota at dispatch and resumes after an admin override', asyn
   expect((await daemon.request({ path: `/api/runs/${pending.json.run.id}/events`, cookie: bob.cookie })).text).toContain('event: start');
 });
 
-it('recovers active rows as failed, retains queued rows, and revokes both states', async () => {
+it('cancels active rows on clean restart, retains queued rows, and revokes both states', async () => {
   const reset = await daemon.request({ method: 'PUT', path: `/api/admin/pool/users/${alice.id}/quota`, cookie: admin.cookie,
     body: { budgetMinutes: 120 } });
   expect(reset.status).toBe(200);
@@ -128,7 +128,7 @@ it('recovers active rows as failed, retains queued rows, and revokes both states
   expect((await capacity(0)).status).toBe(200);
   await daemon.close();
   daemon = await startMultiUserDaemon(multiUserOptions({ testMockAgentScript: path.resolve('../..', 'mocks/run-isolation-agent.ts'), poolClock: () => poolTime }));
-  expect((await daemon.request({ path: `/api/runs/${active.json.run.id}`, cookie: alice.cookie })).json.status).toBe('failed');
+  expect((await daemon.request({ path: `/api/runs/${active.json.run.id}`, cookie: alice.cookie })).json.status).toBe('canceled');
   expect((await daemon.request({ path: `/api/runs/${queued.json.run.id}`, cookie: alice.cookie })).json.status).toBe('queued');
   expect((await capacity(1)).status).toBe(200);
   expect((await daemon.request({ path: `/api/runs/${queued.json.run.id}`, cookie: alice.cookie })).json.status).toBe('running');

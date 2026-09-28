@@ -208,7 +208,7 @@ describe('multi-user run isolation over HTTP', () => {
     expect((await daemon.request({ path: `/api/runs/${second.json.run.id}`, cookie: alice.cookie })).json.status).toBe('canceled');
   });
 
-  it('recovers in-flight rows on restart without changing another actor\'s terminal run', async () => {
+  it('cancels in-flight rows on clean restart without changing another actor\'s terminal run', async () => {
     alice.cookie = await login(daemon, alice.username, alice.password);
     const a = await project(alice);
     const b = await project(bob);
@@ -221,9 +221,9 @@ describe('multi-user run isolation over HTTP', () => {
     expect(interrupted.status).toBe(202);
     await daemon.close();
     daemon = await startMultiUserDaemon(multiUserOptions({ testMockAgentScript: path.resolve('../..', 'mocks/run-isolation-agent.ts') }));
-    const failed = await daemon.request({ path: `/api/runs/${interrupted.json.run.id}`, cookie: alice.cookie });
+    const canceled = await daemon.request({ path: `/api/runs/${interrupted.json.run.id}`, cookie: alice.cookie });
     const intact = await daemon.request({ path: `/api/runs/${complete.json.run.id}`, cookie: bob.cookie });
-    expect(failed.json.status).toBe('failed');
+    expect(canceled.json.status).toBe('canceled');
     expect(intact.json.status).toBe('succeeded');
   });
 });

@@ -28,7 +28,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   mockAgentScript?: string;
   repositoryRoot: string;
   clock?: () => number;
-}): { cancelAccountRuns(accountId: string): void; isRunOwner(runId: string, accountId: string): boolean; shutdown(): void } {
+}): { cancelAccountRuns(accountId: string): void; isRunOwner(runId: string, accountId: string): boolean;
+  beginShutdown(): void; shutdown(): Promise<void> } {
   const { db, dataRoot, projectsRoot } = input;
   const expected = fs.realpathSync(path.join(input.repositoryRoot, 'mocks/run-isolation-agent.ts'));
   const mockAgentScript = input.mockAgentScript ? fs.realpathSync(input.mockAgentScript) : null;
@@ -84,6 +85,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     CREATE TABLE IF NOT EXISTS multiuser_pool_config (
       key TEXT PRIMARY KEY, value TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS multiuser_pool_turns (
+      account_id TEXT PRIMARY KEY, last_seq INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS multiuser_pool_audit (
       id INTEGER PRIMARY KEY AUTOINCREMENT, actor_account_id TEXT NOT NULL,
       action TEXT NOT NULL, target_id TEXT NOT NULL, value INTEGER NOT NULL,
@@ -96,25 +100,36 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   `);
   const recovery = db.prepare(`SELECT * FROM ${table} WHERE status = 'active'`).all() as RunRow[];
   const ledgerActive = ledger.activeRuns();
+  const reconciled = new Set<string>();
   for (const run of recovery) {
-    if (ledgerActive.some((entry) => entry.runId === run.id && entry.actorId === run.owner_account_id)) {
-      ledger.finish(run.owner_account_id, run.id);
+    const entry = ledger.entry(run.id);
+    if (entry?.status === 'active') {
+      ledger.finish(entry.actorId, run.id);
+      reconciled.add(run.id);
     }
     db.prepare(`UPDATE ${table} SET status = 'failed', updated_at = ? WHERE id = ?`).run(now(), run.id);
   }
+  const queuedRecovery = db.prepare(`SELECT * FROM ${table} WHERE status = 'queued'`).all() as RunRow[];
+  for (const run of queuedRecovery) {
+    const entry = ledger.entry(run.id);
+    if (!entry) continue;
+    if (entry.status === 'active') {
+      ledger.finish(entry.actorId, run.id);
+      reconciled.add(run.id);
+    }
+    db.prepare(`UPDATE ${table} SET status = 'failed', output = ?, updated_at = ? WHERE id = ?`)
+      .run(JSON.stringify({ reason: 'ledger_admission_replayed' }), now(), run.id);
+  }
   for (const entry of ledgerActive) {
-    if (!recovery.some((run) => run.id === entry.runId)) {
+    if (!reconciled.has(entry.runId)) {
       ledger.finish(entry.actorId, entry.runId);
-      // A crash between ledger admission and the run-row update is the only
-      // queued row that cannot safely replay the same immutable ledger run id.
-      db.prepare(`UPDATE ${table} SET status = 'failed', updated_at = ? WHERE id = ? AND status = 'queued'`)
-        .run(now(), entry.runId);
     }
   }
   const children = new Map<string, ChildProcessWithoutNullStreams>();
   const cancelPending = new Set<string>();
   const failurePending = new Set<string>();
   let shuttingDown = false;
+  let storesClosed = false;
   const listeners = new Map<string, Set<Response>>();
   const row = (id: string) => db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id) as RunRow | undefined;
   const actor = (res: Response) => multiUserActorOf(res)?.accountId ?? '';
@@ -146,7 +161,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   let retryTimer: NodeJS.Timeout | null = null;
   let dispatch = () => {};
   const finish = (id: string, status: 'succeeded' | 'failed' | 'canceled', output?: unknown) => {
-    if (shuttingDown) return;
+    if (storesClosed) return;
     const existing = row(id);
     if (!existing || (existing.status !== 'active' && existing.status !== 'queued')) return;
     if (existing.status === 'active') {
@@ -161,7 +176,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     children.delete(id);
     cancelPending.delete(id);
     failurePending.delete(id);
-    if (!suspendDispatch) dispatch();
+    if (!shuttingDown && !suspendDispatch) dispatch();
   };
   const capacity = () => Number((db.prepare("SELECT value FROM multiuser_pool_config WHERE key = 'test-mock-capacity'").get() as { value: string } | undefined)?.value ?? '2');
   dispatch = () => {
@@ -171,10 +186,12 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     try {
       while ((db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE status = 'active'`).get() as { n: number }).n < capacity()) {
         const queued = db.prepare(`SELECT * FROM ${table} WHERE status = 'queued' ORDER BY queue_seq`).all() as RunRow[];
-        const lastActor = (db.prepare("SELECT value FROM multiuser_pool_config WHERE key = 'last-actor'").get() as { value: string } | undefined)?.value;
+        const turns = new Map((db.prepare('SELECT account_id, last_seq FROM multiuser_pool_turns').all() as Array<{ account_id: string; last_seq: number }>)
+          .map((turn) => [turn.account_id, turn.last_seq]));
         const eligible = queued.filter((run) => ledger.balance(run.owner_account_id).remainingMs > 0 &&
           !(db.prepare(`SELECT 1 FROM ${table} WHERE owner_account_id = ? AND status = 'active'`).get(run.owner_account_id)));
-        const next = eligible.find((run) => run.owner_account_id !== lastActor) ?? eligible[0];
+        const next = eligible.sort((a, b) => (turns.get(a.owner_account_id) ?? 0) - (turns.get(b.owner_account_id) ?? 0)
+          || Number(a.queue_seq) - Number(b.queue_seq))[0];
         if (!next) break;
         const project = getProject(db, next.project_id);
         const conversation = getConversation(db, next.conversation_id);
@@ -200,10 +217,16 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         fs.chmodSync(runHome, 0o700);
         fs.chmodSync(temp, 0o700);
         const admission = ledger.start({ actorId: next.owner_account_id, runId: next.id, projectId: next.project_id, providerId: 'test-mock' });
+        if (admission.status === 'replayed') {
+          if (admission.run.status === 'active') ledger.finish(next.owner_account_id, next.id);
+          finish(next.id, 'failed', { reason: 'ledger_admission_replayed' });
+          continue;
+        }
         if (admission.status !== 'started') break;
         db.prepare(`UPDATE ${table} SET status = 'active', updated_at = ? WHERE id = ?`).run(now(), next.id);
-        db.prepare("INSERT INTO multiuser_pool_config (key, value) VALUES ('last-actor', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-          .run(next.owner_account_id);
+        db.prepare(`INSERT INTO multiuser_pool_turns (account_id, last_seq)
+          VALUES (?, (SELECT COALESCE(MAX(last_seq), 0) + 1 FROM multiuser_pool_turns))
+          ON CONFLICT(account_id) DO UPDATE SET last_seq = excluded.last_seq`).run(next.owner_account_id);
         emit(next.id, 'start', { runId: next.id });
         const child = spawn(process.execPath, [mockAgentScript], {
           cwd: realCwd, env: { HOME: runHome, TMPDIR: temp, TMP: temp, TEMP: temp, OD_DATA_DIR: dataRoot },
@@ -216,6 +239,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         child.stdin.on('error', () => { failurePending.add(next.id); child.kill('SIGTERM'); });
         child.on('error', () => { failurePending.add(next.id); });
         child.on('close', (code) => {
+          if (shuttingDown) return finish(next.id, 'canceled', { reason: 'daemon_shutdown' });
           if (cancelPending.has(next.id)) return finish(next.id, 'canceled');
           if (code !== 0 || failurePending.has(next.id)) return finish(next.id, 'failed');
           try {
@@ -365,6 +389,38 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     finish(run.id, 'canceled');
     res.json(body(row(run.id)!));
   });
+  const beginShutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    for (const set of listeners.values()) for (const res of set) res.end();
+    listeners.clear();
+  };
+  let shutdownPromise: Promise<void> | null = null;
+  const shutdown = (): Promise<void> => {
+    if (shutdownPromise) return shutdownPromise;
+    beginShutdown();
+    shutdownPromise = (async () => {
+      const exits = [...children.values()].map((child) => new Promise<void>((resolve) => child.once('close', () => resolve())));
+      const wait = async (ms: number) => {
+        if (children.size === 0) return;
+        let timer: NodeJS.Timeout | undefined;
+        await Promise.race([Promise.all(exits), new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); })]);
+        if (timer) clearTimeout(timer);
+      };
+      for (const child of children.values()) child.kill('SIGTERM');
+      await wait(2_000);
+      if (children.size > 0) {
+        for (const child of children.values()) child.kill('SIGKILL');
+        await wait(1_000);
+      }
+      for (const id of children.keys()) finish(id, 'failed', { reason: 'shutdown_timeout' });
+      storesClosed = true;
+      ledger.close();
+      accounts.close();
+    })();
+    return shutdownPromise;
+  };
   return {
     isRunOwner(runId, accountId) {
       const found = row(runId);
@@ -382,14 +438,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       } finally { suspendDispatch = false; }
       dispatch();
     },
-    shutdown() {
-      shuttingDown = true;
-      if (retryTimer) clearTimeout(retryTimer);
-      for (const child of children.values()) child.kill('SIGTERM');
-      for (const set of listeners.values()) for (const res of set) res.end();
-      listeners.clear();
-      ledger.close();
-      accounts.close();
-    },
+    beginShutdown,
+    shutdown,
   };
 }

@@ -203,6 +203,12 @@ export class WorkerQuotaLedger {
       .all() as Array<{ actorId: string; runId: string }>;
   }
 
+  /** Scheduler-only lookup for reconciling an immutable run id. */
+  entry(runId: string): WorkerQuotaRun | undefined {
+    identifier(runId);
+    return this.run(runId);
+  }
+
   setBudgetMs(actorId: string, budgetMs: number, adminActorId: string): void {
     identifier(actorId);
     identifier(adminActorId);
