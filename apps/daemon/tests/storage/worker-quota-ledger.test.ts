@@ -9,7 +9,7 @@ import type { WorkerQuotaLedger as Ledger } from '../../src/storage/worker-quota
 
 const MINUTE = 60_000;
 const WINDOW = 7 * 24 * 60 * MINUTE;
-const BUDGET = 120 * MINUTE;
+const BUDGET = 1_800 * MINUTE;
 const EPOCH = 1_800_000_000_000;
 const fixtureRoot = mkdtempSync(path.join(tmpdir(), 'od-quota-ledger-tests-'));
 const modulePath = new URL('../../src/storage/worker-quota-ledger.ts', import.meta.url).href;
@@ -59,7 +59,7 @@ describe('per-user active worker-time quota', () => {
     expect(ledger.finish('alice', 'run-1')).toMatchObject({ status: 'finished', chargedMs: 30 * MINUTE });
     now += 20 * MINUTE;
     ledger.start({ ...input('alice', 'run-2'), projectId: 'project-2', providerId: 'another-provider' });
-    now += 90 * MINUTE;
+    now += BUDGET - 30 * MINUTE;
     ledger.finish('alice', 'run-2');
     expect(ledger.balance('alice')).toMatchObject({ usedMs: BUDGET, remainingMs: 0, activeRunId: null });
     expect(ledger.start(input('alice', 'run-3'))).toEqual({ status: 'denied', reason: 'quota_exhausted' });

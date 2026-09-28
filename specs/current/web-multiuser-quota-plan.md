@@ -6,7 +6,7 @@ Status: historical plan for the first, unwired ledger slice. The ledger is now w
 Company-funded shared Codex/Claude *capacity*, distinct Web identities and private data; admin-managed `admin`/`user` roles; AWS EC2. Provider account eligibility remains a separate gate. No OAuth profile or subscription credential may be enrolled by this slice.
 
 ## Provisional admission policy
-- Aggregate 120 **active worker-minutes** per actor over a rolling 7×24-hour window, independent of timezone. Queue wait is free. This is a fairness unit, not provider charges or a hard cost ceiling.
+- The company-internal, admin-adjustable default is **30 hours (1,800 active worker-minutes)** per actor over a rolling 7×24-hour window, independent of timezone. Queue wait is free. This is a fairness unit, not a provider billing limit or a hard cost ceiling.
 - One active run and at most three queued requests per actor at the scheduler boundary; provider slot limits are configured elsewhere and default to zero until an approved connector exists.
 - Deny new starts when consumed active milliseconds reach the actor's configured budget. A run admitted below budget can finish and overshoot; account for the full elapsed time and block subsequent starts. A separate run watchdog, cancellation, and crash recovery limit exposure. No mid-run termination *solely* because the quota rolls over or is exhausted.
 - Admin overrides are versioned and audited at integration time; the ledger exposes usage and decisions but **not** role authority. Only a server-verified actor may call it when wired. Disabled users are refused by the upstream auth boundary.

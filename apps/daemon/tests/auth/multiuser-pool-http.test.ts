@@ -112,13 +112,15 @@ it('rechecks queued quota at dispatch and resumes after an admin override', asyn
   expect((await capacity(1)).status).toBe(200);
   expect((await daemon.request({ path: `/api/runs/${pending.json.run.id}`, cookie: bob.cookie })).json.status).toBe('queued');
   expect((await daemon.request({ method: 'PUT', path: `/api/admin/pool/users/${bob.id}/quota`, cookie: admin.cookie,
-    body: { budgetMinutes: 120 } })).status).toBe(200);
+    body: { budgetMinutes: 1_800 } })).status).toBe(200);
+  expect((await daemon.request({ path: '/api/admin/pool', cookie: admin.cookie })).json.users[bob.id].budgetMs)
+    .toBe(1_800 * 60_000);
   expect((await daemon.request({ path: `/api/runs/${pending.json.run.id}/events`, cookie: bob.cookie })).text).toContain('event: start');
 });
 
 it('cancels active rows on clean restart, retains queued rows, and revokes both states', async () => {
   const reset = await daemon.request({ method: 'PUT', path: `/api/admin/pool/users/${alice.id}/quota`, cookie: admin.cookie,
-    body: { budgetMinutes: 120 } });
+    body: { budgetMinutes: 1_800 } });
   expect(reset.status).toBe(200);
   expect((await capacity(0)).status).toBe(200);
   const active = await run(alice, projectA, 'restart-active', 2000);

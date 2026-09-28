@@ -3,7 +3,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 const WINDOW_MS = 7 * 24 * 60 * 60_000;
-const BUDGET_MS = 120 * 60_000;
+const BUDGET_MS = 1_800 * 60_000;
 
 export interface WorkerQuotaStart {
   actorId: string;
