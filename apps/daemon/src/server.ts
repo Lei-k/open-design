@@ -17511,6 +17511,7 @@ export async function startServer({
   const multiUserRuns = multiUserMode ? registerMultiUserRunRoutes(app, {
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
     ...(multiUserMode.testMockAgentScript ? { mockAgentScript: multiUserMode.testMockAgentScript } : {}),
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
   }) : null;
   if (multiUserRuns) multiUserFront?.setCancelAccountRuns(multiUserRuns.cancelAccountRuns);
   if (multiUserRuns) multiUserFront?.setIsRunOwner(multiUserRuns.isRunOwner);

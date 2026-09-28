@@ -63,6 +63,8 @@ export interface MultiUserModeOptions {
   auth?: MultiUserAuthServiceOverrides;
   /** Direct startServer test harness only; must resolve to the repository mock. */
   testMockAgentScript?: string;
+  /** Test harness clock for pool accounting. */
+  poolClock?: () => number;
 }
 
 export interface ResolvedMultiUserMode {
@@ -70,6 +72,7 @@ export interface ResolvedMultiUserMode {
   bootstrapSecret: string | null;
   auth: MultiUserAuthServiceOverrides;
   testMockAgentScript?: string;
+  poolClock?: () => number;
 }
 
 export class MultiUserModeRefusal extends Error {
@@ -138,5 +141,6 @@ export function resolveMultiUserMode(input: {
   const bootstrapSecret =
     typeof options.bootstrapSecret === 'string' && options.bootstrapSecret.length > 0 ? options.bootstrapSecret : null;
   return { allowedOrigins, bootstrapSecret, auth: { ...(options.auth ?? {}) },
-    ...(options.testMockAgentScript ? { testMockAgentScript: options.testMockAgentScript } : {}) };
+    ...(options.testMockAgentScript ? { testMockAgentScript: options.testMockAgentScript } : {}),
+    ...(options.poolClock ? { poolClock: options.poolClock } : {}) };
 }
