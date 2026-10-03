@@ -1,0 +1,612 @@
+// Personal Codex subscription accounts for multi-user mode (#18).
+//
+// A platform user links THEIR OWN Codex subscription through the official
+// device-code flow, driven by an isolated per-user `codex app-server` child.
+// Contract: specs/current/web-multiuser-personal-subscription.md.
+//
+// Invariants kept here:
+// - Disabled unless the multi-user test harness injected the repository mock
+//   app-server; nothing else can enable it (see services/multiuser-mode.ts).
+// - One pending attempt and one linked Codex account per platform user; one
+//   provider identity (keyed HMAC of the normalized e-mail that `account/read`
+//   reports) per platform user. A rejected completion discards its login home.
+// - Device codes and verification URLs live only in memory for the owner's
+//   pending attempt. They are never persisted, logged, audited or returned
+//   after the attempt is terminal.
+// - Each actor's CODEX_HOME derives from the resolved daemon data root, mode
+//   0700 (files 0600). Nothing is ever copied between homes.
+// - Every lookup is keyed by the server-side actor; a foreign id is "missing".
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import type Database from 'better-sqlite3';
+import type {
+  ApiErrorCode, PersonalAccountProblem, PersonalAccountStatus, PersonalAgentAccount, PersonalLoginAttempt,
+  PersonalLoginAttemptStatus, PersonalLoginFailureCode, PersonalRateLimits, PersonalRateLimitWindow,
+} from '@open-design/contracts';
+import { attachCodexAppServerSession, type CodexSandboxMode } from '../agent-protocol/codex-app-server/session.js';
+import { AppServerAccountClient, closeChild, spawnAppServer, type AppServerEnvironment } from '../integrations/codex-app-server-account.js';
+
+type Json = Record<string, unknown>;
+
+/** Server-side bound on a device-code attempt (the provider's own code lifetime is similar). */
+export const PERSONAL_LOGIN_TTL_MS = 15 * 60_000;
+const VERIFY_PROMPT = 'Reply with the single word OK.';
+const MAX_TURN_TEXT = 64 * 1024;
+
+export class PersonalAccountError extends Error {
+  constructor(readonly status: number, readonly code: ApiErrorCode, message: string) {
+    super(message);
+    this.name = 'PersonalAccountError';
+  }
+}
+
+/** Daemon-owned per-actor runtime directory, shared with the isolated run lane. */
+export function actorRuntimeDir(dataRoot: string, accountId: string): string {
+  return path.join(dataRoot, 'multiuser-runtime', createHash('sha256').update(accountId).digest('hex'));
+}
+
+export function personalCodexHome(dataRoot: string, accountId: string): string {
+  return path.join(actorRuntimeDir(dataRoot, accountId), 'codex-home');
+}
+
+function privateDir(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(dir, 0o700);
+}
+
+/** Directories 0700, files 0600; symlinks are neither followed nor changed. */
+function lockDown(root: string): void {
+  const info = fs.lstatSync(root, { throwIfNoEntry: false });
+  if (!info || info.isSymbolicLink()) return;
+  if (info.isDirectory()) {
+    fs.chmodSync(root, 0o700);
+    for (const name of fs.readdirSync(root)) lockDown(path.join(root, name));
+  } else fs.chmodSync(root, 0o600);
+}
+
+export function maskEmail(email: string): string {
+  const at = email.lastIndexOf('@');
+  if (at <= 0) return '***';
+  return `${email.slice(0, 1)}***@${email.slice(at + 1)}`;
+}
+
+/** Provider failure classes from a failed turn's `codexErrorInfo` (codex 0.160.0 schema). */
+export function classifyTurnError(error: unknown): PersonalAccountProblem | null {
+  const record = error && typeof error === 'object' ? error as Json : {};
+  const info = record.codexErrorInfo;
+  const message = typeof record.message === 'string' ? record.message : '';
+  if (info === 'usageLimitExceeded') return 'usage_limit_reached';
+  if (info === 'unauthorized') return /workspace/iu.test(message) ? 'workspace_not_allowed' : 'reauth_required';
+  return null;
+}
+
+export const PROBLEM_ERRORS: Record<PersonalAccountProblem, { status: number; code: ApiErrorCode }> = {
+  reauth_required: { status: 409, code: 'MULTIUSER_PERSONAL_REAUTH_REQUIRED' },
+  usage_limit_reached: { status: 429, code: 'MULTIUSER_PERSONAL_USAGE_LIMIT' },
+  workspace_not_allowed: { status: 403, code: 'MULTIUSER_PERSONAL_WORKSPACE_NOT_ALLOWED' },
+};
+
+/** Device-login failures reported by `account/login/completed`. Unknown text => provider_error. */
+function classifyLoginFailure(error: unknown): { status: PersonalLoginAttemptStatus; failureCode: PersonalLoginFailureCode | null } {
+  const text = typeof error === 'string' ? error : '';
+  if (/denied/iu.test(text)) return { status: 'denied', failureCode: null };
+  if (/expired|timed? ?out/iu.test(text)) return { status: 'expired', failureCode: null };
+  if (/workspace/iu.test(text)) return { status: 'failed', failureCode: 'workspace_not_allowed' };
+  return { status: 'failed', failureCode: 'provider_error' };
+}
+
+function rateWindow(value: unknown): PersonalRateLimitWindow | null {
+  const record = value && typeof value === 'object' ? value as Json : null;
+  if (!record || typeof record.usedPercent !== 'number' || !Number.isFinite(record.usedPercent)) return null;
+  const optional = (v: unknown) => (typeof v === 'number' && Number.isSafeInteger(v) ? v : null);
+  return { usedPercent: record.usedPercent, windowDurationMins: optional(record.windowDurationMins), resetsAt: optional(record.resetsAt) };
+}
+
+export interface PersonalTurnResult { ok: boolean; problem: PersonalAccountProblem | null; text: string; threadId: string | null }
+
+/**
+ * Drive one turn through the shared app-server session driver in `codexHome`.
+ * A raw tap on the same stdout reads the failed turn's `codexErrorInfo`, which
+ * the normalizer does not forward.
+ */
+export function runPersonalCodexTurn(input: AppServerEnvironment & {
+  prompt: string; resumeThreadId: string | null; sandboxMode: CodexSandboxMode; onThread?: (threadId: string) => void;
+  /** Called synchronously from the child's close event, before `done` settles. */
+  onDone?: (result: PersonalTurnResult) => void;
+}): { child: ChildProcessWithoutNullStreams; done: Promise<PersonalTurnResult> } {
+  const child = spawnAppServer(input);
+  let text = '';
+  let problem: PersonalAccountProblem | null = null;
+  let tap = '';
+  child.stdout.on('data', (chunk: Buffer) => {
+    tap += chunk.toString('utf8');
+    let newline: number;
+    while ((newline = tap.indexOf('\n')) !== -1) {
+      const line = tap.slice(0, newline);
+      tap = tap.slice(newline + 1);
+      try {
+        const frame = JSON.parse(line) as Json;
+        const turn = frame.method === 'turn/completed' ? (frame.params as Json | undefined)?.turn as Json | undefined : undefined;
+        if (turn?.status === 'failed') problem = classifyTurnError(turn.error);
+      } catch { /* not a frame */ }
+    }
+  });
+  const session = attachCodexAppServerSession({
+    child, prompt: input.prompt, cwd: input.cwd, sandboxMode: input.sandboxMode,
+    resumeSessionId: input.resumeThreadId, resumeSessionOwned: input.resumeThreadId !== null,
+    onAgentEvent: (event) => {
+      if (event.type === 'text_delta' && typeof event.delta === 'string' && text.length < MAX_TURN_TEXT) text += event.delta;
+      if (event.type === 'status' && typeof event.sessionId === 'string') input.onThread?.(event.sessionId);
+      // A fatal transport error never reaches turn/completed; end the child.
+      if (event.type === 'error') { try { child.stdin.end(); } catch { /* gone */ } }
+    },
+  });
+  const done = new Promise<PersonalTurnResult>((resolve) => {
+    child.once('close', (code) => {
+      const result = { ok: code === 0 && session.completedSuccessfully() && problem === null,
+        problem, text: text.slice(0, MAX_TURN_TEXT), threadId: session.getDurableSessionId() };
+      input.onDone?.(result);
+      resolve(result);
+    });
+  });
+  return { child, done };
+}
+
+type AttemptRow = {
+  id: string; owner_account_id: string; status: PersonalLoginAttemptStatus; failure_code: PersonalLoginFailureCode | null;
+  created_at: number; expires_at: number; updated_at: number;
+};
+type AccountRow = {
+  id: string; owner_account_id: string; status: PersonalAccountStatus; identity_hash: string; masked_identity: string;
+  plan_type: string | null; credential_version: number; last_problem: PersonalAccountProblem | null;
+  rate_limits_json: string | null; linked_at: number; verified_at: number | null; updated_at: number;
+};
+interface LiveAttempt {
+  id: string; ownerId: string; loginId: string; userCode: string; verificationUrl: string;
+  client: AppServerAccountClient; loginHome: string; timer: NodeJS.Timeout; completing: boolean;
+  closed: Promise<void> | null;
+}
+
+export interface UsablePersonalAccount { id: string; credentialVersion: number; codexHome: string }
+
+export class PersonalCodexAccounts {
+  readonly enabled: boolean;
+  private readonly db: Database.Database;
+  private readonly dataRoot: string;
+  private readonly command: readonly [string, ...string[]] | null;
+  private readonly now: () => number;
+  private readonly live = new Map<string, LiveAttempt>();
+  private readonly verifying = new Map<string, ChildProcessWithoutNullStreams>();
+  private cancelPersonalRuns: (ownerId: string) => Promise<void> = async () => {};
+  private identityKey: Buffer;
+  private stopped = false;
+
+  constructor(input: { db: Database.Database; dataRoot: string; appServerScript?: string; clock?: () => number }) {
+    this.db = input.db;
+    this.dataRoot = input.dataRoot;
+    this.command = input.appServerScript ? [process.execPath, input.appServerScript] : null;
+    this.enabled = this.command !== null;
+    this.now = input.clock ?? Date.now;
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS multiuser_agent_accounts (
+        id TEXT PRIMARY KEY,
+        owner_account_id TEXT NOT NULL CHECK (length(owner_account_id) > 0),
+        provider TEXT NOT NULL CHECK (provider IN ('codex')),
+        status TEXT NOT NULL CHECK (status IN ('connected','requires_reauth','disabled')),
+        identity_hash TEXT NOT NULL, masked_identity TEXT NOT NULL, plan_type TEXT,
+        credential_version INTEGER NOT NULL, last_problem TEXT, rate_limits_json TEXT,
+        linked_at INTEGER NOT NULL, verified_at INTEGER, updated_at INTEGER NOT NULL,
+        UNIQUE (owner_account_id, provider), UNIQUE (provider, identity_hash)
+      );
+      CREATE TRIGGER IF NOT EXISTS multiuser_agent_accounts_binding_immutable
+        BEFORE UPDATE OF owner_account_id, provider, identity_hash ON multiuser_agent_accounts
+        BEGIN SELECT RAISE(ABORT, 'agent account binding is immutable'); END;
+      CREATE TABLE IF NOT EXISTS multiuser_agent_login_attempts (
+        id TEXT PRIMARY KEY,
+        owner_account_id TEXT NOT NULL CHECK (length(owner_account_id) > 0),
+        provider TEXT NOT NULL CHECK (provider IN ('codex')),
+        status TEXT NOT NULL CHECK (status IN ('pending','connected','denied','expired','canceled','failed')),
+        failure_code TEXT, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_multiuser_agent_login_one_pending
+        ON multiuser_agent_login_attempts(owner_account_id, provider) WHERE status = 'pending';
+      CREATE TRIGGER IF NOT EXISTS multiuser_agent_login_owner_immutable
+        BEFORE UPDATE OF owner_account_id, provider ON multiuser_agent_login_attempts
+        BEGIN SELECT RAISE(ABORT, 'login attempt binding is immutable'); END;
+      CREATE TABLE IF NOT EXISTS multiuser_agent_account_config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS multiuser_agent_account_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, actor_account_id TEXT NOT NULL, target_account_id TEXT NOT NULL,
+        provider TEXT NOT NULL, action TEXT NOT NULL, detail TEXT, ref_id TEXT, created_at INTEGER NOT NULL
+      );
+      CREATE TRIGGER IF NOT EXISTS multiuser_agent_account_audit_immutable BEFORE UPDATE ON multiuser_agent_account_audit
+        BEGIN SELECT RAISE(ABORT, 'agent account audit is append only'); END;
+      CREATE TRIGGER IF NOT EXISTS multiuser_agent_account_audit_no_delete BEFORE DELETE ON multiuser_agent_account_audit
+        BEGIN SELECT RAISE(ABORT, 'agent account audit is append only'); END;
+    `);
+    this.db.prepare("INSERT OR IGNORE INTO multiuser_agent_account_config (key, value) VALUES ('identity-key', ?)")
+      .run(randomBytes(32).toString('base64'));
+    this.identityKey = Buffer.from((this.db.prepare("SELECT value FROM multiuser_agent_account_config WHERE key = 'identity-key'")
+      .get() as { value: string }).value, 'base64');
+    this.recover();
+  }
+
+  setRunHooks(hooks: { cancelPersonalRuns: (ownerId: string) => Promise<void> }): void {
+    this.cancelPersonalRuns = hooks.cancelPersonalRuns;
+  }
+
+  audit(actorId: string, targetId: string, action: string, detail: string | null = null, refId: string | null = null): void {
+    this.db.prepare(`INSERT INTO multiuser_agent_account_audit
+      (actor_account_id, target_account_id, provider, action, detail, ref_id, created_at) VALUES (?, ?, 'codex', ?, ?, ?, ?)`)
+      .run(actorId, targetId, action, detail, refId, this.now());
+  }
+
+  // ---- reads -----------------------------------------------------------------
+
+  summary(ownerId: string): { account: PersonalAgentAccount | null; pendingAttempt: PersonalLoginAttempt | null } {
+    const pending = this.db.prepare("SELECT * FROM multiuser_agent_login_attempts WHERE owner_account_id = ? AND status = 'pending'")
+      .get(ownerId) as AttemptRow | undefined;
+    const account = this.accountRow(ownerId);
+    return { account: account ? this.accountDto(account) : null, pendingAttempt: pending ? this.attemptDto(pending, false) : null };
+  }
+
+  async attempt(ownerId: string, attemptId: string): Promise<PersonalLoginAttempt | null> {
+    const row = this.ownedAttempt(ownerId, attemptId);
+    if (!row) return null;
+    if (row.status === 'pending' && this.now() >= row.expires_at) {
+      await this.finalize(row.id, 'expired', null, 'link_expire');
+    }
+    return this.attemptDto(this.ownedAttempt(ownerId, attemptId)!, true);
+  }
+
+  /** Gate hook: the id names the actor's own attempt / linked account. */
+  isOwner(param: 'attemptId' | 'accountId', id: string, ownerId: string): boolean {
+    if (param === 'attemptId') return this.ownedAttempt(ownerId, id) !== null;
+    return this.accountRow(ownerId)?.id === id;
+  }
+
+  usableAccount(ownerId: string): UsablePersonalAccount | null {
+    if (!this.enabled) return null;
+    const row = this.accountRow(ownerId);
+    if (!row || row.status !== 'connected') return null;
+    return { id: row.id, credentialVersion: row.credential_version, codexHome: personalCodexHome(this.dataRoot, ownerId) };
+  }
+
+  /** Re-apply 0700/0600 after a provider child wrote into the actor's home. */
+  secureHome(ownerId: string): void {
+    const home = personalCodexHome(this.dataRoot, ownerId);
+    if (fs.existsSync(home)) lockDown(home);
+  }
+
+  appServerCommand(): readonly [string, ...string[]] | null {
+    return this.command;
+  }
+
+  adminView(ownerIds: readonly string[]): Record<string, { linked: boolean; status: PersonalAccountStatus | null;
+    linkedAt: number | null; verifiedAt: number | null; updatedAt: number | null }> {
+    const out: ReturnType<PersonalCodexAccounts['adminView']> = {};
+    for (const ownerId of ownerIds) {
+      const row = this.accountRow(ownerId);
+      out[ownerId] = { linked: !!row, status: row?.status ?? null, linkedAt: row?.linked_at ?? null,
+        verifiedAt: row?.verified_at ?? null, updatedAt: row?.updated_at ?? null };
+    }
+    return out;
+  }
+
+  // ---- login state machine -----------------------------------------------------
+
+  async startLogin(ownerId: string): Promise<PersonalLoginAttempt> {
+    if (!this.enabled || !this.command) throw new PersonalAccountError(403, 'MULTIUSER_PERSONAL_DISABLED', 'personal subscriptions are not enabled on this server');
+    const id = randomBytes(32).toString('base64url');
+    const createdAt = this.now();
+    // Replace atomically: the prior pending attempt and the new one never coexist.
+    const prior = this.db.transaction(() => {
+      const previous = this.db.prepare("SELECT id FROM multiuser_agent_login_attempts WHERE owner_account_id = ? AND status = 'pending'")
+        .get(ownerId) as { id: string } | undefined;
+      if (previous) {
+        this.db.prepare("UPDATE multiuser_agent_login_attempts SET status = 'canceled', updated_at = ? WHERE id = ? AND status = 'pending'")
+          .run(createdAt, previous.id);
+        this.audit(ownerId, ownerId, 'link_cancel', 'replaced', previous.id);
+      }
+      this.db.prepare(`INSERT INTO multiuser_agent_login_attempts (id, owner_account_id, provider, status, created_at, expires_at, updated_at)
+        VALUES (?, ?, 'codex', 'pending', ?, ?, ?)`).run(id, ownerId, createdAt, createdAt + PERSONAL_LOGIN_TTL_MS, createdAt);
+      this.audit(ownerId, ownerId, 'link_start', null, id);
+      return previous?.id ?? null;
+    }).immediate();
+    if (prior) await this.teardown(prior);
+    const loginHome = this.loginHome(ownerId, id);
+    privateDir(actorRuntimeDir(this.dataRoot, ownerId));
+    privateDir(loginHome);
+    privateDir(path.join(loginHome, 'tmp'));
+    const client = new AppServerAccountClient({ command: this.command, codexHome: loginHome, home: loginHome,
+      temp: path.join(loginHome, 'tmp'), cwd: loginHome, dataRoot: this.dataRoot });
+    try {
+      await client.initialize();
+      const started = await client.request('account/login/start', { type: 'chatgptDeviceCode' });
+      if (started.type !== 'chatgptDeviceCode' || typeof started.loginId !== 'string' || typeof started.userCode !== 'string'
+          || typeof started.verificationUrl !== 'string' || !/^https:\/\//u.test(started.verificationUrl)) {
+        throw new Error('unexpected login response');
+      }
+      const stillPending = this.attemptRow(id)?.status === 'pending' && !this.stopped;
+      if (!stillPending) {
+        await client.close();
+        fs.rmSync(loginHome, { recursive: true, force: true });
+        return this.attemptDto(this.attemptRow(id)!, false);
+      }
+      const timer = setTimeout(() => { this.finalize(id, 'expired', null, 'link_expire').catch(() => {}); }, PERSONAL_LOGIN_TTL_MS);
+      timer.unref();
+      const live: LiveAttempt = { id, ownerId, loginId: started.loginId, userCode: started.userCode,
+        verificationUrl: started.verificationUrl, client, loginHome, timer, completing: false, closed: null };
+      this.live.set(id, live);
+      client.onNotification((method, params) => {
+        if (method === 'account/login/completed') {
+          this.onCompleted(id, params).catch(() => this.finalize(id, 'failed', 'provider_error', 'link_fail').catch(() => {}));
+        }
+      });
+      client.child.once('close', () => {
+        if (this.live.get(id) === live && !live.completing && !live.closed) this.finalize(id, 'failed', 'provider_error', 'link_fail').catch(() => {});
+      });
+      return this.attemptDto(this.attemptRow(id)!, true);
+    } catch {
+      await client.close();
+      fs.rmSync(loginHome, { recursive: true, force: true });
+      this.transition(id, 'failed', 'provider_error', 'link_fail');
+      return this.attemptDto(this.attemptRow(id)!, false);
+    }
+  }
+
+  async cancelLogin(ownerId: string, attemptId: string): Promise<PersonalLoginAttempt | null> {
+    const row = this.ownedAttempt(ownerId, attemptId);
+    if (!row) return null;
+    if (row.status === 'pending') {
+      // State first: any completion that races the cancel is ignored.
+      this.transition(row.id, 'canceled', null, 'link_cancel');
+      const live = this.live.get(row.id);
+      if (live) await live.client.request('account/login/cancel', { loginId: live.loginId }, 2_000).catch(() => null);
+      await this.teardown(row.id);
+    }
+    return this.attemptDto(this.ownedAttempt(ownerId, attemptId)!, false);
+  }
+
+  /** Session revocation / deactivation: end the actor's pending login. */
+  async cancelPendingFor(ownerId: string): Promise<void> {
+    const pending = this.db.prepare("SELECT id FROM multiuser_agent_login_attempts WHERE owner_account_id = ? AND status = 'pending'")
+      .get(ownerId) as { id: string } | undefined;
+    if (pending) await this.cancelLogin(ownerId, pending.id);
+  }
+
+  private async onCompleted(attemptId: string, params: Json): Promise<void> {
+    const live = this.live.get(attemptId);
+    // Replays, foreign login ids and anything after a terminal state are ignored.
+    if (!live || live.completing || params.loginId !== live.loginId) return;
+    if (this.attemptRow(attemptId)?.status !== 'pending') return;
+    live.completing = true;
+    if (params.success !== true) {
+      const mapped = classifyLoginFailure(params.error);
+      await this.finalize(attemptId, mapped.status, mapped.failureCode, `link_${mapped.status === 'failed' ? 'fail' : mapped.status === 'denied' ? 'deny' : 'expire'}`);
+      return;
+    }
+    let read: Json;
+    let limits: Json | null;
+    try {
+      read = await live.client.request('account/read', { refreshToken: false });
+      limits = await live.client.request('account/rateLimits/read', null).catch(() => null);
+    } catch {
+      await this.finalize(attemptId, 'failed', 'provider_error', 'link_fail');
+      return;
+    }
+    clearTimeout(live.timer);
+    await live.client.close();
+    if (this.attemptRow(attemptId)?.status !== 'pending' || this.stopped) { await this.finalize(attemptId, 'failed', 'interrupted', 'link_fail'); return; }
+    const account = read.account && typeof read.account === 'object' ? read.account as Json : null;
+    const email = account?.type === 'chatgpt' && typeof account.email === 'string' ? account.email.trim().toLowerCase() : '';
+    if (!email || !email.includes('@')) { await this.finalize(attemptId, 'failed', 'identity_unavailable', 'link_fail'); return; }
+    const identity = createHmac('sha256', this.identityKey).update(`codex:${email}`).digest('hex');
+    const rateLimits = this.rateLimits(limits);
+    const planType = typeof account?.planType === 'string' ? account.planType.slice(0, 64) : null;
+    const existing = this.accountRow(live.ownerId);
+    const holder = this.db.prepare("SELECT owner_account_id FROM multiuser_agent_accounts WHERE provider = 'codex' AND identity_hash = ?")
+      .get(identity) as { owner_account_id: string } | undefined;
+    if (holder && holder.owner_account_id !== live.ownerId) { await this.finalize(attemptId, 'failed', 'identity_in_use', 'link_fail'); return; }
+    if (existing && existing.identity_hash !== identity) { await this.finalize(attemptId, 'failed', 'account_mismatch', 'link_fail'); return; }
+    // Re-authorization replaces the credential: runs bound to the old version stop first.
+    if (existing) await this.cancelPersonalRuns(live.ownerId);
+    if (this.attemptRow(attemptId)?.status !== 'pending' || this.stopped) { await this.finalize(attemptId, 'failed', 'interrupted', 'link_fail'); return; }
+    // Synchronous from here: no dispatch can observe a half-swapped home.
+    const home = personalCodexHome(this.dataRoot, live.ownerId);
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.renameSync(live.loginHome, home);
+    lockDown(home);
+    const at = this.now();
+    // The UNIQUE identity index is the backstop; a failed bind leaves no usable home behind.
+    try { this.db.transaction(() => {
+      if (existing) {
+        this.db.prepare(`UPDATE multiuser_agent_accounts SET status = 'connected', masked_identity = ?, plan_type = ?,
+          credential_version = credential_version + 1, last_problem = NULL, rate_limits_json = ?, updated_at = ? WHERE id = ?`)
+          .run(maskEmail(email), planType, rateLimits ? JSON.stringify(rateLimits) : null, at, existing.id);
+      } else {
+        this.db.prepare(`INSERT INTO multiuser_agent_accounts (id, owner_account_id, provider, status, identity_hash, masked_identity,
+          plan_type, credential_version, rate_limits_json, linked_at, updated_at) VALUES (?, ?, 'codex', 'connected', ?, ?, ?, 1, ?, ?, ?)`)
+          .run(randomUUID(), live.ownerId, identity, maskEmail(email), planType, rateLimits ? JSON.stringify(rateLimits) : null, at, at);
+      }
+      this.transition(attemptId, 'connected', null, 'link_complete');
+    }).immediate(); } catch {
+      fs.rmSync(home, { recursive: true, force: true });
+      if (existing) this.recordProblem(live.ownerId, existing.id, 'reauth_required');
+      await this.finalize(attemptId, 'failed', 'provider_error', 'link_fail');
+      return;
+    }
+    this.live.delete(attemptId);
+  }
+
+  private rateLimits(result: Json | null): PersonalRateLimits | null {
+    const snapshot = result?.rateLimits && typeof result.rateLimits === 'object' ? result.rateLimits as Json : null;
+    if (!snapshot) return null;
+    const primary = rateWindow(snapshot.primary);
+    const secondary = rateWindow(snapshot.secondary);
+    return primary || secondary ? { primary, secondary, readAt: this.now() } : null;
+  }
+
+  /** Move a pending attempt to a terminal state (no-op otherwise) and tear its child down. */
+  private async finalize(attemptId: string, status: PersonalLoginAttemptStatus, failureCode: PersonalLoginFailureCode | null,
+    action: string): Promise<void> {
+    this.transition(attemptId, status, failureCode, action);
+    await this.teardown(attemptId);
+  }
+
+  private transition(attemptId: string, status: PersonalLoginAttemptStatus, failureCode: PersonalLoginFailureCode | null, action: string): void {
+    const row = this.attemptRow(attemptId);
+    if (!row) return;
+    const changed = this.db.prepare(`UPDATE multiuser_agent_login_attempts SET status = ?, failure_code = ?, updated_at = ?
+      WHERE id = ? AND status = 'pending'`).run(status, failureCode, this.now(), attemptId).changes;
+    if (changed > 0) this.audit(row.owner_account_id, row.owner_account_id, action, failureCode ?? status, attemptId);
+  }
+
+  private async teardown(attemptId: string): Promise<void> {
+    const live = this.live.get(attemptId);
+    const row = this.attemptRow(attemptId);
+    if (live) {
+      clearTimeout(live.timer);
+      live.closed ??= live.client.close();
+      await live.closed;
+      if (this.live.get(attemptId) === live) this.live.delete(attemptId);
+    }
+    if (row) fs.rmSync(this.loginHome(row.owner_account_id, attemptId), { recursive: true, force: true });
+  }
+
+  // ---- verify / problems / unlink -------------------------------------------------
+
+  async verify(ownerId: string, accountId: string, consent: unknown): Promise<PersonalAgentAccount | null> {
+    const row = this.accountRow(ownerId);
+    if (!row || row.id !== accountId) return null;
+    if (consent !== true) throw new PersonalAccountError(400, 'MULTIUSER_PERSONAL_CONSENT_REQUIRED', 'verification consumes your plan; explicit consent is required');
+    if (!this.enabled || !this.command) throw new PersonalAccountError(403, 'MULTIUSER_PERSONAL_DISABLED', 'personal subscriptions are not enabled on this server');
+    if (row.status !== 'connected') throw new PersonalAccountError(409, 'MULTIUSER_PERSONAL_UNAVAILABLE', 'the personal account is not usable; re-authorize or unlink it');
+    if (this.verifying.has(ownerId)) throw new PersonalAccountError(409, 'MULTIUSER_PERSONAL_BUSY', 'a verification is already running');
+    const work = path.join(actorRuntimeDir(this.dataRoot, ownerId), 'codex-verify');
+    privateDir(work);
+    privateDir(path.join(work, 'tmp'));
+    const home = personalCodexHome(this.dataRoot, ownerId);
+    const turn = runPersonalCodexTurn({ command: this.command, codexHome: home, home: work, temp: path.join(work, 'tmp'),
+      cwd: work, dataRoot: this.dataRoot, prompt: VERIFY_PROMPT, resumeThreadId: null, sandboxMode: 'read-only' });
+    this.verifying.set(ownerId, turn.child);
+    let result: PersonalTurnResult;
+    try { result = await turn.done; } finally {
+      this.verifying.delete(ownerId);
+      fs.rmSync(work, { recursive: true, force: true });
+    }
+    this.secureHome(ownerId);
+    const current = this.accountRow(ownerId);
+    if (!current || current.id !== accountId || current.credential_version !== row.credential_version) {
+      throw new PersonalAccountError(409, 'MULTIUSER_PERSONAL_UNAVAILABLE', 'the personal account changed during verification');
+    }
+    if (result.ok) {
+      this.db.prepare('UPDATE multiuser_agent_accounts SET verified_at = ?, last_problem = NULL, updated_at = ? WHERE id = ?')
+        .run(this.now(), this.now(), accountId);
+      this.audit(ownerId, ownerId, 'verify', 'ok', accountId);
+      return this.accountDto(this.accountRow(ownerId)!);
+    }
+    this.audit(ownerId, ownerId, 'verify', result.problem ?? 'failed', accountId);
+    if (result.problem) {
+      this.recordProblem(ownerId, accountId, result.problem);
+      const mapped = PROBLEM_ERRORS[result.problem];
+      throw new PersonalAccountError(mapped.status, mapped.code, 'the provider refused the verification request');
+    }
+    throw new PersonalAccountError(502, 'AGENT_EXECUTION_FAILED', 'verification request failed');
+  }
+
+  /** Apply a provider failure class; usage limits never change the status or the source. */
+  recordProblem(ownerId: string, accountId: string, problem: PersonalAccountProblem): void {
+    const row = this.accountRow(ownerId);
+    if (!row || row.id !== accountId) return;
+    const status: PersonalAccountStatus = problem === 'reauth_required' ? 'requires_reauth'
+      : problem === 'workspace_not_allowed' ? 'disabled' : row.status;
+    this.db.prepare('UPDATE multiuser_agent_accounts SET status = ?, last_problem = ?, updated_at = ? WHERE id = ?')
+      .run(status, problem, this.now(), accountId);
+    if (status !== row.status) this.audit(ownerId, ownerId, 'status_change', status, accountId);
+  }
+
+  async unlink(ownerId: string, accountId: string): Promise<boolean> {
+    const row = this.accountRow(ownerId);
+    if (!row || row.id !== accountId) return false;
+    await this.cancelPendingFor(ownerId);
+    await this.cancelPersonalRuns(ownerId);
+    const verifying = this.verifying.get(ownerId);
+    if (verifying) await closeChild(verifying, 0);
+    const home = personalCodexHome(this.dataRoot, ownerId);
+    if (this.command && fs.existsSync(home)) {
+      // Best effort local logout; this is not a provider-side revocation.
+      const client = new AppServerAccountClient({ command: this.command, codexHome: home, home, temp: home, cwd: home, dataRoot: this.dataRoot });
+      try { await client.initialize(); await client.request('account/logout', null, 3_000); } catch { /* deletion below is authoritative */ }
+      await client.close();
+    }
+    fs.rmSync(home, { recursive: true, force: true });
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM multiuser_agent_accounts WHERE id = ? AND owner_account_id = ?').run(accountId, ownerId);
+      this.audit(ownerId, ownerId, 'unlink', null, accountId);
+    })();
+    return true;
+  }
+
+  async shutdown(): Promise<void> {
+    this.stopped = true;
+    for (const id of [...this.live.keys()]) {
+      this.transition(id, 'failed', 'interrupted', 'link_interrupted');
+      await this.teardown(id);
+    }
+    await Promise.all([...this.verifying.values()].map((child) => closeChild(child, 0)));
+  }
+
+  // ---- internals ---------------------------------------------------------------
+
+  /** Restart: pending attempts lost their child, so they fail; their login homes go. */
+  private recover(): void {
+    const pending = this.db.prepare("SELECT id FROM multiuser_agent_login_attempts WHERE status = 'pending'").all() as Array<{ id: string }>;
+    for (const { id } of pending) this.transition(id, 'failed', 'interrupted', 'link_interrupted');
+    const root = path.join(this.dataRoot, 'multiuser-runtime');
+    if (!fs.existsSync(root)) return;
+    for (const actor of fs.readdirSync(root)) {
+      const dir = path.join(root, actor);
+      if (!fs.lstatSync(dir).isDirectory()) continue;
+      for (const name of fs.readdirSync(dir)) {
+        if (name.startsWith('codex-login-') || name === 'codex-verify') fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+      }
+    }
+  }
+
+  private loginHome(ownerId: string, attemptId: string): string {
+    return path.join(actorRuntimeDir(this.dataRoot, ownerId), `codex-login-${createHash('sha256').update(attemptId).digest('hex').slice(0, 24)}`);
+  }
+
+  private attemptRow(id: string): AttemptRow | undefined {
+    return this.db.prepare('SELECT * FROM multiuser_agent_login_attempts WHERE id = ?').get(id) as AttemptRow | undefined;
+  }
+
+  private ownedAttempt(ownerId: string, id: string): AttemptRow | null {
+    const row = this.attemptRow(id);
+    return row && row.owner_account_id === ownerId ? row : null;
+  }
+
+  private accountRow(ownerId: string): AccountRow | undefined {
+    return this.db.prepare("SELECT * FROM multiuser_agent_accounts WHERE owner_account_id = ? AND provider = 'codex'")
+      .get(ownerId) as AccountRow | undefined;
+  }
+
+  private attemptDto(row: AttemptRow, withSecrets: boolean): PersonalLoginAttempt {
+    const live = withSecrets && row.status === 'pending' ? this.live.get(row.id) : undefined;
+    return {
+      id: row.id, provider: 'codex', status: row.status, failureCode: row.failure_code,
+      createdAt: row.created_at, expiresAt: row.expires_at,
+      ...(live ? { verificationUrl: live.verificationUrl, userCode: live.userCode } : {}),
+    };
+  }
+
+  private accountDto(row: AccountRow): PersonalAgentAccount {
+    return {
+      id: row.id, provider: 'codex', status: row.status, maskedIdentity: row.masked_identity, planType: row.plan_type,
+      linkedAt: row.linked_at, verifiedAt: row.verified_at, lastProblem: row.last_problem,
+      rateLimits: row.rate_limits_json ? JSON.parse(row.rate_limits_json) as PersonalRateLimits : null,
+    };
+  }
+}

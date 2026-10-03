@@ -11,6 +11,8 @@
 //   owner-scoped-project  session + the `projectParam` route param must be a project
 //                         the actor owns (checked BEFORE the handler); no admin override
 //   owner-scoped-run      session + immutable run owner verified before the handler
+//   owner-scoped-agent-account  session + the actor's own personal login attempt /
+//                         linked account id verified before the handler (#18)
 //   actor-scoped          session; the handler scopes to the actor (list filter/create bind)
 //   blocked-in-multiuser  denied to everyone, including admins, with the stated reason
 //   middleware            a non-terminal `app.use` entry; never authorizes a request
@@ -30,6 +32,7 @@ export type MultiUserRouteClass =
   | 'admin-only'
   | 'owner-scoped-project'
   | 'owner-scoped-run'
+  | 'owner-scoped-agent-account'
   | 'actor-scoped'
   | 'blocked-in-multiuser'
   | 'middleware';
@@ -48,6 +51,8 @@ export interface MultiUserRouteClassification {
   /** Route param holding the project id (owner-scoped-project only). */
   projectParam?: string;
   runParam?: string;
+  /** Route param holding a personal login attempt or linked account id (owner-scoped-agent-account only). */
+  agentAccountParam?: 'attemptId' | 'accountId';
   /** Post-parse body policy enforced by the gate. */
   bodyPolicy?: MultiUserBodyPolicy;
   /**
@@ -63,7 +68,7 @@ export function routeKey(method: string, path: string): string {
   return `${method.toUpperCase()} ${path}`;
 }
 
-type EntryExtras = Pick<MultiUserRouteClassification, 'projectParam' | 'runParam' | 'bodyPolicy' | 'nonStringPath' | 'catchAll'>;
+type EntryExtras = Pick<MultiUserRouteClassification, 'projectParam' | 'runParam' | 'agentAccountParam' | 'bodyPolicy' | 'nonStringPath' | 'catchAll'>;
 
 function group(
   routeClass: MultiUserRouteClass,
@@ -320,6 +325,23 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'GET /api/runs/:id/events',
     'POST /api/runs/:id/cancel',
   ], { runParam: 'id' }),
+  // Personal subscription accounts (#18): the actor's own provider link only.
+  ...group('actor-scoped', 'personal subscription summary and login start; the handler keys every lookup by the actor', [
+    'GET /api/agent-accounts',
+    'POST /api/agent-accounts/codex/logins',
+  ]),
+  ...group('owner-scoped-agent-account', 'login attempt must belong to the actor (gate check before the handler); foreign and forged ids are the same 404; no admin override', [
+    'GET /api/agent-accounts/codex/logins/:attemptId',
+    'POST /api/agent-accounts/codex/logins/:attemptId/cancel',
+  ], { agentAccountParam: 'attemptId' }),
+  ...group('owner-scoped-agent-account', 'linked account must be the actor\'s own (gate check before the handler); admins cannot verify, use or unlink it', [
+    'POST /api/agent-accounts/codex/accounts/:accountId/verify',
+    'DELETE /api/agent-accounts/codex/accounts/:accountId',
+  ], { agentAccountParam: 'accountId' }),
+  ...group('admin-only', 'personal subscription metadata (linked, status, timestamps, worker time) and the host-wide personal worker ceiling; no identity or secrets', [
+    'GET /api/admin/agent-accounts',
+    'PUT /api/admin/agent-accounts/personal-capacity',
+  ]),
   ...blocked(R_RUNS, [
     'POST /api/chat',
     'GET /api/runs/by-plugin-workflow/:workflowId',
