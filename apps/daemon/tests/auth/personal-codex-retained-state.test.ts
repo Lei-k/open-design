@@ -51,9 +51,12 @@ const SCHEMA_2FD5F112 = `
 
 interface Fixture { root: string; dbPath: string; db: Database.Database; service: PersonalCodexAccounts; owner: string; home: string }
 const fixtures: Fixture[] = [];
+/** Added to the services' clock, to move an attempt past its deadline without waiting. */
+let clockOffset = 0;
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  clockOffset = 0;
   for (const r of fixtures.splice(0)) {
     await r.service.shutdown();
     r.db.close();
@@ -63,7 +66,8 @@ afterEach(async () => {
 
 function open(root: string, dbPath: string) {
   const db = new Database(dbPath);
-  return { db, service: new PersonalCodexAccounts({ db, dataRoot: root, appServerScript: PERSONAL_CODEX_MOCK }) };
+  return { db, service: new PersonalCodexAccounts({ db, dataRoot: root, appServerScript: PERSONAL_CODEX_MOCK,
+    clock: () => Date.now() + clockOffset }) };
 }
 
 function make(seed?: (db: Database.Database) => void): Fixture {
@@ -445,7 +449,7 @@ describe('repair 7: legacy and record-aware retained state', () => {
       fs.renameSync(p.auth, p.backup);
       fs.writeFileSync(p.auth, next, { mode: 0o600 });
     }],
-  ] as const)('row %s: keeps every copy, fences the account, refuses reauth, and only unlink removes it', async (_name, shape) => {
+  ] as const)('row %s: keeps every copy private and fenced across restart; unlink still removes every copy', async (_name, shape) => {
     const r = make();
     const other = as(r, 'other');
     await linked(other);
@@ -469,9 +473,6 @@ describe('repair 7: legacy and record-aware retained state', () => {
     };
     check();
     await restart(r);
-    check();
-    // A re-authorization installs nothing over ambiguous copies.
-    expect((await login(r)).status).toBe('failed');
     check();
     const account = r.service.summary(r.owner).account!;
     expect(await r.service.unlink(r.owner, account.id)).toBe(true);
@@ -570,5 +571,180 @@ describe('repair 7: legacy and record-aware retained state', () => {
     expect(r.service.usableAccount(r.owner)).not.toBeNull();
     expect(fs.existsSync(path.join(r.home, 'sessions'))).toBe(false);
     noRetainedCopies(r);
+  });
+});
+
+// ---- Row 6, confirmed decision (issue18-decision4: "reauth commit = proof") ---------------
+//
+// Ambiguous legacy copies stay private and fenced until a NEW authorization commits. That
+// commit (same account row, credential version +1, verification and problem cleared, native
+// thread pins reset even for the same identity) is the proof that retires both old copies.
+// Anything short of a commit keeps every byte and mode of both copies and the fence.
+
+type AmbiguousForm = 'whole-home' | 'auth-only' | 'mixed';
+
+async function ambiguousState(r: Fixture, form: AmbiguousForm): Promise<void> {
+  await legacyUpgrade(r, (p) => {
+    if (form === 'auth-only') {
+      fs.renameSync(p.auth, p.backup);
+      fs.writeFileSync(p.auth, 'mock-ambiguous-active-credential', { mode: 0o600 });
+      return;
+    }
+    fs.renameSync(p.home, p.aside);
+    writeReplacementHome(p.home, 'mock-ambiguous-active-credential');
+    if (form === 'mixed') fs.writeFileSync(p.backup, 'mock-older-credential', { mode: 0o600 });
+  }, (db) => db.prepare('UPDATE multiuser_agent_accounts SET verified_at = 123 WHERE owner_account_id = ?').run(r.owner));
+  expect(retainedKind(r)).toBe('ambiguous');
+}
+
+const retainedKind = (r: Fixture) => (r.db.prepare('SELECT kind FROM multiuser_agent_retained_state WHERE owner_account_id = ?')
+  .get(r.owner) as { kind: string } | undefined)?.kind ?? null;
+const accountRow = (r: Fixture) => r.db.prepare('SELECT * FROM multiuser_agent_accounts WHERE owner_account_id = ?').get(r.owner) as
+  { id: string; credential_version: number; verified_at: number | null; last_problem: string | null; status: string };
+
+/** Every path, mode and byte of this owner's state outside login staging. */
+function snapshot(r: Fixture): Record<string, string> {
+  const out: Record<string, string> = {};
+  const root = actorRuntimeDir(r.root, r.owner);
+  const walk = (dir: string) => {
+    for (const name of fs.readdirSync(dir).sort()) {
+      if (dir === root && name.startsWith('codex-login-')) continue;
+      const full = path.join(dir, name);
+      const info = fs.lstatSync(full);
+      const rel = path.relative(root, full);
+      if (info.isDirectory()) { out[`${rel}/`] = (info.mode & 0o777).toString(8); walk(full); }
+      else out[rel] = `${(info.mode & 0o777).toString(8)}:${fs.readFileSync(full, 'utf8')}`;
+    }
+  };
+  walk(root);
+  return out;
+}
+
+function expectPreserved(r: Fixture, before: Record<string, string>): void {
+  expect(snapshot(r)).toEqual(before);
+  expect(retainedKind(r)).toBe('ambiguous');
+  expectFenced(r);
+}
+
+describe('row 6: re-authorization out of ambiguous legacy state (commit = proof)', () => {
+  it.each([
+    ['whole-home', 'owner@example.com'], ['auth-only', 'owner@example.com'], ['mixed', 'owner@example.com'],
+    ['whole-home', 'switched@example.org'], ['auth-only', 'switched@example.org'],
+  ] as const)('%s with %s: commits a fresh subscription home, resets pins, then removes both old copies', async (form, email) => {
+    const r = make();
+    const other = as(r, 'other');
+    await linked(other);
+    const otherAuth = fs.readFileSync(path.join(other.home, 'auth.json'), 'utf8');
+    await ambiguousState(r, form);
+    const before = accountRow(r);
+    const forgotten: string[] = [];
+    r.service.setRunHooks({ cancelPersonalRuns: async () => {}, forgetNativeSessions: (owner) => { forgotten.push(owner); } });
+    expect((await login(r, email)).status).toBe('connected');
+    const after = accountRow(r);
+    expect(after).toMatchObject({ id: before.id, status: 'connected', credential_version: before.credential_version + 1,
+      verified_at: null, last_problem: null });
+    expect(r.service.usableAccount(r.owner)).toMatchObject({ id: before.id, credentialVersion: before.credential_version + 1 });
+    expect(forgotten).toEqual([r.owner]);
+    // Only the new login remains: no old credential, no old native sessions, no retained copy.
+    expect(JSON.parse(fs.readFileSync(path.join(r.home, 'auth.json'), 'utf8')).email).toBe(email);
+    expect(fs.existsSync(path.join(r.home, 'sessions'))).toBe(false);
+    noRetainedCopies(r);
+    expect(retainedKind(r)).toBeNull();
+    expect(Object.keys(snapshot(r)).filter((name) => !name.startsWith('codex-home'))).toEqual([]);
+    expect(modeOf(r.home)).toBe(0o700);
+    expect(modeOf(path.join(r.home, 'auth.json'))).toBe(0o600);
+    expect(fs.readFileSync(path.join(other.home, 'auth.json'), 'utf8')).toBe(otherAuth);
+    expect(r.service.usableAccount('other')).not.toBeNull();
+  });
+
+  it.each(['whole-home', 'auth-only', 'mixed'] as const)('%s: a failed install keeps both copies and the fence across restart, then a retry commits', async (form) => {
+    const r = make();
+    await ambiguousState(r, form);
+    const before = snapshot(r);
+    const chmod = fs.chmodSync;
+    let injected = false;
+    vi.spyOn(fs, 'chmodSync').mockImplementation((file, mode) => {
+      if (String(file) === r.home && !injected) { injected = true; throw new Error('install chmod EIO'); }
+      return chmod(file, mode);
+    });
+    expect((await login(r)).status).toBe('failed');
+    vi.restoreAllMocks();
+    expect(injected).toBe(true);
+    expectPreserved(r, before);
+    await restart(r);
+    expectPreserved(r, before);
+    expect((await login(r)).status).toBe('connected');
+    noRetainedCopies(r);
+    expect(r.service.usableAccount(r.owner)).not.toBeNull();
+  });
+
+  it('a failed bind transaction is no deletion authority', async () => {
+    const r = make();
+    await ambiguousState(r, 'mixed');
+    const before = snapshot(r);
+    r.db.exec("CREATE TRIGGER test_fail_bind BEFORE UPDATE ON multiuser_agent_accounts BEGIN SELECT RAISE(ABORT, 'injected bind failure'); END");
+    try { expect((await login(r, 'switched@example.org')).status).toBe('failed'); } finally { r.db.exec('DROP TRIGGER test_fail_bind'); }
+    expectPreserved(r, before);
+  });
+
+  it('expiry, denial and cancel before binding keep both copies and the fence', async () => {
+    const r = make();
+    await ambiguousState(r, 'whole-home');
+    const before = snapshot(r);
+    const expiring = await r.service.startLogin(r.owner);
+    clockOffset = expiring.expiresAt - Date.now() + 1;
+    approve(r, expiring);
+    expect((await settle(r, expiring.id)).status).toBe('expired');
+    clockOffset = 0;
+    await until(() => loginDirs(r), (names) => names.length === 0);
+    expectPreserved(r, before);
+    const denied = await r.service.startLogin(r.owner);
+    const device = path.join(actorRuntimeDir(r.root, r.owner), loginDirs(r)[0]!, '.mock-device');
+    fs.mkdirSync(device, { recursive: true });
+    fs.writeFileSync(path.join(device, denied.userCode!), JSON.stringify({ outcome: 'deny' }));
+    expect((await settle(r, denied.id)).status).toBe('denied');
+    await until(() => loginDirs(r), (names) => names.length === 0);
+    expectPreserved(r, before);
+    const canceled = await r.service.startLogin(r.owner);
+    await r.service.cancelLogin(r.owner, canceled.id);
+    expectPreserved(r, before);
+  });
+
+  it('a crash between installing and committing is undone on restart, keeping the fence', async () => {
+    const r = make();
+    await ambiguousState(r, 'mixed');
+    const before = snapshot(r);
+    const staging = path.join(actorRuntimeDir(r.root, r.owner), 'codex-login-crash-fixture');
+    writeReplacementHome(staging, 'mock-uncommitted');
+    (r.service as unknown as { installCredentials: (...args: unknown[]) => void })
+      .installCredentials(r.owner, staging, 'replaceAmbiguous', () => {});
+    expect(r.service.usableAccount(r.owner)).toBeNull();
+    await restart(r);
+    expectPreserved(r, before);
+    expect((await login(r)).status).toBe('connected');
+    noRetainedCopies(r);
+  });
+
+  it('a failed undo keeps the evidence; the next start puts it back', async () => {
+    const r = make();
+    await ambiguousState(r, 'whole-home');
+    const before = snapshot(r);
+    const chmod = fs.chmodSync;
+    const rename = fs.renameSync;
+    let injected = false;
+    vi.spyOn(fs, 'chmodSync').mockImplementation((file, mode) => {
+      if (String(file) === r.home && !injected) { injected = true; throw new Error('install chmod EIO'); }
+      return chmod(file, mode);
+    });
+    vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+      if (injected && String(to) === r.home) throw new Error('undo EIO');
+      return rename(from, to);
+    });
+    expect((await login(r)).status).toBe('failed');
+    vi.restoreAllMocks();
+    expect(retainedKind(r)).toBe('ambiguous');
+    expectFenced(r);
+    await restart(r);
+    expectPreserved(r, before);
   });
 });

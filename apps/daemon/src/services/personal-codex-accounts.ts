@@ -66,6 +66,14 @@ function privateDir(dir: string): void {
   fs.chmodSync(dir, 0o700);
 }
 
+/** Inside a retained home copy: the active ambiguous home, while a new authorization replaces both. */
+const AMBIGUOUS_ACTIVE = '.od-ambiguous-active';
+
+/** Remove a directory only when it holds nothing (a retained copy created just to hold one entry). */
+function removeIfEmpty(dir: string): void {
+  if (fs.existsSync(dir) && fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+}
+
 /** Directories 0700, files 0600; symlinks are neither followed nor changed. */
 function lockDown(root: string): void {
   const info = fs.lstatSync(root, { throwIfNoEntry: false });
@@ -179,7 +187,7 @@ interface LiveAttempt {
   closed: Promise<void> | null;
 }
 
-type InstallMode = 'link' | 'reauthorize' | 'switch';
+type InstallMode = 'link' | 'reauthorize' | 'switch' | 'replaceAmbiguous';
 type RetainedKind = 'home' | 'credential' | 'ambiguous';
 
 const ACCOUNT_COLUMNS = 'id, owner_account_id, provider, status, identity_hash, masked_identity, plan_type, '
@@ -270,7 +278,8 @@ export class PersonalCodexAccounts {
         -- A prior home or credential set aside by a re-authorization that has not committed.
         -- The bind transaction deletes the row, so its presence alone says the set-aside copy
         -- is still the account's truth. 'ambiguous' marks pre-record copies that cannot be
-        -- told apart from a committed leftover; only an owner unlink removes them.
+        -- told apart from a committed leftover; a committed new authorization or an owner
+        -- unlink removes them.
         CREATE TABLE IF NOT EXISTS multiuser_agent_retained_state (
           owner_account_id TEXT PRIMARY KEY CHECK (length(owner_account_id) > 0),
           kind TEXT NOT NULL CHECK (kind IN ('home','credential','ambiguous')),
@@ -515,13 +524,17 @@ export class PersonalCodexAccounts {
   private async bind(attemptId: string, live: LiveAttempt, existing: AccountRow | undefined,
     read: { identity: string; email: string; planType: string | null; rateLimits: PersonalRateLimits | null }): Promise<void> {
     const { identity, email, planType, rateLimits } = read;
-    const mode: InstallMode = !existing ? 'link' : existing.identity_hash === identity ? 'reauthorize' : 'switch';
+    // Ambiguous legacy copies are replaced as a whole by the new login, whatever its identity.
+    const ambiguous = existing !== undefined && this.retained(live.ownerId)?.kind === 'ambiguous';
+    const mode: InstallMode = !existing ? 'link' : ambiguous ? 'replaceAmbiguous'
+      : existing.identity_hash === identity ? 'reauthorize' : 'switch';
     const at = this.now();
     const limitsJson = rateLimits ? JSON.stringify(rateLimits) : null;
     const rollback: { undo: (() => void) | null } = { undo: null };
-    // A copy retained by an earlier failed re-authorization goes back in place first;
-    // if it cannot, nothing new is installed over it.
-    if (existing && !this.reconcileRetained(live.ownerId)) {
+    // A copy retained by an earlier failed re-authorization goes back in place first (for
+    // ambiguous copies: an interrupted replacement is undone); if it cannot, nothing new is
+    // installed over it.
+    if (existing && !(ambiguous ? this.undoInterruptedAmbiguousReplacement(live.ownerId) : this.reconcileRetained(live.ownerId))) {
       this.recordProblem(live.ownerId, existing.id, 'reauth_required');
       await this.finalize(attemptId, 'failed', 'provider_error', 'link_fail');
       return;
@@ -530,8 +543,10 @@ export class PersonalCodexAccounts {
     try {
       this.installCredentials(live.ownerId, live.loginHome, mode, (fn) => { rollback.undo = fn; });
       this.db.transaction(() => {
-        if (existing && mode === 'switch') {
-          // Same row, new subscription: its verification and the old native threads do not carry over.
+        if (existing && (mode === 'switch' || mode === 'replaceAmbiguous')) {
+          // Same row, new subscription: its verification and the old native threads do not carry
+          // over. After ambiguous legacy copies no pinned thread can be trusted, even for the same
+          // identity.
           this.db.prepare(`UPDATE multiuser_agent_accounts SET status = 'connected', identity_hash = ?, masked_identity = ?,
             plan_type = ?, credential_version = credential_version + 1, verified_at = NULL, last_problem = NULL,
             rate_limits_json = ?, updated_at = ? WHERE id = ?`)
@@ -583,6 +598,26 @@ export class PersonalCodexAccounts {
       setUndo(() => fs.rmSync(home, { recursive: true, force: true }));
       fs.rmSync(home, { recursive: true, force: true });
       fs.renameSync(loginHome, home);
+      lockDown(home);
+      return;
+    }
+    if (mode === 'replaceAmbiguous') {
+      // The `ambiguous` record already fences the account and stays until the commit. The
+      // active ambiguous home (with any credential backup inside it) is kept inside the
+      // retained copy until then, so both old copies live in one retained location.
+      const aside = this.homeBackup(ownerId);
+      const nested = path.join(aside, AMBIGUOUS_ACTIVE);
+      let nestedAway = false;
+      let installed = false;
+      setUndo(() => {
+        if (installed) fs.rmSync(home, { recursive: true, force: true });
+        if (nestedAway) fs.renameSync(nested, home);
+        removeIfEmpty(aside);
+      });
+      privateDir(aside);
+      if (fs.existsSync(home)) { fs.renameSync(home, nested); nestedAway = true; }
+      fs.renameSync(loginHome, home);
+      installed = true;
       lockDown(home);
       return;
     }
@@ -649,7 +684,8 @@ export class PersonalCodexAccounts {
    * - a sole copy (its active counterpart is missing) is the account's only prior state:
    *   `home` / `credential`, restored by the normal reconciliation;
    * - a copy beside an active one cannot be told apart from a committed leftover:
-   *   `ambiguous`, kept in place and fenced until the owner unlinks.
+   *   `ambiguous`, kept in place and fenced until a new authorization commits (which
+   *   then retires both copies) or the owner unlinks.
    * Owners without an account row unlinked earlier; a first link removes their leftovers.
    */
   private adoptLegacyBackups(): void {
@@ -679,8 +715,11 @@ export class PersonalCodexAccounts {
     const aside = this.homeBackup(ownerId);
     const backup = this.credentialBackup(ownerId);
     const record = this.retained(ownerId);
-    // Ambiguous copies stay exactly where they are; only an owner unlink removes them.
-    if (record?.kind === 'ambiguous') return false;
+    // Ambiguous copies stay; only a committed new authorization or an owner unlink removes them.
+    if (record?.kind === 'ambiguous') {
+      this.undoInterruptedAmbiguousReplacement(ownerId);
+      return false;
+    }
     try {
       if (!record) {
         fs.rmSync(aside, { recursive: true, force: true });
@@ -698,6 +737,27 @@ export class PersonalCodexAccounts {
       }
       // Otherwise the copy was never moved, or was already moved back: the target is the prior state.
       this.releaseRetained(ownerId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * While the `ambiguous` record exists nothing has committed, so an active ambiguous home
+   * found inside the retained copy belongs back in place, and whatever stands there is an
+   * uncommitted new login. Returns false (changing nothing further) if that cannot be done.
+   */
+  private undoInterruptedAmbiguousReplacement(ownerId: string): boolean {
+    const home = personalCodexHome(this.dataRoot, ownerId);
+    const aside = this.homeBackup(ownerId);
+    const nested = path.join(aside, AMBIGUOUS_ACTIVE);
+    try {
+      if (fs.existsSync(nested)) {
+        fs.rmSync(home, { recursive: true, force: true });
+        fs.renameSync(nested, home);
+      }
+      removeIfEmpty(aside);
       return true;
     } catch {
       return false;

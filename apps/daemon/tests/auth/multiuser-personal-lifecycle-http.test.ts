@@ -2,7 +2,7 @@
 // same-identity re-authorization keeping native sessions, the login deadline at
 // completion, and restart with queued personal work at nonzero capacity.
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -24,6 +24,7 @@ let expiryUser: Principal;
 let restartUser: Principal;
 let switchUser: Principal;
 let rollbackUser: Principal;
+let ambiguousUser: Principal;
 let clock = Date.now();
 const options = () => multiUserOptions({ testMockAgentScript: RUN_MOCK, testPersonalCodexAppServer: PERSONAL_CODEX_MOCK,
   poolClock: () => clock });
@@ -63,10 +64,10 @@ beforeAll(async () => {
   delete process.env.OD_DISABLE_API_AUTH;
   ({ dataRoot } = await loadIsolatedServerModule());
   daemon = await startMultiUserDaemon(options());
-  const accounts = await provisionAccounts(daemon, ['life-reauth', 'life-unlink', 'life-expiry', 'life-restart', 'life-switch', 'life-rollback']);
+  const accounts = await provisionAccounts(daemon, ['life-reauth', 'life-unlink', 'life-expiry', 'life-restart', 'life-switch', 'life-rollback', 'life-ambiguous']);
   admin = accounts.admin;
-  [reauthUser, unlinkUser, expiryUser, restartUser, switchUser, rollbackUser] =
-    accounts.users as [Principal, Principal, Principal, Principal, Principal, Principal];
+  [reauthUser, unlinkUser, expiryUser, restartUser, switchUser, rollbackUser, ambiguousUser] =
+    accounts.users as [Principal, Principal, Principal, Principal, Principal, Principal, Principal];
 }, 120_000);
 
 afterAll(async () => {
@@ -212,6 +213,49 @@ describe('personal account lifecycle', () => {
     expect(looseModes(home)).toEqual([]);
     const followUp = await finished(rollbackUser, (await personal(rollbackUser, target, 'after-failed-switch')).json.run.id);
     expect(followUp, JSON.stringify(followUp)).toMatchObject({ status: 'succeeded', output: { threadId: first.output.threadId } });
+  });
+
+  it('re-authorizes out of ambiguous legacy state; the pinned follow-up starts a fresh thread', async () => {
+    const { account } = await linkCodex(live(), dataRoot, ambiguousUser, 'ambiguous@example.com');
+    const target = await newProject(ambiguousUser);
+    const first = await finished(ambiguousUser, (await personal(ambiguousUser, target, 'before-legacy')).json.run.id);
+    expect(first.status, JSON.stringify(first)).toBe('succeeded');
+    const before = accountRow(ambiguousUser);
+    // A database from before the retained-state record, with an active home beside a set-aside one.
+    await live().close();
+    daemon = null;
+    const home = codexHome(dataRoot, ambiguousUser.id);
+    const aside = path.join(actorDir(dataRoot, ambiguousUser.id), 'codex-home.previous');
+    withDb((db) => {
+      db.exec('DROP TABLE multiuser_agent_retained_state');
+      db.prepare("UPDATE multiuser_agent_accounts SET status = 'requires_reauth', last_problem = 'reauth_required' WHERE id = ?").run(account.id);
+    });
+    renameSync(home, aside);
+    mkdirSync(home, { mode: 0o700 });
+    writeFileSync(path.join(home, 'auth.json'), 'mock-ambiguous-active-credential', { mode: 0o600 });
+    daemon = await startMultiUserDaemon(options());
+    expect((await summary(live(), ambiguousUser)).codex.account).toMatchObject({ id: account.id, status: 'requires_reauth' });
+    const fenced = await personal(ambiguousUser, target, 'while-ambiguous');
+    expect(fenced.status).toBe(409);
+    expect(fenced.json.error.code).toBe('MULTIUSER_PERSONAL_UNAVAILABLE');
+    expect(existsSync(path.join(aside, 'sessions'))).toBe(true);
+
+    // Same identity as the account row: the commit still starts a fresh subscription home.
+    expect(await reauthorize(ambiguousUser, 'ambiguous@example.com')).toMatchObject({ status: 'connected', failureCode: null });
+    expect((await summary(live(), ambiguousUser)).codex.account).toMatchObject({ id: account.id, status: 'connected',
+      verifiedAt: null, lastProblem: null });
+    expect(accountRow(ambiguousUser).credential_version).toBe(before.credential_version + 1);
+    expect(existsSync(aside)).toBe(false);
+    expect(readdirSync(home).filter((name) => name === 'sessions' || name.startsWith('auth.json.'))).toEqual([]);
+    expect(JSON.parse(readFileSync(path.join(home, 'auth.json'), 'utf8')).email).toBe('ambiguous@example.com');
+    expect(looseModes(home)).toEqual([]);
+
+    const followUp = await personal(ambiguousUser, target, 'after-legacy');
+    expect(followUp.status, followUp.text).toBe(202);
+    const result = await finished(ambiguousUser, followUp.json.run.id);
+    expect(result, JSON.stringify(result)).toMatchObject({ status: 'succeeded', executionSource: 'personal_subscription' });
+    expect(result.output.threadId).not.toBe(first.output.threadId);
+    expect(JSON.parse(result.output.text)).toMatchObject({ codexHome: home, turnsInThread: 1 });
   });
 
   it('restarts with active and queued personal work at nonzero capacity', async () => {
