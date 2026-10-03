@@ -7,6 +7,7 @@ Status: planning + first local implementation slice. Baseline: `main` at `1b47e6
 - One AWS EC2 deployment; several independent Web users sign in with local username/password. No public registration: admin provisions users. One-time first-admin bootstrap. Initial roles `admin` and `user`; private projects/conversations/runs/files per user. Team data sharing is not in MVP. No legacy data to import.
 - Company organization API keys are the chosen credential supply for shared Codex and Claude capacity (#14). Key custody, isolation and provider enrollment remain separate gates. This test-only pool slice grants real providers zero runnable slots and accepts only the repository mock agent.
 - Users share *capacity*, never login sessions, provider credentials, CLI sessions, personal workspaces, or execution files. Only admins manage accounts/roles/capacity.
+- Users may additionally link their OWN Codex subscription as a separate execution source (#18). It never joins the shared pool, and the real provider stays disabled behind recorded enablement gates; see `web-multiuser-personal-subscription.md`.
 
 ## Provisional per-user quota (#11)
 
