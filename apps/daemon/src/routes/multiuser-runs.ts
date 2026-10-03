@@ -308,6 +308,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   const personalCapacity = () => Number((db.prepare("SELECT value FROM multiuser_pool_config WHERE key = 'personal-capacity'")
     .get() as { value: string } | undefined)?.value ?? String(PERSONAL_DEFAULT_CAPACITY));
   let personalDispatching = false;
+  // Declared before the startup dispatch below, which may already need it.
+  const personalSession = (conversationId: string) => db.prepare('SELECT * FROM multiuser_personal_sessions WHERE conversation_id = ?')
+    .get(conversationId) as { owner_account_id: string; personal_account_id: string; thread_id: string | null } | undefined;
   /**
    * Personal lane: its own host-wide ceiling, one active run per user, FIFO per
    * user and round-robin across users by their last personal dispatch turn.
@@ -490,8 +493,6 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     fs.chmodSync(realCwd, 0o700);
     return { projectId, conversationId };
   };
-  const personalSession = (conversationId: string) => db.prepare('SELECT * FROM multiuser_personal_sessions WHERE conversation_id = ?')
-    .get(conversationId) as { owner_account_id: string; personal_account_id: string; thread_id: string | null } | undefined;
   const createPersonalRun = (inputBody: Record<string, unknown>, res: Response) => {
     if (inputBody.agentId !== 'codex' || inputBody.model !== undefined || inputBody.provider !== undefined ||
         Object.keys(inputBody).some((key) => !['projectId', 'conversationId', 'agentId', 'executionSource', 'message'].includes(key))) {

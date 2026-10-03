@@ -25,7 +25,7 @@ The daemon uses exactly these app-server methods, with names and fields taken fr
 ## Per-user provider home
 
 - Each platform account gets one CODEX_HOME. It sits in the same per-actor runtime directory the isolated run lane uses, under the resolved daemon data root. Directories are 0700 and files 0600. Modes are re-applied after every link, verification and personal run, because provider children write with their own umask.
-- A login runs in a separate login home inside the same actor directory. On a successful, accepted completion that home atomically replaces the actor's CODEX_HOME. Every other outcome deletes it. Nothing is ever copied between actors, and there is no global CODEX_HOME.
+- A login runs in a separate login home inside the same actor directory. On a successful, accepted first link that home atomically replaces the actor's CODEX_HOME. A same-identity re-authorization moves only the credential file (`auth.json`) into the existing CODEX_HOME, so the owner's native sessions survive; if the bind fails, the previous credential is restored. Every other outcome deletes the login home. Nothing is ever copied between actors, and there is no global CODEX_HOME.
 - Every app-server child gets an explicit environment: `CODEX_HOME`, `HOME`, `TMPDIR`/`TMP`/`TEMP` and `OD_DATA_DIR`. Nothing is inherited. Personal runs use a per-run HOME/TMP separate from the CODEX_HOME.
 
 ## Login attempt state machine
@@ -33,7 +33,7 @@ The daemon uses exactly these app-server methods, with names and fields taken fr
 `pending → connected | denied | expired | canceled | failed`. The row is durable and bound to the actor.
 
 - Attempt ids are 32 random bytes in base64url. One pending attempt per user, enforced by a partial unique index. A new start cancels the prior pending attempt and inserts the new one in one immediate transaction, then tears down the old child.
-- Expiry: 15 minutes server-side, checked on read with the injected clock and by a timer. The provider's own expiry/denial arrives as `account/login/completed { success: false }`. Error text maps to `denied` (contains "denied"), `expired` ("expired"/"timeout"), `failed/workspace_not_allowed` ("workspace") or `failed/provider_error`. The real provider's error strings are unverified, so unknown text is `provider_error`.
+- Expiry: 15 minutes server-side. The durable `expires_at` is checked on read with the injected clock, by a timer set for the time remaining, when a completion arrives and again just before credentials are bound. A completion past the deadline ends the attempt as `expired` and binds nothing. The provider's own expiry/denial arrives as `account/login/completed { success: false }`. Error text maps to `denied` (contains "denied"), `expired` ("expired"/"timeout"), `failed/workspace_not_allowed` ("workspace") or `failed/provider_error`. The real provider's error strings are unverified, so unknown text is `provider_error`.
 - Completion is accepted only for the live attempt's own `loginId`, only once, and only while the row is `pending`. Replays, foreign login ids and completions that arrive after cancel, expiry or restart cause no state change.
 - On restart every `pending` row becomes `failed/interrupted`, and stray login homes are deleted.
 - Failure codes: `identity_in_use`, `account_mismatch`, `identity_unavailable`, `workspace_not_allowed`, `interrupted`, `provider_error`.
@@ -42,7 +42,7 @@ The daemon uses exactly these app-server methods, with names and fields taken fr
 
 - Account status: `connected → requires_reauth | disabled`. Unlink deletes the row (`unlinked`). Exactly one Codex account per platform user (`UNIQUE(owner, provider)`).
 - Identity read-back: `account/read` in codex 0.160.0 reports `{ type: "chatgpt", email, planType }` and **no account or workspace id**. The identity key is therefore an HMAC-SHA256 of the normalized e-mail. The key is a random per-installation key in the main database. It is stored only as a hash, under `UNIQUE(provider, identity_hash)`. If the e-mail is missing the attempt fails with `identity_unavailable`. A second platform user completing login with a bound identity gets `failed/identity_in_use`, and the response reveals nothing about the first user.
-- Re-authorization must be the same identity, otherwise `failed/account_mismatch`; unlink first to switch accounts. A successful re-authorization bumps the credential version, cancels the owner's queued and active personal runs, and clears `requires_reauth`.
+- Re-authorization must be the same identity, otherwise `failed/account_mismatch`; unlink first to switch accounts. A successful re-authorization bumps the credential version, cancels the owner's queued and active personal runs, and clears `requires_reauth`. While it binds, the account is fenced: no new personal run is admitted or dispatched and verification answers `MULTIUSER_PERSONAL_BUSY`. Native sessions are kept, so a pinned conversation's follow-up resumes the same thread.
 - Display: masked e-mail (`a***@domain`), plan type, link and verify times, and the `account/rateLimits/read` windows (used percent, window, reset) when available. Otherwise the client shows "unknown"; remaining quota and "unlimited" are never derived.
 - "Connected" is not "verified". `POST …/verify` requires `{ "consentToUsePlan": true }`. It runs one minimal turn in the owner's home and sets `verifiedAt` only on success.
 
@@ -71,13 +71,13 @@ None of these ever switches the execution source.
 
 The gate checks the attempt or account owner before the handler. Foreign, missing and forged ids all get the same `404 NOT_FOUND`, with no admin override. Admins cannot link, verify, use or read another user's account, and the admin view has no e-mail, mask, plan or secret.
 
-Error codes: `MULTIUSER_PERSONAL_DISABLED` 403, `MULTIUSER_PERSONAL_UNAVAILABLE` 409, `MULTIUSER_PERSONAL_CONSENT_REQUIRED` 400, `MULTIUSER_PERSONAL_QUEUE_LIMIT` 409, `MULTIUSER_PERSONAL_BUSY` 409 (verification already running), `MULTIUSER_PERSONAL_REAUTH_REQUIRED` 409, `MULTIUSER_PERSONAL_USAGE_LIMIT` 429, `MULTIUSER_PERSONAL_WORKSPACE_NOT_ALLOWED` 403, `MULTIUSER_EXECUTION_SOURCE_MISMATCH` 409. A generic verification failure is `AGENT_EXECUTION_FAILED` 502.
+Error codes: `MULTIUSER_PERSONAL_DISABLED` 403, `MULTIUSER_PERSONAL_UNAVAILABLE` 409, `MULTIUSER_PERSONAL_CONSENT_REQUIRED` 400, `MULTIUSER_PERSONAL_QUEUE_LIMIT` 409, `MULTIUSER_PERSONAL_BUSY` 409 (verification already running, or the account is being unlinked or re-authorized), `MULTIUSER_PERSONAL_REAUTH_REQUIRED` 409, `MULTIUSER_PERSONAL_USAGE_LIMIT` 429, `MULTIUSER_PERSONAL_WORKSPACE_NOT_ALLOWED` 403, `MULTIUSER_EXECUTION_SOURCE_MISMATCH` 409. A generic verification failure is `AGENT_EXECUTION_FAILED` 502.
 
 ## Secrets
 
 - `userCode` and `verificationUrl` live only in daemon memory for the live pending attempt. They are returned only to the owner's start or attempt read while pending. They are never persisted, logged, audited, sent over SSE or run events, or returned after the attempt is terminal.
 - No API returns tokens, auth file contents or another user's account data. App-server stderr is discarded and frames are never logged.
-- Unlink first cancels the pending login, the personal runs and any verification. It then calls `account/logout` as a best-effort local logout and deletes that user's home. This is **not** a provider-side revocation.
+- Unlink fences the account synchronously, before its first await. Until the row is deleted, personal runs are refused (`MULTIUSER_PERSONAL_UNAVAILABLE`) and fail at dispatch. Verification, login start and a second unlink answer `MULTIUSER_PERSONAL_BUSY`, and no login can bind. Unlink first cancels the pending login, then the personal runs (it waits for them to exit), then any verification. It then calls `account/logout` as a best-effort local logout and deletes that user's home. This is **not** a provider-side revocation. The fence lives in daemon memory. A crash mid-unlink leaves the row linked, and the user can unlink again.
 
 ## Personal run lane
 

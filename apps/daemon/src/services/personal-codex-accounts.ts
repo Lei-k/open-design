@@ -33,6 +33,8 @@ type Json = Record<string, unknown>;
 /** Server-side bound on a device-code attempt (the provider's own code lifetime is similar). */
 export const PERSONAL_LOGIN_TTL_MS = 15 * 60_000;
 const VERIFY_PROMPT = 'Reply with the single word OK.';
+/** The provider's credential store inside CODEX_HOME; everything else there is native session state. */
+const CREDENTIAL_FILE = 'auth.json';
 const MAX_TURN_TEXT = 64 * 1024;
 
 export class PersonalAccountError extends Error {
@@ -179,6 +181,13 @@ export class PersonalCodexAccounts {
   private readonly now: () => number;
   private readonly live = new Map<string, LiveAttempt>();
   private readonly verifying = new Map<string, ChildProcessWithoutNullStreams>();
+  /**
+   * Owners whose account is mid-unlink or mid-re-authorization. Set synchronously
+   * before the operation's first await; while set, the account admits, dispatches
+   * and verifies nothing (and, while unlinking, links nothing).
+   */
+  private readonly unlinking = new Set<string>();
+  private readonly reauthorizing = new Set<string>();
   private cancelPersonalRuns: (ownerId: string) => Promise<void> = async () => {};
   private identityKey: Buffer;
   private stopped = false;
@@ -269,7 +278,7 @@ export class PersonalCodexAccounts {
   usableAccount(ownerId: string): UsablePersonalAccount | null {
     if (!this.enabled) return null;
     const row = this.accountRow(ownerId);
-    if (!row || row.status !== 'connected') return null;
+    if (!row || row.status !== 'connected' || this.fenced(ownerId)) return null;
     return { id: row.id, credentialVersion: row.credential_version, codexHome: personalCodexHome(this.dataRoot, ownerId) };
   }
 
@@ -298,6 +307,7 @@ export class PersonalCodexAccounts {
 
   async startLogin(ownerId: string): Promise<PersonalLoginAttempt> {
     if (!this.enabled || !this.command) throw new PersonalAccountError(403, 'MULTIUSER_PERSONAL_DISABLED', 'personal subscriptions are not enabled on this server');
+    if (this.unlinking.has(ownerId)) throw new PersonalAccountError(409, 'MULTIUSER_PERSONAL_BUSY', 'the personal account is being unlinked');
     const id = randomBytes(32).toString('base64url');
     const createdAt = this.now();
     // Replace atomically: the prior pending attempt and the new one never coexist.
@@ -334,7 +344,9 @@ export class PersonalCodexAccounts {
         fs.rmSync(loginHome, { recursive: true, force: true });
         return this.attemptDto(this.attemptRow(id)!, false);
       }
-      const timer = setTimeout(() => { this.finalize(id, 'expired', null, 'link_expire').catch(() => {}); }, PERSONAL_LOGIN_TTL_MS);
+      // Fire at the durable deadline, not a full TTL after the provider answered.
+      const timer = setTimeout(() => { this.finalize(id, 'expired', null, 'link_expire').catch(() => {}); },
+        Math.max(0, createdAt + PERSONAL_LOGIN_TTL_MS - this.now()));
       timer.unref();
       const live: LiveAttempt = { id, ownerId, loginId: started.loginId, userCode: started.userCode,
         verificationUrl: started.verificationUrl, client, loginHome, timer, completing: false, closed: null };
@@ -382,6 +394,7 @@ export class PersonalCodexAccounts {
     if (!live || live.completing || params.loginId !== live.loginId) return;
     if (this.attemptRow(attemptId)?.status !== 'pending') return;
     live.completing = true;
+    if (this.pastDeadline(attemptId)) { await this.finalize(attemptId, 'expired', null, 'link_expire'); return; }
     if (params.success !== true) {
       const mapped = classifyLoginFailure(params.error);
       await this.finalize(attemptId, mapped.status, mapped.failureCode, `link_${mapped.status === 'failed' ? 'fail' : mapped.status === 'denied' ? 'deny' : 'expire'}`);
@@ -410,34 +423,89 @@ export class PersonalCodexAccounts {
       .get(identity) as { owner_account_id: string } | undefined;
     if (holder && holder.owner_account_id !== live.ownerId) { await this.finalize(attemptId, 'failed', 'identity_in_use', 'link_fail'); return; }
     if (existing && existing.identity_hash !== identity) { await this.finalize(attemptId, 'failed', 'account_mismatch', 'link_fail'); return; }
-    // Re-authorization replaces the credential: runs bound to the old version stop first.
-    if (existing) await this.cancelPersonalRuns(live.ownerId);
-    if (this.attemptRow(attemptId)?.status !== 'pending' || this.stopped) { await this.finalize(attemptId, 'failed', 'interrupted', 'link_fail'); return; }
-    // Synchronous from here: no dispatch can observe a half-swapped home.
-    const home = personalCodexHome(this.dataRoot, live.ownerId);
-    fs.rmSync(home, { recursive: true, force: true });
-    fs.renameSync(live.loginHome, home);
-    lockDown(home);
-    const at = this.now();
-    // The UNIQUE identity index is the backstop; a failed bind leaves no usable home behind.
-    try { this.db.transaction(() => {
-      if (existing) {
-        this.db.prepare(`UPDATE multiuser_agent_accounts SET status = 'connected', masked_identity = ?, plan_type = ?,
-          credential_version = credential_version + 1, last_problem = NULL, rate_limits_json = ?, updated_at = ? WHERE id = ?`)
-          .run(maskEmail(email), planType, rateLimits ? JSON.stringify(rateLimits) : null, at, existing.id);
-      } else {
-        this.db.prepare(`INSERT INTO multiuser_agent_accounts (id, owner_account_id, provider, status, identity_hash, masked_identity,
-          plan_type, credential_version, rate_limits_json, linked_at, updated_at) VALUES (?, ?, 'codex', 'connected', ?, ?, ?, 1, ?, ?, ?)`)
-          .run(randomUUID(), live.ownerId, identity, maskEmail(email), planType, rateLimits ? JSON.stringify(rateLimits) : null, at, at);
+    // Re-authorization replaces the credential: fence the owner so nothing is admitted
+    // or dispatched on the old version, then stop the runs bound to it.
+    if (existing) this.reauthorizing.add(live.ownerId);
+    try {
+      if (existing) await this.cancelPersonalRuns(live.ownerId);
+      if (this.attemptRow(attemptId)?.status !== 'pending' || this.stopped || this.unlinking.has(live.ownerId)) {
+        await this.finalize(attemptId, 'failed', 'interrupted', 'link_fail');
+        return;
       }
-      this.transition(attemptId, 'connected', null, 'link_complete');
-    }).immediate(); } catch {
-      fs.rmSync(home, { recursive: true, force: true });
-      if (existing) this.recordProblem(live.ownerId, existing.id, 'reauth_required');
+      if (this.pastDeadline(attemptId)) { await this.finalize(attemptId, 'expired', null, 'link_expire'); return; }
+      await this.bind(attemptId, live, existing, { identity, email, planType, rateLimits });
+    } finally { this.reauthorizing.delete(live.ownerId); }
+  }
+
+  /**
+   * Bind a completed, accepted login. Synchronous until the bind commits, so no
+   * dispatch can observe a half-swapped home; a failed bind restores the prior home.
+   */
+  private async bind(attemptId: string, live: LiveAttempt, existing: AccountRow | undefined,
+    read: { identity: string; email: string; planType: string | null; rateLimits: PersonalRateLimits | null }): Promise<void> {
+    const { identity, email, planType, rateLimits } = read;
+    const at = this.now();
+    let undo: (() => void) | null = null;
+    // The UNIQUE identity index is the backstop; a failed bind leaves no new credential behind.
+    try {
+      undo = this.installCredentials(live.ownerId, live.loginHome, existing !== undefined);
+      this.db.transaction(() => {
+        if (existing) {
+          this.db.prepare(`UPDATE multiuser_agent_accounts SET status = 'connected', masked_identity = ?, plan_type = ?,
+            credential_version = credential_version + 1, last_problem = NULL, rate_limits_json = ?, updated_at = ? WHERE id = ?`)
+            .run(maskEmail(email), planType, rateLimits ? JSON.stringify(rateLimits) : null, at, existing.id);
+        } else {
+          this.db.prepare(`INSERT INTO multiuser_agent_accounts (id, owner_account_id, provider, status, identity_hash, masked_identity,
+            plan_type, credential_version, rate_limits_json, linked_at, updated_at) VALUES (?, ?, 'codex', 'connected', ?, ?, ?, 1, ?, ?, ?)`)
+            .run(randomUUID(), live.ownerId, identity, maskEmail(email), planType, rateLimits ? JSON.stringify(rateLimits) : null, at, at);
+        }
+        this.transition(attemptId, 'connected', null, 'link_complete');
+      }).immediate();
+    } catch {
+      undo?.();
       await this.finalize(attemptId, 'failed', 'provider_error', 'link_fail');
       return;
     }
     this.live.delete(attemptId);
+    // A re-authorization leaves the login home behind, holding the replaced credential.
+    fs.rmSync(live.loginHome, { recursive: true, force: true });
+  }
+
+  /**
+   * Put a completed login's credential in place as the owner's CODEX_HOME and
+   * return its undo. A first link moves the whole login home in. A same-identity
+   * re-authorization swaps only the credential file, so the owner's native
+   * sessions (pinned by conversations) survive.
+   */
+  private installCredentials(ownerId: string, loginHome: string, reauthorization: boolean): () => void {
+    const home = personalCodexHome(this.dataRoot, ownerId);
+    if (!reauthorization) {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.renameSync(loginHome, home);
+      lockDown(home);
+      return () => fs.rmSync(home, { recursive: true, force: true });
+    }
+    privateDir(home);
+    const current = path.join(home, CREDENTIAL_FILE);
+    const previous = path.join(loginHome, `${CREDENTIAL_FILE}.previous`);
+    const hadPrevious = fs.existsSync(current);
+    if (hadPrevious) fs.renameSync(current, previous);
+    const undo = () => {
+      fs.rmSync(current, { force: true });
+      if (hadPrevious) fs.renameSync(previous, current);
+    };
+    try { fs.renameSync(path.join(loginHome, CREDENTIAL_FILE), current); } catch (error) { undo(); throw error; }
+    lockDown(home);
+    return undo;
+  }
+
+  private pastDeadline(attemptId: string): boolean {
+    const row = this.attemptRow(attemptId);
+    return !!row && this.now() >= row.expires_at;
+  }
+
+  private fenced(ownerId: string): boolean {
+    return this.unlinking.has(ownerId) || this.reauthorizing.has(ownerId);
   }
 
   private rateLimits(result: Json | null): PersonalRateLimits | null {
@@ -482,6 +550,7 @@ export class PersonalCodexAccounts {
     if (!row || row.id !== accountId) return null;
     if (consent !== true) throw new PersonalAccountError(400, 'MULTIUSER_PERSONAL_CONSENT_REQUIRED', 'verification consumes your plan; explicit consent is required');
     if (!this.enabled || !this.command) throw new PersonalAccountError(403, 'MULTIUSER_PERSONAL_DISABLED', 'personal subscriptions are not enabled on this server');
+    if (this.fenced(ownerId)) throw new PersonalAccountError(409, 'MULTIUSER_PERSONAL_BUSY', 'the personal account is being changed');
     if (row.status !== 'connected') throw new PersonalAccountError(409, 'MULTIUSER_PERSONAL_UNAVAILABLE', 'the personal account is not usable; re-authorize or unlink it');
     if (this.verifying.has(ownerId)) throw new PersonalAccountError(409, 'MULTIUSER_PERSONAL_BUSY', 'a verification is already running');
     const work = path.join(actorRuntimeDir(this.dataRoot, ownerId), 'codex-verify');
@@ -498,7 +567,7 @@ export class PersonalCodexAccounts {
     }
     this.secureHome(ownerId);
     const current = this.accountRow(ownerId);
-    if (!current || current.id !== accountId || current.credential_version !== row.credential_version) {
+    if (!current || current.id !== accountId || current.credential_version !== row.credential_version || this.fenced(ownerId)) {
       throw new PersonalAccountError(409, 'MULTIUSER_PERSONAL_UNAVAILABLE', 'the personal account changed during verification');
     }
     if (result.ok) {
@@ -530,23 +599,28 @@ export class PersonalCodexAccounts {
   async unlink(ownerId: string, accountId: string): Promise<boolean> {
     const row = this.accountRow(ownerId);
     if (!row || row.id !== accountId) return false;
-    await this.cancelPendingFor(ownerId);
-    await this.cancelPersonalRuns(ownerId);
-    const verifying = this.verifying.get(ownerId);
-    if (verifying) await closeChild(verifying, 0);
-    const home = personalCodexHome(this.dataRoot, ownerId);
-    if (this.command && fs.existsSync(home)) {
-      // Best effort local logout; this is not a provider-side revocation.
-      const client = new AppServerAccountClient({ command: this.command, codexHome: home, home, temp: home, cwd: home, dataRoot: this.dataRoot });
-      try { await client.initialize(); await client.request('account/logout', null, 3_000); } catch { /* deletion below is authoritative */ }
-      await client.close();
-    }
-    fs.rmSync(home, { recursive: true, force: true });
-    this.db.transaction(() => {
-      this.db.prepare('DELETE FROM multiuser_agent_accounts WHERE id = ? AND owner_account_id = ?').run(accountId, ownerId);
-      this.audit(ownerId, ownerId, 'unlink', null, accountId);
-    })();
-    return true;
+    if (this.unlinking.has(ownerId)) throw new PersonalAccountError(409, 'MULTIUSER_PERSONAL_BUSY', 'the personal account is being unlinked');
+    // Fence before the first await: the account is unusable until its row and home are gone.
+    this.unlinking.add(ownerId);
+    try {
+      await this.cancelPendingFor(ownerId);
+      await this.cancelPersonalRuns(ownerId);
+      const verifying = this.verifying.get(ownerId);
+      if (verifying) await closeChild(verifying, 0);
+      const home = personalCodexHome(this.dataRoot, ownerId);
+      if (this.command && fs.existsSync(home)) {
+        // Best effort local logout; this is not a provider-side revocation.
+        const client = new AppServerAccountClient({ command: this.command, codexHome: home, home, temp: home, cwd: home, dataRoot: this.dataRoot });
+        try { await client.initialize(); await client.request('account/logout', null, 3_000); } catch { /* deletion below is authoritative */ }
+        await client.close();
+      }
+      fs.rmSync(home, { recursive: true, force: true });
+      this.db.transaction(() => {
+        this.db.prepare('DELETE FROM multiuser_agent_accounts WHERE id = ? AND owner_account_id = ?').run(accountId, ownerId);
+        this.audit(ownerId, ownerId, 'unlink', null, accountId);
+      })();
+      return true;
+    } finally { this.unlinking.delete(ownerId); }
   }
 
   async shutdown(): Promise<void> {
