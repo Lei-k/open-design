@@ -17,7 +17,6 @@ export type PersonalLoginAttemptStatus = 'pending' | 'connected' | 'denied' | 'e
 
 /** Stable reason for a `failed` login attempt. */
 export type PersonalLoginFailureCode =
-  | 'account_mismatch'
   | 'identity_unavailable'
   | 'workspace_not_allowed'
   | 'interrupted'

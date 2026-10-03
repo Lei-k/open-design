@@ -5897,7 +5897,6 @@ export const zhCN: Dict = {
   'agentAccounts.outcomeExpired': "代码在完成登录前已失效。",
   'agentAccounts.outcomeCanceled': "已取消关联。",
   'agentAccounts.outcomeFailed': "关联失败。",
-  'agentAccounts.failureAccountMismatch': "你登录的是另一个账号。请先解除当前关联，再关联其他账号。",
   'agentAccounts.failureWorkspace': "你的工作区不允许设备登录。",
   'agentAccounts.actionFailed': "出错了（{code}）。",
 };

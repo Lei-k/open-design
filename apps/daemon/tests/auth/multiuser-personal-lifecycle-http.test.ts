@@ -2,8 +2,9 @@
 // same-identity re-authorization keeping native sessions, the login deadline at
 // completion, and restart with queued personal work at nonzero capacity.
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AppServerAccountClient } from '../../src/integrations/codex-app-server-account.js';
 import {
@@ -11,7 +12,7 @@ import {
   startMultiUserDaemon, type Principal, type StartedMultiUserDaemon,
 } from './multiuser-harness.js';
 import {
-  PERSONAL_CODEX_MOCK, RUN_MOCK, codexHome, decide, linkCodex, looseModes, readAttempt, startLogin, summary, until,
+  PERSONAL_CODEX_MOCK, RUN_MOCK, actorDir, codexHome, decide, linkCodex, looseModes, readAttempt, settle, startLogin, summary, until,
 } from './personal-codex-helpers.js';
 
 let daemon: StartedMultiUserDaemon | null = null;
@@ -21,6 +22,8 @@ let reauthUser: Principal;
 let unlinkUser: Principal;
 let expiryUser: Principal;
 let restartUser: Principal;
+let switchUser: Principal;
+let rollbackUser: Principal;
 let clock = Date.now();
 const options = () => multiUserOptions({ testMockAgentScript: RUN_MOCK, testPersonalCodexAppServer: PERSONAL_CODEX_MOCK,
   poolClock: () => clock });
@@ -42,15 +45,28 @@ async function detail(user: Principal, id: string) {
   return res.json;
 }
 const finished = (user: Principal, id: string) => until(() => detail(user, id), (run) => !['queued', 'running'].includes(run.status), `run ${id}`);
+function withDb<T>(fn: (db: Database.Database) => T): T {
+  const db = new Database(path.join(dataRoot, 'app.sqlite'));
+  try { return fn(db); } finally { db.close(); }
+}
+const accountRow = (user: Principal) => withDb((db) => db.prepare(
+  "SELECT id, identity_hash, credential_version, verified_at FROM multiuser_agent_accounts WHERE owner_account_id = ?").get(user.id) as
+  { id: string; identity_hash: string; credential_version: number; verified_at: number | null });
+async function reauthorize(user: Principal, email: string) {
+  const attempt = await startLogin(live(), user);
+  await decide(dataRoot, user, attempt.userCode, { outcome: 'approve', email });
+  return settle(live(), user, attempt.id);
+}
 
 beforeAll(async () => {
   delete process.env.OD_API_TOKEN;
   delete process.env.OD_DISABLE_API_AUTH;
   ({ dataRoot } = await loadIsolatedServerModule());
   daemon = await startMultiUserDaemon(options());
-  const accounts = await provisionAccounts(daemon, ['life-reauth', 'life-unlink', 'life-expiry', 'life-restart']);
+  const accounts = await provisionAccounts(daemon, ['life-reauth', 'life-unlink', 'life-expiry', 'life-restart', 'life-switch', 'life-rollback']);
   admin = accounts.admin;
-  [reauthUser, unlinkUser, expiryUser, restartUser] = accounts.users as [Principal, Principal, Principal, Principal];
+  [reauthUser, unlinkUser, expiryUser, restartUser, switchUser, rollbackUser] =
+    accounts.users as [Principal, Principal, Principal, Principal, Principal, Principal];
 }, 120_000);
 
 afterAll(async () => {
@@ -133,6 +149,69 @@ describe('personal account lifecycle', () => {
     expect((await readAttempt(live(), expiryUser, attempt.id)).json.attempt).toMatchObject({ status: 'expired' });
     expect((await summary(live(), expiryUser)).codex.account).toBeNull();
     expect(existsSync(codexHome(dataRoot, expiryUser.id))).toBe(false);
+  });
+
+  it('switches to a different subscription on the same account row and starts pinned conversations fresh', async () => {
+    const { account } = await linkCodex(live(), dataRoot, switchUser, 'switch-one@example.com');
+    const target = await newProject(switchUser);
+    const first = await finished(switchUser, (await personal(switchUser, target, 'before-switch')).json.run.id);
+    expect(first.status, JSON.stringify(first)).toBe('succeeded');
+    const verified = await live().request({ method: 'POST', path: `/api/agent-accounts/codex/accounts/${account.id}/verify`,
+      cookie: switchUser.cookie, body: { consentToUsePlan: true } });
+    expect(verified.json.account.verifiedAt).toEqual(expect.any(Number));
+    const before = accountRow(switchUser);
+    const home = codexHome(dataRoot, switchUser.id);
+    expect(existsSync(path.join(home, 'sessions'))).toBe(true);
+    const active = (await personal(switchUser, target, 'active [mock-delay-ms=3000]')).json.run.id;
+    const queued = (await personal(switchUser, target, 'queued')).json.run.id;
+    await until(() => detail(switchUser, active), (r) => r.status === 'running', 'active run');
+
+    expect(await reauthorize(switchUser, 'switch-two@example.org')).toMatchObject({ status: 'connected', failureCode: null });
+    expect((await summary(live(), switchUser)).codex.account).toMatchObject({ id: account.id, status: 'connected',
+      maskedIdentity: 's***@example.org', verifiedAt: null, lastProblem: null });
+    const after = accountRow(switchUser);
+    expect(after.id).toBe(before.id);
+    expect(after.identity_hash).not.toBe(before.identity_hash);
+    expect(after.credential_version).toBe(before.credential_version + 1);
+    expect((await detail(switchUser, active)).status).toBe('canceled');
+    expect((await detail(switchUser, queued)).status).toBe('canceled');
+    // The home now holds only the new login: the old credential and native sessions are gone.
+    expect(JSON.parse(readFileSync(path.join(home, 'auth.json'), 'utf8')).email).toBe('switch-two@example.org');
+    expect(readdirSync(home).filter((name) => name === 'sessions' || name.startsWith('auth.json.'))).toEqual([]);
+    expect(readdirSync(actorDir(dataRoot, switchUser.id)).filter((name) => name.startsWith('codex-home.'))).toEqual([]);
+    expect(looseModes(home)).toEqual([]);
+
+    const followUp = await personal(switchUser, target, 'after-switch');
+    expect(followUp.status, followUp.text).toBe(202);
+    const result = await finished(switchUser, followUp.json.run.id);
+    expect(result, JSON.stringify(result)).toMatchObject({ status: 'succeeded', executionSource: 'personal_subscription' });
+    expect(result.output.threadId).not.toBe(first.output.threadId);
+    expect(JSON.parse(result.output.text)).toMatchObject({ codexHome: home, turnsInThread: 1 });
+  });
+
+  it('restores the previous subscription intact when a switch fails to bind', async () => {
+    await linkCodex(live(), dataRoot, rollbackUser, 'rollback-one@example.com');
+    const target = await newProject(rollbackUser);
+    const first = await finished(rollbackUser, (await personal(rollbackUser, target, 'before-failed-switch')).json.run.id);
+    expect(first.status, JSON.stringify(first)).toBe('succeeded');
+    const home = codexHome(dataRoot, rollbackUser.id);
+    const auth = readFileSync(path.join(home, 'auth.json'), 'utf8');
+    const before = accountRow(rollbackUser);
+    const summaryBefore = (await summary(live(), rollbackUser)).codex.account;
+    // Fail the bind transaction after the account row update, at the native-session reset.
+    withDb((db) => db.exec(`CREATE TRIGGER test_fail_switch BEFORE UPDATE OF thread_id ON multiuser_personal_sessions
+      WHEN OLD.owner_account_id = '${rollbackUser.id}' BEGIN SELECT RAISE(ABORT, 'injected switch failure'); END`));
+    try {
+      expect(await reauthorize(rollbackUser, 'rollback-two@example.org')).toMatchObject({ status: 'failed', failureCode: 'provider_error' });
+    } finally { withDb((db) => db.exec('DROP TRIGGER test_fail_switch')); }
+    expect(accountRow(rollbackUser)).toEqual(before);
+    expect((await summary(live(), rollbackUser)).codex.account).toEqual(summaryBefore);
+    expect(readFileSync(path.join(home, 'auth.json'), 'utf8')).toBe(auth);
+    expect(existsSync(path.join(home, 'sessions'))).toBe(true);
+    expect(readdirSync(actorDir(dataRoot, rollbackUser.id)).filter((name) => name.startsWith('codex-home.') || name.startsWith('codex-login-'))).toEqual([]);
+    expect(looseModes(home)).toEqual([]);
+    const followUp = await finished(rollbackUser, (await personal(rollbackUser, target, 'after-failed-switch')).json.run.id);
+    expect(followUp, JSON.stringify(followUp)).toMatchObject({ status: 'succeeded', output: { threadId: first.output.threadId } });
   });
 
   it('restarts with active and queued personal work at nonzero capacity', async () => {

@@ -42,7 +42,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   clock?: () => number;
   personal?: PersonalCodexAccounts;
 }): { cancelAccountRuns(accountId: string): void; isRunOwner(runId: string, accountId: string): boolean;
-  cancelPersonalRuns(accountId: string): Promise<void>; personalLane: PersonalRunLaneControls; listAccountIds(): string[];
+  cancelPersonalRuns(accountId: string): Promise<void>; forgetNativeSessions(accountId: string): void; personalLane: PersonalRunLaneControls; listAccountIds(): string[];
   beginShutdown(): void; shutdown(): Promise<void> } {
   const { db, dataRoot, projectsRoot } = input;
   const expected = fs.realpathSync(path.join(input.repositoryRoot, 'mocks/run-isolation-agent.ts'));
@@ -666,6 +666,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       dispatchPersonal();
     },
     cancelPersonalRuns,
+    // A subscription switch: pinned conversations keep their account but start a fresh native thread.
+    forgetNativeSessions(accountId) {
+      db.prepare('UPDATE multiuser_personal_sessions SET thread_id = NULL, updated_at = ? WHERE owner_account_id = ?').run(now(), accountId);
+    },
     personalLane,
     listAccountIds: () => accounts.listAccounts().map((account) => account.id),
     beginShutdown,

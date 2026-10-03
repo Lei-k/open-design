@@ -7,12 +7,14 @@
 // Invariants kept here:
 // - Disabled unless the multi-user test harness injected the repository mock
 //   app-server; nothing else can enable it (see services/multiuser-mode.ts).
-// - One pending attempt and one linked Codex account per platform user, which
-//   keeps one provider identity (keyed HMAC of the normalized e-mail that
-//   `account/read` reports) across re-authorizations. The same identity may be
-//   linked by several platform accounts (one person may own several), each
-//   through its own login into its own home. A rejected completion discards its
-//   login home.
+// - One pending attempt and one linked Codex account per platform user at a
+//   time. Its provider identity (keyed HMAC of the normalized e-mail that
+//   `account/read` reports) is kept by a same-identity re-authorization (only
+//   the credential is swapped, native sessions survive) and replaced by a switch
+//   to another subscription (same account row; the home and native thread pins
+//   start fresh). The same identity may be linked by several platform accounts
+//   (one person may own several), each through its own login into its own home.
+//   A rejected completion discards its login home.
 // - Device codes and verification URLs live only in memory for the owner's
 //   pending attempt. They are never persisted, logged, audited or returned
 //   after the attempt is terminal.
@@ -174,6 +176,8 @@ interface LiveAttempt {
   closed: Promise<void> | null;
 }
 
+type InstallMode = 'link' | 'reauthorize' | 'switch';
+
 export interface UsablePersonalAccount { id: string; credentialVersion: number; codexHome: string }
 
 export class PersonalCodexAccounts {
@@ -192,6 +196,8 @@ export class PersonalCodexAccounts {
   private readonly unlinking = new Set<string>();
   private readonly reauthorizing = new Set<string>();
   private cancelPersonalRuns: (ownerId: string) => Promise<void> = async () => {};
+  /** Clears the owner's native thread pins; called inside the switch's bind transaction. */
+  private forgetNativeSessions: (ownerId: string) => void = () => {};
   private identityKey: Buffer;
   private stopped = false;
 
@@ -212,9 +218,17 @@ export class PersonalCodexAccounts {
         linked_at INTEGER NOT NULL, verified_at INTEGER, updated_at INTEGER NOT NULL,
         UNIQUE (owner_account_id, provider)
       );
-      CREATE TRIGGER IF NOT EXISTS multiuser_agent_accounts_binding_immutable
-        BEFORE UPDATE OF owner_account_id, provider, identity_hash ON multiuser_agent_accounts
+      DROP TRIGGER IF EXISTS multiuser_agent_accounts_binding_immutable;
+      CREATE TRIGGER multiuser_agent_accounts_binding_immutable
+        BEFORE UPDATE OF owner_account_id, provider ON multiuser_agent_accounts
         BEGIN SELECT RAISE(ABORT, 'agent account binding is immutable'); END;
+      -- The identity changes only through a subscription switch, which bumps the
+      -- credential version and clears the verification in the same update.
+      CREATE TRIGGER IF NOT EXISTS multiuser_agent_accounts_identity_switch_only
+        BEFORE UPDATE OF identity_hash ON multiuser_agent_accounts
+        WHEN NEW.identity_hash IS NOT OLD.identity_hash
+          AND (NEW.credential_version <= OLD.credential_version OR NEW.verified_at IS NOT NULL)
+        BEGIN SELECT RAISE(ABORT, 'agent account identity changes only through a switch'); END;
       CREATE TABLE IF NOT EXISTS multiuser_agent_login_attempts (
         id TEXT PRIMARY KEY,
         owner_account_id TEXT NOT NULL CHECK (length(owner_account_id) > 0),
@@ -244,8 +258,9 @@ export class PersonalCodexAccounts {
     this.recover();
   }
 
-  setRunHooks(hooks: { cancelPersonalRuns: (ownerId: string) => Promise<void> }): void {
+  setRunHooks(hooks: { cancelPersonalRuns: (ownerId: string) => Promise<void>; forgetNativeSessions?: (ownerId: string) => void }): void {
     this.cancelPersonalRuns = hooks.cancelPersonalRuns;
+    if (hooks.forgetNativeSessions) this.forgetNativeSessions = hooks.forgetNativeSessions;
   }
 
   audit(actorId: string, targetId: string, action: string, detail: string | null = null, refId: string | null = null): void {
@@ -424,8 +439,8 @@ export class PersonalCodexAccounts {
     const rateLimits = this.rateLimits(limits);
     const planType = typeof account?.planType === 'string' ? account.planType.slice(0, 64) : null;
     const existing = this.accountRow(live.ownerId);
-    if (existing && existing.identity_hash !== identity) { await this.finalize(attemptId, 'failed', 'account_mismatch', 'link_fail'); return; }
-    // Re-authorization replaces the credential: fence the owner so nothing is admitted
+    // Re-authorization replaces the credential (same identity) or switches the subscription
+    // (different identity) on the same account row: fence the owner so nothing is admitted
     // or dispatched on the old version, then stop the runs bound to it.
     if (existing) this.reauthorizing.add(live.ownerId);
     try {
@@ -442,26 +457,36 @@ export class PersonalCodexAccounts {
   /**
    * Bind a completed, accepted login. Synchronous until the bind commits, so no
    * dispatch can observe a half-swapped home. Any failure after the first credential
-   * change restores the prior credential; if that restore fails too, the backup is
-   * kept in the home and the account becomes `requires_reauth`, never left usable.
+   * change restores the prior credential (or, for a switch, the prior home and row);
+   * if that restore fails too, the backup is kept and the account becomes
+   * `requires_reauth`, never left usable.
    */
   private async bind(attemptId: string, live: LiveAttempt, existing: AccountRow | undefined,
     read: { identity: string; email: string; planType: string | null; rateLimits: PersonalRateLimits | null }): Promise<void> {
     const { identity, email, planType, rateLimits } = read;
+    const mode: InstallMode = !existing ? 'link' : existing.identity_hash === identity ? 'reauthorize' : 'switch';
     const at = this.now();
+    const limitsJson = rateLimits ? JSON.stringify(rateLimits) : null;
     const rollback: { undo: (() => void) | null } = { undo: null };
     // UNIQUE(owner, provider) is the backstop; a failed bind leaves no new credential behind.
     try {
-      this.installCredentials(live.ownerId, live.loginHome, existing !== undefined, (fn) => { rollback.undo = fn; });
+      this.installCredentials(live.ownerId, live.loginHome, mode, (fn) => { rollback.undo = fn; });
       this.db.transaction(() => {
-        if (existing) {
+        if (existing && mode === 'switch') {
+          // Same row, new subscription: its verification and the old native threads do not carry over.
+          this.db.prepare(`UPDATE multiuser_agent_accounts SET status = 'connected', identity_hash = ?, masked_identity = ?,
+            plan_type = ?, credential_version = credential_version + 1, verified_at = NULL, last_problem = NULL,
+            rate_limits_json = ?, updated_at = ? WHERE id = ?`)
+            .run(identity, maskEmail(email), planType, limitsJson, at, existing.id);
+          this.forgetNativeSessions(live.ownerId);
+        } else if (existing) {
           this.db.prepare(`UPDATE multiuser_agent_accounts SET status = 'connected', masked_identity = ?, plan_type = ?,
             credential_version = credential_version + 1, last_problem = NULL, rate_limits_json = ?, updated_at = ? WHERE id = ?`)
-            .run(maskEmail(email), planType, rateLimits ? JSON.stringify(rateLimits) : null, at, existing.id);
+            .run(maskEmail(email), planType, limitsJson, at, existing.id);
         } else {
           this.db.prepare(`INSERT INTO multiuser_agent_accounts (id, owner_account_id, provider, status, identity_hash, masked_identity,
             plan_type, credential_version, rate_limits_json, linked_at, updated_at) VALUES (?, ?, 'codex', 'connected', ?, ?, ?, 1, ?, ?, ?)`)
-            .run(randomUUID(), live.ownerId, identity, maskEmail(email), planType, rateLimits ? JSON.stringify(rateLimits) : null, at, at);
+            .run(randomUUID(), live.ownerId, identity, maskEmail(email), planType, limitsJson, at, at);
         }
         this.transition(attemptId, 'connected', null, 'link_complete');
       }).immediate();
@@ -473,24 +498,43 @@ export class PersonalCodexAccounts {
       return;
     }
     this.live.delete(attemptId);
-    // The replaced credential is no longer needed once the bind committed.
+    // The replaced credential or home is no longer needed once the bind committed.
     fs.rmSync(this.credentialBackup(live.ownerId), { force: true });
+    fs.rmSync(this.homeBackup(live.ownerId), { recursive: true, force: true });
     fs.rmSync(live.loginHome, { recursive: true, force: true });
   }
 
   /**
-   * Put a completed login's credential in place as the owner's CODEX_HOME. A first
-   * link moves the whole login home in. A same-identity re-authorization swaps only
-   * the credential file, so the owner's native sessions (pinned by conversations)
-   * survive. The undo is registered before the first change and reverses exactly
-   * the steps that happened, including when permission hardening fails.
+   * Put a completed login's credential in place as the owner's CODEX_HOME.
+   * - `link`: the whole login home moves in.
+   * - `reauthorize` (same identity): only the credential file is swapped, so the
+   *   owner's native sessions (pinned by conversations) survive.
+   * - `switch` (different identity): the whole login home moves in; the previous
+   *   home, whose sessions belong to the old subscription, is set aside until commit.
+   * The undo is registered before the first change and reverses exactly the steps
+   * that happened, including when permission hardening fails.
    */
-  private installCredentials(ownerId: string, loginHome: string, reauthorization: boolean, setUndo: (undo: () => void) => void): void {
+  private installCredentials(ownerId: string, loginHome: string, mode: InstallMode, setUndo: (undo: () => void) => void): void {
     const home = personalCodexHome(this.dataRoot, ownerId);
-    if (!reauthorization) {
+    if (mode === 'link') {
       setUndo(() => fs.rmSync(home, { recursive: true, force: true }));
       fs.rmSync(home, { recursive: true, force: true });
       fs.renameSync(loginHome, home);
+      lockDown(home);
+      return;
+    }
+    if (mode === 'switch') {
+      const aside = this.homeBackup(ownerId);
+      fs.rmSync(aside, { recursive: true, force: true });
+      let setAside = false;
+      let installed = false;
+      setUndo(() => {
+        if (installed) fs.rmSync(home, { recursive: true, force: true });
+        if (setAside) fs.renameSync(aside, home);
+      });
+      if (fs.existsSync(home)) { fs.renameSync(home, aside); setAside = true; }
+      fs.renameSync(loginHome, home);
+      installed = true;
       lockDown(home);
       return;
     }
@@ -509,6 +553,11 @@ export class PersonalCodexAccounts {
     fs.renameSync(path.join(loginHome, CREDENTIAL_FILE), current);
     installed = true;
     lockDown(home);
+  }
+
+  /** Where a switch sets the previous home aside; beside the home, outside login staging. */
+  private homeBackup(ownerId: string): string {
+    return path.join(actorRuntimeDir(this.dataRoot, ownerId), 'codex-home.previous');
   }
 
   private credentialBackup(ownerId: string): string {

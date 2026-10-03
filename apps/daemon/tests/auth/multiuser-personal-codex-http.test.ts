@@ -263,14 +263,15 @@ describe('personal Codex linking', () => {
     expect(mode(aliceAuthFile)).toBe(0o600);
   });
 
-  it('keeps exactly one account per user: re-authorization must be the same identity', async () => {
+  it('keeps exactly one account per user: re-authorization may switch the subscription', async () => {
     const before = (await summary(daemon, alice)).codex.account;
     const other = await startLogin(daemon, alice);
     remember(other);
     await decide(dataRoot, alice, other.userCode, { outcome: 'approve', email: 'someone-else@example.com' });
-    expect(await settle(daemon, alice, other.id)).toMatchObject({ status: 'failed', failureCode: 'account_mismatch' });
-    expect((await summary(daemon, alice)).codex.account).toEqual(before);
-    expect(JSON.parse(readFileSync(path.join(codexHome(dataRoot, alice.id), 'auth.json'), 'utf8')).email).toBe('Alice.Person@example.com');
+    expect(await settle(daemon, alice, other.id)).toMatchObject({ status: 'connected', failureCode: null });
+    expect((await summary(daemon, alice)).codex.account).toMatchObject({ id: before.id, status: 'connected', maskedIdentity: 's***@example.com' });
+    expect(JSON.parse(readFileSync(path.join(codexHome(dataRoot, alice.id), 'auth.json'), 'utf8')).email).toBe('someone-else@example.com');
+    // Switching back is another switch on the same account row.
     const same = await startLogin(daemon, alice);
     remember(same);
     await decide(dataRoot, alice, same.userCode, { outcome: 'approve', email: 'alice.person@example.com', planType: 'pro' });

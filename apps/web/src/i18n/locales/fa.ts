@@ -5447,7 +5447,6 @@ export const fa: Dict = {
   'agentAccounts.outcomeExpired': "The code expired before sign-in finished.",
   'agentAccounts.outcomeCanceled': "Linking was canceled.",
   'agentAccounts.outcomeFailed': "Linking failed.",
-  'agentAccounts.failureAccountMismatch': "You signed in with a different account. Unlink the current one first to link another.",
   'agentAccounts.failureWorkspace': "Your workspace doesn't allow device sign-in.",
   'agentAccounts.actionFailed': "Something went wrong ({code}).",
 };

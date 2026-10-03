@@ -17532,7 +17532,8 @@ export async function startServer({
   });
   if (multiUserRuns) multiUserFront?.setIsRunOwner(multiUserRuns.isRunOwner);
   if (multiUserRuns && personalCodex) {
-    personalCodex.setRunHooks({ cancelPersonalRuns: multiUserRuns.cancelPersonalRuns });
+    personalCodex.setRunHooks({ cancelPersonalRuns: multiUserRuns.cancelPersonalRuns,
+      forgetNativeSessions: multiUserRuns.forgetNativeSessions });
     multiUserFront?.setIsAgentAccountOwner((param, id, accountId) => personalCodex.isOwner(param, id, accountId));
     registerMultiUserAgentAccountRoutes(app, {
       personal: personalCodex, runs: multiUserRuns.personalLane, listAccountIds: multiUserRuns.listAccountIds,

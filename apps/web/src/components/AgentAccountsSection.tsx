@@ -35,7 +35,6 @@ function outcomeKey(attempt: PersonalLoginAttempt): keyof Dict | null {
   if (attempt.status === 'expired') return 'agentAccounts.outcomeExpired';
   if (attempt.status === 'canceled') return 'agentAccounts.outcomeCanceled';
   if (attempt.status !== 'failed') return null;
-  if (attempt.failureCode === 'account_mismatch') return 'agentAccounts.failureAccountMismatch';
   if (attempt.failureCode === 'workspace_not_allowed') return 'agentAccounts.failureWorkspace';
   return 'agentAccounts.outcomeFailed';
 }
