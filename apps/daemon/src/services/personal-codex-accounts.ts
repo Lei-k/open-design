@@ -7,9 +7,12 @@
 // Invariants kept here:
 // - Disabled unless the multi-user test harness injected the repository mock
 //   app-server; nothing else can enable it (see services/multiuser-mode.ts).
-// - One pending attempt and one linked Codex account per platform user; one
-//   provider identity (keyed HMAC of the normalized e-mail that `account/read`
-//   reports) per platform user. A rejected completion discards its login home.
+// - One pending attempt and one linked Codex account per platform user, which
+//   keeps one provider identity (keyed HMAC of the normalized e-mail that
+//   `account/read` reports) across re-authorizations. The same identity may be
+//   linked by several platform accounts (one person may own several), each
+//   through its own login into its own home. A rejected completion discards its
+//   login home.
 // - Device codes and verification URLs live only in memory for the owner's
 //   pending attempt. They are never persisted, logged, audited or returned
 //   after the attempt is terminal.
@@ -207,7 +210,7 @@ export class PersonalCodexAccounts {
         identity_hash TEXT NOT NULL, masked_identity TEXT NOT NULL, plan_type TEXT,
         credential_version INTEGER NOT NULL, last_problem TEXT, rate_limits_json TEXT,
         linked_at INTEGER NOT NULL, verified_at INTEGER, updated_at INTEGER NOT NULL,
-        UNIQUE (owner_account_id, provider), UNIQUE (provider, identity_hash)
+        UNIQUE (owner_account_id, provider)
       );
       CREATE TRIGGER IF NOT EXISTS multiuser_agent_accounts_binding_immutable
         BEFORE UPDATE OF owner_account_id, provider, identity_hash ON multiuser_agent_accounts
@@ -421,9 +424,6 @@ export class PersonalCodexAccounts {
     const rateLimits = this.rateLimits(limits);
     const planType = typeof account?.planType === 'string' ? account.planType.slice(0, 64) : null;
     const existing = this.accountRow(live.ownerId);
-    const holder = this.db.prepare("SELECT owner_account_id FROM multiuser_agent_accounts WHERE provider = 'codex' AND identity_hash = ?")
-      .get(identity) as { owner_account_id: string } | undefined;
-    if (holder && holder.owner_account_id !== live.ownerId) { await this.finalize(attemptId, 'failed', 'identity_in_use', 'link_fail'); return; }
     if (existing && existing.identity_hash !== identity) { await this.finalize(attemptId, 'failed', 'account_mismatch', 'link_fail'); return; }
     // Re-authorization replaces the credential: fence the owner so nothing is admitted
     // or dispatched on the old version, then stop the runs bound to it.
@@ -450,7 +450,7 @@ export class PersonalCodexAccounts {
     const { identity, email, planType, rateLimits } = read;
     const at = this.now();
     const rollback: { undo: (() => void) | null } = { undo: null };
-    // The UNIQUE identity index is the backstop; a failed bind leaves no new credential behind.
+    // UNIQUE(owner, provider) is the backstop; a failed bind leaves no new credential behind.
     try {
       this.installCredentials(live.ownerId, live.loginHome, existing !== undefined, (fn) => { rollback.undo = fn; });
       this.db.transaction(() => {

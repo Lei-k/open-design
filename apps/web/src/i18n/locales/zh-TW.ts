@@ -5904,7 +5904,6 @@ export const zhTW: Dict = {
   'agentAccounts.outcomeExpired': "代碼在完成登入前已失效。",
   'agentAccounts.outcomeCanceled': "已取消連結。",
   'agentAccounts.outcomeFailed': "連結失敗。",
-  'agentAccounts.failureIdentityInUse': "此供應商帳號已連結到另一位 OpenDesign 使用者。",
   'agentAccounts.failureAccountMismatch': "你登入的是另一個帳號。請先解除目前的連結，再連結其他帳號。",
   'agentAccounts.failureWorkspace': "你的工作區不允許裝置登入。",
   'agentAccounts.actionFailed': "發生錯誤（{code}）。",

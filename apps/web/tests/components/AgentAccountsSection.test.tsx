@@ -71,16 +71,16 @@ describe('AgentAccountsSection', () => {
     let status: PersonalLoginAttempt['status'] = 'pending';
     handler = (url) => (url === '/api/agent-accounts'
       ? { status: 200, body: view() }
-      : { status: 200, body: { attempt: status === 'pending' ? pending : { ...pending, status, failureCode: 'identity_in_use',
+      : { status: 200, body: { attempt: status === 'pending' ? pending : { ...pending, status, failureCode: 'account_mismatch',
         verificationUrl: undefined, userCode: undefined } } });
     renderSection(view({ pendingAttempt: { ...pending, verificationUrl: undefined, userCode: undefined } }));
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(screen.getByLabelText('Your one-time code').textContent).toBe('ABCD-1234');
     status = 'failed';
     await act(async () => { await vi.advanceTimersByTimeAsync(AGENT_ACCOUNT_POLL_MS - 1); });
-    expect(screen.queryByText('This provider account is already linked to another OpenDesign user.')).toBeNull();
+    expect(screen.queryByText('You signed in with a different account. Unlink the current one first to link another.')).toBeNull();
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
-    expect(screen.getByText('This provider account is already linked to another OpenDesign user.')).toBeTruthy();
+    expect(screen.getByText('You signed in with a different account. Unlink the current one first to link another.')).toBeTruthy();
     expect(screen.queryByLabelText('Your one-time code')).toBeNull();
   });
 

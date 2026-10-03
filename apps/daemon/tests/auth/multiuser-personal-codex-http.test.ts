@@ -214,18 +214,53 @@ describe('personal Codex linking', () => {
     expect(existsSync(codexHome(dataRoot, carol.id))).toBe(false);
   });
 
-  it('binds one provider identity to one platform user without revealing the first user', async () => {
+  it('lets one provider identity link to several platform accounts, each with its own isolated home', async () => {
+    // One person may own several platform accounts; each links on its own device-code login.
     const aliceBefore = (await summary(daemon, alice)).codex.account;
+    const aliceAuthFile = path.join(codexHome(dataRoot, alice.id), 'auth.json');
+    const aliceAuth = readFileSync(aliceAuthFile);
     const attempt = await startLogin(daemon, carol);
     remember(attempt);
     await decide(dataRoot, carol, attempt.userCode, { outcome: 'approve', email: 'alice.person@EXAMPLE.com' });
-    const settled = await settle(daemon, carol, attempt.id);
-    expect(settled).toMatchObject({ status: 'failed', failureCode: 'identity_in_use' });
-    const text = JSON.stringify(settled) + JSON.stringify(await summary(daemon, carol));
-    for (const leak of [alice.id, alice.username, aliceBefore.id, aliceBefore.maskedIdentity, 'example.com']) expect(text).not.toContain(leak);
-    await until(() => loginHomes(dataRoot, carol.id), (homes) => homes.length === 0, 'login home removal');
+    expect(await settle(daemon, carol, attempt.id)).toMatchObject({ status: 'connected', failureCode: null });
+    const carolAccount = (await summary(daemon, carol)).codex.account;
+    expect(carolAccount).toMatchObject({ status: 'connected', maskedIdentity: aliceBefore.maskedIdentity });
+    expect(carolAccount.id).not.toBe(aliceBefore.id);
+    const carolAuthFile = path.join(codexHome(dataRoot, carol.id), 'auth.json');
+    expect(codexHome(dataRoot, carol.id)).not.toBe(codexHome(dataRoot, alice.id));
+    for (const file of [aliceAuthFile, carolAuthFile]) expect(mode(file)).toBe(0o600);
+    // Credentials are never shared: carol's came from her own login.
+    expect(readFileSync(carolAuthFile)).not.toEqual(aliceAuth);
+    expect(readFileSync(aliceAuthFile)).toEqual(aliceAuth);
+
+    // Re-authorizing alice neither touches carol's home nor cancels carol's personal runs.
+    const carolAuth = readFileSync(carolAuthFile);
+    const projectId = randomUUID();
+    const project = await daemon.request({ method: 'POST', path: '/api/projects', cookie: carol.cookie, body: { id: projectId, name: projectId } });
+    expect(project.status, project.text).toBe(200);
+    const run = await daemon.request({ method: 'POST', path: '/api/runs', cookie: carol.cookie, body: { projectId,
+      conversationId: project.json.conversationId, agentId: 'codex', executionSource: 'personal_subscription', message: 'carol-run [mock-delay-ms=1500]' } });
+    expect(run.status, run.text).toBe(202);
+    const runState = () => daemon.request({ path: `/api/runs/${run.json.run.id}`, cookie: carol.cookie }).then((r) => r.json.status as string);
+    await until(runState, (status) => status === 'running', 'carol run running');
+    const reauth = await startLogin(daemon, alice);
+    remember(reauth);
+    await decide(dataRoot, alice, reauth.userCode, { outcome: 'approve', email: 'Alice.Person@example.com' });
+    expect((await settle(daemon, alice, reauth.id)).status).toBe('connected');
+    expect(readFileSync(aliceAuthFile)).not.toEqual(aliceAuth);
+    expect(await runState()).toBe('running');
+    expect(await until(runState, (status) => status !== 'running', 'carol run finished')).toBe('succeeded');
+    expect(readFileSync(carolAuthFile)).toEqual(carolAuth);
+
+    // Unlinking carol leaves alice connected with her home and credential intact.
+    const aliceReauthed = readFileSync(aliceAuthFile);
+    const unlinked = await daemon.request({ method: 'DELETE', path: `/api/agent-accounts/codex/accounts/${carolAccount.id}`, cookie: carol.cookie });
+    expect(unlinked.status, unlinked.text).toBe(200);
     expect(existsSync(codexHome(dataRoot, carol.id))).toBe(false);
-    expect((await summary(daemon, alice)).codex.account).toEqual(aliceBefore);
+    expect((await summary(daemon, alice)).codex.account).toMatchObject({ id: aliceBefore.id, status: 'connected',
+      maskedIdentity: aliceBefore.maskedIdentity });
+    expect(readFileSync(aliceAuthFile)).toEqual(aliceReauthed);
+    expect(mode(aliceAuthFile)).toBe(0o600);
   });
 
   it('keeps exactly one account per user: re-authorization must be the same identity', async () => {
