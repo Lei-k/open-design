@@ -7,7 +7,8 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, expect, it, vi } from 'vitest';
 import { AppServerAccountClient } from '../../src/integrations/codex-app-server-account.js';
-import { PersonalCodexAccounts, actorRuntimeDir, personalCodexHome, type PersonalLoginAttempt } from '../../src/services/personal-codex-accounts.js';
+import type { PersonalLoginAttempt } from '@open-design/contracts';
+import { PersonalCodexAccounts, actorRuntimeDir, personalCodexHome } from '../../src/services/personal-codex-accounts.js';
 import { PERSONAL_CODEX_MOCK } from './personal-codex-helpers.js';
 
 type Fixture = ReturnType<typeof make>;

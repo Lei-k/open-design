@@ -449,10 +449,10 @@ export class PersonalCodexAccounts {
     read: { identity: string; email: string; planType: string | null; rateLimits: PersonalRateLimits | null }): Promise<void> {
     const { identity, email, planType, rateLimits } = read;
     const at = this.now();
-    let undo: (() => void) | null = null;
+    const rollback: { undo: (() => void) | null } = { undo: null };
     // The UNIQUE identity index is the backstop; a failed bind leaves no new credential behind.
     try {
-      this.installCredentials(live.ownerId, live.loginHome, existing !== undefined, (fn) => { undo = fn; });
+      this.installCredentials(live.ownerId, live.loginHome, existing !== undefined, (fn) => { rollback.undo = fn; });
       this.db.transaction(() => {
         if (existing) {
           this.db.prepare(`UPDATE multiuser_agent_accounts SET status = 'connected', masked_identity = ?, plan_type = ?,
@@ -466,8 +466,7 @@ export class PersonalCodexAccounts {
         this.transition(attemptId, 'connected', null, 'link_complete');
       }).immediate();
     } catch {
-      const restore: (() => void) | null = undo;
-      try { restore?.(); } catch {
+      try { rollback.undo?.(); } catch {
         if (existing) this.recordProblem(live.ownerId, existing.id, 'reauth_required');
       }
       await this.finalize(attemptId, 'failed', 'provider_error', 'link_fail');
