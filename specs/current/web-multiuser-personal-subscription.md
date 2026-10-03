@@ -34,6 +34,11 @@ The daemon uses exactly these app-server methods, with names and fields taken fr
 - A failed bind puts the copy back and deletes the record. If putting it back also fails, the copy stays private (0700/0600), the record stays, and the account becomes `requires_reauth`.
 - Reconciliation runs on restart and before any later re-authorization installs anything. With a record, the retained copy moves back into place, replacing whatever uncommitted replacement stands there, and the record is deleted. Without a record, copies left beside the home belong to a committed replacement and are deleted. A retained copy is never deleted or overwritten before a replacement commits. If it cannot be moved back, nothing new is installed and the account stays `requires_reauth`.
 - So a same-identity re-authorization after a failed switch recovers the original native sessions. A switch retry that fails again keeps the only prior home.
+- Original credentials and native-session continuity are destroyed only by a proven committed replacement (the commit transaction that deletes the record) or by a successful owner unlink. A missing record is that proof only for copies the record-aware code wrote.
+- Upgrade from code before the record existed: those versions could leave `codex-home.previous` or `auth.json.previous` without a record. On the first start that creates the record table, in the same transaction, each such copy of a linked owner is adopted:
+  - Sole copy (the active home, or its `auth.json`, is missing): it becomes a `home` / `credential` record and is restored as above. The account stays `requires_reauth` until a re-authorization; a same-identity one keeps the restored native sessions.
+  - Copy beside an active one: whether that active copy was committed cannot be told, so the record is `ambiguous`. Every copy stays in place, private. The account stays unusable and `requires_reauth`, and a re-authorization installs nothing over it. Only a successful owner unlink removes it, together with every other copy.
+  - Owners without an account row unlinked earlier. Their leftovers are removed when the owner links again, after that link commits.
 
 ## Schema migration
 

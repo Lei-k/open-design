@@ -180,6 +180,7 @@ interface LiveAttempt {
 }
 
 type InstallMode = 'link' | 'reauthorize' | 'switch';
+type RetainedKind = 'home' | 'credential' | 'ambiguous';
 
 const ACCOUNT_COLUMNS = 'id, owner_account_id, provider, status, identity_hash, masked_identity, plan_type, '
   + 'credential_version, last_problem, rate_limits_json, linked_at, verified_at, updated_at';
@@ -224,6 +225,9 @@ export class PersonalCodexAccounts {
     this.enabled = this.command !== null;
     this.now = input.clock ?? Date.now;
     this.migrateIdentityUniqueness();
+    // Backups written before the retained-state record existed carry no record (see adoptLegacyBackups).
+    const recordsExisted = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'multiuser_agent_retained_state'")
+      .get() !== undefined;
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS multiuser_agent_accounts (${ACCOUNT_TABLE});
       DROP TRIGGER IF EXISTS multiuser_agent_accounts_binding_immutable;
@@ -250,14 +254,6 @@ export class PersonalCodexAccounts {
         BEFORE UPDATE OF owner_account_id, provider ON multiuser_agent_login_attempts
         BEGIN SELECT RAISE(ABORT, 'login attempt binding is immutable'); END;
       CREATE TABLE IF NOT EXISTS multiuser_agent_account_config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      -- A prior home or credential set aside by a re-authorization that has not committed.
-      -- The bind transaction deletes the row, so its presence alone says the set-aside copy
-      -- is still the account's truth.
-      CREATE TABLE IF NOT EXISTS multiuser_agent_retained_state (
-        owner_account_id TEXT PRIMARY KEY CHECK (length(owner_account_id) > 0),
-        kind TEXT NOT NULL CHECK (kind IN ('home','credential')),
-        had_prior INTEGER NOT NULL CHECK (had_prior IN (0, 1)), created_at INTEGER NOT NULL
-      );
       CREATE TABLE IF NOT EXISTS multiuser_agent_account_audit (
         id INTEGER PRIMARY KEY AUTOINCREMENT, actor_account_id TEXT NOT NULL, target_account_id TEXT NOT NULL,
         provider TEXT NOT NULL, action TEXT NOT NULL, detail TEXT, ref_id TEXT, created_at INTEGER NOT NULL
@@ -267,6 +263,22 @@ export class PersonalCodexAccounts {
       CREATE TRIGGER IF NOT EXISTS multiuser_agent_account_audit_no_delete BEFORE DELETE ON multiuser_agent_account_audit
         BEGIN SELECT RAISE(ABORT, 'agent account audit is append only'); END;
     `);
+    // The record table and the adoption of pre-record backups commit together, so a crash
+    // during adoption leaves the table absent and adoption runs again on the next start.
+    this.db.transaction(() => {
+      this.db.exec(`
+        -- A prior home or credential set aside by a re-authorization that has not committed.
+        -- The bind transaction deletes the row, so its presence alone says the set-aside copy
+        -- is still the account's truth. 'ambiguous' marks pre-record copies that cannot be
+        -- told apart from a committed leftover; only an owner unlink removes them.
+        CREATE TABLE IF NOT EXISTS multiuser_agent_retained_state (
+          owner_account_id TEXT PRIMARY KEY CHECK (length(owner_account_id) > 0),
+          kind TEXT NOT NULL CHECK (kind IN ('home','credential','ambiguous')),
+          had_prior INTEGER NOT NULL CHECK (had_prior IN (0, 1)), created_at INTEGER NOT NULL
+        );
+      `);
+      if (!recordsExisted) this.adoptLegacyBackups();
+    }).immediate();
     this.db.prepare("INSERT OR IGNORE INTO multiuser_agent_account_config (key, value) VALUES ('identity-key', ?)")
       .run(randomBytes(32).toString('base64'));
     this.identityKey = Buffer.from((this.db.prepare("SELECT value FROM multiuser_agent_account_config WHERE key = 'identity-key'")
@@ -616,7 +628,7 @@ export class PersonalCodexAccounts {
   }
 
   /** Durably note, before the first file change, that this owner's prior state is being set aside. */
-  private retain(ownerId: string, kind: 'home' | 'credential', hadPrior: boolean): void {
+  private retain(ownerId: string, kind: RetainedKind, hadPrior: boolean): void {
     this.db.prepare('INSERT INTO multiuser_agent_retained_state (owner_account_id, kind, had_prior, created_at) VALUES (?, ?, ?, ?)')
       .run(ownerId, kind, hadPrior ? 1 : 0, this.now());
   }
@@ -625,9 +637,32 @@ export class PersonalCodexAccounts {
     this.db.prepare('DELETE FROM multiuser_agent_retained_state WHERE owner_account_id = ?').run(ownerId);
   }
 
-  private retained(ownerId: string): { kind: 'home' | 'credential'; had_prior: number } | undefined {
+  private retained(ownerId: string): { kind: RetainedKind; had_prior: number } | undefined {
     return this.db.prepare('SELECT kind, had_prior FROM multiuser_agent_retained_state WHERE owner_account_id = ?')
-      .get(ownerId) as { kind: 'home' | 'credential'; had_prior: number } | undefined;
+      .get(ownerId) as { kind: RetainedKind; had_prior: number } | undefined;
+  }
+
+  /**
+   * Code before the retained-state record (7329dfd2 and earlier) could leave a backup with
+   * no record after a failed re-authorization, so on the first start with the record table a
+   * record-less backup proves nothing about a commit. Each one becomes a record here:
+   * - a sole copy (its active counterpart is missing) is the account's only prior state:
+   *   `home` / `credential`, restored by the normal reconciliation;
+   * - a copy beside an active one cannot be told apart from a committed leftover:
+   *   `ambiguous`, kept in place and fenced until the owner unlinks.
+   * Owners without an account row unlinked earlier; a first link removes their leftovers.
+   */
+  private adoptLegacyBackups(): void {
+    const owners = this.db.prepare("SELECT owner_account_id AS id FROM multiuser_agent_accounts WHERE provider = 'codex'").all() as Array<{ id: string }>;
+    for (const { id } of owners) {
+      const home = personalCodexHome(this.dataRoot, id);
+      const hasHomeCopy = fs.existsSync(this.homeBackup(id));
+      const hasCredentialCopy = fs.existsSync(this.credentialBackup(id));
+      if (!hasHomeCopy && !hasCredentialCopy) continue;
+      const kind: RetainedKind = hasHomeCopy && !fs.existsSync(home) ? 'home'
+        : !hasHomeCopy && !fs.existsSync(path.join(home, CREDENTIAL_FILE)) ? 'credential' : 'ambiguous';
+      this.retain(id, kind, true);
+    }
   }
 
   /**
@@ -644,6 +679,8 @@ export class PersonalCodexAccounts {
     const aside = this.homeBackup(ownerId);
     const backup = this.credentialBackup(ownerId);
     const record = this.retained(ownerId);
+    // Ambiguous copies stay exactly where they are; only an owner unlink removes them.
+    if (record?.kind === 'ambiguous') return false;
     try {
       if (!record) {
         fs.rmSync(aside, { recursive: true, force: true });

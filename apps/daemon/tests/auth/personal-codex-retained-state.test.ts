@@ -369,3 +369,206 @@ describe('D3: unlink removes every retained copy of this owner only', () => {
     noRetainedCopies(r);
   });
 });
+
+// ---- Repair 7: convergence table rows (byo-run/repair7-state-table.md) -------------------
+//
+// A database written before the retained-state record existed (7329dfd2 and earlier) has the
+// current account schema without `multiuser_agent_retained_state`. The legacy states below are
+// the exact files 7329dfd2's fault paths leave behind: no record, a sole `codex-home.previous`
+// or `auth.json.previous`, or such a backup next to an active copy.
+
+interface Legacy { auth: string; newAuth: string }
+
+/** Link, add native state, stop, turn the database into a pre-record one and shape the files. */
+async function legacyUpgrade(r: Fixture, shape: (paths: { home: string; aside: string; auth: string; backup: string }) => void,
+  db?: (db: Database.Database) => void): Promise<Legacy> {
+  await linked(r);
+  fs.mkdirSync(path.join(r.home, 'sessions'));
+  fs.writeFileSync(path.join(r.home, 'sessions', 'old-thread'), 'old native state');
+  r.service.secureHome(r.owner);
+  const auth = fs.readFileSync(path.join(r.home, 'auth.json'), 'utf8');
+  await r.service.shutdown();
+  r.db.exec('DROP TABLE multiuser_agent_retained_state');
+  r.db.prepare("UPDATE multiuser_agent_accounts SET status = 'requires_reauth', last_problem = 'reauth_required' WHERE owner_account_id = ?").run(r.owner);
+  db?.(r.db);
+  shape({ home: r.home, aside: aside(r), auth: path.join(r.home, 'auth.json'), backup: path.join(r.home, 'auth.json.previous') });
+  r.db.close();
+  Object.assign(r, open(r.root, r.dbPath));
+  return { auth, newAuth: 'mock-uncommitted-or-committed-replacement' };
+}
+
+/** A second, different credential/home written the way the legacy install leaves it (0700/0600). */
+function writeReplacementHome(dir: string, content: string): void {
+  fs.mkdirSync(dir, { mode: 0o700 });
+  fs.writeFileSync(path.join(dir, 'auth.json'), content, { mode: 0o600 });
+}
+
+function expectFenced(r: Fixture): void {
+  expect(r.service.usableAccount(r.owner)).toBeNull();
+  expect(r.service.summary(r.owner).account).toMatchObject({ status: 'requires_reauth' });
+}
+
+describe('repair 7: legacy and record-aware retained state', () => {
+  it('row 4: adopts a sole legacy credential backup on upgrade, then same-identity reauth keeps sessions (row 9)', async () => {
+    const r = make();
+    const { auth } = await legacyUpgrade(r, (p) => fs.renameSync(p.auth, p.backup));
+    expectOldState(r.home, auth);
+    noRetainedCopies(r);
+    expectFenced(r);
+    await linked(r);
+    expect(r.service.usableAccount(r.owner)).not.toBeNull();
+    expect(fs.readFileSync(path.join(r.home, 'sessions', 'old-thread'), 'utf8')).toBe('old native state');
+    expect(fs.readFileSync(path.join(r.home, 'auth.json'), 'utf8')).not.toBe(auth);
+    noRetainedCopies(r);
+  });
+
+  it('row 5: adopts a sole legacy whole-home backup on upgrade, then a switch commits (row 10)', async () => {
+    const r = make();
+    const { auth } = await legacyUpgrade(r, (p) => fs.renameSync(p.home, p.aside));
+    expectOldState(r.home, auth);
+    noRetainedCopies(r);
+    expectFenced(r);
+    await restart(r);
+    expectOldState(r.home, auth);
+    await linked(r, 'switched@example.org');
+    expect(r.service.summary(r.owner).account).toMatchObject({ status: 'connected', maskedIdentity: 's***@example.org' });
+    expect(fs.existsSync(path.join(r.home, 'sessions'))).toBe(false);
+    noRetainedCopies(r);
+  });
+
+  it.each([
+    ['6a: legacy home backup beside an active home', (p: { home: string; aside: string }, next: string) => {
+      fs.renameSync(p.home, p.aside);
+      writeReplacementHome(p.home, next);
+    }],
+    ['6b: legacy credential backup beside an active credential', (p: { auth: string; backup: string }, next: string) => {
+      fs.renameSync(p.auth, p.backup);
+      fs.writeFileSync(p.auth, next, { mode: 0o600 });
+    }],
+  ] as const)('row %s: keeps every copy, fences the account, refuses reauth, and only unlink removes it', async (_name, shape) => {
+    const r = make();
+    const other = as(r, 'other');
+    await linked(other);
+    const otherAuth = fs.readFileSync(path.join(other.home, 'auth.json'), 'utf8');
+    const next = 'mock-ambiguous-active-credential';
+    const { auth } = await legacyUpgrade(r, (p) => shape(p, next));
+    const original = fs.existsSync(aside(r)) ? aside(r) : null;
+    const check = () => {
+      if (original) {
+        expectOldState(original, auth);
+        expect(fs.readFileSync(path.join(r.home, 'auth.json'), 'utf8')).toBe(next);
+      } else {
+        expect(fs.readFileSync(path.join(r.home, 'auth.json.previous'), 'utf8')).toBe(auth);
+        expect(modeOf(path.join(r.home, 'auth.json.previous'))).toBe(0o600);
+        expect(fs.readFileSync(path.join(r.home, 'auth.json'), 'utf8')).toBe(next);
+        expect(fs.readFileSync(path.join(r.home, 'sessions', 'old-thread'), 'utf8')).toBe('old native state');
+      }
+      expect(modeOf(r.home)).toBe(0o700);
+      expect(modeOf(path.join(r.home, 'auth.json'))).toBe(0o600);
+      expectFenced(r);
+    };
+    check();
+    await restart(r);
+    check();
+    // A re-authorization installs nothing over ambiguous copies.
+    expect((await login(r)).status).toBe('failed');
+    check();
+    const account = r.service.summary(r.owner).account!;
+    expect(await r.service.unlink(r.owner, account.id)).toBe(true);
+    expect(fs.existsSync(r.home)).toBe(false);
+    noRetainedCopies(r);
+    expect(fs.readFileSync(path.join(other.home, 'auth.json'), 'utf8')).toBe(otherAuth);
+    expect(r.service.usableAccount('other')).not.toBeNull();
+    await linked(r);
+    expect(r.service.usableAccount(r.owner)).not.toBeNull();
+  });
+
+  it('row 6c: mixed legacy backups (home set aside, credential backup in the active home) are both kept', async () => {
+    const r = make();
+    const { auth } = await legacyUpgrade(r, (p) => {
+      fs.renameSync(p.home, p.aside);
+      writeReplacementHome(p.home, 'mock-ambiguous-active-credential');
+      fs.writeFileSync(path.join(p.home, 'auth.json.previous'), 'mock-older-credential', { mode: 0o600 });
+    });
+    expectOldState(aside(r), auth);
+    expect(fs.readFileSync(path.join(r.home, 'auth.json.previous'), 'utf8')).toBe('mock-older-credential');
+    expect(fs.readFileSync(path.join(r.home, 'auth.json'), 'utf8')).toBe('mock-ambiguous-active-credential');
+    expectFenced(r);
+  });
+
+  it('row 8: a legacy restore that fails on upgrade keeps the copy fenced, and the next start restores it', async () => {
+    const r = make();
+    const rename = fs.renameSync;
+    const { auth } = await legacyUpgrade(r, (p) => {
+      fs.renameSync(p.home, p.aside);
+      vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        if (String(from) === aside(r)) throw new Error('upgrade restore EIO');
+        return rename(from, to);
+      });
+    });
+    vi.restoreAllMocks();
+    expect(fs.existsSync(r.home)).toBe(false);
+    expectOldState(aside(r), auth);
+    expectFenced(r);
+    await restart(r);
+    expectOldState(r.home, auth);
+    noRetainedCopies(r);
+    expectFenced(r);
+  });
+
+  it.each(['home', 'credential'] as const)('row 7: a post-commit %s cleanup failure never reverts the committed account on restart', async (kind) => {
+    const r = make();
+    await linked(r);
+    const attempt = await r.service.startLogin(r.owner);
+    const target = kind === 'home' ? aside(r) : path.join(r.home, 'auth.json.previous');
+    const rm = fs.rmSync;
+    let blocked = false;
+    vi.spyOn(fs, 'rmSync').mockImplementation((file, options) => {
+      const row = r.db.prepare('SELECT status FROM multiuser_agent_login_attempts WHERE id = ?').get(attempt.id) as { status: string };
+      if (String(file) === target && row.status === 'connected') { blocked = true; throw new Error('post-commit cleanup EIO'); }
+      return rm(file, options);
+    });
+    approve(r, attempt, kind === 'home' ? 'switched@example.org' : 'owner@example.com');
+    expect((await settle(r, attempt.id)).status).toBe('connected');
+    vi.restoreAllMocks();
+    await until(() => loginDirs(r), (names) => names.length === 0);
+    expect(blocked).toBe(true);
+    const committed = { account: r.service.summary(r.owner).account, auth: fs.readFileSync(path.join(r.home, 'auth.json'), 'utf8') };
+    await restart(r);
+    expect(r.service.summary(r.owner).account).toEqual(committed.account);
+    expect(fs.readFileSync(path.join(r.home, 'auth.json'), 'utf8')).toBe(committed.auth);
+    noRetainedCopies(r);
+    expect(r.service.usableAccount(r.owner)).not.toBeNull();
+  });
+
+  it.each(['switch', 'reauthorize'] as const)('rows 2/3: an installed but uncommitted %s is undone on restart', async (mode) => {
+    const r = make();
+    await linked(r);
+    fs.mkdirSync(path.join(r.home, 'sessions'));
+    fs.writeFileSync(path.join(r.home, 'sessions', 'old-thread'), 'old native state');
+    r.service.secureHome(r.owner);
+    const auth = fs.readFileSync(path.join(r.home, 'auth.json'), 'utf8');
+    const row = r.db.prepare('SELECT * FROM multiuser_agent_accounts').get();
+    const staging = path.join(actorRuntimeDir(r.root, r.owner), 'codex-login-crash-fixture');
+    writeReplacementHome(staging, 'mock-uncommitted');
+    // A crash between installing the files and the bind transaction.
+    (r.service as unknown as { installCredentials: (...args: unknown[]) => void }).installCredentials(r.owner, staging, mode, () => {});
+    expect(r.service.usableAccount(r.owner)).toBeNull();
+    await restart(r);
+    expectOldState(r.home, auth);
+    noRetainedCopies(r);
+    expect(r.db.prepare('SELECT * FROM multiuser_agent_accounts').get()).toEqual(row);
+    expect(r.service.usableAccount(r.owner)).not.toBeNull();
+  });
+
+  it('row 12: a legacy home backup left by a pre-record unlink is removed when the owner links again', async () => {
+    const r = make();
+    await legacyUpgrade(r, (p) => fs.renameSync(p.home, p.aside),
+      (db) => db.prepare('DELETE FROM multiuser_agent_accounts WHERE owner_account_id = ?').run(r.owner));
+    expect(r.service.summary(r.owner).account).toBeNull();
+    await linked(r);
+    expect(r.service.usableAccount(r.owner)).not.toBeNull();
+    expect(fs.existsSync(path.join(r.home, 'sessions'))).toBe(false);
+    noRetainedCopies(r);
+  });
+});
