@@ -412,6 +412,8 @@ export class PersonalCodexAccounts {
     clearTimeout(live.timer);
     await live.client.close();
     if (this.attemptRow(attemptId)?.status !== 'pending' || this.stopped) { await this.finalize(attemptId, 'failed', 'interrupted', 'link_fail'); return; }
+    // Re-checked after the provider reads and before any side effect (fence, cancellation, install).
+    if (this.pastDeadline(attemptId)) { await this.finalize(attemptId, 'expired', null, 'link_expire'); return; }
     const account = read.account && typeof read.account === 'object' ? read.account as Json : null;
     const email = account?.type === 'chatgpt' && typeof account.email === 'string' ? account.email.trim().toLowerCase() : '';
     if (!email || !email.includes('@')) { await this.finalize(attemptId, 'failed', 'identity_unavailable', 'link_fail'); return; }
@@ -439,7 +441,9 @@ export class PersonalCodexAccounts {
 
   /**
    * Bind a completed, accepted login. Synchronous until the bind commits, so no
-   * dispatch can observe a half-swapped home; a failed bind restores the prior home.
+   * dispatch can observe a half-swapped home. Any failure after the first credential
+   * change restores the prior credential; if that restore fails too, the backup is
+   * kept in the home and the account becomes `requires_reauth`, never left usable.
    */
   private async bind(attemptId: string, live: LiveAttempt, existing: AccountRow | undefined,
     read: { identity: string; email: string; planType: string | null; rateLimits: PersonalRateLimits | null }): Promise<void> {
@@ -448,7 +452,7 @@ export class PersonalCodexAccounts {
     let undo: (() => void) | null = null;
     // The UNIQUE identity index is the backstop; a failed bind leaves no new credential behind.
     try {
-      undo = this.installCredentials(live.ownerId, live.loginHome, existing !== undefined);
+      this.installCredentials(live.ownerId, live.loginHome, existing !== undefined, (fn) => { undo = fn; });
       this.db.transaction(() => {
         if (existing) {
           this.db.prepare(`UPDATE multiuser_agent_accounts SET status = 'connected', masked_identity = ?, plan_type = ?,
@@ -462,41 +466,54 @@ export class PersonalCodexAccounts {
         this.transition(attemptId, 'connected', null, 'link_complete');
       }).immediate();
     } catch {
-      undo?.();
+      const restore: (() => void) | null = undo;
+      try { restore?.(); } catch {
+        if (existing) this.recordProblem(live.ownerId, existing.id, 'reauth_required');
+      }
       await this.finalize(attemptId, 'failed', 'provider_error', 'link_fail');
       return;
     }
     this.live.delete(attemptId);
-    // A re-authorization leaves the login home behind, holding the replaced credential.
+    // The replaced credential is no longer needed once the bind committed.
+    fs.rmSync(this.credentialBackup(live.ownerId), { force: true });
     fs.rmSync(live.loginHome, { recursive: true, force: true });
   }
 
   /**
-   * Put a completed login's credential in place as the owner's CODEX_HOME and
-   * return its undo. A first link moves the whole login home in. A same-identity
-   * re-authorization swaps only the credential file, so the owner's native
-   * sessions (pinned by conversations) survive.
+   * Put a completed login's credential in place as the owner's CODEX_HOME. A first
+   * link moves the whole login home in. A same-identity re-authorization swaps only
+   * the credential file, so the owner's native sessions (pinned by conversations)
+   * survive. The undo is registered before the first change and reverses exactly
+   * the steps that happened, including when permission hardening fails.
    */
-  private installCredentials(ownerId: string, loginHome: string, reauthorization: boolean): () => void {
+  private installCredentials(ownerId: string, loginHome: string, reauthorization: boolean, setUndo: (undo: () => void) => void): void {
     const home = personalCodexHome(this.dataRoot, ownerId);
     if (!reauthorization) {
+      setUndo(() => fs.rmSync(home, { recursive: true, force: true }));
       fs.rmSync(home, { recursive: true, force: true });
       fs.renameSync(loginHome, home);
       lockDown(home);
-      return () => fs.rmSync(home, { recursive: true, force: true });
+      return;
     }
     privateDir(home);
     const current = path.join(home, CREDENTIAL_FILE);
-    const previous = path.join(loginHome, `${CREDENTIAL_FILE}.previous`);
+    // Kept inside the home, so cleaning the login staging directory can never delete it.
+    const backup = this.credentialBackup(ownerId);
     const hadPrevious = fs.existsSync(current);
-    if (hadPrevious) fs.renameSync(current, previous);
-    const undo = () => {
-      fs.rmSync(current, { force: true });
-      if (hadPrevious) fs.renameSync(previous, current);
-    };
-    try { fs.renameSync(path.join(loginHome, CREDENTIAL_FILE), current); } catch (error) { undo(); throw error; }
+    let backedUp = false;
+    let installed = false;
+    setUndo(() => {
+      if (installed) fs.rmSync(current, { force: true });
+      if (backedUp) fs.renameSync(backup, current);
+    });
+    if (hadPrevious) { fs.renameSync(current, backup); backedUp = true; }
+    fs.renameSync(path.join(loginHome, CREDENTIAL_FILE), current);
+    installed = true;
     lockDown(home);
-    return undo;
+  }
+
+  private credentialBackup(ownerId: string): string {
+    return path.join(personalCodexHome(this.dataRoot, ownerId), `${CREDENTIAL_FILE}.previous`);
   }
 
   private pastDeadline(attemptId: string): boolean {
