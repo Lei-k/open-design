@@ -20,6 +20,9 @@
 //   after the attempt is terminal.
 // - Each actor's CODEX_HOME derives from the resolved daemon data root, mode
 //   0700 (files 0600). Nothing is ever copied between homes.
+// - A re-authorization's prior home or credential is retained, under a durable
+//   record, until its replacement commits; restart and retries put it back, and
+//   unlink deletes every copy of the owner's state before the row.
 // - Every lookup is keyed by the server-side actor; a foreign id is "missing".
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -178,6 +181,19 @@ interface LiveAttempt {
 
 type InstallMode = 'link' | 'reauthorize' | 'switch';
 
+const ACCOUNT_COLUMNS = 'id, owner_account_id, provider, status, identity_hash, masked_identity, plan_type, '
+  + 'credential_version, last_problem, rate_limits_json, linked_at, verified_at, updated_at';
+const ACCOUNT_TABLE = `
+        id TEXT PRIMARY KEY,
+        owner_account_id TEXT NOT NULL CHECK (length(owner_account_id) > 0),
+        provider TEXT NOT NULL CHECK (provider IN ('codex')),
+        status TEXT NOT NULL CHECK (status IN ('connected','requires_reauth','disabled')),
+        identity_hash TEXT NOT NULL, masked_identity TEXT NOT NULL, plan_type TEXT,
+        credential_version INTEGER NOT NULL, last_problem TEXT, rate_limits_json TEXT,
+        linked_at INTEGER NOT NULL, verified_at INTEGER, updated_at INTEGER NOT NULL,
+        UNIQUE (owner_account_id, provider)
+      `;
+
 export interface UsablePersonalAccount { id: string; credentialVersion: number; codexHome: string }
 
 export class PersonalCodexAccounts {
@@ -207,17 +223,9 @@ export class PersonalCodexAccounts {
     this.command = input.appServerScript ? [process.execPath, input.appServerScript] : null;
     this.enabled = this.command !== null;
     this.now = input.clock ?? Date.now;
+    this.migrateIdentityUniqueness();
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS multiuser_agent_accounts (
-        id TEXT PRIMARY KEY,
-        owner_account_id TEXT NOT NULL CHECK (length(owner_account_id) > 0),
-        provider TEXT NOT NULL CHECK (provider IN ('codex')),
-        status TEXT NOT NULL CHECK (status IN ('connected','requires_reauth','disabled')),
-        identity_hash TEXT NOT NULL, masked_identity TEXT NOT NULL, plan_type TEXT,
-        credential_version INTEGER NOT NULL, last_problem TEXT, rate_limits_json TEXT,
-        linked_at INTEGER NOT NULL, verified_at INTEGER, updated_at INTEGER NOT NULL,
-        UNIQUE (owner_account_id, provider)
-      );
+      CREATE TABLE IF NOT EXISTS multiuser_agent_accounts (${ACCOUNT_TABLE});
       DROP TRIGGER IF EXISTS multiuser_agent_accounts_binding_immutable;
       CREATE TRIGGER multiuser_agent_accounts_binding_immutable
         BEFORE UPDATE OF owner_account_id, provider ON multiuser_agent_accounts
@@ -242,6 +250,14 @@ export class PersonalCodexAccounts {
         BEFORE UPDATE OF owner_account_id, provider ON multiuser_agent_login_attempts
         BEGIN SELECT RAISE(ABORT, 'login attempt binding is immutable'); END;
       CREATE TABLE IF NOT EXISTS multiuser_agent_account_config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      -- A prior home or credential set aside by a re-authorization that has not committed.
+      -- The bind transaction deletes the row, so its presence alone says the set-aside copy
+      -- is still the account's truth.
+      CREATE TABLE IF NOT EXISTS multiuser_agent_retained_state (
+        owner_account_id TEXT PRIMARY KEY CHECK (length(owner_account_id) > 0),
+        kind TEXT NOT NULL CHECK (kind IN ('home','credential')),
+        had_prior INTEGER NOT NULL CHECK (had_prior IN (0, 1)), created_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS multiuser_agent_account_audit (
         id INTEGER PRIMARY KEY AUTOINCREMENT, actor_account_id TEXT NOT NULL, target_account_id TEXT NOT NULL,
         provider TEXT NOT NULL, action TEXT NOT NULL, detail TEXT, ref_id TEXT, created_at INTEGER NOT NULL
@@ -256,6 +272,29 @@ export class PersonalCodexAccounts {
     this.identityKey = Buffer.from((this.db.prepare("SELECT value FROM multiuser_agent_account_config WHERE key = 'identity-key'")
       .get() as { value: string }).value, 'base64');
     this.recover();
+  }
+
+  /**
+   * Databases created before the one-identity-per-provider rule was dropped keep
+   * `UNIQUE (provider, identity_hash)`, which SQLite cannot drop in place. Rebuild
+   * the table once, in one transaction: same columns, rows and ids; only the
+   * per-owner uniqueness. Its triggers go with the old table and are recreated by
+   * the schema that follows. No other table references it by foreign key, and
+   * login attempts, runs and session pins refer to unchanged ids.
+   */
+  private migrateIdentityUniqueness(): void {
+    const indexes = this.db.prepare('PRAGMA index_list(multiuser_agent_accounts)').all() as
+      Array<{ name: string; unique: number; origin: string }>;
+    const legacy = indexes.some((index) => index.unique === 1 && index.origin === 'u' &&
+      (this.db.prepare(`PRAGMA index_info(${JSON.stringify(index.name)})`).all() as Array<{ name: string }>)
+        .map((column) => column.name).join(',') === 'provider,identity_hash');
+    if (!legacy) return;
+    this.db.transaction(() => {
+      this.db.exec(`CREATE TABLE multiuser_agent_accounts_next (${ACCOUNT_TABLE})`);
+      this.db.exec(`INSERT INTO multiuser_agent_accounts_next (${ACCOUNT_COLUMNS}) SELECT ${ACCOUNT_COLUMNS} FROM multiuser_agent_accounts`);
+      this.db.exec('DROP TABLE multiuser_agent_accounts');
+      this.db.exec('ALTER TABLE multiuser_agent_accounts_next RENAME TO multiuser_agent_accounts');
+    }).immediate();
   }
 
   setRunHooks(hooks: { cancelPersonalRuns: (ownerId: string) => Promise<void>; forgetNativeSessions?: (ownerId: string) => void }): void {
@@ -296,7 +335,7 @@ export class PersonalCodexAccounts {
   usableAccount(ownerId: string): UsablePersonalAccount | null {
     if (!this.enabled) return null;
     const row = this.accountRow(ownerId);
-    if (!row || row.status !== 'connected' || this.fenced(ownerId)) return null;
+    if (!row || row.status !== 'connected' || this.fenced(ownerId) || this.retained(ownerId)) return null;
     return { id: row.id, credentialVersion: row.credential_version, codexHome: personalCodexHome(this.dataRoot, ownerId) };
   }
 
@@ -468,6 +507,13 @@ export class PersonalCodexAccounts {
     const at = this.now();
     const limitsJson = rateLimits ? JSON.stringify(rateLimits) : null;
     const rollback: { undo: (() => void) | null } = { undo: null };
+    // A copy retained by an earlier failed re-authorization goes back in place first;
+    // if it cannot, nothing new is installed over it.
+    if (existing && !this.reconcileRetained(live.ownerId)) {
+      this.recordProblem(live.ownerId, existing.id, 'reauth_required');
+      await this.finalize(attemptId, 'failed', 'provider_error', 'link_fail');
+      return;
+    }
     // UNIQUE(owner, provider) is the backstop; a failed bind leaves no new credential behind.
     try {
       this.installCredentials(live.ownerId, live.loginHome, mode, (fn) => { rollback.undo = fn; });
@@ -488,6 +534,8 @@ export class PersonalCodexAccounts {
             plan_type, credential_version, rate_limits_json, linked_at, updated_at) VALUES (?, ?, 'codex', 'connected', ?, ?, ?, 1, ?, ?, ?)`)
             .run(randomUUID(), live.ownerId, identity, maskEmail(email), planType, limitsJson, at, at);
         }
+        // Committing the replacement is what retires the set-aside copy.
+        this.releaseRetained(live.ownerId);
         this.transition(attemptId, 'connected', null, 'link_complete');
       }).immediate();
     } catch {
@@ -498,9 +546,12 @@ export class PersonalCodexAccounts {
       return;
     }
     this.live.delete(attemptId);
-    // The replaced credential or home is no longer needed once the bind committed.
-    fs.rmSync(this.credentialBackup(live.ownerId), { force: true });
-    fs.rmSync(this.homeBackup(live.ownerId), { recursive: true, force: true });
+    // The replaced credential or home is obsolete once the bind committed; a copy that
+    // cannot be removed now is removed by the next reconciliation or unlink.
+    try {
+      fs.rmSync(this.credentialBackup(live.ownerId), { force: true });
+      fs.rmSync(this.homeBackup(live.ownerId), { recursive: true, force: true });
+    } catch { /* obsolete copy */ }
     fs.rmSync(live.loginHome, { recursive: true, force: true });
   }
 
@@ -525,14 +576,16 @@ export class PersonalCodexAccounts {
     }
     if (mode === 'switch') {
       const aside = this.homeBackup(ownerId);
-      fs.rmSync(aside, { recursive: true, force: true });
+      const hadHome = fs.existsSync(home);
+      this.retain(ownerId, 'home', hadHome);
       let setAside = false;
       let installed = false;
       setUndo(() => {
         if (installed) fs.rmSync(home, { recursive: true, force: true });
         if (setAside) fs.renameSync(aside, home);
+        this.releaseRetained(ownerId);
       });
-      if (fs.existsSync(home)) { fs.renameSync(home, aside); setAside = true; }
+      if (hadHome) { fs.renameSync(home, aside); setAside = true; }
       fs.renameSync(loginHome, home);
       installed = true;
       lockDown(home);
@@ -543,11 +596,13 @@ export class PersonalCodexAccounts {
     // Kept inside the home, so cleaning the login staging directory can never delete it.
     const backup = this.credentialBackup(ownerId);
     const hadPrevious = fs.existsSync(current);
+    this.retain(ownerId, 'credential', hadPrevious);
     let backedUp = false;
     let installed = false;
     setUndo(() => {
       if (installed) fs.rmSync(current, { force: true });
       if (backedUp) fs.renameSync(backup, current);
+      this.releaseRetained(ownerId);
     });
     if (hadPrevious) { fs.renameSync(current, backup); backedUp = true; }
     fs.renameSync(path.join(loginHome, CREDENTIAL_FILE), current);
@@ -558,6 +613,58 @@ export class PersonalCodexAccounts {
   /** Where a switch sets the previous home aside; beside the home, outside login staging. */
   private homeBackup(ownerId: string): string {
     return path.join(actorRuntimeDir(this.dataRoot, ownerId), 'codex-home.previous');
+  }
+
+  /** Durably note, before the first file change, that this owner's prior state is being set aside. */
+  private retain(ownerId: string, kind: 'home' | 'credential', hadPrior: boolean): void {
+    this.db.prepare('INSERT INTO multiuser_agent_retained_state (owner_account_id, kind, had_prior, created_at) VALUES (?, ?, ?, ?)')
+      .run(ownerId, kind, hadPrior ? 1 : 0, this.now());
+  }
+
+  private releaseRetained(ownerId: string): void {
+    this.db.prepare('DELETE FROM multiuser_agent_retained_state WHERE owner_account_id = ?').run(ownerId);
+  }
+
+  private retained(ownerId: string): { kind: 'home' | 'credential'; had_prior: number } | undefined {
+    return this.db.prepare('SELECT kind, had_prior FROM multiuser_agent_retained_state WHERE owner_account_id = ?')
+      .get(ownerId) as { kind: 'home' | 'credential'; had_prior: number } | undefined;
+  }
+
+  /**
+   * Put a retained prior state back before anything new is installed (on restart and
+   * on the next re-authorization). A retained record exists only while its replacement
+   * has not committed, so the set-aside copy is the account's truth: whatever stands
+   * in its place is an uncommitted replacement and goes. Without a record, any copy
+   * left beside the home belongs to a committed replacement and is obsolete. Returns
+   * false when the prior state cannot be put back; the retained copy then stays where
+   * it is and nothing is installed over it.
+   */
+  private reconcileRetained(ownerId: string): boolean {
+    const home = personalCodexHome(this.dataRoot, ownerId);
+    const aside = this.homeBackup(ownerId);
+    const backup = this.credentialBackup(ownerId);
+    const record = this.retained(ownerId);
+    try {
+      if (!record) {
+        fs.rmSync(aside, { recursive: true, force: true });
+        fs.rmSync(backup, { force: true });
+        return true;
+      }
+      const copy = record.kind === 'home' ? aside : backup;
+      const target = record.kind === 'home' ? home : path.join(home, CREDENTIAL_FILE);
+      if (fs.existsSync(copy)) {
+        fs.rmSync(target, { recursive: true, force: true });
+        fs.renameSync(copy, target);
+      } else if (record.had_prior === 0) {
+        // Nothing was set aside because nothing existed: the target is an uncommitted replacement.
+        fs.rmSync(target, { recursive: true, force: true });
+      }
+      // Otherwise the copy was never moved, or was already moved back: the target is the prior state.
+      this.releaseRetained(ownerId);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private credentialBackup(ownerId: string): string {
@@ -679,9 +786,18 @@ export class PersonalCodexAccounts {
         try { await client.initialize(); await client.request('account/logout', null, 3_000); } catch { /* deletion below is authoritative */ }
         await client.close();
       }
-      fs.rmSync(home, { recursive: true, force: true });
+      // Every copy of this owner's state goes before the row: the active home (with any
+      // retained credential inside it) and a home set aside by a failed switch.
+      try {
+        fs.rmSync(this.homeBackup(ownerId), { recursive: true, force: true });
+        fs.rmSync(home, { recursive: true, force: true });
+      } catch (error) {
+        this.recordProblem(ownerId, accountId, 'reauth_required');
+        throw error;
+      }
       this.db.transaction(() => {
         this.db.prepare('DELETE FROM multiuser_agent_accounts WHERE id = ? AND owner_account_id = ?').run(accountId, ownerId);
+        this.releaseRetained(ownerId);
         this.audit(ownerId, ownerId, 'unlink', null, accountId);
       })();
       return true;
@@ -703,6 +819,13 @@ export class PersonalCodexAccounts {
   private recover(): void {
     const pending = this.db.prepare("SELECT id FROM multiuser_agent_login_attempts WHERE status = 'pending'").all() as Array<{ id: string }>;
     for (const { id } of pending) this.transition(id, 'failed', 'interrupted', 'link_interrupted');
+    // Retained copies go back in place; copies left by a committed replacement go.
+    const owners = this.db.prepare(`SELECT owner_account_id AS id FROM multiuser_agent_retained_state
+      UNION SELECT owner_account_id FROM multiuser_agent_accounts`).all() as Array<{ id: string }>;
+    for (const { id } of owners) {
+      const account = this.accountRow(id);
+      if (!this.reconcileRetained(id) && account) this.recordProblem(id, account.id, 'reauth_required');
+    }
     const root = path.join(this.dataRoot, 'multiuser-runtime');
     if (!fs.existsSync(root)) return;
     for (const actor of fs.readdirSync(root)) {
