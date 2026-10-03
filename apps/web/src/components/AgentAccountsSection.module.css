@@ -1,0 +1,171 @@
+/* Settings → Agent accounts (#18). The global `.settings-section` supplies the
+   flex column, block gap and entrance animation; this module only styles the
+   provider cards. Tokens only, so the cards follow the Settings palette. */
+.intro,
+.hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.banner,
+.notice,
+.warning,
+.error {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.banner,
+.notice {
+  background: var(--bg-panel);
+  color: var(--text);
+}
+
+.warning {
+  background: var(--amber-bg);
+  color: var(--text);
+}
+
+.error {
+  background: var(--red-bg);
+  border: 1px solid var(--red-border);
+  color: var(--text);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+}
+
+.card[aria-disabled='true'] {
+  opacity: 0.7;
+}
+
+.cardHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.cardTitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+/* Personal vs company pool must read as distinct at a glance. */
+.badge {
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.status {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.status[data-status='connected'] {
+  color: var(--green);
+}
+
+.status[data-status='requires_reauth'],
+.status[data-status='disabled'] {
+  color: var(--amber);
+}
+
+.pending {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.link {
+  align-self: flex-start;
+  color: var(--accent);
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.codeRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.code {
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--text-strong);
+}
+
+.waiting {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-soft);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px 16px;
+  margin: 0;
+}
+
+.facts dt {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.facts dd {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
