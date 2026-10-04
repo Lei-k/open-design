@@ -39,8 +39,10 @@ Registry: `apps/daemon/src/http/multiuser-route-classes.ts` (declarative, one re
 | --- | --- |
 | `public-probe` | no session; liveness/readiness/version only |
 | `auth` | the auth registrar enforces its own session/admin checks and hardening |
-| `admin-only` | session + persisted `admin` role (no entries yet; reserved for #10) |
+| `admin-only` | session + persisted `admin` role (test pool operations only) |
 | `owner-scoped-project` | session + the declared project param must be owned by the actor; **no admin override** |
+| `owner-scoped-run` | session + the immutable run owner is verified before the handler; no admin override |
+| `owner-scoped-agent-account` | session + the declared login-attempt / linked-account param must be the actor's own (#18); foreign and forged ids are the same 404; no admin override |
 | `actor-scoped` | session; the handler scopes to the actor (list filter / create bind) |
 | `blocked-in-multiuser` | denied to everyone, admins included |
 | `middleware` | non-terminal `app.use` entry; never authorizes |
@@ -53,12 +55,15 @@ Coverage: the string inventory, routes registered with a RegExp or a path array,
 - Auth: `/api/auth/*` (bootstrap, login, logout, me, session rotate, password, admin user management).
 - Projects: `GET /api/projects` (the actor's own only), `POST /api/projects`, `GET|PATCH|DELETE /api/projects/:id`.
 - Conversations: `GET|POST /api/projects/:id/conversations`, `GET /api/projects/:id/conversations/:cid/messages`.
+- Test mock runs: `POST|GET /api/runs`, `GET /api/runs/:id`, `GET /api/runs/:id/events`, `POST /api/runs/:id/cancel` (see `web-multiuser-run-isolation.md`).
+- Admin pool operations: `GET /api/admin/pool`, `PUT /api/admin/pool/providers/:providerId`, `PUT /api/admin/pool/users/:id/quota` (see `web-multiuser-pool.md`).
+- Personal subscription accounts (#18, test-only, default off): `GET /api/agent-accounts`, `POST /api/agent-accounts/codex/logins`, `GET /api/agent-accounts/codex/logins/:attemptId`, `POST /api/agent-accounts/codex/logins/:attemptId/cancel`, `POST /api/agent-accounts/codex/accounts/:accountId/verify`, `DELETE /api/agent-accounts/codex/accounts/:accountId`; admin metadata `GET /api/admin/agent-accounts` and `PUT /api/admin/agent-accounts/personal-capacity` (see `web-multiuser-personal-subscription.md`). Startup also refuses when the personal-account ownership lookup is not attached.
 
 Project create/patch body policy: only `id`, `name`, `metadata`, `pendingPrompt`, `customInstructions`, `skipDiscoveryBrief`, `conversationMode`/`sessionMode` and `automaticStrategyTaskProfile` (create); `name`, `metadata`, `pendingPrompt` and `customInstructions` (patch). `metadata` may carry only descriptive keys, and `kind` must be one of prototype, deck, other, image, video or audio. Refused fields include host paths (`linkedDirs`, `baseDir`, project locations), templates, plugins, skills and design systems.
 
 ### Blocked (everything else), by reason
 
-Agent execution (runs, chat, automations, routines, media generation), agent tool-token endpoints, and SSE/event streams. Project file/preview/export/upload planes, including the regex preview/raw/powered routes, plus terminals, browser sessions, deploy, collab and presence. Static mounts (`/artifacts`, `/frames`, plugin previews) and the SPA shell. Host filesystem and desktop integration: folder import, native dialogs, project locations, recent dirs, open-external. Connector/MCP/OAuth/provider credentials and provider proxies. Daemon status/db/shutdown/diagnostics. Global app config and memory. Shared catalogs whose user entries are global: skills, design systems, templates, plugins, marketplaces. Vela workspace features.
+Real-provider execution and all execution routes outside the test mock run set above, agent tool-token endpoints, and other SSE/event streams. Project file/preview/export/upload planes, including the regex preview/raw/powered routes, plus terminals, browser sessions, deploy, collab and presence. Static mounts (`/artifacts`, `/frames`, plugin previews) and the SPA shell. Host filesystem and desktop integration: folder import, native dialogs, project locations, recent dirs, open-external. Connector/MCP/OAuth/provider credentials and provider proxies. Daemon status/db/shutdown/diagnostics. Global app config and memory. Shared catalogs whose user entries are global: skills, design systems, templates, plugins, marketplaces. Vela workspace features.
 
 ## Project ownership (#3)
 
@@ -69,10 +74,10 @@ Agent execution (runs, chat, automations, routines, media generation), agent too
 
 ## Known gaps (not done here)
 
-- **#5 run isolation**: every execution surface is blocked. No per-user filesystem or session isolation exists yet.
-- **SSE/static/preview scoping**: project events, run events, file/preview/raw/export routes and static mounts stay blocked until they are provably actor-scoped.
-- **#10 admin API/UX**: only the #2 account management routes exist. `admin-only` has no entries, and admins have no project-content view by design.
-- **#11 pool + quota**: no scheduling, reservations or ledger are wired. Provider access stays blocked.
+- **#5 run isolation**: the test-only mock run proof is documented in `web-multiuser-run-isolation.md`; real provider execution and every other execution surface remain blocked.
+- **SSE/static/preview scoping**: project and other event streams, file/preview/raw/export routes and static mounts stay blocked until they are provably actor-scoped. The test mock run event stream is owner-scoped.
+- **#10 admin API/UX**: account management routes and test pool operations exist, but no admin UI exists; admins have no project-content view by design.
+- **#11 pool + quota**: the test-mock queue and ledger are wired; real provider enrollment and credential isolation remain blocked.
 - **#6 Web UX**: no login UI and no SPA shell in multi-user mode.
 - **#7/#8 deployment gate**: loopback-only bind, no TLS/proxy/rate-limit/backup work. The origin allowlist is exercised only in tests.
 - Residual: `POST /api/projects` with a client-chosen id that already exists fails with a conflict. That reveals the id exists, but ids are client-generated UUIDs. `GET /api/projects/:id` still returns the daemon-side `resolvedDir`.

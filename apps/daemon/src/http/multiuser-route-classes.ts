@@ -10,14 +10,17 @@
 //   admin-only            session + persisted role === 'admin'
 //   owner-scoped-project  session + the `projectParam` route param must be a project
 //                         the actor owns (checked BEFORE the handler); no admin override
+//   owner-scoped-run      session + immutable run owner verified before the handler
+//   owner-scoped-agent-account  session + the actor's own personal login attempt /
+//                         linked account id verified before the handler (#18)
 //   actor-scoped          session; the handler scopes to the actor (list filter/create bind)
 //   blocked-in-multiuser  denied to everyone, including admins, with the stated reason
 //   middleware            a non-terminal `app.use` entry; never authorizes a request
 //
 // Anything that matches no entry is unclassified and fails closed (404), and
 // multi-user startup refuses when the live inventory contains a route missing
-// from this table. Being conservative is intentional: this slice allows only
-// auth, probes, project CRUD and project conversations list/create/messages.
+// from this table. This slice allows auth, probes, project/conversation access,
+// and the isolated test-mock run routes only.
 //
 // Keys are `METHOD path` exactly as registered. The matcher below supports the
 // Express 5 string syntax actually used by the inventory (`:param`, a final
@@ -28,6 +31,8 @@ export type MultiUserRouteClass =
   | 'auth'
   | 'admin-only'
   | 'owner-scoped-project'
+  | 'owner-scoped-run'
+  | 'owner-scoped-agent-account'
   | 'actor-scoped'
   | 'blocked-in-multiuser'
   | 'middleware';
@@ -45,6 +50,9 @@ export interface MultiUserRouteClassification {
   reason: string;
   /** Route param holding the project id (owner-scoped-project only). */
   projectParam?: string;
+  runParam?: string;
+  /** Route param holding a personal login attempt or linked account id (owner-scoped-agent-account only). */
+  agentAccountParam?: 'attemptId' | 'accountId';
   /** Post-parse body policy enforced by the gate. */
   bodyPolicy?: MultiUserBodyPolicy;
   /**
@@ -60,7 +68,7 @@ export function routeKey(method: string, path: string): string {
   return `${method.toUpperCase()} ${path}`;
 }
 
-type EntryExtras = Pick<MultiUserRouteClassification, 'projectParam' | 'bodyPolicy' | 'nonStringPath' | 'catchAll'>;
+type EntryExtras = Pick<MultiUserRouteClassification, 'projectParam' | 'runParam' | 'agentAccountParam' | 'bodyPolicy' | 'nonStringPath' | 'catchAll'>;
 
 function group(
   routeClass: MultiUserRouteClass,
@@ -89,7 +97,7 @@ function nonStringBlocked(
 // ---- reasons ----------------------------------------------------------------
 
 const R_NOT_MINIMUM = 'outside the minimum allowed set for this slice; revisit with the multi-user Web UX (#6)';
-const R_RUNS = 'agent execution requires run isolation (#5) and the shared pool/quota (#11)';
+const R_RUNS = 'real provider execution requires the shared pool/quota (#11) and an approved credential supply';
 const R_TOOL_TOKENS = 'agent tool endpoint authorized by run-scoped tool tokens, not accounts; blocked until run isolation (#5)';
 const R_HOST_FS = 'host filesystem / desktop integration; not an actor resource';
 const R_CREDENTIALS = 'connector/MCP/OAuth/provider credentials are host-level secrets; admin/pool surfaces are #10/#11';
@@ -303,15 +311,42 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
   ),
 
   // Execution --------------------------------------------------------------------
-  ...blocked(R_RUNS, [
-    'POST /api/chat',
+  ...group('admin-only', 'aggregate pool operations; no project or run content', [
+    'GET /api/admin/pool',
+    'PUT /api/admin/pool/providers/:providerId',
+    'PUT /api/admin/pool/users/:id/quota',
+  ]),
+  ...group('actor-scoped', 'test mock only; create binds the trusted actor, owned managed project and conversation in one SQLite insert', [
     'POST /api/runs',
     'GET /api/runs',
+  ]),
+  ...group('owner-scoped-run', 'gate and handler verify immutable run owner and project before lookup, stream or cancellation; no admin override', [
+    'GET /api/runs/:id',
+    'GET /api/runs/:id/events',
+    'POST /api/runs/:id/cancel',
+  ], { runParam: 'id' }),
+  // Personal subscription accounts (#18): the actor's own provider link only.
+  ...group('actor-scoped', 'personal subscription summary and login start; the handler keys every lookup by the actor', [
+    'GET /api/agent-accounts',
+    'POST /api/agent-accounts/codex/logins',
+  ]),
+  ...group('owner-scoped-agent-account', 'login attempt must belong to the actor (gate check before the handler); foreign and forged ids are the same 404; no admin override', [
+    'GET /api/agent-accounts/codex/logins/:attemptId',
+    'POST /api/agent-accounts/codex/logins/:attemptId/cancel',
+  ], { agentAccountParam: 'attemptId' }),
+  ...group('owner-scoped-agent-account', 'linked account must be the actor\'s own (gate check before the handler); admins cannot verify, use or unlink it', [
+    'POST /api/agent-accounts/codex/accounts/:accountId/verify',
+    'DELETE /api/agent-accounts/codex/accounts/:accountId',
+  ], { agentAccountParam: 'accountId' }),
+  ...group('admin-only', 'personal subscription metadata (linked, status, timestamps, worker time) and the host-wide personal worker ceiling; no identity or secrets', [
+    'GET /api/admin/agent-accounts',
+    'PUT /api/admin/agent-accounts/personal-capacity',
+  ]),
+  ...blocked(R_RUNS, [
+    'POST /api/chat',
     'GET /api/runs/by-plugin-workflow/:workflowId',
     'GET /api/runs/:id/result-package',
-    'GET /api/runs/:id',
     'GET /api/runs/:id/agui',
-    'POST /api/runs/:id/cancel',
     'POST /api/runs/:id/steer',
     'POST /api/runs/:id/feedback',
     'GET /api/runs/:runId/genui',
@@ -345,7 +380,6 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'POST /api/plugins/share-tasks/:id/wait',
   ]),
   ...blocked(R_SSE, [
-    'GET /api/runs/:id/events',
     'GET /api/library/events',
     'GET /api/memory/events',
     'GET /api/workspace/events',

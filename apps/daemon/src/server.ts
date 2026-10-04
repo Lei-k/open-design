@@ -937,6 +937,9 @@ import { EmptyTranscriptError, synthesizeHandoffPrompt } from './design/index.js
 import { TranscriptExportLockedError } from './transcript-export.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerRunRoutes } from './routes/runs.js';
+import { registerMultiUserRunRoutes } from './routes/multiuser-runs.js';
+import { registerMultiUserAgentAccountRoutes } from './routes/multiuser-agent-accounts.js';
+import { PersonalCodexAccounts } from './services/personal-codex-accounts.js';
 import { registerStrategyRolloutRoutes } from './routes/strategy-rollout.js';
 import { registerTerminalRoutes } from './routes/terminal.js';
 import { registerBrowserSessionRoutes } from './routes/browser-sessions.js';
@@ -3164,7 +3167,7 @@ export async function startServer({
   host = normalizeDaemonBindHost(host);
   // Resolved once, before any side effect: null (single-user, the default)
   // or a validated multi-user configuration. Refusals throw here.
-  const multiUserMode = resolveMultiUserMode({ options: multiUser, env: process.env, host });
+  const multiUserMode = resolveMultiUserMode({ options: multiUser, env: process.env, host, repositoryRoot: PROJECT_ROOT });
   let resolvedPort = port;
   let daemonShuttingDown = false;
   const extraAllowedOrigins = [
@@ -8289,7 +8292,10 @@ export async function startServer({
     res.json({
       version: {
         ...version,
-        capabilities: { slideRenderer: typeof desktopSlideRenderer === 'function' },
+        capabilities: {
+          slideRenderer: typeof desktopSlideRenderer === 'function',
+          ...(multiUserMode ? { multiUser: true as const } : {}),
+        },
       },
     });
   });
@@ -17507,6 +17513,32 @@ export async function startServer({
     };
   });
 
+  // Personal subscription accounts (#18): always mounted in multi-user mode,
+  // enabled only when the test harness injected the repository mock app-server.
+  const personalCodex = multiUserMode ? new PersonalCodexAccounts({
+    db, dataRoot: RUNTIME_DATA_DIR,
+    ...(multiUserMode.personalCodexAppServer ? { appServerScript: multiUserMode.personalCodexAppServer } : {}),
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
+  }) : null;
+  const multiUserRuns = multiUserMode ? registerMultiUserRunRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
+    ...(multiUserMode.testMockAgentScript ? { mockAgentScript: multiUserMode.testMockAgentScript } : {}),
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
+    ...(personalCodex ? { personal: personalCodex } : {}),
+  }) : null;
+  if (multiUserRuns) multiUserFront?.setCancelAccountRuns((accountId) => {
+    multiUserRuns.cancelAccountRuns(accountId);
+    personalCodex?.cancelPendingFor(accountId).catch(() => {});
+  });
+  if (multiUserRuns) multiUserFront?.setIsRunOwner(multiUserRuns.isRunOwner);
+  if (multiUserRuns && personalCodex) {
+    personalCodex.setRunHooks({ cancelPersonalRuns: multiUserRuns.cancelPersonalRuns,
+      forgetNativeSessions: multiUserRuns.forgetNativeSessions });
+    multiUserFront?.setIsAgentAccountOwner((param, id, accountId) => personalCodex.isOwner(param, id, accountId));
+    registerMultiUserAgentAccountRoutes(app, {
+      personal: personalCodex, runs: multiUserRuns.personalLane, listAccountIds: multiUserRuns.listAccountIds,
+    });
+  }
   registerRunRoutes(app, {
     db,
     design,
@@ -18124,11 +18156,18 @@ export async function startServer({
       collabPublishWatcher.dispose();
       collabCloud?.dispose();
       multiUserFront?.close();
+      void personalCodex?.shutdown();
+      void multiUserRuns?.shutdown();
     };
     const shutdownDaemonRuns = async () => {
       if (daemonShutdownStarted) return;
       daemonShutdownStarted = true;
       daemonShuttingDown = true;
+      if (multiUserRuns) {
+        multiUserRuns.beginShutdown();
+        await personalCodex?.shutdown();
+        await multiUserRuns.shutdown();
+      }
       amrTerminalReportDelivery.stop();
       clearTerminalTelemetryFallbackTimers();
       const shutdownGraceMs = resolveChatRunShutdownGraceMs();

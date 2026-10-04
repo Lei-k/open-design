@@ -1,0 +1,308 @@
+// Issue #18 — personal-subscription run lane. Personal runs execute through the
+// owner's own CODEX_HOME (repository mock app-server), use a separate queue,
+// never consume company-pool slots or the 30h company ledger, and never fall
+// back to the company pool.
+import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import Database from 'better-sqlite3';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import {
+  cleanupIsolatedDataRoot, loadIsolatedServerModule, login, multiUserOptions, provisionAccounts,
+  startMultiUserDaemon, type Principal, type StartedMultiUserDaemon,
+} from './multiuser-harness.js';
+import { PERSONAL_CODEX_MOCK, RUN_MOCK, codexHome, linkCodex, looseModes, setTurnMode, summary, until } from './personal-codex-helpers.js';
+
+let daemon: StartedMultiUserDaemon;
+let dataRoot: string;
+let admin: Principal;
+let alice: Principal;
+let bob: Principal;
+let carol: Principal;
+let dave: Principal;
+let clock = Date.now();
+const projects = new Map<string, { id: string; conversationId: string }>();
+/** Company-pool runs use their own conversations: a personal run pins its conversation's source. */
+const companyProjects = new Map<string, { id: string; conversationId: string }>();
+const options = () => multiUserOptions({ testMockAgentScript: RUN_MOCK, testPersonalCodexAppServer: PERSONAL_CODEX_MOCK,
+  poolClock: () => clock });
+
+async function newProject(user: Principal) {
+  const id = randomUUID();
+  const res = await daemon.request({ method: 'POST', path: '/api/projects', cookie: user.cookie, body: { id, name: id } });
+  expect(res.status, res.text).toBe(200);
+  return { id, conversationId: res.json.conversationId as string };
+}
+function personal(user: Principal, message: string, project = projects.get(user.id)!) {
+  return daemon.request({ method: 'POST', path: '/api/runs', cookie: user.cookie, body: {
+    projectId: project.id, conversationId: project.conversationId, agentId: 'codex', executionSource: 'personal_subscription', message } });
+}
+function company(user: Principal, message: string, delayMs = 0, project = companyProjects.get(user.id)!) {
+  return daemon.request({ method: 'POST', path: '/api/runs', cookie: user.cookie, body: {
+    projectId: project.id, conversationId: project.conversationId, agentId: 'test-mock', message, delayMs } });
+}
+async function detail(user: Principal, id: string) {
+  const res = await daemon.request({ path: `/api/runs/${id}`, cookie: user.cookie });
+  expect(res.status, res.text).toBe(200);
+  return res.json;
+}
+const finished = (user: Principal, id: string) => until(() => detail(user, id), (run) => !['queued', 'running'].includes(run.status), `run ${id}`);
+async function personalCapacity(capacity: number) {
+  const res = await daemon.request({ method: 'PUT', path: '/api/admin/agent-accounts/personal-capacity', cookie: admin.cookie, body: { capacity } });
+  expect(res.status, res.text).toBe(200);
+}
+async function companyCapacity(capacity: number) {
+  const res = await daemon.request({ method: 'PUT', path: '/api/admin/pool/providers/test-mock', cookie: admin.cookie, body: { capacity } });
+  expect(res.status, res.text).toBe(200);
+}
+function ledgerRow(runId: string) {
+  const db = new Database(path.join(dataRoot, 'worker-quota', 'worker-quota.sqlite'));
+  try { return db.prepare('SELECT * FROM quota_runs WHERE run_id = ?').get(runId); } finally { db.close(); }
+}
+
+beforeAll(async () => {
+  delete process.env.OD_API_TOKEN;
+  delete process.env.OD_DISABLE_API_AUTH;
+  ({ dataRoot } = await loadIsolatedServerModule());
+  daemon = await startMultiUserDaemon(options());
+  const accounts = await provisionAccounts(daemon, ['prun-alice', 'prun-bob', 'prun-carol', 'prun-dave']);
+  admin = accounts.admin;
+  [alice, bob, carol, dave] = accounts.users as [Principal, Principal, Principal, Principal];
+  for (const [user, email] of [[alice, 'alice@example.com'], [bob, 'bob@example.com'], [carol, 'carol@example.com']] as const) {
+    await linkCodex(daemon, dataRoot, user, email);
+  }
+  for (const user of [alice, bob, carol, dave]) {
+    projects.set(user.id, await newProject(user));
+    companyProjects.set(user.id, await newProject(user));
+  }
+}, 120_000);
+
+afterEach(async () => {
+  await personalCapacity(4);
+  for (const user of [alice, bob, carol, dave]) {
+    const list = await daemon.request({ path: '/api/runs', cookie: user.cookie });
+    for (const run of (list.json?.runs ?? []) as Array<{ id: string; status: string }>) {
+      if (run.status === 'queued' || run.status === 'running') {
+        await daemon.request({ method: 'POST', path: `/api/runs/${run.id}/cancel`, cookie: user.cookie });
+      }
+    }
+  }
+});
+
+afterAll(async () => { await daemon?.close(); cleanupIsolatedDataRoot(); });
+
+describe('personal subscription run lane', () => {
+  it('runs each user only through their own CODEX_HOME with an explicit environment', async () => {
+    process.env.MULTIUSER_TEST_API_KEY = 'PLANTED_HOST_SECRET';
+    try {
+      const [a, b] = await Promise.all([personal(alice, 'alice-private [mock-delay-ms=200]'), personal(bob, 'bob-private [mock-delay-ms=200]')]);
+      expect(a.status, a.text).toBe(202);
+      expect(b.status, b.text).toBe(202);
+      expect(a.json.run).toMatchObject({ agentId: 'codex', executionSource: 'personal_subscription' });
+      for (const [user, res, home, other] of [[alice, a, codexHome(dataRoot, alice.id), 'bob-private'], [bob, b, codexHome(dataRoot, bob.id), 'alice-private']] as const) {
+        const run = await finished(user, res.json.run.id);
+        expect(run.status, JSON.stringify(run)).toBe('succeeded');
+        const reply = JSON.parse(run.output.text);
+        expect(reply.codexHome).toBe(home);
+        expect(reply.cwd).toBe(path.join(dataRoot, 'projects', projects.get(user.id)!.id));
+        expect(reply.envKeys).toEqual(['CODEX_HOME', 'HOME', 'OD_DATA_DIR', 'TEMP', 'TMP', 'TMPDIR']);
+        expect(reply.home).not.toBe(home);
+        const events = await daemon.request({ path: `/api/runs/${res.json.run.id}/events`, cookie: user.cookie });
+        expect(events.text).not.toContain(other);
+        // Files the provider child wrote into the home are re-locked to 0600 / 0700.
+        expect(existsSync(path.join(home, 'sessions'))).toBe(true);
+        expect(looseModes(home)).toEqual([]);
+      }
+    } finally { delete process.env.MULTIUSER_TEST_API_KEY; }
+  });
+
+  it('is not charged to the company ledger and does not consume company slots or quota', async () => {
+    await companyCapacity(0);
+    const quota = await daemon.request({ method: 'PUT', path: `/api/admin/pool/users/${alice.id}/quota`, cookie: admin.cookie, body: { budgetMinutes: 0 } });
+    expect(quota.status).toBe(200);
+    const exhausted = await company(alice, 'company-blocked');
+    expect(exhausted.status).toBe(429);
+    const before = (await daemon.request({ path: '/api/admin/pool', cookie: admin.cookie })).json;
+    const run = await personal(alice, 'personal-while-company-exhausted');
+    expect(run.status, run.text).toBe(202);
+    expect((await finished(alice, run.json.run.id)).status).toBe('succeeded');
+    expect(ledgerRow(run.json.run.id)).toBeUndefined();
+    const after = (await daemon.request({ path: '/api/admin/pool', cookie: admin.cookie })).json;
+    expect(after.users[alice.id].usedMs).toBe(before.users[alice.id].usedMs);
+    expect(after.providers['test-mock']).toEqual(before.providers['test-mock']);
+    const personalView = (await daemon.request({ path: '/api/admin/agent-accounts', cookie: admin.cookie })).json;
+    expect(personalView.users[alice.id].personalWorkerMs).toBeGreaterThanOrEqual(0);
+    expect((await daemon.request({ method: 'PUT', path: `/api/admin/pool/users/${alice.id}/quota`, cookie: admin.cookie,
+      body: { budgetMinutes: 1_800 } })).status).toBe(200);
+
+    // The same user may hold one company run and one personal run at once.
+    await companyCapacity(1);
+    const c = await company(alice, 'company-concurrent', 1500);
+    const p = await personal(alice, 'personal-concurrent [mock-delay-ms=800]');
+    expect((await until(() => detail(alice, p.json.run.id), (r) => r.status === 'running', 'personal running')).status).toBe('running');
+    expect((await detail(alice, c.json.run.id)).status).toBe('running');
+    expect((await finished(alice, p.json.run.id)).status).toBe('succeeded');
+  });
+
+  it('enforces per-user personal limits independently of the company queue', async () => {
+    await personalCapacity(0);
+    await companyCapacity(0);
+    const queued: string[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const res = await personal(alice, `personal-q${i}`);
+      expect(res.status, res.text).toBe(202);
+      expect(res.json.run).toMatchObject({ status: 'queued', queuePosition: i + 1 });
+      queued.push(res.json.run.id);
+    }
+    const full = await personal(alice, 'personal-q3');
+    expect(full.status).toBe(409);
+    expect(full.json.error.code).toBe('MULTIUSER_PERSONAL_QUEUE_LIMIT');
+    const companyRun = await company(alice, 'company-still-accepted');
+    expect(companyRun.status).toBe(202);
+    expect(companyRun.json.run.executionSource).toBeUndefined();
+    await personalCapacity(4);
+    const first = await until(() => detail(alice, queued[0]!), (r) => r.status !== 'queued', 'first dispatch');
+    expect(['running', 'succeeded']).toContain(first.status);
+    // One active personal run per user even with free host capacity.
+    if (first.status === 'running') expect((await detail(alice, queued[1]!)).status).toBe('queued');
+  });
+
+  it('applies the host-wide ceiling and dispatches round-robin across users', async () => {
+    await personalCapacity(0);
+    // Start from an empty rotation so the expected order is fully determined.
+    const db = new Database(path.join(dataRoot, 'app.sqlite'));
+    try { db.prepare('DELETE FROM multiuser_personal_turns').run(); } finally { db.close(); }
+    const a1 = (await personal(alice, 'A1 [mock-delay-ms=300]')).json.run.id;
+    const a2 = (await personal(alice, 'A2 [mock-delay-ms=300]')).json.run.id;
+    const b1 = (await personal(bob, 'B1 [mock-delay-ms=300]')).json.run.id;
+    const c1 = (await personal(carol, 'C1 [mock-delay-ms=300]')).json.run.id;
+    await personalCapacity(1);
+    expect((await detail(alice, a1)).status).toBe('running');
+    expect((await detail(bob, b1)).status).toBe('queued');
+    await finished(alice, a1);
+    expect((await until(() => detail(bob, b1), (r) => r.status !== 'queued', 'B1')).status).not.toBe('queued');
+    expect((await detail(carol, c1)).status).toBe('queued');
+    await finished(bob, b1);
+    expect((await until(() => detail(carol, c1), (r) => r.status !== 'queued', 'C1')).status).not.toBe('queued');
+    expect((await detail(alice, a2)).status).toBe('queued');
+    const view = (await daemon.request({ path: '/api/admin/agent-accounts', cookie: admin.cookie })).json;
+    expect(view.personalWorkerCapacity).toBe(1);
+  });
+
+  it('never falls back to the company pool when the personal account is unusable', async () => {
+    await companyCapacity(1);
+    const before = (await daemon.request({ path: '/api/runs', cookie: dave.cookie })).json.runs.length;
+    const none = await personal(dave, 'no-account');
+    expect(none.status).toBe(409);
+    expect(none.json.error.code).toBe('MULTIUSER_PERSONAL_UNAVAILABLE');
+    expect((await daemon.request({ path: '/api/runs', cookie: dave.cookie })).json.runs).toHaveLength(before);
+    const wrongAgent = await daemon.request({ method: 'POST', path: '/api/runs', cookie: dave.cookie, body: {
+      projectId: projects.get(dave.id)!.id, conversationId: projects.get(dave.id)!.conversationId, agentId: 'test-mock',
+      executionSource: 'personal_subscription', message: 'x' } });
+    expect(wrongAgent.status).toBe(403);
+    expect(wrongAgent.json.error.code).toBe('MULTIUSER_AGENT_FORBIDDEN');
+    const realCompany = await daemon.request({ method: 'POST', path: '/api/runs', cookie: dave.cookie, body: {
+      projectId: projects.get(dave.id)!.id, conversationId: projects.get(dave.id)!.conversationId, agentId: 'codex',
+      executionSource: 'company_pool', message: 'x' } });
+    expect(realCompany.status).toBe(403);
+    expect(realCompany.json.error.code).toBe('MULTIUSER_AGENT_FORBIDDEN');
+  });
+
+  it('keeps follow-ups on the same native session and refuses a source or account switch', async () => {
+    const convo = await newProject(alice);
+    const one = await personal(alice, 'turn-one', convo);
+    const first = JSON.parse((await finished(alice, one.json.run.id)).output.text);
+    expect(first.turnsInThread).toBe(1);
+    const two = await personal(alice, 'turn-two', convo);
+    const second = JSON.parse((await finished(alice, two.json.run.id)).output.text);
+    expect(second.threadId).toBe(first.threadId);
+    expect(second.turnsInThread).toBe(2);
+    const switched = await company(alice, 'switch-source', 0, convo);
+    expect(switched.status).toBe(409);
+    expect(switched.json.error.code).toBe('MULTIUSER_EXECUTION_SOURCE_MISMATCH');
+    // Bob cannot address alice's personal run.
+    for (const suffix of ['', '/events']) {
+      const hidden = await daemon.request({ path: `/api/runs/${two.json.run.id}${suffix}`, cookie: bob.cookie });
+      const missing = await daemon.request({ path: `/api/runs/${randomUUID()}${suffix}`, cookie: bob.cookie });
+      expect(hidden.status).toBe(404);
+      expect(hidden.json).toEqual(missing.json);
+    }
+  });
+
+  it('maps usage limit and expired auth on a run without switching source', async () => {
+    setTurnMode(dataRoot, bob, { turn: 'usage-limit' });
+    const limited = await personal(bob, 'limited');
+    expect(await finished(bob, limited.json.run.id)).toMatchObject({ status: 'failed', output: { reason: 'MULTIUSER_PERSONAL_USAGE_LIMIT' } });
+    expect((await summary(daemon, bob)).codex.account).toMatchObject({ status: 'connected', lastProblem: 'usage_limit_reached' });
+    expect(ledgerRow(limited.json.run.id)).toBeUndefined();
+    setTurnMode(dataRoot, bob, { turn: 'auth-invalid' });
+    const invalid = await personal(bob, 'invalid');
+    expect(await finished(bob, invalid.json.run.id)).toMatchObject({ status: 'failed', output: { reason: 'MULTIUSER_PERSONAL_REAUTH_REQUIRED' } });
+    expect((await summary(daemon, bob)).codex.account).toMatchObject({ status: 'requires_reauth' });
+    const next = await personal(bob, 'after-reauth-needed');
+    expect(next.status).toBe(409);
+    expect(next.json.error.code).toBe('MULTIUSER_PERSONAL_UNAVAILABLE');
+    const runs = (await daemon.request({ path: '/api/runs', cookie: bob.cookie })).json.runs as Array<{ agentId: string }>;
+    expect(runs.filter((run) => run.agentId === 'test-mock')).toHaveLength(0);
+  });
+
+  it('cancels a user\'s personal runs on unlink and revocation, leaving others intact', async () => {
+    await personalCapacity(4);
+    await companyCapacity(1);
+    const active = (await personal(carol, 'carol-active [mock-delay-ms=3000]')).json.run.id;
+    const queued = (await personal(carol, 'carol-queued')).json.run.id;
+    const carolCompany = (await company(carol, 'carol-company', 1500)).json.run.id;
+    const alicePersonal = (await personal(alice, 'alice-keeps [mock-delay-ms=600]')).json.run.id;
+    await until(() => detail(carol, active), (r) => r.status === 'running', 'carol active');
+    const account = (await summary(daemon, carol)).codex.account;
+    const unlink = await daemon.request({ method: 'DELETE', path: `/api/agent-accounts/codex/accounts/${account.id}`, cookie: carol.cookie });
+    expect(unlink.status, unlink.text).toBe(200);
+    expect((await detail(carol, active)).status).toBe('canceled');
+    expect((await detail(carol, queued)).status).toBe('canceled');
+    expect(existsSync(codexHome(dataRoot, carol.id))).toBe(false);
+    expect(existsSync(path.join(codexHome(dataRoot, alice.id), 'auth.json'))).toBe(true);
+    expect((await finished(alice, alicePersonal)).status).toBe('succeeded');
+    expect(['running', 'succeeded']).toContain((await detail(carol, carolCompany)).status);
+
+    // Relinking gives a new account: the old native session is not reused.
+    await linkCodex(daemon, dataRoot, carol, 'carol@example.com');
+    const convo = projects.get(carol.id)!;
+    const blocked = await personal(carol, 'old-thread', convo);
+    expect(blocked.status).toBe(409);
+    expect(blocked.json.error.code).toBe('MULTIUSER_EXECUTION_SOURCE_MISMATCH');
+
+    const fresh = await newProject(carol);
+    const pending = (await personal(carol, 'revoke-me [mock-delay-ms=3000]', fresh)).json.run.id;
+    await until(() => detail(carol, pending), (r) => r.status === 'running', 'carol running');
+    const revoked = await daemon.request({ method: 'POST', path: `/api/auth/users/${carol.id}/sessions/revoke`, cookie: admin.cookie, body: {} });
+    expect(revoked.status).toBe(200);
+    carol.cookie = await login(daemon, carol.username, carol.password);
+    expect((await detail(carol, pending)).status).toBe('canceled');
+  });
+
+  it('cancels active personal runs on clean restart and keeps queued ones', async () => {
+    await personalCapacity(1);
+    const active = (await personal(alice, 'restart-active [mock-delay-ms=3000]')).json.run.id;
+    const queued = (await personal(alice, 'restart-queued')).json.run.id;
+    await until(() => detail(alice, active), (r) => r.status === 'running', 'active');
+    await personalCapacity(0);
+    await daemon.close();
+    daemon = await startMultiUserDaemon(options());
+    expect(await detail(alice, active)).toMatchObject({ status: 'canceled', output: { reason: 'daemon_shutdown' } });
+    expect((await detail(alice, queued)).status).toBe('queued');
+    await personalCapacity(1);
+    expect((await finished(alice, queued)).status).toBe('succeeded');
+  });
+
+  it('fails a personal row left active by a crash without creating a ledger entry', async () => {
+    await personalCapacity(0);
+    const id = (await personal(alice, 'crash-active')).json.run.id;
+    await daemon.close();
+    const db = new Database(path.join(dataRoot, 'app.sqlite'));
+    try { db.prepare("UPDATE multiuser_runs SET status = 'active', started_at = ? WHERE id = ?").run(clock, id); }
+    finally { db.close(); }
+    daemon = await startMultiUserDaemon(options());
+    expect((await detail(alice, id)).status).toBe('failed');
+    expect(ledgerRow(id)).toBeUndefined();
+  });
+});

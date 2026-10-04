@@ -1,17 +1,17 @@
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { once } from 'node:events';
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { WorkerQuotaLedger as Ledger } from '../../src/storage/worker-quota-ledger.js';
 
 const MINUTE = 60_000;
 const WINDOW = 7 * 24 * 60 * MINUTE;
-const BUDGET = 120 * MINUTE;
+const BUDGET = 1_800 * MINUTE;
 const EPOCH = 1_800_000_000_000;
-const fixtureRoot = fileURLToPath(new URL('../../../../.tmp/quota-ledger-tests/', import.meta.url));
+const fixtureRoot = mkdtempSync(path.join(tmpdir(), 'od-quota-ledger-tests-'));
 const modulePath = new URL('../../src/storage/worker-quota-ledger.ts', import.meta.url).href;
 let WorkerQuotaLedger: typeof Ledger;
 let dataRoot: string;
@@ -46,10 +46,11 @@ afterEach(async () => {
   for (const store of stores.reverse()) store.close();
   if (dataRoot) rmSync(dataRoot, { recursive: true, force: true });
 });
+afterAll(() => rmSync(fixtureRoot, { recursive: true, force: true }));
 
 describe('per-user active worker-time quota', () => {
   it('charges only time between explicit worker start and stop, aggregating projects/providers', () => {
-    now += WINDOW; // Waiting before dispatch is free; no queue is implemented here.
+    now += WINDOW; // Waiting before dispatch is free.
     expect(ledger.balance('alice')).toEqual({
       usedMs: 0, remainingMs: BUDGET, budgetMs: BUDGET, windowMs: WINDOW, activeRunId: null,
     });
@@ -58,7 +59,7 @@ describe('per-user active worker-time quota', () => {
     expect(ledger.finish('alice', 'run-1')).toMatchObject({ status: 'finished', chargedMs: 30 * MINUTE });
     now += 20 * MINUTE;
     ledger.start({ ...input('alice', 'run-2'), projectId: 'project-2', providerId: 'another-provider' });
-    now += 90 * MINUTE;
+    now += BUDGET - 30 * MINUTE;
     ledger.finish('alice', 'run-2');
     expect(ledger.balance('alice')).toMatchObject({ usedMs: BUDGET, remainingMs: 0, activeRunId: null });
     expect(ledger.start(input('alice', 'run-3'))).toEqual({ status: 'denied', reason: 'quota_exhausted' });
@@ -281,6 +282,34 @@ describe('per-user active worker-time quota', () => {
     const db = new Database(path.join(dataRoot, 'worker-quota', 'worker-quota.sqlite'));
     try { db.pragma('user_version = 999'); } finally { db.close(); }
     expect(() => open()).toThrow('unsupported_quota_schema');
+  });
+
+  it('persists audited budget overrides atomically and rejects invalid values', () => {
+    ledger.setBudgetMs('alice', MINUTE, 'admin-1');
+    expect(ledger.balance('alice').budgetMs).toBe(MINUTE);
+    expect(() => ledger.setBudgetMs('alice', -1, 'admin-1')).toThrow('invalid_budget');
+    const db = new Database(path.join(dataRoot, 'worker-quota', 'worker-quota.sqlite'));
+    try {
+      expect(db.prepare('SELECT admin_actor_id, actor_id, budget_ms FROM quota_audit').all())
+        .toEqual([{ admin_actor_id: 'admin-1', actor_id: 'alice', budget_ms: MINUTE }]);
+      expect(() => db.prepare('DELETE FROM quota_audit').run()).toThrow(/append only/);
+    } finally { db.close(); }
+    ledger.close();
+    ledger = open();
+    expect(ledger.balance('alice').budgetMs).toBe(MINUTE);
+  });
+
+  it('migrates the original unwired ledger schema without losing runs', () => {
+    ledger.start(input());
+    ledger.close();
+    const db = new Database(path.join(dataRoot, 'worker-quota', 'worker-quota.sqlite'));
+    try {
+      db.exec('DROP TABLE quota_audit; DROP TABLE quota_overrides; PRAGMA user_version = 1;');
+    } finally { db.close(); }
+    ledger = open();
+    expect(ledger.start(input()).status).toBe('replayed');
+    ledger.setBudgetMs('alice', MINUTE, 'admin-1');
+    expect(ledger.balance('alice').budgetMs).toBe(MINUTE);
   });
 });
 

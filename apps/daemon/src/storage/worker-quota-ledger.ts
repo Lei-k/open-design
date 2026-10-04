@@ -3,7 +3,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 const WINDOW_MS = 7 * 24 * 60 * 60_000;
-const BUDGET_MS = 120 * 60_000;
+const BUDGET_MS = 1_800 * 60_000;
 
 export interface WorkerQuotaStart {
   actorId: string;
@@ -76,14 +76,14 @@ function privateQuotaFile(dataRoot: string): string {
 }
 
 /**
- * Isolated admission/accounting primitive; intentionally not wired into routes
- * or worker spawning. All IDs and the clock are trusted server inputs, not auth
+ * Private admission/accounting primitive, wired only to the test-mock
+ * multi-user pool. All IDs and the clock are trusted server inputs, not auth
  * claims: callers must verify actor identity and access before invoking this.
  *
  * Call start at actual dispatch, not enqueue. Only `started` grants a new
  * admission; `replayed` must never launch another worker. Finish/cancel record
  * the actual worker stop, not the time a cancellation was merely requested.
- * There is no scheduler, provider access, role override, or quota watchdog here.
+ * Scheduler, provider access, role checks and watchdogs live outside this store.
  *
  * Unfinished runs retain their slot across restarts and accrue elapsed time
  * until explicitly stopped. Recovery must reconcile the worker before doing so;
@@ -112,9 +112,9 @@ export class WorkerQuotaLedger {
       this.db.pragma('synchronous = FULL');
       this.db.transaction(() => {
         const version = this.db.pragma('user_version', { simple: true });
-        if (version !== 0 && version !== 1) throw new Error('unsupported_quota_schema');
-        if (version === 1) return;
-        this.db.exec(`
+        if (version !== 0 && version !== 1 && version !== 2 && version !== 3) throw new Error('unsupported_quota_schema');
+        if (version === 3) return;
+        if (version === 0) this.db.exec(`
           CREATE TABLE quota_clock (
             singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
             observed_at INTEGER NOT NULL CHECK (observed_at BETWEEN 0 AND 9007199254740991)
@@ -133,8 +133,20 @@ export class WorkerQuotaLedger {
           ) STRICT;
           CREATE UNIQUE INDEX quota_one_active_actor ON quota_runs(actor_id) WHERE status = 'active';
           CREATE INDEX quota_actor_spans ON quota_runs(actor_id, ended_at);
-          PRAGMA user_version = 1;
         `);
+        if (version <= 1) this.db.exec(`CREATE TABLE quota_overrides (
+          actor_id TEXT PRIMARY KEY NOT NULL,
+          budget_ms INTEGER NOT NULL CHECK (budget_ms BETWEEN 0 AND 604800000)
+        ) STRICT;`);
+        this.db.exec(`CREATE TABLE quota_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, admin_actor_id TEXT NOT NULL,
+            actor_id TEXT NOT NULL, budget_ms INTEGER NOT NULL, created_at INTEGER NOT NULL
+          ) STRICT;
+          CREATE TRIGGER quota_audit_immutable BEFORE UPDATE ON quota_audit
+            BEGIN SELECT RAISE(ABORT, 'quota audit is append only'); END;
+          CREATE TRIGGER quota_audit_no_delete BEFORE DELETE ON quota_audit
+            BEGIN SELECT RAISE(ABORT, 'quota audit is append only'); END;
+          PRAGMA user_version = 3;`);
       }).immediate();
     } catch (error) {
       this.db.close();
@@ -183,6 +195,30 @@ export class WorkerQuotaLedger {
   balance(actorId: string): WorkerQuotaBalance {
     identifier(actorId);
     return this.db.transaction(() => this.balanceAt(actorId, this.checkedNow()))();
+  }
+
+  /** Startup reconciliation for the daemon-owned scheduler only. */
+  activeRuns(): Array<{ actorId: string; runId: string }> {
+    return this.db.prepare("SELECT actor_id AS actorId, run_id AS runId FROM quota_runs WHERE status = 'active'")
+      .all() as Array<{ actorId: string; runId: string }>;
+  }
+
+  /** Scheduler-only lookup for reconciling an immutable run id. */
+  entry(runId: string): WorkerQuotaRun | undefined {
+    identifier(runId);
+    return this.run(runId);
+  }
+
+  setBudgetMs(actorId: string, budgetMs: number, adminActorId: string): void {
+    identifier(actorId);
+    identifier(adminActorId);
+    if (!Number.isSafeInteger(budgetMs) || budgetMs < 0 || budgetMs > WINDOW_MS) throw new Error('invalid_budget');
+    this.mutate(now => {
+      this.db.prepare('INSERT INTO quota_overrides (actor_id, budget_ms) VALUES (?, ?) ON CONFLICT(actor_id) DO UPDATE SET budget_ms = excluded.budget_ms')
+        .run(actorId, budgetMs);
+      this.db.prepare('INSERT INTO quota_audit (admin_actor_id, actor_id, budget_ms, created_at) VALUES (?, ?, ?, ?)')
+        .run(adminActorId, actorId, budgetMs, now);
+    });
   }
 
   close(): void {
@@ -242,10 +278,12 @@ export class WorkerQuotaLedger {
     if (!Number.isSafeInteger(usedMs) || usedMs < 0 || usedMs > WINDOW_MS) throw new Error('invalid_quota_usage');
     const active = this.db.prepare("SELECT run_id FROM quota_runs WHERE actor_id = ? AND status = 'active'")
       .get(actorId) as { run_id: string } | undefined;
+    const override = this.db.prepare('SELECT budget_ms FROM quota_overrides WHERE actor_id = ?').get(actorId) as { budget_ms: number } | undefined;
+    const budgetMs = override?.budget_ms ?? BUDGET_MS;
     return {
       usedMs,
-      remainingMs: Math.max(0, BUDGET_MS - usedMs),
-      budgetMs: BUDGET_MS,
+      remainingMs: Math.max(0, budgetMs - usedMs),
+      budgetMs,
       windowMs: WINDOW_MS,
       activeRunId: active?.run_id ?? null,
     };

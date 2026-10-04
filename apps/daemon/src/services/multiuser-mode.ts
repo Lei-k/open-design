@@ -23,6 +23,8 @@
 //
 // This module is pure (no Express, no I/O) so the rule table is unit-tested.
 
+import { realpathSync } from 'node:fs';
+import path from 'node:path';
 import { apiTokenFromEnv, isApiAuthDisabled } from '../api-token-auth.js';
 import { isLoopbackHostname } from '../http/local-daemon-request.js';
 import type { ScryptParams } from './auth-passwords.js';
@@ -61,12 +63,29 @@ export interface MultiUserModeOptions {
   /** One-time first-admin bootstrap secret; null/empty disables bootstrap. */
   bootstrapSecret?: string | null;
   auth?: MultiUserAuthServiceOverrides;
+  /** Direct startServer test harness only; must resolve to the repository mock. */
+  testMockAgentScript?: string;
+  /** Test harness clock for pool accounting. */
+  poolClock?: () => number;
+  /**
+   * Personal-subscription enablement switch (#18), default off. Direct
+   * startServer test harness only; must resolve to the repository mock
+   * app-server. There is no environment, admin or UI path to a real provider.
+   */
+  testPersonalCodexAppServer?: string;
 }
+
+/** The only app-server the personal-subscription lane may spawn in this slice. */
+export const PERSONAL_CODEX_MOCK_RELATIVE_PATH = 'mocks/personal-codex-app-server.ts';
 
 export interface ResolvedMultiUserMode {
   allowedOrigins: readonly string[];
   bootstrapSecret: string | null;
   auth: MultiUserAuthServiceOverrides;
+  testMockAgentScript?: string;
+  poolClock?: () => number;
+  /** Real path of the repository mock app-server; absent means the feature is off. */
+  personalCodexAppServer?: string;
 }
 
 export class MultiUserModeRefusal extends Error {
@@ -103,6 +122,8 @@ export function resolveMultiUserMode(input: {
   options: MultiUserModeOptions | null | undefined;
   env: NodeJS.ProcessEnv;
   host: string;
+  /** Repository root used to pin the personal app-server to the repository mock. */
+  repositoryRoot?: string;
 }): ResolvedMultiUserMode | null {
   const { options, env, host } = input;
   for (const [name, value] of Object.entries(env)) {
@@ -134,5 +155,20 @@ export function resolveMultiUserMode(input: {
   const allowedOrigins = assertExactOrigins(options.allowedOrigins);
   const bootstrapSecret =
     typeof options.bootstrapSecret === 'string' && options.bootstrapSecret.length > 0 ? options.bootstrapSecret : null;
-  return { allowedOrigins, bootstrapSecret, auth: { ...(options.auth ?? {}) } };
+  const personalCodexAppServer = options.testPersonalCodexAppServer === undefined
+    ? undefined : resolvePersonalCodexMock(options.testPersonalCodexAppServer, input.repositoryRoot);
+  return { allowedOrigins, bootstrapSecret, auth: { ...(options.auth ?? {}) },
+    ...(options.testMockAgentScript ? { testMockAgentScript: options.testMockAgentScript } : {}),
+    ...(options.poolClock ? { poolClock: options.poolClock } : {}),
+    ...(personalCodexAppServer ? { personalCodexAppServer } : {}) };
+}
+
+function resolvePersonalCodexMock(candidate: unknown, repositoryRoot: string | undefined): string {
+  const real = (file: string) => { try { return realpathSync(file); } catch { return null; } };
+  const expected = repositoryRoot ? real(path.join(repositoryRoot, PERSONAL_CODEX_MOCK_RELATIVE_PATH)) : null;
+  const actual = typeof candidate === 'string' && candidate.length > 0 ? real(candidate) : null;
+  if (!expected || !actual || actual !== expected) {
+    throw new MultiUserModeRefusal('only the repository mock app-server may back personal subscriptions in this slice');
+  }
+  return actual;
 }

@@ -43,6 +43,7 @@ export * from './api/mcp.js';
 export * from './api/memory.js';
 export * from './api/next-step-marker.js';
 export * from './api/orbit.js';
+export * from './api/personal-agent-accounts.js';
 export * from './api/plugin-candidates.js';
 export * from './api/providerModels.js';
 export * from './api/projects.js';
