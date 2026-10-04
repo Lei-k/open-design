@@ -141,6 +141,17 @@ describe('route classification covers the real inventory', () => {
       'public-probe GET /api/health',
       'public-probe GET /api/ready',
       'public-probe GET /api/version',
+      'public-web GET /',
+      'public-web GET /_next/static/*asset',
+      'public-web GET /admin/audit',
+      'public-web GET /admin/users',
+      'public-web GET /app-icon.png',
+      'public-web GET /fonts/AlbertSans-Italic-VariableFont_wght.ttf',
+      'public-web GET /fonts/AlbertSans-VariableFont_wght.ttf',
+      'public-web GET /fonts/JiduMonoPro-Regular.otf',
+      'public-web GET /login',
+      'public-web GET /projects',
+      'public-web GET /setup',
     ]);
   });
 
@@ -248,7 +259,6 @@ describe('authentication is required (loopback is not a bypass)', () => {
       ['GET', '/api/mcp/servers'],
       ['GET', '/artifacts/anything.html'],
       ['GET', '/api/definitely-not-a-route'],
-      ['GET', '/'],
     ];
     for (const [method, probePath] of probes) {
       const res = await daemon.request({
@@ -258,6 +268,8 @@ describe('authentication is required (loopback is not a bypass)', () => {
       });
       expect(res.status, `${method} ${probePath}`).toBe(401);
     }
+    // An explicit public shell route with no emitted index is a 404, not API auth.
+    expect((await daemon.request({ path: '/' })).status).toBe(404);
     // Still there: the anonymous DELETE never reached the handler.
     expect(await listProjectIds(alice)).toContain(project.id);
   });

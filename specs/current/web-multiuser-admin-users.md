@@ -1,6 +1,6 @@
 # Web multi-user admin users (#10)
 
-Status: local, test-only backend slice on top of #2/#3/#4. Tracking: Lei-k/open-design #10 (epic #9). It makes the account lifecycle backend ready for the #6 Web integration. It ships no UI and no CLI, and #10 stays open until its UI and browser acceptance close in #6. The mode switch, gate and loopback rules in `web-multiuser-authz-gate.md` stay in force. Daemon data paths follow the root `AGENTS.md` "Daemon data directory contract"; this note does not restate them.
+Status: local, test-only backend slice on top of #2/#3/#4. Tracking: Lei-k/open-design #10 (epic #9). It makes the account lifecycle backend ready for the #6 Web integration. The backend originally shipped without UI or CLI. The bounded web shell now consumes it; see `web-multiuser-web-ux.md`. #10 remains open for full acceptance and CLI parity. The mode switch, gate and loopback rules in `web-multiuser-authz-gate.md` stay in force. Daemon data paths follow the root `AGENTS.md` "Daemon data directory contract"; this note does not restate them.
 
 ## Account lifecycle
 
@@ -55,5 +55,5 @@ Production activation obligation (#7/#8): remove these two body shapes or gate t
 
 ## Not done here
 
-- #6: login, setup and admin UI; recipient setup link; browser desktop and mobile acceptance; CLI parity at user-facing activation.
+- #6: the bounded login/setup/admin shell is in `web-multiuser-web-ux.md`; remaining phased browser acceptance and CLI parity at user-facing activation stay open.
 - #7/#8: deployment gate, rate limits, secrets, backup and audit retention, real-account staging.

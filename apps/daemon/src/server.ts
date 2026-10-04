@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { registerMultiUserStatic } from './http/multiuser-static.js';
 import { startEvidenceDelivery } from './services/evidence-delivery.js';
 import type {
   DesktopExportArtifactInput,
@@ -18109,6 +18110,7 @@ export async function startServer({
     telemetry: { reportFinalizedMessage, reportFeedback },
   });
 
+  if (multiUserMode) registerMultiUserStatic(app, staticDir);
   registerStaticSpaFallback(app, staticDir);
 
   // Wait for `listen` to bind so callers always see the resolved URL —
