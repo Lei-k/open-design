@@ -52,7 +52,7 @@ Coverage: the string inventory, routes registered with a RegExp or a path array,
 ### Allowed (the whole list)
 
 - Probes: `GET /api/health`, `/api/ready`, `/api/version`.
-- Auth: `/api/auth/*` (bootstrap, login, logout, me, session rotate, password, admin user management).
+- Auth: `/api/auth/*` (bootstrap, login, logout, me, session rotate, password, recipient setup, admin user management, search and audit; see `web-multiuser-admin-users.md`).
 - Projects: `GET /api/projects` (the actor's own only), `POST /api/projects`, `GET|PATCH|DELETE /api/projects/:id`.
 - Conversations: `GET|POST /api/projects/:id/conversations`, `GET /api/projects/:id/conversations/:cid/messages`.
 - Test mock runs: `POST|GET /api/runs`, `GET /api/runs/:id`, `GET /api/runs/:id/events`, `POST /api/runs/:id/cancel` (see `web-multiuser-run-isolation.md`).
@@ -76,7 +76,7 @@ Real-provider execution and all execution routes outside the test mock run set a
 
 - **#5 run isolation**: the test-only mock run proof is documented in `web-multiuser-run-isolation.md`; real provider execution and every other execution surface remain blocked.
 - **SSE/static/preview scoping**: project and other event streams, file/preview/raw/export routes and static mounts stay blocked until they are provably actor-scoped. The test mock run event stream is owner-scoped.
-- **#10 admin API/UX**: account management routes and test pool operations exist, but no admin UI exists; admins have no project-content view by design.
+- **#10 admin API/UX**: the backend lifecycle (recipient setup, reset credentials, search, audit) is in `web-multiuser-admin-users.md`; no admin UI exists yet; admins have no project-content view by design.
 - **#11 pool + quota**: the test-mock queue and ledger are wired; real provider enrollment and credential isolation remain blocked.
 - **#6 Web UX**: no login UI and no SPA shell in multi-user mode.
 - **#7/#8 deployment gate**: loopback-only bind, no TLS/proxy/rate-limit/backup work. The origin allowlist is exercised only in tests.

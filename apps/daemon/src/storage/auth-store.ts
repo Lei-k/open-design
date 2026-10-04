@@ -17,16 +17,37 @@
 // - Multi-step invariants (one-time bootstrap, last-admin protection) are
 //   decided inside a single SQLite transaction by the caller via
 //   `transaction()`; better-sqlite3 is synchronous so no await can interleave.
+// - Setup/reset credentials (#10) are stored by SHA-256 digest only, at most
+//   one per account; redeeming one deletes it in the committing transaction.
+// - `auth_audit` is append-only (triggers abort UPDATE/DELETE) and holds
+//   non-sensitive metadata only.
+//
+// Schema history: v1 (#2) accounts/sessions/meta; v2 (#10) adds
+// `auth_accounts.password_state` (existing rows default to `set`),
+// `auth_setup_credentials` and `auth_audit`. Upgrades run in one immediate
+// transaction; a newer schema fails closed.
 
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
+import type {
+  AuthAuditAction,
+  AuthAuditEvent,
+  AuthPasswordState,
+  AuthRole,
+  AuthSetupCredentialPurpose,
+} from '@open-design/contracts';
+
+export type { AuthAuditAction, AuthPasswordState, AuthRole, AuthSetupCredentialPurpose } from '@open-design/contracts';
 
 export const AUTH_STORE_RELATIVE_PATH = path.join('auth', 'auth.sqlite');
-const AUTH_SCHEMA_VERSION = 1;
+const AUTH_SCHEMA_VERSION = 2;
 const BOOTSTRAP_META_KEY = 'bootstrap_completed_at';
+/** Stored in `password_hash` while no password is usable; never parses as a hash. */
+export const NO_PASSWORD_HASH = '';
 
-export type AuthRole = 'admin' | 'user';
+const PASSWORD_STATES: ReadonlySet<string> = new Set<AuthPasswordState>(['set', 'setup_required', 'reset_required']);
+const CREDENTIAL_PURPOSES: ReadonlySet<string> = new Set<AuthSetupCredentialPurpose>(['setup', 'reset']);
 
 export interface AuthAccountRecord {
   id: string;
@@ -34,9 +55,31 @@ export interface AuthAccountRecord {
   passwordHash: string;
   role: AuthRole;
   active: boolean;
+  passwordState: AuthPasswordState;
   createdAt: number;
   updatedAt: number;
 }
+
+export interface AuthSetupCredentialRecord {
+  id: string;
+  tokenHash: string;
+  accountId: string;
+  purpose: AuthSetupCredentialPurpose;
+  createdAt: number;
+  expiresAt: number;
+}
+
+export type AuthAuditMetadata = AuthAuditEvent['metadata'];
+
+export interface AuthAuditInput {
+  at: number;
+  actorAccountId: string | null;
+  targetAccountId: string | null;
+  action: AuthAuditAction;
+  metadata: AuthAuditMetadata;
+}
+
+export type AuthAuditRecord = AuthAuditEvent;
 
 export interface AuthSessionRecord {
   id: string;
@@ -58,8 +101,28 @@ interface AccountRow {
   password_hash: string;
   role: string;
   active: number;
+  password_state: string;
   created_at: number;
   updated_at: number;
+}
+
+interface CredentialRow {
+  id: string;
+  token_hash: string;
+  account_id: string;
+  purpose: string;
+  created_at: number;
+  expires_at: number;
+}
+
+interface AuditRow {
+  id: number;
+  at: number;
+  actor_account_id: string | null;
+  target_account_id: string | null;
+  action: string;
+  outcome: string;
+  metadata_json: string;
 }
 
 interface SessionRow {
@@ -98,14 +161,51 @@ function toAccount(row: AccountRow): AuthAccountRecord {
     // Fail closed on a tampered/unknown role instead of guessing.
     throw new AuthStoreError('auth store contains an unknown role');
   }
+  if (!PASSWORD_STATES.has(row.password_state)) {
+    throw new AuthStoreError('auth store contains an unknown password state');
+  }
   return {
     id: row.id,
     username: row.username,
     passwordHash: row.password_hash,
     role: row.role,
     active: row.active === 1,
+    passwordState: row.password_state as AuthPasswordState,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function toCredential(row: CredentialRow): AuthSetupCredentialRecord {
+  if (!CREDENTIAL_PURPOSES.has(row.purpose)) throw new AuthStoreError('auth store contains an unknown credential purpose');
+  return {
+    id: row.id,
+    tokenHash: row.token_hash,
+    accountId: row.account_id,
+    purpose: row.purpose as AuthSetupCredentialPurpose,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+  };
+}
+
+function toAudit(row: AuditRow): AuthAuditRecord {
+  let metadata: unknown;
+  try {
+    metadata = JSON.parse(row.metadata_json);
+  } catch {
+    throw new AuthStoreError('auth store contains malformed audit metadata');
+  }
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata) || row.outcome !== 'success') {
+    throw new AuthStoreError('auth store contains malformed audit metadata');
+  }
+  return {
+    id: row.id,
+    at: row.at,
+    actorAccountId: row.actor_account_id,
+    targetAccountId: row.target_account_id,
+    action: row.action as AuthAuditAction,
+    outcome: 'success',
+    metadata: metadata as AuthAuditMetadata,
   };
 }
 
@@ -190,9 +290,9 @@ export class AuthStore {
    * Atomically insert the first admin iff bootstrap has never completed and
    * no account exists. Returns false (and writes nothing) otherwise.
    */
-  insertFirstAdmin(account: AuthAccountRecord): boolean {
-    if (account.role !== 'admin' || !account.active) {
-      throw new AuthStoreError('first account must be an active admin');
+  insertFirstAdmin(account: AuthAccountRecord, audit: AuthAuditInput): boolean {
+    if (account.role !== 'admin' || !account.active || account.passwordState !== 'set') {
+      throw new AuthStoreError('first account must be an active admin with a password');
     }
     return this.transaction(() => {
       if (this.isBootstrapped()) return false;
@@ -200,6 +300,7 @@ export class AuthStore {
       this.db
         .prepare('INSERT INTO auth_meta (key, value) VALUES (?, ?)')
         .run(BOOTSTRAP_META_KEY, String(account.createdAt));
+      this.appendAudit(audit);
       return true;
     });
   }
@@ -211,9 +312,10 @@ export class AuthStore {
     return row.n;
   }
 
-  countActiveAdmins(): number {
+  /** Admins that can actually sign in: active AND with a usable password. */
+  countUsableAdmins(): number {
     const row = this.db
-      .prepare("SELECT COUNT(*) AS n FROM auth_accounts WHERE role = 'admin' AND active = 1")
+      .prepare("SELECT COUNT(*) AS n FROM auth_accounts WHERE role = 'admin' AND active = 1 AND password_state = 'set'")
       .get() as { n: number };
     return row.n;
   }
@@ -240,6 +342,20 @@ export class AuthStore {
     return rows.map(toAccount);
   }
 
+  /**
+   * One page of accounts in creation order. `contains` is an already-validated
+   * username fragment matched literally (no LIKE wildcards).
+   */
+  searchAccounts(query: { contains: string | null; limit: number; offset: number }): { accounts: AuthAccountRecord[]; total: number } {
+    const where = 'WHERE (? IS NULL OR instr(username, ?) > 0)';
+    const total = (this.db.prepare(`SELECT COUNT(*) AS n FROM auth_accounts ${where}`)
+      .get(query.contains, query.contains) as { n: number }).n;
+    const rows = this.db
+      .prepare(`SELECT * FROM auth_accounts ${where} ORDER BY created_at ASC, rowid ASC LIMIT ? OFFSET ?`)
+      .all(query.contains, query.contains, query.limit, query.offset) as AccountRow[];
+    return { accounts: rows.map(toAccount), total };
+  }
+
   /** Insert a new account. Returns false when the username is taken. */
   insertAccount(account: AuthAccountRecord): boolean {
     try {
@@ -257,17 +373,17 @@ export class AuthStore {
       .run(patch.role, patch.active ? 1 : 0, updatedAt, id);
   }
 
-  updatePasswordHash(id: string, passwordHash: string, updatedAt: number): void {
+  updatePassword(id: string, patch: { passwordHash: string; passwordState: AuthPasswordState }, updatedAt: number): void {
     this.db
-      .prepare('UPDATE auth_accounts SET password_hash = ?, updated_at = ? WHERE id = ?')
-      .run(passwordHash, updatedAt, id);
+      .prepare('UPDATE auth_accounts SET password_hash = ?, password_state = ?, updated_at = ? WHERE id = ?')
+      .run(patch.passwordHash, patch.passwordState, updatedAt, id);
   }
 
   private insertAccountRow(account: AuthAccountRecord): void {
     this.db
       .prepare(
-        `INSERT INTO auth_accounts (id, username, password_hash, role, active, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO auth_accounts (id, username, password_hash, role, active, password_state, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         account.id,
@@ -275,9 +391,57 @@ export class AuthStore {
         account.passwordHash,
         account.role,
         account.active ? 1 : 0,
+        account.passwordState,
         account.createdAt,
         account.updatedAt,
       );
+  }
+
+  // ---- setup / reset credentials -----------------------------------------
+
+  /** Replace the account's outstanding credential (supersession), if any. */
+  replaceSetupCredential(credential: AuthSetupCredentialRecord): void {
+    this.deleteSetupCredentialsForAccount(credential.accountId);
+    this.db
+      .prepare(
+        `INSERT INTO auth_setup_credentials (id, token_hash, account_id, purpose, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(credential.id, credential.tokenHash, credential.accountId, credential.purpose, credential.createdAt, credential.expiresAt);
+  }
+
+  getSetupCredentialByTokenHash(tokenHash: string): AuthSetupCredentialRecord | null {
+    const row = this.db
+      .prepare('SELECT * FROM auth_setup_credentials WHERE token_hash = ?')
+      .get(tokenHash) as CredentialRow | undefined;
+    return row ? toCredential(row) : null;
+  }
+
+  deleteSetupCredential(id: string): boolean {
+    return this.db.prepare('DELETE FROM auth_setup_credentials WHERE id = ?').run(id).changes > 0;
+  }
+
+  deleteSetupCredentialsForAccount(accountId: string): number {
+    return this.db.prepare('DELETE FROM auth_setup_credentials WHERE account_id = ?').run(accountId).changes;
+  }
+
+  // ---- audit -------------------------------------------------------------
+
+  appendAudit(event: AuthAuditInput): void {
+    this.db
+      .prepare(
+        `INSERT INTO auth_audit (at, actor_account_id, target_account_id, action, outcome, metadata_json)
+         VALUES (?, ?, ?, ?, 'success', ?)`,
+      )
+      .run(event.at, event.actorAccountId, event.targetAccountId, event.action, JSON.stringify(event.metadata));
+  }
+
+  /** Newest first; `beforeId` pages further back. Returns one extra row to signal more. */
+  listAudit(query: { limit: number; beforeId: number | null }): AuthAuditRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM auth_audit WHERE (? IS NULL OR id < ?) ORDER BY id DESC LIMIT ?')
+      .all(query.beforeId, query.beforeId, query.limit) as AuditRow[];
+    return rows.map(toAudit);
   }
 
   // ---- sessions --------------------------------------------------------
@@ -331,37 +495,75 @@ export class AuthStore {
   }
 }
 
-function migrate(db: Database.Database): void {
+const V1_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS auth_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS auth_accounts (
+    id            TEXT PRIMARY KEY,
+    username      TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    role          TEXT NOT NULL CHECK (role IN ('admin', 'user')),
+    active        INTEGER NOT NULL CHECK (active IN (0, 1)),
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS auth_sessions (
+    id           TEXT PRIMARY KEY,
+    token_hash   TEXT NOT NULL UNIQUE,
+    account_id   TEXT NOT NULL REFERENCES auth_accounts(id) ON DELETE CASCADE,
+    created_at   INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS auth_sessions_account_idx ON auth_sessions(account_id);
+`;
+
+// Plain CREATE (no IF NOT EXISTS): a conflicting object aborts the upgrade,
+// which then rolls back as a whole instead of half-applying.
+const V2_UPGRADE = `
+  ALTER TABLE auth_accounts ADD COLUMN password_state TEXT NOT NULL DEFAULT 'set'
+    CHECK (password_state IN ('set', 'setup_required', 'reset_required'));
+  CREATE TABLE auth_setup_credentials (
+    id         TEXT PRIMARY KEY,
+    token_hash TEXT NOT NULL UNIQUE,
+    account_id TEXT NOT NULL UNIQUE REFERENCES auth_accounts(id) ON DELETE CASCADE,
+    purpose    TEXT NOT NULL CHECK (purpose IN ('setup', 'reset')),
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+  CREATE TABLE auth_audit (
+    id                INTEGER PRIMARY KEY,
+    at                INTEGER NOT NULL,
+    actor_account_id  TEXT,
+    target_account_id TEXT,
+    action            TEXT NOT NULL,
+    outcome           TEXT NOT NULL CHECK (outcome IN ('success')),
+    metadata_json     TEXT NOT NULL
+  );
+  CREATE TRIGGER auth_audit_no_update BEFORE UPDATE ON auth_audit
+    BEGIN SELECT RAISE(ABORT, 'auth_audit is append-only'); END;
+  CREATE TRIGGER auth_audit_no_delete BEFORE DELETE ON auth_audit
+    BEGIN SELECT RAISE(ABORT, 'auth_audit is append-only'); END;
+`;
+
+function schemaVersion(db: Database.Database): number {
   const version = db.pragma('user_version', { simple: true }) as number;
   if (version > AUTH_SCHEMA_VERSION) {
     throw new AuthStoreError('auth store schema is newer than this daemon');
   }
-  if (version === AUTH_SCHEMA_VERSION) return;
+  return version;
+}
+
+function migrate(db: Database.Database): void {
+  if (schemaVersion(db) === AUTH_SCHEMA_VERSION) return;
   db.transaction(() => {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS auth_meta (
-        key   TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS auth_accounts (
-        id            TEXT PRIMARY KEY,
-        username      TEXT NOT NULL UNIQUE,
-        password_hash TEXT NOT NULL,
-        role          TEXT NOT NULL CHECK (role IN ('admin', 'user')),
-        active        INTEGER NOT NULL CHECK (active IN (0, 1)),
-        created_at    INTEGER NOT NULL,
-        updated_at    INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS auth_sessions (
-        id           TEXT PRIMARY KEY,
-        token_hash   TEXT NOT NULL UNIQUE,
-        account_id   TEXT NOT NULL REFERENCES auth_accounts(id) ON DELETE CASCADE,
-        created_at   INTEGER NOT NULL,
-        last_seen_at INTEGER NOT NULL,
-        expires_at   INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS auth_sessions_account_idx ON auth_sessions(account_id);
-    `);
+    // Re-read under the write lock: another connection may have upgraded.
+    const version = schemaVersion(db);
+    if (version === AUTH_SCHEMA_VERSION) return;
+    if (version < 1) db.exec(V1_SCHEMA);
+    if (version < 2) db.exec(V2_UPGRADE);
     db.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`);
-  })();
+  }).immediate();
 }
