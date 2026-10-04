@@ -50,8 +50,10 @@ type RunListQuery = {
   projectId?: string; conversationId?: string; status?: RunRow['status'];
 };
 /**
- * Strict `GET /api/runs` query. A repeated or malformed paging, filter or status
- * value is refused rather than silently widening the list; unknown names are ignored.
+ * Strict `GET /api/runs` query. Repeated or non-string parameters, a malformed
+ * limit/cursor and an unknown status are refused rather than silently widening
+ * the list. Id filters accept any single string (an unowned id matches nothing);
+ * unknown names are ignored.
  */
 function parseRunListQuery(query: Request['query']): RunListQuery | null {
   const one = (name: string): string | undefined | null => {
