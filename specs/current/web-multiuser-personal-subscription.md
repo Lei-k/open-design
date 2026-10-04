@@ -139,4 +139,4 @@ Follow-ups:
 
 - A run-composer source picker.
 - A CLI (`od`) surface. The CLI has no multi-user session support yet, as in #13/#15/#16.
-- A served multi-user SPA shell (#6).
+- Integration into the capability-restricted multi-user shell (#6); the first bounded auth/admin/project-metadata slice is in `web-multiuser-web-ux.md`.

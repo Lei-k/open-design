@@ -64,7 +64,7 @@ export type MultiUserAccessDecision =
 
 /**
  * Pure access decision for one request. Fail-closed rules:
- * - public-probe / auth pass without a session only when EVERY match agrees;
+ * - public-probe / public-web / auth pass without a session only when EVERY match agrees;
  * - everything else needs a resolved actor (so anonymous callers learn
  *   nothing about which routes exist or are blocked);
  * - no match => not-found; matches of different classes => blocked;
@@ -81,7 +81,7 @@ export function decideMultiUserAccess(input: {
 }): MultiUserAccessDecision {
   const { matches, actor, isProjectOwner, isRunOwner, isAgentAccountOwner } = input;
   const classes = new Set(matches.map((match) => match.entry.routeClass));
-  if (classes.size === 1 && (classes.has('public-probe') || classes.has('auth'))) {
+  if (classes.size === 1 && (classes.has('public-probe') || classes.has('auth') || classes.has('public-web'))) {
     return { kind: 'pass-unauthenticated' };
   }
   if (!actor) return { kind: 'unauthenticated' };

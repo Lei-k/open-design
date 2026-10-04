@@ -38,6 +38,7 @@ Registry: `apps/daemon/src/http/multiuser-route-classes.ts` (declarative, one re
 | Class | Meaning |
 | --- | --- |
 | `public-probe` | no session; liveness/readiness/version only |
+| `public-web` | explicit public shell/build code only; canonical-path and symlink checks |
 | `auth` | the auth registrar enforces its own session/admin checks and hardening |
 | `admin-only` | session + persisted `admin` role (test pool operations only) |
 | `owner-scoped-project` | session + the declared project param must be owned by the actor; **no admin override** |
@@ -47,7 +48,7 @@ Registry: `apps/daemon/src/http/multiuser-route-classes.ts` (declarative, one re
 | `blocked-in-multiuser` | denied to everyone, admins included |
 | `middleware` | non-terminal `app.use` entry; never authorizes |
 
-Coverage: the string inventory, routes registered with a RegExp or a path array, pathless `app.use` middleware (recorded separately and explicitly acknowledged), and the static mounts. A new unacknowledged pathless middleware fails multi-user startup. The root static handler is inert in multi-user mode even when its directory exists, so it cannot shadow an allowed API route. The SPA catch-all (`GET /*splat`) is blocked and never used to classify a request. `tests/auth/multiuser-gate-http.test.ts` starts the real daemon and fails on any unclassified or stale entry.
+Coverage: the string inventory, routes registered with a RegExp or a path array, pathless `app.use` middleware (recorded separately and explicitly acknowledged), and the static mounts. A new unacknowledged pathless middleware fails multi-user startup. The root static handler is inert in multi-user mode even when its directory exists, so it cannot shadow an allowed API route. The SPA catch-all (`GET /*splat`) is blocked and never used to classify a request. Explicit public shell and restricted build-asset registrations are described in `web-multiuser-web-ux.md`. `tests/auth/multiuser-gate-http.test.ts` starts the real daemon and fails on any unclassified or stale entry.
 
 ### Allowed (the whole list)
 
@@ -63,7 +64,7 @@ Project create/patch body policy: only `id`, `name`, `metadata`, `pendingPrompt`
 
 ### Blocked (everything else), by reason
 
-Real-provider execution and all execution routes outside the test mock run set above, agent tool-token endpoints, and other SSE/event streams. Project file/preview/export/upload planes, including the regex preview/raw/powered routes, plus terminals, browser sessions, deploy, collab and presence. Static mounts (`/artifacts`, `/frames`, plugin previews) and the SPA shell. Host filesystem and desktop integration: folder import, native dialogs, project locations, recent dirs, open-external. Connector/MCP/OAuth/provider credentials and provider proxies. Daemon status/db/shutdown/diagnostics. Global app config and memory. Shared catalogs whose user entries are global: skills, design systems, templates, plugins, marketplaces. Vela workspace features.
+Real-provider execution and all execution routes outside the test mock run set above, agent tool-token endpoints, and other SSE/event streams. Project file/preview/export/upload planes, including the regex preview/raw/powered routes, plus terminals, browser sessions, deploy, collab and presence. Static mounts (`/artifacts`, `/frames`, plugin previews) and the generic SPA catch-all. Host filesystem and desktop integration: folder import, native dialogs, project locations, recent dirs, open-external. Connector/MCP/OAuth/provider credentials and provider proxies. Daemon status/db/shutdown/diagnostics. Global app config and memory. Shared catalogs whose user entries are global: skills, design systems, templates, plugins, marketplaces. Vela workspace features.
 
 ## Project ownership (#3)
 
@@ -76,8 +77,8 @@ Real-provider execution and all execution routes outside the test mock run set a
 
 - **#5 run isolation**: the test-only mock run proof is documented in `web-multiuser-run-isolation.md`; real provider execution and every other execution surface remain blocked.
 - **SSE/static/preview scoping**: project and other event streams, file/preview/raw/export routes and static mounts stay blocked until they are provably actor-scoped. The test mock run event stream is owner-scoped.
-- **#10 admin API/UX**: the backend lifecycle (recipient setup, reset credentials, search, audit) is in `web-multiuser-admin-users.md`; no admin UI exists yet; admins have no project-content view by design.
+- **#10 admin API/UX**: the backend lifecycle (recipient setup, reset credentials, search, audit) is in `web-multiuser-admin-users.md`; a bounded admin UI is described in `web-multiuser-web-ux.md`; admins have no project-content view by design.
 - **#11 pool + quota**: the test-mock queue and ledger are wired; real provider enrollment and credential isolation remain blocked.
-- **#6 Web UX**: no login UI and no SPA shell in multi-user mode.
+- **#6 Web UX**: the bounded auth/admin/project-metadata shell is described in `web-multiuser-web-ux.md`; run and pool UX remain pending.
 - **#7/#8 deployment gate**: loopback-only bind, no TLS/proxy/rate-limit/backup work. The origin allowlist is exercised only in tests.
 - Residual: `POST /api/projects` with a client-chosen id that already exists fails with a conflict. That reveals the id exists, but ids are client-generated UUIDs. `GET /api/projects/:id` still returns the daemon-side `resolvedDir`.

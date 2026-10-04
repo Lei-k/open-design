@@ -83,7 +83,8 @@ describe('matcher mirrors Express routing permissively enough to fail closed', (
   });
 
   it('never lets the SPA catch-all classify an arbitrary path', () => {
-    expect(keysFor('GET', '/')).toEqual([]);
+    expect(keysFor('GET', '/')).toEqual(['GET /']);
+    expect(keysFor('GET', '/unknown-shell-route')).toEqual([]);
     expect(keysFor('GET', '/assets/app.js')).toEqual([]);
     expect(keysFor('GET', '/api/nope/nope/nope')).toEqual([]);
   });

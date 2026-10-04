@@ -1,3 +1,5 @@
+import { MULTIUSER_SHELL_PATHS, MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE, publicMultiUserFile } from './multiuser-static.js';
+
 // Multi-user route classification registry (issue #4) — declarative data.
 //
 // Every route the daemon registers (the route-registration inventory, plus
@@ -5,6 +7,7 @@
 // class and a reason. The multi-user gate (`http/multiuser-gate.ts`) consults
 // ONLY this table:
 //
+//   public-web            explicit public shell and validated build assets only
 //   public-probe          no session; process liveness/version only
 //   auth                  no session at the gate; the auth registrar enforces its own
 //   admin-only            session + persisted role === 'admin'
@@ -27,6 +30,7 @@
 // `*splat`); other syntax is rejected at compile time rather than guessed.
 
 export type MultiUserRouteClass =
+  | 'public-web'
   | 'public-probe'
   | 'auth'
   | 'admin-only'
@@ -114,6 +118,8 @@ const R_GLOBAL_STATE = 'daemon-global state shared by every account';
 // ---- registry ---------------------------------------------------------------
 
 export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassification[] = [
+  ...group('public-web', 'reviewed public app code only; canonical file and symlink checks in the static handler',
+    [...MULTIUSER_SHELL_PATHS, ...MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE].map((path) => `GET ${path}`)),
   // Probes -------------------------------------------------------------------
   ...group('public-probe', 'process liveness/readiness/version only; carries no account or project data', [
     'GET /api/health',
@@ -869,6 +875,7 @@ export function matchMultiUserRoute(method: string, rawPath: string): MultiUserR
       continue;
     }
     if (compiled.segments === null) continue;
+    if (compiled.entry.routeClass === 'public-web' && publicMultiUserFile(rawPath) === null) continue;
     if (compiled.entry.method !== 'ALL' && compiled.entry.method !== verb) continue;
     const params = matchSegments(compiled.segments, parts);
     if (params) matches.push({ entry: compiled.entry, params });

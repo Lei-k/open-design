@@ -21,6 +21,6 @@ Cancellation targets only the selected run's child. Account session revocation, 
 ## Remaining gates
 
 - #11: real provider enrollment and credential isolation remain blocked; the test-mock pool proof is in `web-multiuser-pool.md`.
-- #6: Web login and run UX. Multi-user still has no served SPA shell.
+- #6: the bounded auth/admin/project-metadata shell is in `web-multiuser-web-ux.md`; conversation and run UX remain pending.
 - #7/#8: deployment controls. This remains loopback-only and test-only.
 - Native provider session ownership and process isolation for same-UID children need separate proof before real providers can run. A daemon crash can briefly leave a test mock child alive until its bounded delay ends; production process reaping must be included with provider enablement.
