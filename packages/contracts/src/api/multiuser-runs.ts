@@ -25,7 +25,23 @@ export interface MultiUserRunRequest {
   executionSource: RunExecutionSource;
 }
 export interface MultiUserRunResponse { run: MultiUserRun }
-export interface MultiUserRunsResponse { runs: MultiUserRun[]; awaitingInputProjectIds: string[] }
+/**
+ * `GET /api/runs`: the owner's runs, newest first, `limit` (1-100, default 50)
+ * per page. Pass `nextCursor` back as `cursor` for the next older page; it is
+ * opaque and `null` on the last page.
+ */
+export interface MultiUserRunsResponse {
+  runs: MultiUserRun[];
+  awaitingInputProjectIds: string[];
+  nextCursor: string | null;
+  /**
+   * Present only when the list is filtered by `conversationId`. True when the
+   * conversation is pinned to a personal account that is no longer the owner's
+   * linked account (unlinked, or replaced by a new link): personal runs there
+   * are refused and never fall back to the company pool.
+   */
+  personalPinStale?: boolean;
+}
 export type MultiUserRunEvent =
   | { event: 'queued'; data: { runId: string } }
   | { event: 'start'; data: { runId: string } }

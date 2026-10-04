@@ -8,11 +8,20 @@
 .hint { margin: 0; font-size: 13px; color: var(--text-muted); overflow-wrap: anywhere; }
 .error { margin: 0; padding: 12px; background: var(--red-bg); color: var(--text-strong); border: 1px solid var(--red-border); border-radius: var(--radius-sm); }
 .composer > button { justify-self: start; }
+.locked { display: flex; align-items: center; gap: 8px; min-height: 44px; margin: 0; color: var(--text-strong); font-weight: 600; }
+.locked svg { flex-shrink: 0; }
+.warning { margin: 0; padding: 12px; background: var(--amber-bg); color: var(--text-strong); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.back { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; color: var(--accent); font-weight: 600; text-decoration: none; }
+.back:hover { text-decoration: underline; text-underline-offset: 3px; }
+.older { margin: 0 0 16px; }
 .history { list-style: none; padding: 0; display: grid; gap: 16px; }
 .run { padding: 20px; min-width: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-panel); overflow-wrap: anywhere; }
 .metadata { display: flex; flex-wrap: wrap; gap: 8px 20px; justify-content: space-between; font-size: 13px; color: var(--text-muted); }
+.exchange { display: grid; gap: 4px; margin: 12px 0 0; }
+.exchange dt { font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.exchange dd { margin: 0 0 8px; min-width: 0; }
 .prompt { white-space: pre-wrap; color: var(--text-strong); font-weight: 600; }
-.output { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.output { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 .accounts label { flex-direction: row; align-items: center; gap: 10px; }
 .accounts input[type='checkbox'] { width: 18px; height: 18px; min-height: 18px; padding: 0; flex-shrink: 0; accent-color: var(--accent); }
 @media (max-width: 640px) {

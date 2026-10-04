@@ -1,10 +1,12 @@
 import { useState, type FormEvent } from 'react';
 import { Button } from '@open-design/components';
+import { ArrowLeft } from 'lucide-react';
 import type { ConversationsResponse, ConversationResponse, ProjectDetailResponse } from '@open-design/contracts';
 import { useT } from '../i18n';
 import { useOwnedRequest, useOwnedResource, type OwnedSession } from './owned';
 import { isAbort, runErrorKey } from './run-errors';
 import styles from './MultiUserApp.module.css';
+import runStyles from './Runs.module.css';
 
 export function ProjectConversations(props: OwnedSession & { projectId: string }) {
   const t = useT();
@@ -29,7 +31,7 @@ export function ProjectConversations(props: OwnedSession & { projectId: string }
     finally { setBusy(false); }
   }
   const loadError = project.error || conversations.error;
-  return <><a href="/projects">{t('multiuser.projects')}</a>
+  return <><a className={runStyles.back} href="/projects"><ArrowLeft size={16} aria-hidden="true" />{t('multiuser.projects')}</a>
     {loadError ? <><p role="alert" className={styles.error}>{t(runErrorKey(loadError))}</p><Button onClick={() => setRevision((n) => n + 1)}>{t('multiuser.retry')}</Button></>
       : !project.data || !conversations.data ? <p role="status">{t('multiuser.loading')}</p> : <>
         <h1>{project.data.project.name}</h1><h2>{t('multiuserRuns.conversations')}</h2>

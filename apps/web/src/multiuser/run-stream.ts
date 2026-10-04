@@ -3,8 +3,14 @@ import type { OwnedSession } from './owned';
 import { isAbort } from './run-errors';
 import { RequestFailure } from './session';
 type Frame = Extract<ParsedSseFrame, { kind: 'event' }>;
+export const RECONNECT_BASE_MS = 1_500;
+export const RECONNECT_MAX_MS = 30_000;
 
-/** Persisted sequence is the replay cursor. Reconnects must never append it twice. */
+/**
+ * Persisted sequence is the replay cursor. Reconnects must never append it twice.
+ * Reconnect delays double up to a ceiling and reset only after a connection
+ * delivered a new event; a bare replay does not count as progress.
+ */
 export function watchRunEvents(
   owner: OwnedSession, runId: string,
   onEvent: (frame: Frame) => void, onReconnect: (reconnecting: boolean) => void,
@@ -14,6 +20,7 @@ export function watchRunEvents(
   const release = owner.session.bindMount(controller, owner.generation);
   let lastSeq = 0;
   let terminal = false;
+  let failures = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   const cancelReader = () => { void reader?.cancel().catch(() => {}); if (timer) clearTimeout(timer); };
@@ -41,6 +48,7 @@ export function watchRunEvents(
           const seq = Number(frame.id);
           if (!Number.isSafeInteger(seq) || seq <= lastSeq) continue;
           lastSeq = seq;
+          failures = 0;
           onEvent(frame);
           if (frame.event === 'end') { terminal = true; break; }
         }
@@ -55,7 +63,9 @@ export function watchRunEvents(
     }
     if (!controller.signal.aborted && !terminal) {
       onReconnect(true);
-      timer = setTimeout(() => { void connect(); }, 1500);
+      const delay = Math.min(RECONNECT_BASE_MS * 2 ** failures, RECONNECT_MAX_MS);
+      failures = Math.min(failures + 1, 16);
+      timer = setTimeout(() => { void connect(); }, delay);
     }
   }
   void connect();

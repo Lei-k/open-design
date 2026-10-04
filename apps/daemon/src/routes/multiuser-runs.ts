@@ -4,11 +4,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
-import type { MultiUserRun, MultiUserRunEvent } from '@open-design/contracts';
+import type { MultiUserRun, MultiUserRunEvent, MultiUserRunStatus, MultiUserRunsResponse } from '@open-design/contracts';
 import { getConversation, getProject } from '../db.js';
 import { sendApiError } from '../http/api-errors.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
-import { ProjectOwnershipStore } from '../storage/project-ownership.js';
+import { PROJECT_OWNERS_TABLE, ProjectOwnershipStore } from '../storage/project-ownership.js';
 import { WorkerQuotaLedger } from '../storage/worker-quota-ledger.js';
 import { AuthStore } from '../storage/auth-store.js';
 import { isSafeId } from '../projects.js';
@@ -27,6 +27,58 @@ const table = 'multiuser_runs';
 /** Personal-subscription lane defaults (#18): host-wide worker ceiling and per-user queue. */
 const PERSONAL_DEFAULT_CAPACITY = 4;
 const PERSONAL_QUEUE_LIMIT = 3;
+const RUN_PAGE_DEFAULT = 50;
+const RUN_PAGE_MAX = 100;
+/** The API names an active row `running`; every other status is stored as served. */
+const STORED_STATUS: Record<MultiUserRunStatus, RunRow['status']> = {
+  queued: 'queued', running: 'active', succeeded: 'succeeded', failed: 'failed', canceled: 'canceled',
+};
+
+/** Stored JSON is projected, never trusted: a damaged value reads as null instead of failing the owner's reads. */
+function storedJson(text: string | null): unknown {
+  if (!text) return null;
+  try { return JSON.parse(text) as unknown; } catch { return null; }
+}
+function storedMessage(requestJson: string | null): string | null {
+  const request = storedJson(requestJson);
+  const message = request && typeof request === 'object' ? (request as { message?: unknown }).message : null;
+  return typeof message === 'string' ? message : null;
+}
+
+type RunListQuery = {
+  limit: number; cursor: { createdAt: number; id: string } | null;
+  projectId?: string; conversationId?: string; status?: RunRow['status'];
+};
+/**
+ * Strict `GET /api/runs` query. A repeated or malformed paging, filter or status
+ * value is refused rather than silently widening the list; unknown names are ignored.
+ */
+function parseRunListQuery(query: Request['query']): RunListQuery | null {
+  const one = (name: string): string | undefined | null => {
+    const value = query[name];
+    return value === undefined ? undefined : typeof value === 'string' ? value : null;
+  };
+  const [limit, cursor, projectId, conversationId, status] = ['limit', 'cursor', 'projectId', 'conversationId', 'status'].map(one);
+  if ([limit, cursor, projectId, conversationId, status].includes(null)) return null;
+  const parsed: RunListQuery = { limit: RUN_PAGE_DEFAULT, cursor: null };
+  if (limit !== undefined) {
+    if (!/^[1-9]\d{0,2}$/.test(limit!) || Number(limit) > RUN_PAGE_MAX) return null;
+    parsed.limit = Number(limit);
+  }
+  if (cursor !== undefined) {
+    // Opaque to clients: `<createdAt>:<id>` of the last row served.
+    const match = /^(0|[1-9]\d{0,15}):([A-Za-z0-9-]{1,64})$/.exec(cursor!);
+    if (!match || !Number.isSafeInteger(Number(match[1]))) return null;
+    parsed.cursor = { createdAt: Number(match[1]), id: match[2]! };
+  }
+  if (status !== undefined) {
+    if (!Object.hasOwn(STORED_STATUS, status!)) return null;
+    parsed.status = STORED_STATUS[status as MultiUserRunStatus];
+  }
+  if (projectId !== undefined) parsed.projectId = projectId!;
+  if (conversationId !== undefined) parsed.conversationId = conversationId!;
+  return parsed;
+}
 
 /**
  * Separate test-only execution plane. The normal run/agent stack is never reached.
@@ -189,8 +241,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     id: run.id, projectId: run.project_id, conversationId: run.conversation_id,
     agentId: isPersonal(run) ? 'codex' : 'test-mock', status: run.status === 'active' ? 'running' : run.status,
     queuePosition: queuePosition(run), createdAt: run.created_at,
-    updatedAt: run.updated_at, output: run.output ? JSON.parse(run.output) : null,
-    message: run.request_json ? JSON.parse(run.request_json).message ?? null : null,
+    updatedAt: run.updated_at, output: storedJson(run.output),
+    message: storedMessage(run.request_json),
     ...(isPersonal(run) ? { executionSource: 'personal_subscription' as const } : {}),
   });
   const emit = <E extends MultiUserRunEvent['event']>(id: string, event: E, data: Extract<MultiUserRunEvent, { event: E }>['data']) => {
@@ -578,15 +630,42 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     dispatch();
     res.status(202).json({ run: body(row(id)!) });
   });
+  /**
+   * Owner-only: the conversation is pinned to a personal account that is no
+   * longer the owner's linked account. Re-authorization keeps the account row,
+   * so only unlink (and any later new link) makes a pin stale. Foreign, missing
+   * and unpinned conversations all answer false.
+   */
+  const personalPinStale = (owner: string, conversationId: string): boolean => {
+    const pin = personalSession(conversationId);
+    const projectId = pin ? getConversation(db, conversationId)?.projectId : undefined;
+    if (!pin || !personal || pin.owner_account_id !== owner || !projectId || !owners.isOwnedBy(projectId, owner)) return false;
+    return !personal.isOwner('accountId', pin.personal_account_id, owner);
+  };
   app.get('/api/runs', (req, res) => {
-    const rows = db.prepare(`SELECT * FROM ${table} WHERE owner_account_id = ? ORDER BY created_at DESC`)
-      .all(actor(res)) as RunRow[];
-    res.json({ runs: rows.filter((run) =>
-      owners.isOwnedBy(run.project_id, actor(res)) &&
-      (typeof req.query.projectId !== 'string' || run.project_id === req.query.projectId) &&
-      (typeof req.query.conversationId !== 'string' || run.conversation_id === req.query.conversationId) &&
-      (typeof req.query.status !== 'string' || run.status === req.query.status),
-    ).map(body), awaitingInputProjectIds: [] });
+    const query = parseRunListQuery(req.query);
+    if (!query) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid run list query');
+    const owner = actor(res);
+    // Ownership and filters apply in SQL before the limit, so a page is never short of the owner's rows.
+    const where = ['r.owner_account_id = ?', 'o.owner_account_id = ?'];
+    const args: Array<string | number> = [owner, owner];
+    if (query.projectId !== undefined) { where.push('r.project_id = ?'); args.push(query.projectId); }
+    if (query.conversationId !== undefined) { where.push('r.conversation_id = ?'); args.push(query.conversationId); }
+    if (query.status !== undefined) { where.push('r.status = ?'); args.push(query.status); }
+    if (query.cursor) {
+      where.push('(r.created_at < ? OR (r.created_at = ? AND r.id < ?))');
+      args.push(query.cursor.createdAt, query.cursor.createdAt, query.cursor.id);
+    }
+    const rows = db.prepare(`SELECT r.* FROM ${table} r JOIN ${PROJECT_OWNERS_TABLE} o ON o.project_id = r.project_id
+      WHERE ${where.join(' AND ')} ORDER BY r.created_at DESC, r.id DESC LIMIT ?`).all(...args, query.limit + 1) as RunRow[];
+    const page = rows.slice(0, query.limit);
+    const last = page.at(-1);
+    const response: MultiUserRunsResponse = {
+      runs: page.map(body), awaitingInputProjectIds: [],
+      nextCursor: rows.length > query.limit && last ? `${last.created_at}:${last.id}` : null,
+      ...(query.conversationId === undefined ? {} : { personalPinStale: personalPinStale(owner, query.conversationId) }),
+    };
+    res.json(response);
   });
   app.get('/api/runs/:id', (req, res) => { const run = owned(req, res); if (run) res.json(body(run)); });
   app.get('/api/runs/:id/events', (req, res) => {
