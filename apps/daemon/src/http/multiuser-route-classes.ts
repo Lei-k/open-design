@@ -129,11 +129,13 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'GET /api/auth/me',
     'POST /api/auth/session/rotate',
     'POST /api/auth/password',
+    'POST /api/auth/setup',
     'GET /api/auth/users',
     'POST /api/auth/users',
     'PATCH /api/auth/users/:id',
     'POST /api/auth/users/:id/sessions/revoke',
     'POST /api/auth/users/:id/password',
+    'GET /api/auth/audit',
   ]),
   ...group('middleware', 'auth registrar hardening, bounded body parser and error handler; not an endpoint', ['USE /api/auth']),
 

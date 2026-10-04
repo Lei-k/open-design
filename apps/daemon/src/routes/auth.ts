@@ -14,11 +14,20 @@
 //   GET   /me
 //   POST  /session/rotate
 //   POST  /password                      self password change (current password required)
-//   GET   /users                         admin
-//   POST  /users                         admin; the ONLY way to create accounts
+//   POST  /setup                         anonymous; recipient sets the password with a
+//                                        one-time setup/reset credential; does not sign in
+//   GET   /users?q=&limit=&offset=       admin; bounded search, metadata only
+//   POST  /users                         admin; the ONLY way to create accounts. Without
+//                                        `password`: pending account + setup credential
+//                                        (returned once). With `password`: LEGACY TEST-ONLY
+//                                        admin-chosen password (fixtures)
 //   PATCH /users/:id                     admin; role/active only
 //   POST  /users/:id/sessions/revoke     admin
-//   POST  /users/:id/password            admin password reset
+//   POST  /users/:id/password            admin. Without `password`: issue a setup/reset
+//                                        credential (a reset retires the password and
+//                                        sessions). With `password`: LEGACY TEST-ONLY
+//                                        direct reset (fixtures)
+//   GET   /audit?limit=&before=          admin; append-only lifecycle audit, newest first
 // There is no registration/signup route.
 //
 // Request hardening:
@@ -46,6 +55,8 @@ import type { ApiErrorCode } from '@open-design/contracts';
 import { sendApiError } from '../http/api-errors.js';
 import {
   AuthError,
+  type AccountSearchInput,
+  type AuditListInput,
   type AuthActor,
   type AuthErrorCode,
   type AuthRole,
@@ -80,6 +91,12 @@ export type AuthRouteService = Pick<
   | 'updateAccount'
   | 'revokeAccountSessions'
   | 'resetPassword'
+  | 'provisionAccount'
+  | 'issueSetupCredential'
+  | 'completePasswordSetup'
+  | 'searchAccounts'
+  | 'listAuditEvents'
+  | 'assertAdmin'
 >;
 
 export interface RegisterAuthRoutesDeps {
@@ -102,6 +119,7 @@ const STATUS_BY_AUTH_CODE: Record<AuthErrorCode, { status: number; code: ApiErro
   FORBIDDEN: { status: 403, code: 'FORBIDDEN' },
   NOT_FOUND: { status: 404, code: 'NOT_FOUND' },
   LAST_ADMIN: { status: 409, code: 'CONFLICT' },
+  SETUP_INVALID: { status: 401, code: 'UNAUTHORIZED' },
 };
 
 // ---- cookies ---------------------------------------------------------
@@ -158,6 +176,31 @@ function bodyObject(req: Request): Record<string, unknown> | null {
 function stringField(body: Record<string, unknown> | null, key: string): string {
   const value = body?.[key];
   return typeof value === 'string' ? value : '';
+}
+
+function hasOwn(body: Record<string, unknown> | null, key: string): boolean {
+  return body !== null && Object.prototype.hasOwnProperty.call(body, key);
+}
+
+const QUERY_INTEGER_RE = /^\d{1,15}$/;
+
+/**
+ * Strict query parsing: only `allowed` keys, each at most once and a plain
+ * string; `integers` must be unsigned decimal. Anything else is a 400.
+ */
+function parseQuery(req: Request, allowed: readonly string[], integers: readonly string[]): Record<string, string | number> {
+  const query = req.query as Record<string, unknown>;
+  const out: Record<string, string | number> = {};
+  for (const [key, value] of Object.entries(query)) {
+    if (!allowed.includes(key) || typeof value !== 'string') throw new AuthError('VALIDATION', 'invalid query');
+    if (integers.includes(key)) {
+      if (!QUERY_INTEGER_RE.test(value)) throw new AuthError('VALIDATION', `${key} must be an integer`);
+      out[key] = Number(value);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
 }
 
 function digest(value: string): Buffer {
@@ -410,18 +453,39 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
     res.status(200).json({ session: { expiresAt: session.expiresAt } });
   }));
 
-  app.get(`${p}/users`, requireSession, handle((_req, res) => {
-    res.status(200).json({ accounts: auth.listAccounts(actorOf(res)) });
+  app.post(`${p}/setup`, handle(async (req, res) => {
+    const body = bodyObject(req);
+    const result = await auth.completePasswordSetup({
+      token: stringField(body, 'token'),
+      password: stringField(body, 'password'),
+    });
+    // Setup deliberately does not sign in: the owner logs in normally.
+    res.status(200).json({ account: { username: result.username } });
+  }));
+
+  app.get(`${p}/users`, requireSession, handle((req, res) => {
+    const actor = actorOf(res);
+    auth.assertAdmin(actor);
+    const query = parseQuery(req, ['q', 'limit', 'offset'], ['limit', 'offset']) as AccountSearchInput;
+    const { accounts, total, limit, offset } = auth.searchAccounts(actor, query);
+    res.status(200).json({ accounts, page: { total, limit, offset } });
   }));
 
   app.post(`${p}/users`, requireSession, handle(async (req, res) => {
     const body = bodyObject(req);
-    const account = await auth.createAccount(actorOf(res), {
-      username: stringField(body, 'username'),
-      password: stringField(body, 'password'),
-      role: body?.role as AuthRole, // validated by the service
-    });
-    res.status(201).json({ account });
+    const role = body?.role as AuthRole; // validated by the service
+    if (hasOwn(body, 'password')) {
+      // LEGACY, TEST-ONLY: admin-chosen password (fixtures).
+      const account = await auth.createAccount(actorOf(res), {
+        username: stringField(body, 'username'),
+        password: stringField(body, 'password'),
+        role,
+      });
+      res.status(201).json({ account });
+      return;
+    }
+    const { account, setup } = auth.provisionAccount(actorOf(res), { username: stringField(body, 'username'), role });
+    res.status(201).json({ account, setup });
   }));
 
   app.patch(`${p}/users/:id`, requireSession, handle((req, res) => {
@@ -444,9 +508,26 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
   }));
 
   app.post(`${p}/users/:id/password`, requireSession, handle(async (req, res) => {
-    await auth.resetPassword(actorOf(res), String(req.params.id), stringField(bodyObject(req), 'password'));
-    deps.onAccountSessionsRevoked?.(String(req.params.id));
-    res.status(204).end();
+    const body = bodyObject(req);
+    const accountId = String(req.params.id);
+    if (hasOwn(body, 'password')) {
+      // LEGACY, TEST-ONLY: the admin sets the password directly (fixtures).
+      await auth.resetPassword(actorOf(res), accountId, stringField(body, 'password'));
+      deps.onAccountSessionsRevoked?.(accountId);
+      res.status(204).end();
+      return;
+    }
+    const setup = auth.issueSetupCredential(actorOf(res), accountId);
+    // A reset retired the owner's sessions: cancel their queued/active work.
+    deps.onAccountSessionsRevoked?.(accountId);
+    res.status(201).json({ setup });
+  }));
+
+  app.get(`${p}/audit`, requireSession, handle((req, res) => {
+    const actor = actorOf(res);
+    auth.assertAdmin(actor);
+    const query = parseQuery(req, ['limit', 'before'], ['limit', 'before']) as AuditListInput;
+    res.status(200).json(auth.listAuditEvents(actor, query));
   }));
 
   app.use(p, authBodyErrorHandler);

@@ -165,7 +165,7 @@ describe('auth service — accounts and password policy', () => {
     const views = service.listAccounts(admin);
     expect(views.map((v) => v.username).sort()).toEqual(['alice', 'bob', 'root']);
     for (const view of views) {
-      expect(Object.keys(view).sort()).toEqual(['active', 'createdAt', 'id', 'role', 'updatedAt', 'username']);
+      expect(Object.keys(view).sort()).toEqual(['active', 'createdAt', 'id', 'passwordState', 'role', 'updatedAt', 'username']);
     }
     store.close();
     const raw = new Database(path.join(dataRoot, 'auth', 'auth.sqlite'), { readonly: true });
