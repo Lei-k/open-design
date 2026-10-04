@@ -39,6 +39,7 @@ export function registerMultiUserStatic(app: Express, staticDir: string): void {
       res.setHeader('Cache-Control', 'no-store');
       res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Referrer-Policy', 'no-referrer');
+      res.setHeader('X-Frame-Options', 'DENY');
       if (!file || !regularPublicFile(staticDir, file)) { res.status(404).end(); return; }
       res.sendFile(file, { root: staticDir, dotfiles: 'deny' });
     });

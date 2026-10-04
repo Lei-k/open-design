@@ -1,6 +1,9 @@
 import type { Dict } from "../types";
 
 export const zhCN: Dict = {
+  "multiuser.selfAccess": "如需重置自己的密码或更改访问权限，请联系其他管理员。",
+  "multiuser.outcomeUnknown": "操作结果不明。请登录原账号并检查列表后再重试。",
+  "multiuser.dismissNotice": "关闭通知",
   "multiuser.checking": "正在确认连接…",
   "multiuser.connectionError": "无法确认服务器或登录状态，请重试。",
   "multiuser.retry": "重试",

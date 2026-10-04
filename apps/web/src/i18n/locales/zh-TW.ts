@@ -1,6 +1,9 @@
 import type { Dict } from "../types";
 
 export const zhTW: Dict = {
+  "multiuser.selfAccess": "如需重設自己的密碼或變更存取權限，請聯絡其他管理員。",
+  "multiuser.outcomeUnknown": "操作結果不明。請登入原帳號並檢查清單後再重試。",
+  "multiuser.dismissNotice": "關閉通知",
   "multiuser.checking": "正在確認連線…",
   "multiuser.connectionError": "無法確認伺服器或登入狀態，請重試。",
   "multiuser.retry": "重試",

@@ -17,8 +17,8 @@
 .shell label, .auth label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .inlineForm label:first-child { flex: 1; min-width: min(220px, 100%); }
 .shell input, .shell select, .auth input { width: 100%; min-width: 0; min-height: 44px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-panel); color: var(--text-strong); padding: 10px 12px; font: inherit; }
-.shell button, .auth button { min-height: 44px; gap: 8px; }
-.shell :focus-visible, .auth :focus-visible { outline: 2px solid var(--text-strong); outline-offset: 3px; }
+.shell button, .auth button, .operationNotice button { min-height: 44px; gap: 8px; }
+.shell :focus-visible, .auth :focus-visible, .operationNotice :focus-visible { outline: 2px solid var(--text-strong); outline-offset: 3px; }
 .muted { color: var(--text-muted); font-size: 13px; }
 .error { color: #a72024; background: var(--red-bg); padding: 12px; border-radius: 8px; }
 .empty { padding: 40px 0; color: var(--text-muted); }
@@ -44,3 +44,5 @@
   .list li > .muted { margin-inline-start: 0; width: 100%; }
   .shell input, .auth input, .shell select { font-size: 16px; }
 }
+
+.operationNotice { padding: 16px 28px; border-bottom: 1px solid var(--border); background: var(--bg-panel); color: var(--text-strong); }

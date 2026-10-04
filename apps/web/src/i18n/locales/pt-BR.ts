@@ -1,6 +1,9 @@
 import type { Dict } from '../types';
 
 export const ptBR: Dict = {
+  "multiuser.selfAccess": "Ask another administrator to reset your password or change your own access.",
+  "multiuser.outcomeUnknown": "Outcome unknown. Sign in to the original account and check the list before retrying.",
+  "multiuser.dismissNotice": "Dismiss notice",
   "multiuser.checking": "Checking your connection…",
   "multiuser.connectionError": "Could not verify this server or session. Try again.",
   "multiuser.retry": "Retry",

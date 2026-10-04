@@ -30,6 +30,9 @@ export const LOCALE_LABEL: Record<Locale, string> = {
 // flat (not deeply nested) so missing-key TS errors point straight at the
 // offending string instead of a generic object mismatch.
 export interface Dict {
+  'multiuser.selfAccess': string;
+  'multiuser.outcomeUnknown': string;
+  'multiuser.dismissNotice': string;
   'multiuser.checking': string;
   'multiuser.connectionError': string;
   'multiuser.retry': string;

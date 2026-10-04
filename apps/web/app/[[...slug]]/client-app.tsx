@@ -33,19 +33,33 @@ export function ClientApp() {
   }, []);
   useEffect(() => {
     const controller = new AbortController();
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const backoff = [250, 750, 1500];
     setMode('loading');
-    void fetch('/api/version', { credentials: 'omit', cache: 'no-store', signal: controller.signal })
-      .then(async (response) => {
+    async function probe(failures = 0) {
+      let transient = true;
+      try {
+        const response = await fetch('/api/version', { credentials: 'omit', cache: 'no-store', signal: controller.signal });
+        transient = response.status >= 500;
         if (!response.ok) throw new Error('Version unavailable');
+        transient = false;
         const body = await response.json();
         if (controller.signal.aborted) return;
         const version = body?.version;
-        if (!version || typeof version.version !== 'string' || !version.version || !version.capabilities || typeof version.capabilities !== 'object' || Array.isArray(version.capabilities) || typeof version.capabilities.slideRenderer !== 'boolean') throw new Error('Invalid version');
-        const multi = version.capabilities.multiUser;
+        if (!version || typeof version.version !== 'string' || !version.version) throw new Error('Invalid version');
+        const capabilities = version.capabilities;
+        if (capabilities !== undefined && (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities))) throw new Error('Invalid capabilities');
+        const multi = capabilities?.multiUser;
         if (multi !== undefined && multi !== true) throw new Error('Invalid capability');
         setMode(multi === true ? 'multi' : 'single');
-      }).catch(() => { if (!controller.signal.aborted) setMode('error'); });
-    return () => controller.abort();
+      } catch {
+        if (controller.signal.aborted) return;
+        if (transient && failures < backoff.length) retry = setTimeout(() => void probe(failures + 1), backoff[failures]);
+        else setMode('error');
+      }
+    }
+    void probe();
+    return () => { controller.abort(); clearTimeout(retry); };
   }, [attempt]);
   if (mode === 'multi') return <MultiUserApp setupToken={setupToken} clearSetupToken={() => setSetupToken(null)} />;
   if (mode === 'single') return <SingleUserApp />;

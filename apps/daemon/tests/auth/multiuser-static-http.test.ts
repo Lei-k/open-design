@@ -22,6 +22,7 @@ it('serves only explicit public shell paths and required assets without a sessio
     const get = await daemon.request({ path: url });
     expect(get.status, url).toBe(200);
     expect(get.headers['x-content-type-options']).toBe('nosniff');
+    expect(get.headers['x-frame-options']).toBe('DENY');
     expect((await daemon.request({ path: url, method: 'HEAD' })).status, url).toBe(200);
   }
 });

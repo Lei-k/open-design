@@ -86,13 +86,14 @@ export function MultiUserApp({ setupToken, clearSetupToken = () => {} }: { setup
     const timer = window.setInterval(verify, SESSION_CHECK_MS);
     return () => { session.dispose(); clearInterval(timer); window.removeEventListener('pagehide', hide); window.removeEventListener('pageshow', verify); window.removeEventListener('focus', verify); document.removeEventListener('visibilitychange', verify); window.removeEventListener('storage', storage); };
   }, [session, setup]);
+  const outcome = state.outcomeUnknown && <div className={styles.operationNotice} role="alert"><p>{t('multiuser.outcomeUnknown')}</p><Button onClick={session.clearOutcomeUnknown}>{t('multiuser.dismissNotice')}</Button></div>;
   if (setup) return <Setup token={setupToken} clear={clearSetupToken} />;
-  if (state.status === 'checking' || state.status === 'error') return <main className={styles.auth}><Brand /><p role="status">{t(state.status === 'error' ? 'multiuser.connectionError' : 'multiuser.checking')}</p>
-    {state.status === 'error' && <><Button onClick={() => void session.verify()}>{t('multiuser.retry')}</Button><Button onClick={() => void session.logout()}>{t('multiuser.signOut')}</Button></>}</main>;
-  if (!state.account) return <main className={styles.auth}><Brand /><h1>{t('multiuser.signIn')}</h1><p>{t('multiuser.inviteOnly')}</p>
+  if (state.status === 'checking' || state.status === 'error') return <>{outcome}<main className={styles.auth}><Brand /><p role="status">{t(state.status === 'error' ? 'multiuser.connectionError' : 'multiuser.checking')}</p>
+    {state.status === 'error' && <><Button onClick={() => void session.verify()}>{t('multiuser.retry')}</Button><Button onClick={() => void session.logout()}>{t('multiuser.signOut')}</Button></>}</main></>;
+  if (!state.account) return <>{outcome}<main className={styles.auth}><Brand /><h1>{t('multiuser.signIn')}</h1><p>{t('multiuser.inviteOnly')}</p>
     <Credentials busy={false} submit={(username, password) => { setLoginError(false); void session.login(username, password).catch(() => setLoginError(true)); }} />
-    {loginError && <Alert>{t('multiuser.loginError')}</Alert>}<p className={styles.muted}>{t('multiuser.testOnly')}</p></main>;
-  return <SignedIn key={`${state.generation}:${state.account.id}:${state.account.role}`} session={session} account={state.account} generation={state.generation} />;
+    {loginError && <Alert>{t('multiuser.loginError')}</Alert>}<p className={styles.muted}>{t('multiuser.testOnly')}</p></main></>;
+  return <>{outcome}<SignedIn key={`${state.generation}:${state.account.id}:${state.account.role}`} session={session} account={state.account} generation={state.generation} /></>;
 }
 
 type OwnedProps = { session: CookieSession; account: AuthAccount; generation: number };
@@ -170,13 +171,14 @@ function AdminUsers(props: OwnedProps) {
   }
   async function apply() {
     if (!confirm) return; const { account, action } = confirm;
+    if (account.id === props.account.id && action !== 'revoke') return;
     setBusy(true); setActionError(null); setSetup(null); setNotice(null);
     const suffix = action === 'reset' ? '/password' : action === 'revoke' ? '/sessions/revoke' : '';
     const body = action === 'active' ? { active: !account.active } : action === 'role' ? { role: account.role === 'admin' ? 'user' : 'admin' } : {};
     try {
       const result = await props.session.request<AuthIssueSetupCredentialResponse>(`/api/auth/users/${encodeURIComponent(account.id)}${suffix}`, { method: suffix ? 'POST' : 'PATCH', body: JSON.stringify(body) }, props.generation);
       setConfirm(null);
-      if (account.id === props.account.id) { await props.session.verify(); return; }
+      if (account.id === props.account.id) { props.session.withdraw(); await props.session.verify(); return; }
       if (action === 'reset') setSetup(result.setup);
       setNotice(t('multiuser.saved')); setRevision((r) => r + 1);
     } catch (e) { if (!isAborted(e)) setActionError(t(failureKey(e))); } finally { setBusy(false); }
@@ -189,10 +191,10 @@ function AdminUsers(props: OwnedProps) {
     <form className={styles.inlineForm} onSubmit={(event) => { event.preventDefault(); setQuery(String(new FormData(event.currentTarget).get('q')).trim()); setOffset(0); setSetup(null); }}><label>{t('multiuser.searchUsers')}<input name="q" maxLength={32} pattern="[A-Za-z0-9_.-]*" /></label><Button type="submit">{t('multiuser.search')}</Button></form>
     {error ? <><Alert>{t('multiuser.requestError')}</Alert><Button onClick={() => setRevision((r) => r + 1)}>{t('multiuser.retry')}</Button></> : !data ? <p role="status">{t('multiuser.loading')}</p> : <>
       {data.accounts.length === 0 && <p>{t('multiuser.noUsers')}</p>}
-      <ul className={styles.list}>{data.accounts.map((account) => <li key={account.id} className={styles.account}><div><strong>{account.username}</strong><p>{t(account.role === 'admin' ? 'multiuser.admin' : 'multiuser.user')} · {t(account.active ? 'multiuser.active' : 'multiuser.inactive')} · {t(account.passwordState === 'set' ? 'multiuser.passwordSet' : 'multiuser.passwordPending')}</p></div><div className={styles.actions}>
-        <Button disabled={busy || !account.active} onClick={() => setConfirm({ account, action: 'reset' })}>{t('multiuser.resetLink')}</Button>
-        <Button disabled={busy} onClick={() => setConfirm({ account, action: 'active' })}>{t(account.active ? 'multiuser.disable' : 'multiuser.enable')}</Button>
-        <Button disabled={busy} onClick={() => setConfirm({ account, action: 'role' })}>{t(account.role === 'admin' ? 'multiuser.makeUser' : 'multiuser.makeAdmin')}</Button>
+      <ul className={styles.list}>{data.accounts.map((account) => <li key={account.id} className={styles.account}><div><strong>{account.username}</strong><p>{t(account.role === 'admin' ? 'multiuser.admin' : 'multiuser.user')} · {t(account.active ? 'multiuser.active' : 'multiuser.inactive')} · {t(account.passwordState === 'set' ? 'multiuser.passwordSet' : 'multiuser.passwordPending')}</p>{account.id === props.account.id && <p>{t('multiuser.selfAccess')}</p>}</div><div className={styles.actions}>
+        <Button disabled={busy || !account.active || account.id === props.account.id} onClick={() => setConfirm({ account, action: 'reset' })}>{t('multiuser.resetLink')}</Button>
+        <Button disabled={busy || account.id === props.account.id} onClick={() => setConfirm({ account, action: 'active' })}>{t(account.active ? 'multiuser.disable' : 'multiuser.enable')}</Button>
+        <Button disabled={busy || account.id === props.account.id} onClick={() => setConfirm({ account, action: 'role' })}>{t(account.role === 'admin' ? 'multiuser.makeUser' : 'multiuser.makeAdmin')}</Button>
         <Button disabled={busy} onClick={() => setConfirm({ account, action: 'revoke' })}>{t('multiuser.revoke')}</Button>
       </div></li>)}</ul>
       <div className={styles.actions}><Button disabled={offset === 0} onClick={() => { setOffset(Math.max(0, offset - 20)); setSetup(null); }}>{t('multiuser.previous')}</Button><span>{t('multiuser.total', { count: data.page.total })}</span><Button disabled={offset + 20 >= data.page.total || offset >= 10000} onClick={() => { setOffset(offset + 20); setSetup(null); }}>{t('multiuser.next')}</Button></div>
