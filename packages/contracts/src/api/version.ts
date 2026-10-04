@@ -18,6 +18,11 @@ export interface AppRuntimeCapabilities {
    * plain daemon still has no renderer.
    */
   slideRenderer: boolean;
+  /**
+   * Present (and `true`) only on a multi-user daemon (#18). Absent means a
+   * single-user daemon, so single-user clients never probe multi-user routes.
+   */
+  multiUser?: true;
 }
 
 export interface AppVersionInfo {

@@ -165,6 +165,9 @@ import { PetSettings } from './pet/PetSettings';
 import { McpClientSection } from './McpClientSection';
 import { DesignSystemsSection } from './DesignSystemsSection';
 import { PrivacySection } from './PrivacySection';
+import { AgentAccountsSection } from './AgentAccountsSection';
+import { fetchPersonalAgentAccounts } from '../providers/agent-accounts';
+import type { PersonalAgentAccountsResponse } from '@open-design/contracts';
 import { ProjectLocationsSection } from './ProjectLocationsSection';
 import { RoutinesSection } from './RoutinesSection';
 import { SettingsWorkspaceSection } from './SettingsWorkspaceSection';
@@ -241,6 +244,9 @@ export type SettingsSection =
   | 'projectLocations'
   | 'memory'
   | 'privacy'
+  // Multi-user only (#18): personal subscription accounts. Rendered only when
+  // the daemon answers /api/agent-accounts for a signed-in user.
+  | 'agentAccounts'
   // 'library' is consumed by the EntryShell library route — App opens it
   // via this same openSettings entry point, so SettingsSection must
   // accept the token even though SettingsDialog itself has no Library
@@ -1907,6 +1913,17 @@ export function SettingsDialog({
   const [aboutUpdateActionBusy, setAboutUpdateActionBusy] = useState(false);
   const [aboutUpdateQuitFailed, setAboutUpdateQuitFailed] = useState(false);
   const [aboutToast, setAboutToast] = useState<string | null>(null);
+  // Fail closed: only a daemon that reports multi-user mode is probed, and a
+  // signed-out user or any error leaves this null. Single-user daemons never
+  // see the request.
+  const multiUserDaemon = appVersionInfo?.capabilities?.multiUser === true;
+  const [agentAccounts, setAgentAccounts] = useState<PersonalAgentAccountsResponse | null>(null);
+  useEffect(() => {
+    if (!multiUserDaemon) { setAgentAccounts(null); return undefined; }
+    let active = true;
+    void fetchPersonalAgentAccounts().then((result) => { if (active) setAgentAccounts(result); });
+    return () => { active = false; };
+  }, [multiUserDaemon]);
   // Two-stage inline confirm for the destructive manual cache clear.
   const [clearUpdaterCacheStage, setClearUpdaterCacheStage] = useState<'idle' | 'confirm'>('idle');
   const [clearUpdaterCacheBusy, setClearUpdaterCacheBusy] = useState(false);
@@ -3916,6 +3933,7 @@ export function SettingsDialog({
     },
     notifications: { title: t('settings.notifications'), subtitle: t('settings.notificationsHint') },
     privacy: { title: t('settings.privacy'), subtitle: t('settings.privacyHint') },
+    agentAccounts: { title: t('agentAccounts.navTitle'), subtitle: t('agentAccounts.navHint') },
     pet: { title: t('pet.title'), subtitle: t('pet.subtitle') },
     designSystems: {
       title: t('settings.designSystems'),
@@ -4370,6 +4388,20 @@ export function SettingsDialog({
                 <small>{`${t('settings.localCli')} / ${t('settings.modeApiMeta')}`}</small>
               </span>
             </button>
+            {agentAccounts ? (
+              <button
+                type="button"
+                className={`settings-nav-item${activeSection === 'agentAccounts' ? ' active' : ''}`}
+                onClick={() => setActiveSection('agentAccounts')}
+                data-testid="settings-nav-agent-accounts"
+              >
+                <Icon name="key" size={18} />
+                <span>
+                  <strong>{t('agentAccounts.navTitle')}</strong>
+                  <small>{t('agentAccounts.navHint')}</small>
+                </span>
+              </button>
+            ) : null}
             <button
               type="button"
               className={`settings-nav-item${activeSection === 'general' ? ' active' : ''}`}
@@ -6057,6 +6089,10 @@ export function SettingsDialog({
 
           {activeSection === 'privacy' ? (
             <PrivacySection cfg={cfg} setCfg={setCfg} />
+          ) : null}
+
+          {activeSection === 'agentAccounts' && agentAccounts ? (
+            <AgentAccountsSection initial={agentAccounts} />
           ) : null}
 
           {activeSection === 'about' ? (

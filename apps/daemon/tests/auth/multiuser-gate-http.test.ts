@@ -101,11 +101,15 @@ describe('route classification covers the real inventory', () => {
       .map((entry) => `${entry.routeClass} ${entry.key}`)
       .sort();
     expect(allowed).toEqual([
+      'actor-scoped GET /api/agent-accounts',
       'actor-scoped GET /api/projects',
       'actor-scoped GET /api/runs',
+      'actor-scoped POST /api/agent-accounts/codex/logins',
       'actor-scoped POST /api/projects',
       'actor-scoped POST /api/runs',
+      'admin-only GET /api/admin/agent-accounts',
       'admin-only GET /api/admin/pool',
+      'admin-only PUT /api/admin/agent-accounts/personal-capacity',
       'admin-only PUT /api/admin/pool/providers/:providerId',
       'admin-only PUT /api/admin/pool/users/:id/quota',
       'auth GET /api/auth/me',
@@ -119,6 +123,10 @@ describe('route classification covers the real inventory', () => {
       'auth POST /api/auth/users',
       'auth POST /api/auth/users/:id/password',
       'auth POST /api/auth/users/:id/sessions/revoke',
+      'owner-scoped-agent-account DELETE /api/agent-accounts/codex/accounts/:accountId',
+      'owner-scoped-agent-account GET /api/agent-accounts/codex/logins/:attemptId',
+      'owner-scoped-agent-account POST /api/agent-accounts/codex/accounts/:accountId/verify',
+      'owner-scoped-agent-account POST /api/agent-accounts/codex/logins/:attemptId/cancel',
       'owner-scoped-project DELETE /api/projects/:id',
       'owner-scoped-project GET /api/projects/:id',
       'owner-scoped-project GET /api/projects/:id/conversations',
