@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@open-design/components';
 import type {
   PersonalAgentAccount,
@@ -20,9 +20,14 @@ import styles from './AgentAccountsSection.module.css';
 
 export const AGENT_ACCOUNT_POLL_MS = 2_000;
 
+const defaultApi = { fetchPersonalAgentAccounts, readCodexLogin, startCodexLogin, cancelCodexLogin, verifyCodexAccount, unlinkCodexAccount };
+export type AgentAccountsApi = typeof defaultApi;
+
 interface Props {
   /** Multi-user probe result; the section is never rendered without one. */
   initial: PersonalAgentAccountsResponse;
+  api?: AgentAccountsApi;
+  errorText?: (code: string | null) => string;
 }
 
 function formatCountdown(ms: number): string {
@@ -46,8 +51,10 @@ function outcomeKey(attempt: PersonalLoginAttempt): keyof Dict | null {
  * password or token. Personal subscriptions are a separate execution source
  * from the company pool.
  */
-export function AgentAccountsSection({ initial }: Props): JSX.Element {
+export function AgentAccountsSection({ initial, api = defaultApi, errorText }: Props): JSX.Element {
   const t = useT();
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [data, setData] = useState(initial);
   const [attempt, setAttempt] = useState<PersonalLoginAttempt | null>(initial.codex.pendingAttempt);
   const [notice, setNotice] = useState<string | null>(null);
@@ -61,10 +68,10 @@ export function AgentAccountsSection({ initial }: Props): JSX.Element {
   const account = data.codex.account;
 
   const refresh = useCallback(async () => {
-    const next = await fetchPersonalAgentAccounts();
-    if (next) setData(next);
-  }, []);
-  const fail = (code: string | null) => setError(t('agentAccounts.actionFailed', { code: code ?? 'network' }));
+    const next = await api.fetchPersonalAgentAccounts();
+    if (mounted.current && next) setData(next);
+  }, [api]);
+  const fail = (code: string | null) => setError(errorText ? errorText(code) : t('agentAccounts.actionFailed', { code: code ?? 'network' }));
 
   // A pending attempt from the summary carries no code; the owner's read does.
   const pendingId = pending?.id ?? null;
@@ -83,17 +90,18 @@ export function AgentAccountsSection({ initial }: Props): JSX.Element {
       setNotice(key ? t(key) : null);
       void refresh();
     };
-    if (!pendingHasCode) void readCodexLogin(pendingId).then((r) => { if (r.ok) settle(r.value); });
+    if (!pendingHasCode) void api.readCodexLogin(pendingId).then((r) => { if (r.ok) settle(r.value); });
     const poll = setInterval(() => {
-      void readCodexLogin(pendingId).then((r) => { if (r.ok) settle(r.value); });
+      void api.readCodexLogin(pendingId).then((r) => { if (r.ok) settle(r.value); });
     }, AGENT_ACCOUNT_POLL_MS);
     const tick = setInterval(() => setNow(Date.now()), 1_000);
     return () => { active = false; clearInterval(poll); clearInterval(tick); };
-  }, [pendingId, pendingHasCode, refresh, t]);
+  }, [api, pendingId, pendingHasCode, refresh, t]);
 
   async function link(): Promise<void> {
     setBusy(true); setError(null); setNotice(null); setConfirm(null);
-    const result = await startCodexLogin();
+    const result = await api.startCodexLogin();
+    if (!mounted.current) return;
     setBusy(false);
     if (result.ok) { setNow(Date.now()); setAttempt(result.value); } else fail(result.code);
   }
@@ -101,7 +109,8 @@ export function AgentAccountsSection({ initial }: Props): JSX.Element {
   async function cancel(): Promise<void> {
     if (!pending) return;
     setBusy(true);
-    const result = await cancelCodexLogin(pending.id);
+    const result = await api.cancelCodexLogin(pending.id);
+    if (!mounted.current) return;
     setBusy(false);
     if (!result.ok) return fail(result.code);
     setAttempt(null);
@@ -111,7 +120,8 @@ export function AgentAccountsSection({ initial }: Props): JSX.Element {
 
   async function verify(target: PersonalAgentAccount): Promise<void> {
     setBusy(true); setError(null); setNotice(null);
-    const result = await verifyCodexAccount(target.id);
+    const result = await api.verifyCodexAccount(target.id);
+    if (!mounted.current) return;
     setBusy(false); setConfirm(null); setConsent(false);
     if (result.ok) setNotice(t('agentAccounts.verifySucceeded')); else fail(result.code);
     await refresh();
@@ -119,7 +129,8 @@ export function AgentAccountsSection({ initial }: Props): JSX.Element {
 
   async function unlink(target: PersonalAgentAccount): Promise<void> {
     setBusy(true); setError(null); setNotice(null);
-    const result = await unlinkCodexAccount(target.id);
+    const result = await api.unlinkCodexAccount(target.id);
+    if (!mounted.current) return;
     setBusy(false); setConfirm(null);
     if (!result.ok) fail(result.code);
     await refresh();
@@ -159,12 +170,12 @@ export function AgentAccountsSection({ initial }: Props): JSX.Element {
         {pending ? (
           <div className={styles.pending}>
             <p className={styles.hint}>{t('agentAccounts.pendingInstructions')}</p>
-            {pending.verificationUrl ? (
+            {pending.expiresAt > now && pending.verificationUrl ? (
               <a className={styles.link} href={pending.verificationUrl} target="_blank" rel="noopener noreferrer">
                 {t('agentAccounts.openVerification')}
               </a>
             ) : null}
-            {pending.userCode ? (
+            {pending.expiresAt > now && pending.userCode ? (
               <div className={styles.codeRow}>
                 <span className={styles.label}>{t('agentAccounts.userCodeLabel')}</span>
                 <code className={styles.code} aria-label={t('agentAccounts.userCodeLabel')}>{pending.userCode}</code>

@@ -104,3 +104,4 @@ export * from './analytics/observability.js';
 export * from './observability/index.js';
 
 export * from './api/amr-continuation.js';
+export * from './api/multiuser-runs.js';

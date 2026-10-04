@@ -3,14 +3,15 @@ import path from 'node:path';
 import type { Express } from 'express';
 
 /** Public code only. No generic static root or SPA catch-all is authorized. */
-export const MULTIUSER_SHELL_PATHS = ['/', '/login', '/setup', '/projects', '/admin/users', '/admin/audit'] as const;
+export const MULTIUSER_SHELL_PATHS = ['/', '/login', '/setup', '/projects', '/admin/users', '/admin/audit', '/account/agents', '/projects/:projectId', '/projects/:projectId/conversations/:conversationId'] as const;
 export const MULTIUSER_ASSET_PATHS = ['/app-icon.png', '/fonts/AlbertSans-VariableFont_wght.ttf', '/fonts/AlbertSans-Italic-VariableFont_wght.ttf', '/fonts/JiduMonoPro-Regular.otf'] as const;
 export const MULTIUSER_BUILD_ASSET_ROUTE = '/_next/static/*asset';
 
 export function publicMultiUserFile(rawPath: string): string | null {
   // Require one canonical spelling; never decode path separators or dot segments.
   if (rawPath.includes('%') || rawPath.includes('\\') || rawPath.includes('//')) return null;
-  if ((MULTIUSER_SHELL_PATHS as readonly string[]).includes(rawPath)) return 'index.html';
+  if (MULTIUSER_SHELL_PATHS.some((route) => !route.includes(':') && route === rawPath)
+      || /^\/projects\/[A-Za-z0-9_-]+(?:\/conversations\/[A-Za-z0-9_-]+)?$/.test(rawPath)) return 'index.html';
   if ((MULTIUSER_ASSET_PATHS as readonly string[]).includes(rawPath)) return rawPath.slice(1);
   if (!/^\/_next\/static\/(?:chunks|media)\/[A-Za-z0-9_.~-]+\.(?:js|css|woff2?|ttf|otf|png|svg)$/.test(rawPath)) return null;
   if (rawPath.split('/').some((part) => part === '.' || part === '..')) return null;

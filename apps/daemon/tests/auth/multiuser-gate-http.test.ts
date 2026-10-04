@@ -143,6 +143,7 @@ describe('route classification covers the real inventory', () => {
       'public-probe GET /api/version',
       'public-web GET /',
       'public-web GET /_next/static/*asset',
+      'public-web GET /account/agents',
       'public-web GET /admin/audit',
       'public-web GET /admin/users',
       'public-web GET /app-icon.png',
@@ -151,6 +152,8 @@ describe('route classification covers the real inventory', () => {
       'public-web GET /fonts/JiduMonoPro-Regular.otf',
       'public-web GET /login',
       'public-web GET /projects',
+      'public-web GET /projects/:projectId',
+      'public-web GET /projects/:projectId/conversations/:conversationId',
       'public-web GET /setup',
     ]);
   });

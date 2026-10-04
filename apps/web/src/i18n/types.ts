@@ -30,6 +30,45 @@ export const LOCALE_LABEL: Record<Locale, string> = {
 // flat (not deeply nested) so missing-key TS errors point straight at the
 // offending string instead of a generic object mismatch.
 export interface Dict {
+  'multiuserRuns.conversations': string;
+  'multiuserRuns.conversationTitle': string;
+  'multiuserRuns.createConversation': string;
+  'multiuserRuns.noConversations': string;
+  'multiuserRuns.untitled': string;
+  'multiuserRuns.history': string;
+  'multiuserRuns.noRuns': string;
+  'multiuserRuns.source': string;
+  'multiuserRuns.company': string;
+  'multiuserRuns.personal': string;
+  'multiuserRuns.pinned': string;
+  'multiuserRuns.message': string;
+  'multiuserRuns.send': string;
+  'multiuserRuns.messageLimit': string;
+  'multiuserRuns.queued': string;
+  'multiuserRuns.running': string;
+  'multiuserRuns.succeeded': string;
+  'multiuserRuns.failed': string;
+  'multiuserRuns.canceled': string;
+  'multiuserRuns.position': string;
+  'multiuserRuns.cancel': string;
+  'multiuserRuns.reconnecting': string;
+  'multiuserRuns.notFound': string;
+  'multiuserRuns.queueLimit': string;
+  'multiuserRuns.quota': string;
+  'multiuserRuns.personalDisabled': string;
+  'multiuserRuns.personalUnavailable': string;
+  'multiuserRuns.personalConsent': string;
+  'multiuserRuns.personalQueue': string;
+  'multiuserRuns.personalBusy': string;
+  'multiuserRuns.personalReauth': string;
+  'multiuserRuns.personalUsage': string;
+  'multiuserRuns.personalWorkspace': string;
+  'multiuserRuns.personalFailed': string;
+  'multiuserRuns.verificationFailed': string;
+  'multiuserRuns.mockOnly': string;
+  'multiuserRuns.managedOnly': string;
+  'multiuserRuns.projectsHelp': string;
+
   'multiuser.selfAccess': string;
   'multiuser.outcomeUnknown': string;
   'multiuser.dismissNotice': string;

@@ -52,7 +52,8 @@ it('keeps company runs unchanged when executionSource is omitted or company_pool
       projectId: project.id, conversationId: project.conversationId, agentId: 'test-mock', message: 'company', ...extra } });
     expect(res.status, res.text).toBe(202);
     expect(Object.keys(res.json.run).sort()).toEqual(
-      ['agentId', 'conversationId', 'createdAt', 'id', 'output', 'projectId', 'queuePosition', 'status', 'updatedAt']);
+      ['agentId', 'conversationId', 'createdAt', 'id', 'message', 'output', 'projectId', 'queuePosition', 'status', 'updatedAt']);
+    expect(res.json.run.message).toBe('company');
   }
   const bogus = await daemon.request({ method: 'POST', path: '/api/runs', cookie: alice.cookie, body: {
     projectId: project.id, conversationId: project.conversationId, agentId: 'test-mock', message: 'x', executionSource: 'other' } });

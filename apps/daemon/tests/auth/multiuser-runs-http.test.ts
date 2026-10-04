@@ -52,6 +52,9 @@ describe('multi-user run isolation over HTTP', () => {
     } finally { db.close(); }
     const own = await daemon.request({ path: `/api/runs/${id}`, cookie: alice.cookie });
     expect(own.status).toBe(200);
+    expect(own.json.message).toBe('alice-private');
+    const history = await daemon.request({ path: `/api/runs?projectId=${p.id}&conversationId=${p.conversationId}`, cookie: alice.cookie });
+    expect(history.json.runs.find((run: { id: string }) => run.id === id)?.message).toBe('alice-private');
     const stream = await daemon.request({ path: `/api/runs/${id}/events`, cookie: alice.cookie });
     expect(stream.status).toBe(200);
     for (const user of [bob, admin]) {
