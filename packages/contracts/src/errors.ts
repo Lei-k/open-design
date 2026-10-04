@@ -189,6 +189,8 @@ export const API_ERROR_CODES = [
   // composer instead of waiting on a stalled create. Retryable: the same
   // client-minted project id may be resubmitted.
   'PROJECT_CREATE_PREPARATION_TIMEOUT',
+  'MULTIUSER_AGENT_FORBIDDEN',
+  'MULTIUSER_IMPORTED_PROJECT_FORBIDDEN',
   'INTERNAL_ERROR',
 ] as const;
 

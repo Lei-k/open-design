@@ -58,6 +58,7 @@ export type MultiUserAccessDecision =
   | { kind: 'blocked' }
   | { kind: 'forbidden' }
   | { kind: 'project-not-found' }
+  | { kind: 'run-not-found' }
   | { kind: 'allow' };
 
 /**
@@ -74,8 +75,9 @@ export function decideMultiUserAccess(input: {
   matches: readonly MultiUserRouteMatch[];
   actor: AuthActor | null;
   isProjectOwner: (projectId: string, accountId: string) => boolean;
+  isRunOwner?: (runId: string, accountId: string) => boolean;
 }): MultiUserAccessDecision {
-  const { matches, actor, isProjectOwner } = input;
+  const { matches, actor, isProjectOwner, isRunOwner } = input;
   const classes = new Set(matches.map((match) => match.entry.routeClass));
   if (classes.size === 1 && (classes.has('public-probe') || classes.has('auth'))) {
     return { kind: 'pass-unauthenticated' };
@@ -92,6 +94,13 @@ export function decideMultiUserAccess(input: {
         const param = match.entry.projectParam;
         const projectId = param ? match.params[param] : undefined;
         if (!projectId || !isProjectOwner(projectId, actor.accountId)) return { kind: 'project-not-found' };
+      }
+      return { kind: 'allow' };
+    case 'owner-scoped-run':
+      for (const match of matches) {
+        const param = match.entry.runParam;
+        const runId = param ? match.params[param] : undefined;
+        if (!runId || !isRunOwner?.(runId, actor.accountId)) return { kind: 'run-not-found' };
       }
       return { kind: 'allow' };
     case 'actor-scoped':
@@ -139,6 +148,7 @@ export interface MultiUserGateDeps {
   auth: Pick<AuthService, 'resolveSession'>;
   allowedOrigins: readonly string[];
   isProjectOwner: (projectId: string, accountId: string) => boolean;
+  isRunOwner?: (runId: string, accountId: string) => boolean;
 }
 
 export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
@@ -150,7 +160,8 @@ export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
     const needsSession = decideMultiUserAccess({ matches, actor: null, isProjectOwner: () => false }).kind
       !== 'pass-unauthenticated';
     const actor = needsSession && cookie.token ? deps.auth.resolveSession(cookie.token) : null;
-    const decision = decideMultiUserAccess({ matches, actor, isProjectOwner: deps.isProjectOwner });
+    const decision = decideMultiUserAccess({ matches, actor, isProjectOwner: deps.isProjectOwner,
+      ...(deps.isRunOwner ? { isRunOwner: deps.isRunOwner } : {}) });
     if (decision.kind === 'pass-unauthenticated') {
       next();
       return;
@@ -177,6 +188,9 @@ export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
         return;
       case 'project-not-found':
         sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
+        return;
+      case 'run-not-found':
+        sendApiError(res, 404, 'NOT_FOUND', 'run not found');
         return;
       case 'allow':
         res.locals[ACTOR_LOCAL] = actor;
@@ -281,6 +295,8 @@ export interface MultiUserFront {
   projectOwnershipHooks: ProjectOwnershipRouteHooks;
   /** Attach the ownership store to the main daemon database once it is open. */
   attachProjectOwnership: (db: Database.Database) => void;
+  setCancelAccountRuns: (cancel: (accountId: string) => void) => void;
+  setIsRunOwner: (check: (runId: string, accountId: string) => boolean) => void;
   /** Install the post-parse body policy; call right after the global JSON parser. */
   installBodyPolicy: (app: Express) => void;
   /** Refuse to listen unless every registration is classified and wiring is complete. */
@@ -302,12 +318,15 @@ export function installMultiUserFront(
     ...(mode.auth.sessionIdleTtlMs ? { sessionIdleTtlMs: mode.auth.sessionIdleTtlMs } : {}),
   });
   let ownership: ProjectOwnershipStore | null = null;
+  let cancelAccountRuns: ((accountId: string) => void) | null = null;
+  let isRunOwner: ((runId: string, accountId: string) => boolean) | null = null;
   let bodyPolicyInstalled = false;
 
   app.use(acknowledgePathlessUse(createMultiUserGate({
     auth,
     allowedOrigins: mode.allowedOrigins,
     isProjectOwner: (projectId, accountId) => ownership?.isOwnedBy(projectId, accountId) ?? false,
+    isRunOwner: (runId, accountId) => isRunOwner?.(runId, accountId) ?? false,
   }), 'authorization-gate'));
   // Mounted before any global body parser (resolves the parser-order residual
   // risk documented in routes/auth.ts).
@@ -315,6 +334,7 @@ export function installMultiUserFront(
     auth,
     bootstrapSecret: mode.bootstrapSecret,
     allowedOrigins: mode.allowedOrigins,
+    onAccountSessionsRevoked: (accountId) => cancelAccountRuns?.(accountId),
   });
 
   const projectOwnershipHooks: ProjectOwnershipRouteHooks = {
@@ -336,6 +356,8 @@ export function installMultiUserFront(
     attachProjectOwnership(db) {
       ownership = new ProjectOwnershipStore(db);
     },
+    setCancelAccountRuns(cancel) { cancelAccountRuns = cancel; },
+    setIsRunOwner(check) { isRunOwner = check; },
     installBodyPolicy(target) {
       target.use(acknowledgePathlessUse(createMultiUserBodyPolicy(), 'body-policy'));
       bodyPolicyInstalled = true;
@@ -351,6 +373,8 @@ export function installMultiUserFront(
       }
       if (!bodyPolicyInstalled) throw new Error('multi-user mode refused: body policy middleware was not installed');
       if (!ownership) throw new Error('multi-user mode refused: project ownership store was not attached');
+      if (!cancelAccountRuns) throw new Error('multi-user mode refused: isolated run service was not attached');
+      if (!isRunOwner) throw new Error('multi-user mode refused: run ownership lookup was not attached');
     },
     close() {
       store.close();
