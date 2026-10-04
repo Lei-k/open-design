@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
+import type { MultiUserRun, MultiUserRunEvent } from '@open-design/contracts';
 import { getConversation, getProject } from '../db.js';
 import { sendApiError } from '../http/api-errors.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
@@ -16,7 +17,7 @@ import type { PersonalRunLaneControls } from './multiuser-agent-accounts.js';
 
 type RunRow = {
   id: string; owner_account_id: string; project_id: string; conversation_id: string;
-  status: string; created_at: number; updated_at: number; output: string | null;
+  status: 'queued' | 'active' | 'succeeded' | 'failed' | 'canceled'; created_at: number; updated_at: number; output: string | null;
   request_json: string | null; queue_seq: number | null;
   execution_source: 'company_pool' | 'personal_subscription'; personal_account_id: string | null;
   credential_version: number | null; started_at: number | null; ended_at: number | null;
@@ -184,14 +185,15 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     WHERE status = 'queued' AND owner_account_id = ? AND queue_seq <= ? AND execution_source = ?`)
     .get(run.owner_account_id, run.queue_seq, run.execution_source) as { n: number }).n : null;
   const isPersonal = (run: RunRow) => run.execution_source === 'personal_subscription';
-  const body = (run: RunRow) => ({
+  const body = (run: RunRow): MultiUserRun => ({
     id: run.id, projectId: run.project_id, conversationId: run.conversation_id,
     agentId: isPersonal(run) ? 'codex' : 'test-mock', status: run.status === 'active' ? 'running' : run.status,
     queuePosition: queuePosition(run), createdAt: run.created_at,
     updatedAt: run.updated_at, output: run.output ? JSON.parse(run.output) : null,
+    message: run.request_json ? JSON.parse(run.request_json).message ?? null : null,
     ...(isPersonal(run) ? { executionSource: 'personal_subscription' as const } : {}),
   });
-  const emit = (id: string, event: string, data: unknown) => {
+  const emit = <E extends MultiUserRunEvent['event']>(id: string, event: E, data: Extract<MultiUserRunEvent, { event: E }>['data']) => {
     const seq = (db.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM multiuser_run_events WHERE run_id = ?').get(id) as { seq: number }).seq;
     const payload = JSON.stringify(data);
     db.prepare('INSERT INTO multiuser_run_events (run_id, seq, event, data) VALUES (?, ?, ?, ?)').run(id, seq, event, payload);

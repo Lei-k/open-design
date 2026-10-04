@@ -1,0 +1,56 @@
+import { useState, type FormEvent } from 'react';
+import { Button } from '@open-design/components';
+import type { PersonalAgentAccountsResponse, RunExecutionSource } from '@open-design/contracts';
+import { useT } from '../i18n';
+import { isAbort, runErrorKey } from './run-errors';
+import styles from './Runs.module.css';
+
+export function validRunMessage(message: string): boolean {
+  return message.trim().length > 0 && message.length <= 64_000
+    && new TextEncoder().encode(JSON.stringify({ message })).byteLength <= 64 * 1024;
+}
+
+export function RunComposer({ accounts, pinnedSource, send }: {
+  accounts: PersonalAgentAccountsResponse | null;
+  pinnedSource: RunExecutionSource | null;
+  send: (message: string, source: RunExecutionSource) => Promise<void>;
+}) {
+  const t = useT();
+  const [choice, setChoice] = useState<RunExecutionSource | null>(null);
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const source = pinnedSource ?? choice;
+  const personalEnabled = accounts?.personalSubscriptionsEnabled === true && accounts.codex.account?.status === 'connected';
+  const unavailableKey = !accounts ? 'multiuser.loading'
+    : !accounts.personalSubscriptionsEnabled ? 'multiuserRuns.personalDisabled'
+    : accounts.codex.account?.status === 'requires_reauth' ? 'multiuserRuns.personalReauth'
+    : accounts.codex.account?.status === 'disabled' ? 'multiuserRuns.personalWorkspace'
+    : 'multiuserRuns.personalUnavailable';
+  const allowed = source !== null && (source === 'company_pool' || personalEnabled);
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!allowed || !source || !validRunMessage(message) || busy) return;
+    setBusy(true); setError(null);
+    try { await send(message, source); setMessage(''); }
+    catch (e) { if (!isAbort(e)) setError(e); }
+    finally { setBusy(false); }
+  }
+  return <form className={styles.composer} onSubmit={submit}>
+    <fieldset className={styles.sources}><legend>{t('multiuserRuns.source')}</legend>
+      {(['company_pool', 'personal_subscription'] as const).map((value) => <label key={value}>
+        <input type="radio" name="execution-source" value={value} checked={source === value}
+          disabled={busy || pinnedSource !== null || (value === 'personal_subscription' && !personalEnabled)}
+          aria-describedby={value === 'personal_subscription' && !personalEnabled ? 'personal-unavailable' : undefined}
+          onChange={() => setChoice(value)} />
+        <span>{t(value === 'company_pool' ? 'multiuserRuns.company' : 'multiuserRuns.personal')}</span>
+      </label>)}
+    </fieldset>
+    {pinnedSource && <p className={styles.hint}>{t('multiuserRuns.pinned')}</p>}
+    {!personalEnabled && <p id="personal-unavailable" className={styles.hint}>{t(unavailableKey)} <a href="/account/agents">{t('agentAccounts.navTitle')}</a></p>}
+    <label className={styles.message}>{t('multiuserRuns.message')}<textarea value={message} rows={4} maxLength={64_000} aria-describedby="message-limit" onChange={(event) => setMessage(event.target.value)} /></label>
+    <p id="message-limit" className={styles.hint}>{t('multiuserRuns.messageLimit')}</p>
+    {Boolean(error) && <p role="alert" className={styles.error}>{t(runErrorKey(error))}</p>}
+    <Button variant="primary" type="submit" disabled={busy || !allowed || !validRunMessage(message)}>{t(busy ? 'multiuser.saving' : 'multiuserRuns.send')}</Button>
+  </form>;
+}

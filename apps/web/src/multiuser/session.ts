@@ -2,7 +2,7 @@ import type { AuthAccount } from '@open-design/contracts';
 
 export type SessionState = { generation: number; status: 'checking' | 'anonymous' | 'ready' | 'error'; account: AuthAccount | null; outcomeUnknown: boolean };
 export class RequestFailure extends Error {
-  constructor(readonly status: number) { super('Request failed'); }
+  constructor(readonly status: number, readonly code: string | null = null) { super('Request failed'); }
 }
 export const AUTH_CHANGE_KEY = 'open-design:auth-change';
 export const SESSION_CHECK_MS = 60_000;
@@ -45,7 +45,7 @@ export class CookieSession {
   }
   async request<T>(url: string, init?: RequestInit, generation = this.state.generation): Promise<T> {
     if (generation !== this.state.generation) throw new DOMException('Stale request', 'AbortError');
-    const signal = this.abort.signal;
+    const signal = init?.signal ? AbortSignal.any([this.abort.signal, init.signal]) : this.abort.signal;
     const ownedMutation = !['GET', 'HEAD'].includes((init?.method ?? 'GET').toUpperCase()) && !['/api/auth/login', '/api/auth/logout', '/api/auth/setup'].includes(url);
     const operation = Symbol();
     if (ownedMutation) {
@@ -64,13 +64,39 @@ export class CookieSession {
         if (response.status === 401 && url !== '/api/auth/me' && !url.endsWith('/login') && !url.endsWith('/setup')) {
           this.withdraw(); this.publish('anonymous');
         }
-        throw new RequestFailure(response.status);
+        const error = body && typeof body === 'object' && 'error' in body ? body.error : null;
+        const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : null;
+        throw new RequestFailure(response.status, code);
       }
       return body as T;
     } finally {
       this.pendingMutations.delete(operation);
       if (this.recheckRequested && !this.hasPendingMutation() && !this.mutation && !this.externalMutation && !this.checking) void this.verify();
     }
+  }
+  /** Stream transport uses the same generation fence and cookie as JSON requests. */
+  async stream(url: string, mountSignal: AbortSignal, generation: number): Promise<Response> {
+    if (generation !== this.state.generation) throw new DOMException('Stale stream', 'AbortError');
+    const signal = AbortSignal.any([this.abort.signal, mountSignal]);
+    const response = await fetch(url, { credentials: 'same-origin', cache: 'no-store', signal, headers: { Accept: 'text/event-stream' } });
+    if (signal.aborted || generation !== this.state.generation) {
+      await response.body?.cancel();
+      throw new DOMException('Stale stream', 'AbortError');
+    }
+    if (!response.ok) {
+      await response.body?.cancel();
+      if (response.status === 401) { this.withdraw(); this.publish('anonymous'); }
+      throw new RequestFailure(response.status);
+    }
+    return response;
+  }
+  /** A mount owns its resources; session withdrawal aborts them synchronously. */
+  bindMount(controller: AbortController, generation: number): () => void {
+    const signal = this.abort.signal;
+    const abort = () => controller.abort();
+    if (signal.aborted || generation !== this.state.generation) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+    return () => { signal.removeEventListener('abort', abort); controller.abort(); };
   }
   receiveAuthChange = (value: string | null) => {
     this.externalMutation = value?.startsWith('pending:') ?? false;

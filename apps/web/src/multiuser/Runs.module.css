@@ -1,0 +1,24 @@
+.composer { display: grid; gap: 12px; margin: 24px 0; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-panel); }
+.sources { margin: 0; padding: 0; border: 0; display: grid; gap: 10px; min-width: 0; }
+.sources legend { margin-bottom: 10px; font-weight: 600; color: var(--text-strong); }
+.composer .sources label { flex-direction: row; align-items: center; gap: 10px; min-height: 44px; }
+.composer .sources input { width: 18px; height: 18px; min-height: 18px; margin: 0; padding: 0; flex-shrink: 0; accent-color: var(--accent); }
+.message { display: grid; gap: 8px; }
+.message textarea { width: 100%; min-width: 0; resize: vertical; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); color: var(--text-strong); font: inherit; line-height: 1.5; }
+.hint { margin: 0; font-size: 13px; color: var(--text-muted); overflow-wrap: anywhere; }
+.error { margin: 0; padding: 12px; background: var(--red-bg); color: var(--text-strong); border: 1px solid var(--red-border); border-radius: var(--radius-sm); }
+.composer > button { justify-self: start; }
+.history { list-style: none; padding: 0; display: grid; gap: 16px; }
+.run { padding: 20px; min-width: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-panel); overflow-wrap: anywhere; }
+.metadata { display: flex; flex-wrap: wrap; gap: 8px 20px; justify-content: space-between; font-size: 13px; color: var(--text-muted); }
+.prompt { white-space: pre-wrap; color: var(--text-strong); font-weight: 600; }
+.output { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.accounts label { flex-direction: row; align-items: center; gap: 10px; }
+.accounts input[type='checkbox'] { width: 18px; height: 18px; min-height: 18px; padding: 0; flex-shrink: 0; accent-color: var(--accent); }
+@media (max-width: 640px) {
+  .composer { padding: 16px; }
+  .message textarea { font-size: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer *, .history *, .accounts * { animation: none; transition: none; }
+}

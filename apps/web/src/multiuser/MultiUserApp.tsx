@@ -5,6 +5,9 @@ import { Folder, LogOut, Users, ClipboardList } from 'lucide-react';
 import type { AuthAccount, AuthAccountListResponse, AuthAuditListResponse, AuthCreateAccountResponse, AuthIssueSetupCredentialResponse, AuthSetupCredential } from '@open-design/contracts';
 import { useI18n, useT } from '../i18n';
 import { AUTH_CHANGE_KEY, CookieSession, RequestFailure, SESSION_CHECK_MS } from './session';
+import { AgentAccountsPage } from './AgentAccountsPage';
+import { ProjectConversations } from './ProjectConversations';
+import { ConversationRuns } from './ConversationRuns';
 import styles from './MultiUserApp.module.css';
 
 function failureKey(error: unknown) {
@@ -101,13 +104,15 @@ function SignedIn(props: OwnedProps) {
   const t = useT();
   const route = window.location.pathname.replace(/\/$/, '') || '/';
   const adminPage = route.startsWith('/admin');
+  const projectRoute = /^\/projects\/([A-Za-z0-9_-]+)(?:\/conversations\/([A-Za-z0-9_-]+))?$/.exec(route);
   return <div className={styles.shell}><header className={styles.header}><Brand /><div className={styles.identity}><span>{props.account.username}</span><span className={styles.badge}>{t(props.account.role === 'admin' ? 'multiuser.admin' : 'multiuser.user')}</span><Button onClick={() => void props.session.logout()}><LogOut size={16} />{t('multiuser.signOut')}</Button></div></header>
     <div className={styles.body}><nav aria-label={t('multiuser.navigation')} className={styles.nav}>
-      <a href="/projects" aria-current={!adminPage ? 'page' : undefined}><Folder size={18} />{t('multiuser.projects')}</a>
+      <a href="/projects" aria-current={route === '/projects' || projectRoute ? 'page' : undefined}><Folder size={18} />{t('multiuser.projects')}</a>
+      <a href="/account/agents" aria-current={route === '/account/agents' ? 'page' : undefined}>{t('agentAccounts.navTitle')}</a>
       {props.account.role === 'admin' && <><a href="/admin/users" aria-current={route === '/admin/users' ? 'page' : undefined}><Users size={18} />{t('multiuser.users')}</a><a href="/admin/audit" aria-current={route === '/admin/audit' ? 'page' : undefined}><ClipboardList size={18} />{t('multiuser.audit')}</a></>}
     </nav><main className={styles.content}>
       <p className={styles.muted}>{t('multiuser.testOnly')}</p>
-      {adminPage && props.account.role !== 'admin' ? <><h1>{t('multiuser.denied')}</h1><p>{t('multiuser.adminOnly')}</p></> : route === '/admin/users' ? <AdminUsers {...props} /> : route === '/admin/audit' ? <Audit {...props} /> : <Projects {...props} />}
+      {adminPage && props.account.role !== 'admin' ? <><h1>{t('multiuser.denied')}</h1><p>{t('multiuser.adminOnly')}</p></> : route === '/admin/users' ? <AdminUsers {...props} /> : route === '/admin/audit' ? <Audit {...props} /> : route === '/account/agents' ? <AgentAccountsPage {...props} /> : projectRoute?.[2] ? <ConversationRuns {...props} projectId={projectRoute[1]!} conversationId={projectRoute[2]} /> : projectRoute ? <ProjectConversations {...props} projectId={projectRoute[1]!} /> : <Projects {...props} />}
     </main></div></div>;
 }
 
@@ -135,10 +140,10 @@ function Projects(props: OwnedProps) {
     catch (e) { if (!isAborted(e)) setActionError(t(failureKey(e))); }
     finally { setBusy(false); }
   }
-  return <><h1>{t('multiuser.projects')}</h1><p>{t('multiuser.projectsHelp')}</p>
+  return <><h1>{t('multiuser.projects')}</h1><p>{t('multiuserRuns.projectsHelp')}</p>
     <form className={styles.inlineForm} onSubmit={create}><label>{t('multiuser.projectName')}<input name="name" required maxLength={120} /></label><Button variant="primary" type="submit" disabled={busy}>{t('multiuser.createProject')}</Button></form>
     {actionError && <Alert>{actionError}</Alert>}
-    {error ? <><Alert>{t('multiuser.requestError')}</Alert><Button onClick={() => setRevision((r) => r + 1)}>{t('multiuser.retry')}</Button></> : !data ? <p role="status">{t('multiuser.loading')}</p> : data.projects.length === 0 ? <p className={styles.empty}>{t('multiuser.noProjects')}</p> : <ul className={styles.list}>{data.projects.map((project) => <li key={project.id}><Folder size={20} /><strong>{project.name}</strong><span className={styles.muted}>{t('multiuser.metadataOnly')}</span></li>)}</ul>}
+    {error ? <><Alert>{t('multiuser.requestError')}</Alert><Button onClick={() => setRevision((r) => r + 1)}>{t('multiuser.retry')}</Button></> : !data ? <p role="status">{t('multiuser.loading')}</p> : data.projects.length === 0 ? <p className={styles.empty}>{t('multiuser.noProjects')}</p> : <ul className={styles.list}>{data.projects.map((project) => <li key={project.id}><Folder size={20} /><a href={`/projects/${encodeURIComponent(project.id)}`}><strong>{project.name}</strong></a></li>)}</ul>}
   </>;
 }
 

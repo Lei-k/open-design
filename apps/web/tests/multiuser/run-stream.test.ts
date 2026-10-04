@@ -1,0 +1,61 @@
+import { afterEach, expect, it, vi } from 'vitest';
+import { CookieSession } from '../../src/multiuser/session';
+import { watchRunEvents } from '../../src/multiuser/run-stream';
+const cleanups: Array<() => void> = [];
+afterEach(() => { cleanups.splice(0).forEach((fn) => fn()); vi.unstubAllGlobals(); vi.useRealTimers(); });
+it('replays and reconnects without delivering a persisted sequence twice', async () => {
+  vi.useFakeTimers();
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  const fetcher = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } })));
+  vi.stubGlobal('fetch', fetcher);
+  const session = new CookieSession();
+  const seen: string[] = [];
+  const reconnect = vi.fn();
+  const stop = watchRunEvents({ session, generation: 0 }, 'run', (frame) => seen.push(String(frame.data.text ?? frame.event)), reconnect, vi.fn());
+  cleanups.push(stop);
+  await vi.advanceTimersByTimeAsync(0);
+  stream.enqueue(new TextEncoder().encode('id: 1\nevent: agent\ndata: {"text":"first"}\n\n'));
+  stream.close();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(seen).toEqual(['first']); expect(reconnect).toHaveBeenLastCalledWith(true);
+  await vi.advanceTimersByTimeAsync(1499); expect(fetcher).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1); expect(fetcher).toHaveBeenCalledTimes(2);
+  stream.enqueue(new TextEncoder().encode('id: 1\nevent: agent\ndata: {"text":"first"}\n\nid: 2\nevent: agent\ndata: {"text":"second"}\n\nid: 3\nevent: end\ndata: {"status":"succeeded"}\n\n'));
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(seen).toEqual(['first', 'second', 'end']); expect(fetcher).toHaveBeenCalledTimes(2);
+});
+it.each(['withdraw', 'unmount'])('cancels an open reader on %s even when transport ignores abort', async (action) => {
+  let signal: AbortSignal | null | undefined;
+  const cancel = vi.fn();
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+    signal = init?.signal;
+    return new Response(new ReadableStream<Uint8Array>({ cancel }));
+  }));
+  const session = new CookieSession();
+  const event = vi.fn();
+  const stop = watchRunEvents({ session, generation: 0 }, 'run', event, vi.fn(), vi.fn());
+  cleanups.push(stop);
+  await vi.waitFor(() => expect(signal).toBeTruthy());
+  if (action === 'withdraw') session.withdraw(); else stop();
+  expect(signal?.aborted).toBe(true);
+  await vi.waitFor(() => expect(cancel).toHaveBeenCalledTimes(1));
+  expect(event).not.toHaveBeenCalled();
+});
+it('a stream 401 withdraws identity without retrying', async () => {
+  vi.useFakeTimers();
+  const fetcher = vi.fn(async () => new Response('{}', { status: 401 }));
+  vi.stubGlobal('fetch', fetcher);
+  const session = new CookieSession();
+  cleanups.push(watchRunEvents({ session, generation: 0 }, 'run', vi.fn(), vi.fn(), vi.fn()));
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(session.snapshot().status).toBe('anonymous'); expect(fetcher).toHaveBeenCalledTimes(1);
+});
+it('does not keep reconnecting an inaccessible run', async () => {
+  vi.useFakeTimers();
+  const fetcher = vi.fn(async () => new Response('{}', { status: 404 }));
+  vi.stubGlobal('fetch', fetcher);
+  const session = new CookieSession(); const failure = vi.fn();
+  cleanups.push(watchRunEvents({ session, generation: 0 }, 'missing', vi.fn(), vi.fn(), failure));
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(failure).toHaveBeenCalledTimes(1); expect(fetcher).toHaveBeenCalledTimes(1);
+});
