@@ -1151,7 +1151,15 @@ import {
 import { resolveAmrModelProbe } from './runtimes/amr-model-probe.js';
 import { createPluginInstallationHelpers, normalizeProjectPluginFolderPath, resolveProjectChildDirectory } from './services/plugin-installation.js';
 import { createPluginShareTaskStore } from './services/plugin-share-tasks.js';
-import { getRouteRegistrationInventory, installRouteRegistrationGuard } from './route-registration-guard.js';
+import {
+  acknowledgePathlessUse,
+  getPathlessRouteRegistrationInventory,
+  getPatternRouteRegistrationInventory,
+  getRouteRegistrationInventory,
+  installRouteRegistrationGuard,
+} from './route-registration-guard.js';
+import { installMultiUserFront } from './http/multiuser-gate.js';
+import { resolveMultiUserMode, type MultiUserModeOptions } from './services/multiuser-mode.js';
 import { assertServerContextSatisfiesRoutes } from './route-context-contract.js';
 import { configureConnectorCredentialStore, connectorService, FileConnectorCredentialStore } from './connectors/service.js';
 import { composioConnectorProvider } from './connectors/composio.js';
@@ -3109,6 +3117,13 @@ export interface StartServerOptions {
    * boundary; HTTP bodies, assistant prose, and raw stdout are never inputs.
    */
   odNextComplexProductionResolver?: OdNextComplexProductionResolver | null;
+  /**
+   * Multi-user authorization gate (#3/#4). Default off. Test-only and not
+   * launch-ready: there is no environment switch, no production entrypoint
+   * passes this, and it must carry the exact acknowledgement literal. See
+   * services/multiuser-mode.ts and specs/current/web-multiuser-authz-gate.md.
+   */
+  multiUser?: MultiUserModeOptions | null;
 }
 
 export function startAmrTerminalReportDeliveryAfterBind(
@@ -3125,6 +3140,10 @@ export interface StartServerResult {
   server: import('node:http').Server;
   shutdown: () => Promise<void> | void;
   routeInventory: import('./route-registration-guard.js').RouteRegistration[];
+  /** Routes registered with a RegExp/array path (`String(path)`), kept out of `routeInventory`. */
+  patternRouteInventory: import('./route-registration-guard.js').RouteRegistration[];
+  /** Present only in multi-user mode; pathless app.use registrations. */
+  pathlessRouteInventory?: import('./route-registration-guard.js').RouteRegistration[];
 }
 
 export async function startServer({
@@ -3140,11 +3159,18 @@ export async function startServer({
   inheritedEnvironment = () => ({}),
   odNextExecutionPreflightResolver = null,
   odNextComplexProductionResolver = null,
+  multiUser = null,
 }: StartServerOptions = {}) {
   host = normalizeDaemonBindHost(host);
+  // Resolved once, before any side effect: null (single-user, the default)
+  // or a validated multi-user configuration. Refusals throw here.
+  const multiUserMode = resolveMultiUserMode({ options: multiUser, env: process.env, host });
   let resolvedPort = port;
   let daemonShuttingDown = false;
-  const extraAllowedOrigins = configuredAllowedOrigins();
+  const extraAllowedOrigins = [
+    ...configuredAllowedOrigins(),
+    ...(multiUserMode?.allowedOrigins ?? []),
+  ];
   const workspaceAuthorityCacheMode = resolveWorkspaceAuthorityCacheMode(
     process.env.OD_WORKSPACE_AUTHORITY_CACHE_MODE,
   );
@@ -3196,6 +3222,12 @@ export async function startServer({
 
   const app = express();
   installRouteRegistrationGuard(app);
+  // Multi-user mode only: the authorization gate and the auth registrar go in
+  // front of every body parser and route. Single-user mode installs nothing.
+  const multiUserFront = multiUserMode ? installMultiUserFront(app, {
+    mode: multiUserMode,
+    dataRoot: RUNTIME_DATA_DIR,
+  }) : null;
   // Clipper page captures are self-contained HTML with inlined images plus a
   // Figma IR, which for an image-heavy site (The Economist, news front pages)
   // runs to tens of MB — far past a normal JSON body. Give the ingest route a
@@ -3218,7 +3250,8 @@ export async function startServer({
   // exactly the incidents it was built for, and silently: the uploader reports
   // `res.ok` and the export continues without the evidence.
   app.use(CHAT_SCROLL_FORENSICS_PATH, chatScrollForensicsBodyParser);
-  app.use(express.json({ limit: '4mb' }));
+  app.use(acknowledgePathlessUse(express.json({ limit: '4mb' }), 'json-parser'));
+  multiUserFront?.installBodyPolicy(app);
   const projectPreviewScopes = createProjectPreviewScopeRegistry();
 
   // Plan §3.K1 — API-token middleware.
@@ -3487,6 +3520,7 @@ export async function startServer({
     previousLogPath: resolveDaemonPreviousLogPath(runtime),
   });
   const db = openDatabase(PROJECT_ROOT, { dataDir: RUNTIME_DATA_DIR });
+  multiUserFront?.attachProjectOwnership(db);
   daemonHealth?.setStorageProbe(() => readSqlitePageStats({ db, file: db.name }));
   const amrTerminalReportOutbox = createAmrTerminalReportOutboxStore(db);
   const amrTerminalReportDelivery = createAmrTerminalReportDeliveryService({
@@ -3737,7 +3771,12 @@ export async function startServer({
   });
 
   if (fs.existsSync(staticDir)) {
-    app.use(express.static(staticDir));
+    // The root static tree can contain API-looking paths. Keep the registration
+    // visible to the startup audit, but let no static file answer in multi-user mode.
+    app.use(acknowledgePathlessUse(
+      multiUserMode ? (_req, _res, next) => next() : express.static(staticDir),
+      'root-static',
+    ));
   }
 
   // ---- Projects (DB-backed) -------------------------------------------------
@@ -8706,6 +8745,7 @@ export async function startServer({
   registerProjectRoutes(app, {
     db,
     design,
+    projectOwnership: multiUserFront?.projectOwnershipHooks ?? null,
     // Test seam for the POST /api/projects preparation deadline; production
     // keeps the route's 15s default when the variable is unset or invalid.
     ...(projectCreatePreparationTimeoutMs != null
@@ -18083,6 +18123,7 @@ export async function startServer({
       proactiveContentPull.dispose();
       collabPublishWatcher.dispose();
       collabCloud?.dispose();
+      multiUserFront?.close();
     };
     const shutdownDaemonRuns = async () => {
       if (daemonShutdownStarted) return;
@@ -18104,6 +18145,13 @@ export async function startServer({
     };
     let server;
     try {
+      // Multi-user mode refuses to listen with an unclassified route
+      // inventory or incomplete gate wiring (the catch below cleans up).
+      multiUserFront?.assertReady([
+        ...getRouteRegistrationInventory(app),
+        ...getPatternRouteRegistrationInventory(app),
+        ...getPathlessRouteRegistrationInventory(app),
+      ]);
       server = app.listen(port, host);
       server.once('listening', () => {
         // Widen the between-request idle window so kept-alive sockets
@@ -18173,6 +18221,8 @@ export async function startServer({
           server,
           shutdown: shutdownDaemonRuns,
           routeInventory: getRouteRegistrationInventory(app),
+          patternRouteInventory: getPatternRouteRegistrationInventory(app),
+          ...(multiUserMode ? { pathlessRouteInventory: getPathlessRouteRegistrationInventory(app) } : {}),
         } : url);
       });
     } catch (error) {

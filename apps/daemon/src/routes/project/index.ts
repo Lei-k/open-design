@@ -8,6 +8,7 @@ import {
 } from '../../chat-artifacts/store.js';
 import type { Express, Request, Response } from 'express';
 import type { LintArtifactRequest, LintArtifactResponse } from '@open-design/contracts';
+import type { ProjectOwnershipRouteHooks } from '../../http/multiuser-gate.js';
 import {
   PREVIEW_OBSERVABILITY_BRIDGE_MARKER,
   buildPreviewBaseHrefBridge,
@@ -337,6 +338,12 @@ export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | '
    * the `OD_PROJECT_CREATE_PREPARATION_TIMEOUT_MS` env seam may shorten it.
    */
   projectCreatePreparationTimeoutMs?: number;
+  /**
+   * Multi-user mode only (#3): scopes `GET /api/projects` to the actor and
+   * binds the actor as immutable owner inside the create transaction. Absent
+   * or null in single-user mode, which keeps the original behaviour.
+   */
+  projectOwnership?: ProjectOwnershipRouteHooks | null;
   pluginScope?: {
     loadRegistry: (options: {
       workspaceId?: string | null;
@@ -3331,6 +3338,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
   });
 
   app.get('/api/projects', async (_req, res) => {
+    const projectOwnership = ctx.projectOwnership ?? null;
     try {
       const locations = await configuredProjectLocations();
       const latestRunStatuses = listLatestProjectRunStatuses(db);
@@ -3365,7 +3373,9 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       // ever resolve to misses).
       /** @type {import('@open-design/contracts').ProjectsResponse} */
       const body = {
-        projects: listUnboundProjects(db)
+        projects: (projectOwnership
+          ? projectOwnership.filterVisibleProjects(res, listUnboundProjects(db))
+          : listUnboundProjects(db))
           .filter((project: any) => projectVisibleForLocations(project, locations))
           .map((project: any) => ({
             ...project,
@@ -4412,6 +4422,9 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
             id,
             now,
           );
+          // Multi-user mode: the actor becomes the immutable owner in this same
+          // transaction; a failed bind rolls the whole create back.
+          ctx.projectOwnership?.bindCreatedProject(res, id, now);
           if (resolveBody && registry) {
             const resolved = resolvePluginSnapshot({
               db,

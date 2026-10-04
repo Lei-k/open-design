@@ -12,7 +12,7 @@ export type StartedDaemonRuntime = StartedServer & {
   stop(): Promise<void>;
 };
 
-type DaemonRuntimeOptions = Omit<StartServerOptions, 'returnServer'> & {
+type DaemonRuntimeOptions = Omit<StartServerOptions, 'returnServer' | 'multiUser'> & {
   openBrowser?: boolean;
   logListening?: boolean;
 };
@@ -116,6 +116,9 @@ export async function closeHttpServer(
 }
 
 export async function startDaemonRuntime(options: DaemonRuntimeOptions = {}): Promise<StartedDaemonRuntime> {
+  if (Object.hasOwn(options, 'multiUser')) {
+    throw new Error('multi-user mode is test-only and cannot be supplied to startDaemonRuntime');
+  }
   const { openBrowser: shouldOpenBrowser = false, logListening = false, ...serverOptions } = options;
   const { startServer } = await import('./server.js');
   const started = await startServer({
