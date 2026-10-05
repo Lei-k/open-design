@@ -6,11 +6,12 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   cleanupIsolatedDataRoot, loadIsolatedServerModule, login, multiUserOptions, provisionAccounts,
   startMultiUserDaemon, type Principal, type StartedMultiUserDaemon,
 } from './multiuser-harness.js';
+import * as personalCodexAccounts from '../../src/services/personal-codex-accounts.js';
 import { PERSONAL_CODEX_MOCK, RUN_MOCK, actorDir, codexHome, linkCodex, looseModes, setTurnMode, summary, until } from './personal-codex-helpers.js';
 
 let daemon: StartedMultiUserDaemon;
@@ -336,7 +337,7 @@ describe('damaged queued run requests', () => {
     expect(events.names).toEqual(['queued', 'end']);
     expect(events.text).not.toContain(MARKER);
     expect(JSON.stringify(run)).not.toContain(MARKER);
-    expect(appDb((db) => db.prepare('SELECT started_at FROM multiuser_runs WHERE id = ?').get(runId))).toEqual({ started_at: null });
+    expect(appDb((db) => db.prepare('SELECT started_at, ended_at FROM multiuser_runs WHERE id = ?').get(runId))).toEqual({ started_at: null, ended_at: null });
     expect(existsSync(path.join(actorDir(dataRoot, user.id), runId))).toBe(false);
     expect(ledgerRow(runId)).toBeUndefined();
   }
@@ -400,33 +401,88 @@ describe('damaged queued run requests', () => {
     await personalCapacity(0);
     const convo = await newProject(alice);
     const broken = (await personal(alice, 'start-throws', convo)).json.run.id;
-    const next = (await personal(alice, 'after-start-throws', convo)).json.run.id;
+    const turnBefore = personalTurn(alice);
+    const maxBefore = maxPersonalTurn();
     // Fault injection: persisting this row's start event fails.
     appDb((db) => db.exec(`CREATE TRIGGER test_start_fails BEFORE INSERT ON multiuser_run_events
       WHEN NEW.event = 'start' AND NEW.run_id = '${broken}' BEGIN SELECT RAISE(ABORT, 'planted start failure'); END`));
     try {
       await personalCapacity(1);
       expect(await finished(alice, broken)).toMatchObject({ status: 'failed', output: { reason: 'MULTIUSER_PERSONAL_RUN_FAILED' } });
+      expect(personalTurn(alice)).toBe(turnBefore);
+      expect(appDb((db) => db.prepare('SELECT started_at, ended_at FROM multiuser_runs WHERE id = ?').get(broken)))
+        .toEqual({ started_at: null, ended_at: null });
+      expect((await eventsOf(alice, broken)).names).toEqual(['queued', 'end']);
+      expect(ledgerRow(broken)).toBeUndefined();
+      const next = (await personal(alice, 'after-start-throws', convo)).json.run.id;
       expect((await finished(alice, next)).status).toBe('succeeded');
+      expect(personalTurn(alice)).toBe(maxBefore + 1);
     } finally { appDb((db) => db.exec('DROP TRIGGER IF EXISTS test_start_fails')); }
   });
 
-  it('ends a damaged company-pool request as an ordinary failed run with its ledger entry closed', async () => {
+  it('keeps committed personal start accounting when the launcher throws before spawning', async () => {
+    await personalCapacity(0);
+    const convo = await newProject(alice);
+    const broken = (await personal(alice, 'launcher-throws', convo)).json.run.id;
+    const maxBefore = maxPersonalTurn();
+    // Replace one launcher call at the existing module seam; no child is spawned.
+    const launch = vi.spyOn(personalCodexAccounts, 'runPersonalCodexTurn').mockImplementationOnce(() => {
+      throw new Error('planted launcher failure');
+    });
+    try {
+      await personalCapacity(1);
+      expect(await finished(alice, broken)).toMatchObject({ status: 'failed', output: { reason: 'MULTIUSER_PERSONAL_RUN_FAILED' } });
+      expect(launch).toHaveBeenCalledTimes(1);
+      expect(personalTurn(alice)).toBe(maxBefore + 1);
+      expect(appDb((db) => db.prepare('SELECT started_at, ended_at FROM multiuser_runs WHERE id = ?').get(broken)))
+        .toEqual({ started_at: clock, ended_at: clock });
+      expect((await eventsOf(alice, broken)).names).toEqual(['queued', 'start', 'end']);
+      expect(ledgerRow(broken)).toBeUndefined();
+      const next = (await personal(alice, 'after-launcher-throws', convo)).json.run.id;
+      expect((await finished(alice, next)).status).toBe('succeeded');
+      expect(personalTurn(alice)).toBe(maxBefore + 2);
+    } finally { launch.mockRestore(); }
+  });
+
+  const maxCompanyTurn = () => appDb((db) => (db.prepare('SELECT MAX(last_seq) AS n FROM multiuser_pool_turns').get() as { n: number | null }).n ?? 0);
+  const companyTurn = (user: Principal) => appDb((db) => (db.prepare('SELECT last_seq FROM multiuser_pool_turns WHERE account_id = ?')
+    .get(user.id) as { last_seq: number } | undefined)?.last_seq);
+
+  it.each([
+    ['invalid JSON', INVALID_JSON], ['null', 'null'], ['array', '[]'], ['primitive', '7'],
+    ['missing message', JSON.stringify({ other: MARKER })], ['non-string message', JSON.stringify({ message: [MARKER] })],
+  ])('fails a damaged company-pool %s before admission and dispatches the next valid row', async (_name, requestJson) => {
     await companyCapacity(0);
-    const invalid = (await company(alice, 'company-damaged-1')).json.run.id;
-    const nullRequest = (await company(alice, 'company-damaged-2')).json.run.id;
-    const valid = (await company(alice, 'company-valid')).json.run.id;
-    damage(invalid, INVALID_JSON);
-    damage(nullRequest, 'null');
+    const invalid = (await company(alice, 'company-damaged')).json.run.id;
+    const valid = (await company(alice, 'company-valid', 100)).json.run.id;
+    damage(invalid, requestJson);
+    const turnBefore = maxCompanyTurn();
     await companyCapacity(1);
-    for (const id of [invalid, nullRequest]) {
-      expect(await finished(alice, id)).toMatchObject({ status: 'failed', output: null });
-      expect(ledgerRow(id)).toMatchObject({ status: 'finished' });
-      expect((await eventsOf(alice, id)).text).not.toContain(MARKER);
-    }
+    await expectRequestInvalid(alice, invalid);
     const run = await finished(alice, valid);
     expect(run.status, JSON.stringify(run)).toBe('succeeded');
     expect(run.output.message).toBe('company-valid');
     expect(ledgerRow(valid)).toMatchObject({ status: 'finished' });
+    expect(companyTurn(alice)).toBe(turnBefore + 1);
+  });
+
+  it('rolls back a company start failure and closes its admitted ledger entry before dispatching again', async () => {
+    await companyCapacity(0);
+    const broken = (await company(alice, 'company-start-throws')).json.run.id;
+    const turnBefore = companyTurn(alice);
+    const maxBefore = maxCompanyTurn();
+    appDb((db) => db.exec(`CREATE TRIGGER test_company_start_fails BEFORE INSERT ON multiuser_run_events
+      WHEN NEW.event = 'start' AND NEW.run_id = '${broken}' BEGIN SELECT RAISE(ABORT, 'planted start failure'); END`));
+    try {
+      await companyCapacity(1);
+      expect(await finished(alice, broken)).toMatchObject({ status: 'failed', output: { reason: 'MULTIUSER_RUN_START_FAILED' } });
+      expect(companyTurn(alice)).toBe(turnBefore);
+      expect((await eventsOf(alice, broken)).names).toEqual(['queued', 'end']);
+      expect(ledgerRow(broken)).toMatchObject({ status: 'finished', ended_at: clock });
+      const next = (await company(alice, 'after-company-start-throws')).json.run.id;
+      expect((await finished(alice, next)).status).toBe('succeeded');
+      expect(companyTurn(alice)).toBe(maxBefore + 1);
+      expect(ledgerRow(next)).toMatchObject({ status: 'finished' });
+    } finally { appDb((db) => db.exec('DROP TRIGGER IF EXISTS test_company_start_fails')); }
   });
 });
