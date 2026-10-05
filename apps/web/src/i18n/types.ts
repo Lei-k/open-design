@@ -68,6 +68,11 @@ export interface Dict {
   'multiuserRuns.mockOnly': string;
   'multiuserRuns.managedOnly': string;
   'multiuserRuns.projectsHelp': string;
+  'multiuserRuns.lockedTo': string;
+  'multiuserRuns.pinStale': string;
+  'multiuserRuns.loadOlder': string;
+  'multiuserRuns.prompt': string;
+  'multiuserRuns.output': string;
 
   'multiuser.selfAccess': string;
   'multiuser.outcomeUnknown': string;

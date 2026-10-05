@@ -225,7 +225,7 @@ it.each(['role', '401'])('withdraws admin data on a heartbeat reporting %s', asy
   expect(screen.queryByRole('button', { name: 'Create account' })).toBeNull();
   expect(change === 'role' ? screen.getByText('Access denied') : screen.getByRole('button', { name: 'Sign in' })).toBeTruthy();
 });
-it('defers focus verification during create and preserves its one-use result', async () => {
+it('checks a same identity during create without disturbing it, then confirms after it settles', async () => {
   const held = deferred<Response>(); const { fetcher } = adminRequests(() => held.promise);
   render(<ClientApp />); await screen.findByLabelText('Username');
   fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'new-user' } });
@@ -234,10 +234,11 @@ it('defers focus verification during create and preserves its one-use result', a
   const before = fetcher.mock.calls.filter(([url]) => url === '/api/auth/me').length;
   await act(async () => window.dispatchEvent(new Event('focus')));
   expect(mutation[1]?.signal?.aborted).toBe(false);
-  expect(fetcher.mock.calls.filter(([url]) => url === '/api/auth/me')).toHaveLength(before);
+  expect(fetcher.mock.calls.filter(([url]) => url === '/api/auth/me')).toHaveLength(before + 1);
   await act(async () => held.resolve(json({ setup: { token: 'd'.repeat(43), expiresAt: Date.now() + 60_000 } })));
   expect(screen.getByLabelText('One-time setup link', { selector: 'input' })).toBeTruthy();
-  expect(fetcher.mock.calls.filter(([url]) => url === '/api/auth/me')).toHaveLength(before + 1);
+  expect(screen.queryByText(/Outcome unknown/)).toBeNull();
+  expect(fetcher.mock.calls.filter(([url]) => url === '/api/auth/me')).toHaveLength(before + 2);
 });
 it('reports an unknown mutation outcome after genuine cross-tab withdrawal without leaking its late result', async () => {
   const held = deferred<Response>(); adminRequests(() => held.promise); render(<ClientApp />); await screen.findByLabelText('Username');
@@ -252,4 +253,20 @@ it('reports an unknown mutation outcome after genuine cross-tab withdrawal witho
 
 it('rechecks safely after StrictMode effect cleanup without getting stuck', async () => {
   render(<StrictMode><ClientApp /></StrictMode>); await screen.findByText('Alice private project');
+});
+it.each(['role', '401'])('applies a server %s change during a hung owned write', async (change) => {
+  const held = deferred<Response>(); const state = adminRequests(() => held.promise); const tick = heartbeat();
+  render(<ClientApp />); await screen.findByLabelText('Username');
+  fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'new-user' } });
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Create account' })));
+  const mutation = state.fetcher.mock.calls.find(([url, init]) => url === '/api/auth/users' && init?.method === 'POST')!;
+  if (change === 'role') state.setRole(); else state.expire();
+  await act(async () => tick());
+  // The write never settled, yet the routine check ran and withdrew the old identity.
+  expect(change === 'role' ? screen.getByText('Access denied') : screen.getByRole('button', { name: 'Sign in' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Create account' })).toBeNull();
+  expect(mutation[1]?.signal?.aborted).toBe(true);
+  expect(screen.getByText(/Outcome unknown/)).toBeTruthy();
+  await act(async () => held.resolve(json({ setup: { token: 'd'.repeat(43), expiresAt: Date.now() + 60_000 } })));
+  expect(screen.queryByLabelText('One-time setup link', { selector: 'input' })).toBeNull();
 });

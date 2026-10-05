@@ -6,6 +6,8 @@ export class RequestFailure extends Error {
 }
 export const AUTH_CHANGE_KEY = 'open-design:auth-change';
 export const SESSION_CHECK_MS = 60_000;
+/** A peer tab's `pending:` marker with no follow-up stops withholding verification after this long. */
+export const EXTERNAL_MUTATION_MS = 10_000;
 
 /** One in-memory cookie-session boundary. No credential or account is persisted. */
 export class CookieSession {
@@ -14,6 +16,7 @@ export class CookieSession {
   private abort = new AbortController();
   private mutation = false;
   private externalMutation = false;
+  private externalMutationTimer: ReturnType<typeof setTimeout> | undefined;
   private pendingMutations = new Map<symbol, number>();
   private verificationRevision = 0;
   private checking = false;
@@ -35,7 +38,11 @@ export class CookieSession {
     this.state = { generation: this.state.generation + 1, status: 'checking', account: null, outcomeUnknown };
     this.listeners.forEach((listener) => listener());
   };
-  dispose = () => { this.verificationRevision++; this.abort.abort(); this.recheckRequested = false; };
+  dispose = () => {
+    this.verificationRevision++; this.abort.abort(); this.recheckRequested = false;
+    // A disposed listener can no longer receive a peer's completion marker.
+    clearTimeout(this.externalMutationTimer); this.externalMutation = false;
+  };
   private signalChange(pending = false) {
     // A random invalidation marker only; never identity, links or credentials.
     try { localStorage.setItem(AUTH_CHANGE_KEY, `${pending ? 'pending' : 'changed'}:${crypto.randomUUID()}`); } catch { /* storage unavailable */ }
@@ -99,16 +106,26 @@ export class CookieSession {
     return () => { signal.removeEventListener('abort', abort); controller.abort(); };
   }
   receiveAuthChange = (value: string | null) => {
+    clearTimeout(this.externalMutationTimer);
     this.externalMutation = value?.startsWith('pending:') ?? false;
     this.withdraw();
-    if (!this.externalMutation) void this.verify();
+    if (!this.externalMutation) { void this.verify(); return; }
+    // A peer that closed mid-sign-in never sends its completion marker.
+    this.externalMutationTimer = setTimeout(() => { this.externalMutation = false; void this.verify(); }, EXTERNAL_MUTATION_MS);
   };
+  /**
+   * Routine checks also run while an owned write is in flight, so a server-side
+   * 401, deactivation or id/role change is not postponed by a hung write. A check
+   * that began before a write still loses to it (revision fence), and a check
+   * that overlapped a write is repeated once the write settles.
+   */
   verify = async () => {
     if (this.abort.signal.aborted) this.abort = new AbortController();
-    if (this.mutation || this.externalMutation || this.hasPendingMutation() || this.checking) { this.recheckRequested = true; return; }
+    if (this.mutation || this.externalMutation || this.checking) { this.recheckRequested = true; return; }
     this.checking = true; this.recheckRequested = false;
     const generation = this.state.generation;
     const revision = this.verificationRevision;
+    const duringWrite = this.hasPendingMutation();
     try {
       const result = await this.request<{ account: AuthAccount }>('/api/auth/me');
       if (generation !== this.state.generation || revision !== this.verificationRevision || this.abort.signal.aborted) return;
@@ -118,8 +135,11 @@ export class CookieSession {
       }
       if (!a.active) { this.withdraw(); this.publish('anonymous'); return; }
       const previous = this.state.account;
-      if (previous && (previous.id !== a.id || previous.role !== a.role || previous.active !== a.active)) this.withdraw();
+      const changed = previous !== null && (previous.id !== a.id || previous.role !== a.role || previous.active !== a.active);
+      if (changed) this.withdraw();
       this.publish('ready', a);
+      // An overlapping write may take effect after this read; confirm once it settles.
+      if (duringWrite && !changed) this.recheckRequested = true;
     } catch (error) {
       if (generation !== this.state.generation || revision !== this.verificationRevision) return;
       if (error instanceof RequestFailure && error.status === 401) { this.withdraw(); this.publish('anonymous'); return; }

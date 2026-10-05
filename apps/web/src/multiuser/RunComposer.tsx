@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { Button } from '@open-design/components';
+import { Lock } from 'lucide-react';
 import type { PersonalAgentAccountsResponse, RunExecutionSource } from '@open-design/contracts';
 import { useT } from '../i18n';
 import { isAbort, runErrorKey } from './run-errors';
@@ -10,9 +11,15 @@ export function validRunMessage(message: string): boolean {
     && new TextEncoder().encode(JSON.stringify({ message })).byteLength <= 64 * 1024;
 }
 
-export function RunComposer({ accounts, pinnedSource, send }: {
+/**
+ * A pinned conversation shows its source as locked, not as unavailable choices.
+ * A stale personal pin (its account was unlinked or replaced) is refused by the
+ * server, so the composer warns and offers no send instead of a doomed one.
+ */
+export function RunComposer({ accounts, pinnedSource, pinStale = false, send }: {
   accounts: PersonalAgentAccountsResponse | null;
   pinnedSource: RunExecutionSource | null;
+  pinStale?: boolean;
   send: (message: string, source: RunExecutionSource) => Promise<void>;
 }) {
   const t = useT();
@@ -27,7 +34,9 @@ export function RunComposer({ accounts, pinnedSource, send }: {
     : accounts.codex.account?.status === 'requires_reauth' ? 'multiuserRuns.personalReauth'
     : accounts.codex.account?.status === 'disabled' ? 'multiuserRuns.personalWorkspace'
     : 'multiuserRuns.personalUnavailable';
-  const allowed = source !== null && (source === 'company_pool' || personalEnabled);
+  const sourceLabel = (value: RunExecutionSource) => t(value === 'company_pool' ? 'multiuserRuns.company' : 'multiuserRuns.personal');
+  const allowed = source !== null && !pinStale && (source === 'company_pool' || personalEnabled);
+  const personalReason = !personalEnabled && !pinStale && pinnedSource !== 'company_pool';
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!allowed || !source || !validRunMessage(message) || busy) return;
@@ -37,17 +46,19 @@ export function RunComposer({ accounts, pinnedSource, send }: {
     finally { setBusy(false); }
   }
   return <form className={styles.composer} onSubmit={submit}>
-    <fieldset className={styles.sources}><legend>{t('multiuserRuns.source')}</legend>
-      {(['company_pool', 'personal_subscription'] as const).map((value) => <label key={value}>
-        <input type="radio" name="execution-source" value={value} checked={source === value}
-          disabled={busy || pinnedSource !== null || (value === 'personal_subscription' && !personalEnabled)}
-          aria-describedby={value === 'personal_subscription' && !personalEnabled ? 'personal-unavailable' : undefined}
-          onChange={() => setChoice(value)} />
-        <span>{t(value === 'company_pool' ? 'multiuserRuns.company' : 'multiuserRuns.personal')}</span>
-      </label>)}
+    <fieldset className={styles.sources} aria-describedby={pinnedSource ? 'source-pinned' : undefined}><legend>{t('multiuserRuns.source')}</legend>
+      {pinnedSource ? <p className={styles.locked}><Lock size={16} aria-hidden="true" />{t('multiuserRuns.lockedTo', { source: sourceLabel(pinnedSource) })}</p>
+        : (['company_pool', 'personal_subscription'] as const).map((value) => <label key={value}>
+          <input type="radio" name="execution-source" value={value} checked={source === value}
+            disabled={busy || (value === 'personal_subscription' && !personalEnabled)}
+            aria-describedby={value === 'personal_subscription' && !personalEnabled ? 'personal-unavailable' : undefined}
+            onChange={() => setChoice(value)} />
+          <span>{sourceLabel(value)}</span>
+        </label>)}
     </fieldset>
-    {pinnedSource && <p className={styles.hint}>{t('multiuserRuns.pinned')}</p>}
-    {!personalEnabled && <p id="personal-unavailable" className={styles.hint}>{t(unavailableKey)} <a href="/account/agents">{t('agentAccounts.navTitle')}</a></p>}
+    {pinnedSource && <p id="source-pinned" className={styles.hint}>{t('multiuserRuns.pinned')}</p>}
+    {pinStale && <p className={styles.warning} role="note">{t('multiuserRuns.pinStale')}</p>}
+    {personalReason && <p id="personal-unavailable" className={styles.hint}>{t(unavailableKey)} <a href="/account/agents">{t('agentAccounts.navTitle')}</a></p>}
     <label className={styles.message}>{t('multiuserRuns.message')}<textarea value={message} rows={4} maxLength={64_000} aria-describedby="message-limit" onChange={(event) => setMessage(event.target.value)} /></label>
     <p id="message-limit" className={styles.hint}>{t('multiuserRuns.messageLimit')}</p>
     {Boolean(error) && <p role="alert" className={styles.error}>{t(runErrorKey(error))}</p>}
