@@ -11,7 +11,7 @@ import {
   cleanupIsolatedDataRoot, loadIsolatedServerModule, login, multiUserOptions, provisionAccounts,
   startMultiUserDaemon, type Principal, type StartedMultiUserDaemon,
 } from './multiuser-harness.js';
-import { PERSONAL_CODEX_MOCK, RUN_MOCK, codexHome, linkCodex, looseModes, setTurnMode, summary, until } from './personal-codex-helpers.js';
+import { PERSONAL_CODEX_MOCK, RUN_MOCK, actorDir, codexHome, linkCodex, looseModes, setTurnMode, summary, until } from './personal-codex-helpers.js';
 
 let daemon: StartedMultiUserDaemon;
 let dataRoot: string;
@@ -304,5 +304,129 @@ describe('personal subscription run lane', () => {
     daemon = await startMultiUserDaemon(options());
     expect((await detail(alice, id)).status).toBe('failed');
     expect(ledgerRow(id)).toBeUndefined();
+  });
+});
+
+// Issue #30 — a queued row whose stored request is damaged must fail before
+// dispatch changes any state, instead of staying active with no child.
+describe('damaged queued run requests', () => {
+  const MARKER = 'damaged-request-marker';
+  const INVALID_JSON = `{"message":"${MARKER}`;
+  /** Overwrite a queued row's stored request, as a damaged database would hold it. */
+  function damage(runId: string, requestJson: string) {
+    const db = new Database(path.join(dataRoot, 'app.sqlite'));
+    try { expect(db.prepare("UPDATE multiuser_runs SET request_json = ? WHERE id = ? AND status = 'queued'").run(requestJson, runId).changes).toBe(1); }
+    finally { db.close(); }
+  }
+  function appDb<T>(read: (db: Database.Database) => T): T {
+    const db = new Database(path.join(dataRoot, 'app.sqlite'));
+    try { return read(db); } finally { db.close(); }
+  }
+  async function eventsOf(user: Principal, runId: string) {
+    const res = await daemon.request({ path: `/api/runs/${runId}/events`, cookie: user.cookie });
+    expect(res.status).toBe(200);
+    return { names: [...res.text.matchAll(/^event: (\w+)$/gmu)].map((match) => match[1]), text: res.text };
+  }
+  async function expectRequestInvalid(user: Principal, runId: string) {
+    const run = await finished(user, runId);
+    expect(run).toMatchObject({ status: 'failed', message: null, output: { reason: 'MULTIUSER_RUN_REQUEST_INVALID' } });
+    expect(run.output).toEqual({ reason: 'MULTIUSER_RUN_REQUEST_INVALID' });
+    const events = await eventsOf(user, runId);
+    // Never started: no start event, no worker time, no runtime home, no company ledger entry.
+    expect(events.names).toEqual(['queued', 'end']);
+    expect(events.text).not.toContain(MARKER);
+    expect(JSON.stringify(run)).not.toContain(MARKER);
+    expect(appDb((db) => db.prepare('SELECT started_at FROM multiuser_runs WHERE id = ?').get(runId))).toEqual({ started_at: null });
+    expect(existsSync(path.join(actorDir(dataRoot, user.id), runId))).toBe(false);
+    expect(ledgerRow(runId)).toBeUndefined();
+  }
+  const maxPersonalTurn = () => appDb((db) => (db.prepare('SELECT MAX(last_seq) AS n FROM multiuser_personal_turns').get() as { n: number | null }).n ?? 0);
+  const personalTurn = (user: Principal) => appDb((db) => (db.prepare('SELECT last_seq FROM multiuser_personal_turns WHERE account_id = ?')
+    .get(user.id) as { last_seq: number } | undefined)?.last_seq);
+
+  it('fails damaged rows when a finishing run dispatches the lane, then runs the next valid row', async () => {
+    const convo = await newProject(alice);
+    const busy = (await personal(alice, 'busy [mock-delay-ms=5000]', convo)).json.run.id;
+    await until(() => detail(alice, busy), (r) => r.status === 'running', 'busy running');
+    const invalid = (await personal(alice, 'to-be-damaged-1', convo)).json.run.id;
+    const nullRequest = (await personal(alice, 'to-be-damaged-2', convo)).json.run.id;
+    const valid = (await personal(alice, 'valid-after-damaged', convo)).json.run.id;
+    damage(invalid, INVALID_JSON);
+    damage(nullRequest, 'null');
+    const turnBefore = maxPersonalTurn();
+    // Ending the busy run is what dispatches the queued rows.
+    const canceled = await daemon.request({ method: 'POST', path: `/api/runs/${busy}/cancel`, cookie: alice.cookie });
+    expect(canceled.status, canceled.text).toBe(200);
+    await expectRequestInvalid(alice, invalid);
+    await expectRequestInvalid(alice, nullRequest);
+    const run = await finished(alice, valid);
+    expect(run.status, JSON.stringify(run)).toBe('succeeded');
+    expect(JSON.parse(run.output.text).message).toBe('valid-after-damaged');
+    // Only the valid row took a personal dispatch turn.
+    expect(personalTurn(alice)).toBe(turnBefore + 1);
+  });
+
+  it('fails damaged rows found at startup and still dispatches valid rows', async () => {
+    await personalCapacity(0);
+    const aliceConvo = await newProject(alice);
+    const carolConvo = await newProject(carol);
+    const rows = {
+      invalid: (await personal(alice, 'startup-damaged-1', aliceConvo)).json.run.id,
+      nullRequest: (await personal(alice, 'startup-damaged-2', aliceConvo)).json.run.id,
+      aliceValid: (await personal(alice, 'startup-valid-alice', aliceConvo)).json.run.id,
+      array: (await personal(carol, 'startup-damaged-3', carolConvo)).json.run.id,
+      numeric: (await personal(carol, 'startup-damaged-4', carolConvo)).json.run.id,
+      carolValid: (await personal(carol, 'startup-valid-carol', carolConvo)).json.run.id,
+    };
+    await daemon.close();
+    damage(rows.invalid, INVALID_JSON);
+    damage(rows.nullRequest, 'null');
+    damage(rows.array, '[]');
+    damage(rows.numeric, '{"message":7}');
+    // The persisted ceiling lets the startup dispatch pick the rows up.
+    appDb((db) => db.prepare("UPDATE multiuser_pool_config SET value = '4' WHERE key = 'personal-capacity'").run());
+    daemon = await startMultiUserDaemon(options());
+    for (const [user, id] of [[alice, rows.invalid], [alice, rows.nullRequest], [carol, rows.array], [carol, rows.numeric]] as const) {
+      await expectRequestInvalid(user, id);
+    }
+    for (const [user, id, message] of [[alice, rows.aliceValid, 'startup-valid-alice'], [carol, rows.carolValid, 'startup-valid-carol']] as const) {
+      const run = await finished(user, id);
+      expect(run.status, JSON.stringify(run)).toBe('succeeded');
+      expect(JSON.parse(run.output.text).message).toBe(message);
+    }
+  });
+
+  it('fails a row whose start throws instead of leaving it active with no child', async () => {
+    await personalCapacity(0);
+    const convo = await newProject(alice);
+    const broken = (await personal(alice, 'start-throws', convo)).json.run.id;
+    const next = (await personal(alice, 'after-start-throws', convo)).json.run.id;
+    // Fault injection: persisting this row's start event fails.
+    appDb((db) => db.exec(`CREATE TRIGGER test_start_fails BEFORE INSERT ON multiuser_run_events
+      WHEN NEW.event = 'start' AND NEW.run_id = '${broken}' BEGIN SELECT RAISE(ABORT, 'planted start failure'); END`));
+    try {
+      await personalCapacity(1);
+      expect(await finished(alice, broken)).toMatchObject({ status: 'failed', output: { reason: 'MULTIUSER_PERSONAL_RUN_FAILED' } });
+      expect((await finished(alice, next)).status).toBe('succeeded');
+    } finally { appDb((db) => db.exec('DROP TRIGGER IF EXISTS test_start_fails')); }
+  });
+
+  it('ends a damaged company-pool request as an ordinary failed run with its ledger entry closed', async () => {
+    await companyCapacity(0);
+    const invalid = (await company(alice, 'company-damaged-1')).json.run.id;
+    const nullRequest = (await company(alice, 'company-damaged-2')).json.run.id;
+    const valid = (await company(alice, 'company-valid')).json.run.id;
+    damage(invalid, INVALID_JSON);
+    damage(nullRequest, 'null');
+    await companyCapacity(1);
+    for (const id of [invalid, nullRequest]) {
+      expect(await finished(alice, id)).toMatchObject({ status: 'failed', output: null });
+      expect(ledgerRow(id)).toMatchObject({ status: 'finished' });
+      expect((await eventsOf(alice, id)).text).not.toContain(MARKER);
+    }
+    const run = await finished(alice, valid);
+    expect(run.status, JSON.stringify(run)).toBe('succeeded');
+    expect(run.output.message).toBe('company-valid');
+    expect(ledgerRow(valid)).toMatchObject({ status: 'finished' });
   });
 });

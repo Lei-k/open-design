@@ -39,6 +39,11 @@ function storedJson(text: string | null): unknown {
   if (!text) return null;
   try { return JSON.parse(text) as unknown; } catch { return null; }
 }
+/**
+ * The stored request's string `message`, or null when the request is damaged
+ * (missing, not JSON, or not an object with a string message). Personal
+ * dispatch refuses a null before it changes any state, never running an empty prompt.
+ */
 function storedMessage(requestJson: string | null): string | null {
   const request = storedJson(requestJson);
   const message = request && typeof request === 'object' ? (request as { message?: unknown }).message : null;
@@ -405,38 +410,48 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           finish(next.id, 'failed', { reason: 'MULTIUSER_PERSONAL_UNAVAILABLE' });
           continue;
         }
+        // A damaged request never starts: no runtime home, active mark, personal turn or start event.
+        const prompt = storedMessage(next.request_json);
+        if (prompt === null) {
+          finish(next.id, 'failed', { reason: 'MULTIUSER_RUN_REQUEST_INVALID' });
+          continue;
+        }
         const runHome = path.join(dataRoot, 'multiuser-runtime', createHash('sha256').update(next.owner_account_id).digest('hex'), next.id);
         const temp = path.join(runHome, 'tmp');
         fs.mkdirSync(temp, { recursive: true, mode: 0o700 });
         for (const dir of [path.dirname(runHome), runHome, temp]) fs.chmodSync(dir, 0o700);
-        db.prepare(`UPDATE ${table} SET status = 'active', started_at = ?, updated_at = ? WHERE id = ?`).run(now(), now(), next.id);
-        db.prepare(`INSERT INTO multiuser_personal_turns (account_id, last_seq)
-          VALUES (?, (SELECT COALESCE(MAX(last_seq), 0) + 1 FROM multiuser_personal_turns))
-          ON CONFLICT(account_id) DO UPDATE SET last_seq = excluded.last_seq`).run(next.owner_account_id);
-        emit(next.id, 'start', { runId: next.id });
         const runId = next.id;
-        const owner = next.owner_account_id;
-        const accountId = account.id;
-        const turn = runPersonalCodexTurn({
-          command, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
-          prompt: (JSON.parse(next.request_json ?? '{}') as { message?: string }).message ?? '',
-          resumeThreadId: session.thread_id, sandboxMode: 'workspace-write',
-          onThread: (threadId) => db.prepare(`UPDATE multiuser_personal_sessions SET thread_id = ?, updated_at = ?
-            WHERE conversation_id = ? AND personal_account_id = ?`).run(threadId, now(), next.conversation_id, accountId),
-          onDone: (result) => {
-            personal.secureHome(owner);
-            if (shuttingDown) return finish(runId, 'canceled', { reason: 'daemon_shutdown' });
-            if (cancelPending.has(runId)) return finish(runId, 'canceled');
-            if (row(runId)?.status !== 'active') return;
-            if (result.ok) {
-              emit(runId, 'agent', { text: result.text });
-              return finish(runId, 'succeeded', { text: result.text, threadId: result.threadId });
-            }
-            if (result.problem) personal.recordProblem(owner, accountId, result.problem);
-            finish(runId, 'failed', { reason: result.problem ? PROBLEM_ERRORS[result.problem].code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
-          },
-        });
-        children.set(runId, turn.child);
+        try {
+          db.prepare(`UPDATE ${table} SET status = 'active', started_at = ?, updated_at = ? WHERE id = ?`).run(now(), now(), next.id);
+          db.prepare(`INSERT INTO multiuser_personal_turns (account_id, last_seq)
+            VALUES (?, (SELECT COALESCE(MAX(last_seq), 0) + 1 FROM multiuser_personal_turns))
+            ON CONFLICT(account_id) DO UPDATE SET last_seq = excluded.last_seq`).run(next.owner_account_id);
+          emit(next.id, 'start', { runId: next.id });
+          const owner = next.owner_account_id;
+          const accountId = account.id;
+          const turn = runPersonalCodexTurn({
+            command, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
+            prompt, resumeThreadId: session.thread_id, sandboxMode: 'workspace-write',
+            onThread: (threadId) => db.prepare(`UPDATE multiuser_personal_sessions SET thread_id = ?, updated_at = ?
+              WHERE conversation_id = ? AND personal_account_id = ?`).run(threadId, now(), next.conversation_id, accountId),
+            onDone: (result) => {
+              personal.secureHome(owner);
+              if (shuttingDown) return finish(runId, 'canceled', { reason: 'daemon_shutdown' });
+              if (cancelPending.has(runId)) return finish(runId, 'canceled');
+              if (row(runId)?.status !== 'active') return;
+              if (result.ok) {
+                emit(runId, 'agent', { text: result.text });
+                return finish(runId, 'succeeded', { text: result.text, threadId: result.threadId });
+              }
+              if (result.problem) personal.recordProblem(owner, accountId, result.problem);
+              finish(runId, 'failed', { reason: result.problem ? PROBLEM_ERRORS[result.problem].code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
+            },
+          });
+          children.set(runId, turn.child);
+        } catch {
+          // Never leave a row holding the owner's slot and a host slot with no child; dispatch moves on.
+          if (!children.has(runId)) finish(runId, 'failed', { reason: 'MULTIUSER_PERSONAL_RUN_FAILED' });
+        }
       }
     } finally {
       personalDispatching = false;
