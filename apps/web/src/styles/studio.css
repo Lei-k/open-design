@@ -1,0 +1,16 @@
+/* Cookie Studio identity remains reachable at both desktop and phone widths. */
+.studio-account-chrome { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 16px; min-height: 52px; border-bottom: 1px solid var(--border); }
+.studio-account-chrome > span { margin-inline-start: auto; }
+.workspace-shell[data-studio-pilot] { height: calc(100dvh - 52px); }
+@media (max-width: 600px) {
+  .studio-account-chrome { gap: 4px; padding: 4px 8px; }
+  .workspace-shell[data-studio-pilot] { height: calc(100dvh - 84px); }
+}
+
+.workspace-shell[data-studio-pilot] .split > .studio-unavailable { grid-column: 3; padding: 16px; min-width: 0; }
+.workspace-shell[data-studio-pilot] .split-chat-collapse { display: none; }
+@media (max-width: 600px) {
+  .workspace-shell[data-studio-pilot] .split { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+  .workspace-shell[data-studio-pilot] .split-resize-handle { display: none; }
+  .workspace-shell[data-studio-pilot] .split > .studio-unavailable { grid-column: 1; grid-row: 2; margin: 0; padding: 8px 16px; font-size: 12px; }
+}

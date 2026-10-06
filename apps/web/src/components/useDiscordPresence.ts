@@ -1,4 +1,4 @@
-import { studioFetch as fetch, studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { studioFetch as fetch, studioWindowLocalStorage } from '../runtime/studio-transport';
 // Shared Discord presence hook backing the entry Discord CTAs.
 //
 // The renderer asks the local daemon for public invite counts so we avoid
@@ -24,7 +24,7 @@ let inflight: Promise<CachedPresence | null> | null = null;
 function readPersistedCache(): CachedPresence | null {
   if (typeof window === 'undefined') return null;
   try {
-    const raw = localStorage.getItem(LS_KEY);
+    const raw = studioWindowLocalStorage().getItem(LS_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<CachedPresence>;
     if (
@@ -47,7 +47,7 @@ function readPersistedCache(): CachedPresence | null {
 function writePersistedCache(value: CachedPresence): void {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(LS_KEY, JSON.stringify(value));
+    studioWindowLocalStorage().setItem(LS_KEY, JSON.stringify(value));
   } catch {
     // The in-memory cache still covers this tab if localStorage is full.
   }

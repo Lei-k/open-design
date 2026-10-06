@@ -1,4 +1,4 @@
-import { studioLocalStorage as localStorage } from '../../runtime/studio-transport';
+import { studioWindowLocalStorage } from '../../runtime/studio-transport';
 import { useCallback, useEffect, useState } from 'react';
 
 const SAVED_PLUGIN_IDS_KEY = 'open-design:saved-plugin-ids';
@@ -8,7 +8,7 @@ type SavedPluginIdsEvent = CustomEvent<{ ids: string[] }>;
 
 function isBrowserStorageAvailable(): boolean {
   try {
-    return typeof window !== 'undefined' && typeof localStorage !== 'undefined';
+    return typeof window !== 'undefined' && typeof studioWindowLocalStorage() !== 'undefined';
   } catch {
     return false;
   }
@@ -30,7 +30,7 @@ export function readSavedPluginIds(): Set<string> {
   if (!isBrowserStorageAvailable()) return new Set();
   try {
     return new Set(
-      normalizePluginIds(JSON.parse(localStorage.getItem(SAVED_PLUGIN_IDS_KEY) ?? '[]')),
+      normalizePluginIds(JSON.parse(studioWindowLocalStorage().getItem(SAVED_PLUGIN_IDS_KEY) ?? '[]')),
     );
   } catch {
     return new Set();
@@ -40,7 +40,7 @@ export function readSavedPluginIds(): Set<string> {
 function writeSavedPluginIds(ids: Iterable<string>): string[] {
   const next = normalizePluginIds([...ids]);
   if (!isBrowserStorageAvailable()) return next;
-  localStorage.setItem(SAVED_PLUGIN_IDS_KEY, JSON.stringify(next));
+  studioWindowLocalStorage().setItem(SAVED_PLUGIN_IDS_KEY, JSON.stringify(next));
   window.dispatchEvent(new CustomEvent(SAVED_PLUGIN_IDS_EVENT, { detail: { ids: next } }));
   return next;
 }

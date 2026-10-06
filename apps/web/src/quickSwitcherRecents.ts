@@ -1,4 +1,4 @@
-import { studioLocalStorage as localStorage } from './runtime/studio-transport';
+import { studioLocalStorage } from './runtime/studio-transport';
 // Recently-opened file tracking for the Quick Switcher (Cmd/Ctrl+P).
 // Scoped per-project so each project keeps its own list. localStorage is
 // the right home: recents are a UX nicety, not source-of-truth state, and
@@ -13,7 +13,7 @@ function key(projectId: string): string {
 
 export function readRecents(projectId: string): string[] {
   try {
-    const raw = localStorage.getItem(key(projectId));
+    const raw = studioLocalStorage().getItem(key(projectId));
     if (!raw) return [];
     const arr = JSON.parse(raw);
     return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : [];
@@ -26,7 +26,7 @@ export function pushRecent(projectId: string, name: string): void {
   try {
     const prev = readRecents(projectId);
     const next = [name, ...prev.filter((p) => p !== name)].slice(0, RECENTS_LIMIT);
-    localStorage.setItem(key(projectId), JSON.stringify(next));
+    studioLocalStorage().setItem(key(projectId), JSON.stringify(next));
   } catch {
     // Quota exceeded or private mode — recents are best-effort, drop silently.
   }

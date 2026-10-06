@@ -1,5 +1,5 @@
 import { StudioLane, useStudioCapabilities } from '../runtime/studio-capabilities';
-import { studioWindowSetTimeout, studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { studioWindowSetTimeout, studioWindowLocalStorage, studioLocalStorage } from '../runtime/studio-transport';
 // Composed Home view — the top-down layout the entry view renders
 // when the left nav rail's "Home" tab is active.
 //
@@ -390,7 +390,7 @@ const HOME_COMPOSER_SEED_EVENT = 'open-design:home-composer:seed';
 function readHomeComposerDraft(key: string): string | null {
   if (typeof window === 'undefined') return null;
   try {
-    return localStorage.getItem(key);
+    return studioWindowLocalStorage().getItem(key);
   } catch {
     return null;
   }
@@ -399,8 +399,8 @@ function readHomeComposerDraft(key: string): string | null {
 function writeHomeComposerDraft(key: string, value: string | null): void {
   if (typeof window === 'undefined') return;
   try {
-    if (value) localStorage.setItem(key, value);
-    else localStorage.removeItem(key);
+    if (value) studioWindowLocalStorage().setItem(key, value);
+    else studioWindowLocalStorage().removeItem(key);
   } catch {
     // Storage unavailable (private mode / quota exceeded) — degrade silently to
     // in-memory-only state; the composer still works for this session.
@@ -3010,7 +3010,7 @@ export function HomeView({
       // accepted — a rejected attempt stays retryable and must resend it.
       const examplePromptKey = 'od:example-prompt-used';
       const examplePromptToSend =
-        examplePromptInfoRef.current != null && localStorage.getItem(examplePromptKey) == null
+        examplePromptInfoRef.current != null && studioLocalStorage().getItem(examplePromptKey) == null
           ? examplePromptInfoRef.current
           : null;
       const accepted = await onSubmit({
@@ -3072,7 +3072,7 @@ export function HomeView({
       // dialog. Keep the composer draft and staged contexts for the retry.
       if (accepted === 'blocked') return;
       // Create accepted — now it is safe to spend the one-shot marker.
-      if (examplePromptToSend) localStorage.setItem(examplePromptKey, '1');
+      if (examplePromptToSend) studioLocalStorage().setItem(examplePromptKey, '1');
       // The draft has become a real run; drop it synchronously (before the
       // navigation unmounts us) so the sent prompt + pick don't reappear the
       // next time the Home tab mounts.

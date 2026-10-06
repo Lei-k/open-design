@@ -1,4 +1,4 @@
-import { studioUsesLocalServices, studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioSessionStorage as sessionStorage } from '../runtime/studio-transport';
+import { studioUsesLocalServices, studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioWindowSessionStorage } from '../runtime/studio-transport';
 import { reportExperienceEvent } from '../observability/experience-diagnostics';
 import { conversationMetaLabel } from '../runtime/chat/conversation-time';
 export { conversationMetaLabel } from '../runtime/chat/conversation-time';
@@ -5918,7 +5918,7 @@ function includeVirtualRowByKey<T extends { key: string }>(
   function readContinuedTodoSnapshotKey(storageKey: string): string | null {
   if (typeof window === 'undefined') return null;
   try {
-    return sessionStorage.getItem(storageKey);
+    return studioWindowSessionStorage().getItem(storageKey);
   } catch {
     return null;
   }
@@ -5927,7 +5927,7 @@ function includeVirtualRowByKey<T extends { key: string }>(
 function writeContinuedTodoSnapshotKey(storageKey: string, snapshotKey: string): void {
   if (typeof window === 'undefined') return;
   try {
-    sessionStorage.setItem(storageKey, snapshotKey);
+    studioWindowSessionStorage().setItem(storageKey, snapshotKey);
   } catch {
     // sessionStorage may be unavailable in sandboxed or privacy-restricted contexts.
   }

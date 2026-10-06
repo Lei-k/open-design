@@ -1,4 +1,4 @@
-import { studioWindowSetTimeout, studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { studioWindowSetTimeout, studioWindowLocalStorage } from '../runtime/studio-transport';
 // Hand-off menu in the ChatPane header. The left split button opens the
 // current design project folder in a local editor, while the dropdown also
 // exposes copy-to-CLI prompts for handing the same local folder to code agents.
@@ -131,7 +131,7 @@ interface Props {
 
 function readPreferred(): HostEditorId | null {
   try {
-    const v = localStorage.getItem(PREFERRED_EDITOR_KEY);
+    const v = studioWindowLocalStorage().getItem(PREFERRED_EDITOR_KEY);
     return (v as HostEditorId) || null;
   } catch {
     return null;
@@ -140,7 +140,7 @@ function readPreferred(): HostEditorId | null {
 
 function writePreferred(id: HostEditorId): void {
   try {
-    localStorage.setItem(PREFERRED_EDITOR_KEY, id);
+    studioWindowLocalStorage().setItem(PREFERRED_EDITOR_KEY, id);
   } catch {
     // ignore — quota or sandboxed
   }
@@ -149,7 +149,7 @@ function writePreferred(id: HostEditorId): void {
 function readPreferredFramework(): string {
   if (typeof window === 'undefined') return DEFAULT_FRAMEWORK.id;
   try {
-    const stored = localStorage.getItem(PREFERRED_FRAMEWORK_KEY);
+    const stored = studioWindowLocalStorage().getItem(PREFERRED_FRAMEWORK_KEY);
     if (stored && FRAMEWORKS.some((f) => f.id === stored)) return stored;
   } catch {
     // ignore
@@ -159,7 +159,7 @@ function readPreferredFramework(): string {
 
 function writePreferredFramework(id: string): void {
   try {
-    localStorage.setItem(PREFERRED_FRAMEWORK_KEY, id);
+    studioWindowLocalStorage().setItem(PREFERRED_FRAMEWORK_KEY, id);
   } catch {
     // ignore — quota or sandboxed
   }

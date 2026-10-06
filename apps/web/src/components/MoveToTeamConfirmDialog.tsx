@@ -1,4 +1,4 @@
-import { studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { studioWindowLocalStorage } from '../runtime/studio-transport';
 import { useId, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Dialog, DialogDescription, DialogFooter, DialogTitle } from '@open-design/components';
@@ -9,7 +9,7 @@ export const MOVE_CONFIRM_SKIP_KEY = 'od.projects.moveConfirmSkip';
 
 export function moveConfirmSkipped(): boolean {
   try {
-    return localStorage.getItem(MOVE_CONFIRM_SKIP_KEY) === '1';
+    return studioWindowLocalStorage().getItem(MOVE_CONFIRM_SKIP_KEY) === '1';
   } catch {
     return false;
   }
@@ -79,7 +79,7 @@ export function MoveToTeamConfirmDialog({
           onClick={() => {
             if (dontRemind) {
               try {
-                localStorage.setItem(MOVE_CONFIRM_SKIP_KEY, '1');
+                studioWindowLocalStorage().setItem(MOVE_CONFIRM_SKIP_KEY, '1');
               } catch {
                 // best-effort persistence
               }

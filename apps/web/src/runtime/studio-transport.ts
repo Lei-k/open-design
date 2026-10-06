@@ -38,9 +38,15 @@ export function studioUsesLocalServices(): boolean { return scope === undefined;
 
 /** Shared request seam: unavailable domains never reach fetch, and a response
  * cannot be consumed after its issuing identity has been withdrawn. */
-export async function studioFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+export function studioFetch(this: unknown, ...args: Parameters<typeof fetch>): Promise<Response> {
+  // Keep the native call synchronous, including thrown errors and promise
+  // identity. An async wrapper changes both even when it simply returns fetch.
+  if (scope === undefined) return Reflect.apply(globalThis.fetch, this, args);
+  return fetchInStudio(...args);
+}
+
+async function fetchInStudio(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const issued = scope;
-  if (issued === undefined) return arguments.length === 1 ? globalThis.fetch(input) : globalThis.fetch(input, init);
   if (!issued || issued.abort.signal.aborted) throw new DOMException('Withdrawn Studio', 'AbortError');
   const requestUrl = input instanceof Request ? input.url : String(input);
   const url = new URL(requestUrl, window.location.origin);
@@ -88,22 +94,28 @@ function storage(kind: 'localStorage' | 'sessionStorage'): Storage {
   const key = (name: string) => `${prefix}${name}`;
   const keys = () => [...(scope?.storage.keys() ?? [])].filter((name) => name.startsWith(prefix));
   return {
-    get length() { return scope === undefined ? window[kind].length : keys().length; },
-    key(index) { return scope === undefined ? window[kind].key(index) : keys()[index]?.slice(prefix.length) ?? null; },
-    getItem(name) { return scope === undefined ? window[kind].getItem(name) : scope?.storage.get(key(name)) ?? null; },
-    setItem(name, value) { if (scope === undefined) window[kind].setItem(name, value); else scope?.storage.set(key(name), String(value)); },
-    removeItem(name) { if (scope === undefined) window[kind].removeItem(name); else scope?.storage.delete(key(name)); },
-    clear() { if (scope === undefined) window[kind].clear(); else for (const name of keys()) scope?.storage.delete(name); },
+    get length() { return keys().length; },
+    key(index) { return keys()[index]?.slice(prefix.length) ?? null; },
+    getItem(name) { return scope?.storage.get(key(name)) ?? null; },
+    setItem(name, value) { scope?.storage.set(key(name), String(value)); },
+    removeItem(name) { scope?.storage.delete(key(name)); },
+    clear() { for (const name of keys()) scope?.storage.delete(name); },
   };
 }
-export const studioLocalStorage = storage('localStorage');
-export const studioSessionStorage = storage('sessionStorage');
+const localMemory = storage('localStorage');
+const sessionMemory = storage('sessionStorage');
+// Return the original object in local mode: native method receivers, borrowed
+// calls, spies, missing arguments and return values must remain untouched.
+// Keep qualified and global bindings distinct (also in non-browser hosts).
+export function studioLocalStorage(): Storage { return scope === undefined ? localStorage : localMemory; }
+export function studioSessionStorage(): Storage { return scope === undefined ? sessionStorage : sessionMemory; }
+export function studioWindowLocalStorage(): Storage { return scope === undefined ? window.localStorage : localMemory; }
+export function studioWindowSessionStorage(): Storage { return scope === undefined ? window.sessionStorage : sessionMemory; }
 
 function timer(repeat: boolean, handler: TimerHandler, delay?: number, ...args: unknown[]): number {
   const issued = scope;
-  if (issued === null) return 0;
+  if (!issued) return 0;
   const schedule = repeat ? globalThis.setInterval : globalThis.setTimeout;
-  if (issued === undefined) return schedule(handler, delay, ...args) as unknown as number;
   const release = () => { globalThis.clearTimeout(id); globalThis.clearInterval(id); };
   const id = schedule(() => {
     if (!repeat) issued.abort.signal.removeEventListener('abort', release);
@@ -112,7 +124,15 @@ function timer(repeat: boolean, handler: TimerHandler, delay?: number, ...args: 
   issued.abort.signal.addEventListener('abort', release, { once: true });
   return id as unknown as number;
 }
-export function studioWindowSetTimeout(handler: TimerHandler, delay?: number, ...args: unknown[]): number { return timer(false, handler, delay, ...args); }
-export function studioWindowSetInterval(handler: TimerHandler, delay?: number, ...args: unknown[]): number { return timer(true, handler, delay, ...args); }
-export const studioSetTimeout = studioWindowSetTimeout as unknown as typeof setTimeout;
-export const studioSetInterval = studioWindowSetInterval as unknown as typeof setInterval;
+export function studioWindowSetTimeout(...args: [TimerHandler, number?, ...unknown[]]): number {
+  return scope === undefined ? Reflect.apply(window.setTimeout, window, args) : timer(false, ...args);
+}
+export function studioWindowSetInterval(...args: [TimerHandler, number?, ...unknown[]]): number {
+  return scope === undefined ? Reflect.apply(window.setInterval, window, args) : timer(true, ...args);
+}
+export const studioSetTimeout = function (this: unknown, ...args: [TimerHandler, number?, ...unknown[]]) {
+  return scope === undefined ? Reflect.apply(globalThis.setTimeout, this, args) : timer(false, ...args);
+} as unknown as typeof setTimeout;
+export const studioSetInterval = function (this: unknown, ...args: [TimerHandler, number?, ...unknown[]]) {
+  return scope === undefined ? Reflect.apply(globalThis.setInterval, this, args) : timer(true, ...args);
+} as unknown as typeof setInterval;

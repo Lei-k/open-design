@@ -1,4 +1,4 @@
-import { studioFetch as fetch, studioLocalStorage as localStorage } from '../../../runtime/studio-transport';
+import { studioFetch as fetch, studioWindowLocalStorage } from '../../../runtime/studio-transport';
 import { useEffect, useState } from 'react';
 import type { WorkspaceCollabContext } from '@open-design/contracts';
 import { workspaceProjectHeaders } from '../../../collab/workspace-identity';
@@ -138,7 +138,7 @@ export function setCritiqueTheaterEnabled(
   if (typeof window === 'undefined') return;
   let parsed: ConfigShape = {};
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = studioWindowLocalStorage().getItem(STORAGE_KEY);
     if (raw) {
       const candidate: unknown = JSON.parse(raw);
       if (candidate && typeof candidate === 'object') {
@@ -150,7 +150,7 @@ export function setCritiqueTheaterEnabled(
   }
   parsed.critiqueTheaterEnabled = next;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+    studioWindowLocalStorage().setItem(STORAGE_KEY, JSON.stringify(parsed));
   } catch {
     /* private mode / quota / disabled storage: the in-session event
        below still propagates to other mounts so the UI stays
@@ -252,7 +252,7 @@ function readToggle(): boolean {
   if (typeof window === 'undefined') return false;
   let raw: string | null;
   try {
-    raw = localStorage.getItem(STORAGE_KEY);
+    raw = studioWindowLocalStorage().getItem(STORAGE_KEY);
   } catch {
     return false;
   }

@@ -1,4 +1,4 @@
-import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioFetch as fetch, studioLocalStorage as localStorage, studioSessionStorage as sessionStorage } from './runtime/studio-transport';
+import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioFetch as fetch, studioWindowSessionStorage } from './runtime/studio-transport';
 import { AdminUsers, Audit } from './multiuser/MultiUserApp';
 import { useStudioCapabilities, StudioUnavailable } from './runtime/studio-capabilities';
 import { StudioAccountChrome } from './runtime/StudioAccountChrome';
@@ -3434,50 +3434,50 @@ function AppInner() {
           (derivedPendingPrompt !== undefined || firstMessageAttachments.length > 0)
         ) {
           try {
-            sessionStorage.setItem(
+            studioWindowSessionStorage().setItem(
               `od:auto-send-first:${result.project.id}`,
               '1',
             );
             if (derivedPendingPrompt !== undefined) {
-              sessionStorage.setItem(
+              studioWindowSessionStorage().setItem(
                 `od:auto-send-prompt:${result.project.id}`,
                 derivedPendingPrompt,
               );
             } else {
-              sessionStorage.removeItem(
+              studioWindowSessionStorage().removeItem(
                 `od:auto-send-prompt:${result.project.id}`,
               );
             }
             if (input.amrGatePrecheckWitness) {
-              sessionStorage.setItem(
+              studioWindowSessionStorage().setItem(
                 `od:auto-send-amr-gate-witness:${result.project.id}`,
                 JSON.stringify(input.amrGatePrecheckWitness),
               );
             } else {
-              sessionStorage.removeItem(
+              studioWindowSessionStorage().removeItem(
                 `od:auto-send-amr-gate-witness:${result.project.id}`,
               );
             }
-            sessionStorage.removeItem(
+            studioWindowSessionStorage().removeItem(
               `od:auto-send-amr-gate-ok:${result.project.id}`,
             );
             if (firstMessageAttachments.length > 0) {
-              sessionStorage.setItem(
+              studioWindowSessionStorage().setItem(
                 `od:auto-send-attachments:${result.project.id}`,
                 JSON.stringify(firstMessageAttachments),
               );
             } else {
-              sessionStorage.removeItem(
+              studioWindowSessionStorage().removeItem(
                 `od:auto-send-attachments:${result.project.id}`,
               );
             }
             if (input.initialRunContext && Object.keys(input.initialRunContext).length > 0) {
-              sessionStorage.setItem(
+              studioWindowSessionStorage().setItem(
                 `od:auto-send-context:${result.project.id}`,
                 JSON.stringify(input.initialRunContext),
               );
             } else {
-              sessionStorage.removeItem(
+              studioWindowSessionStorage().removeItem(
                 `od:auto-send-context:${result.project.id}`,
               );
             }
@@ -3619,10 +3619,10 @@ function AppInner() {
         sourceWorkspaceContext,
       );
       try {
-        sessionStorage.setItem(`od:auto-send-first:${result.project.id}`, '1');
+        studioWindowSessionStorage().setItem(`od:auto-send-first:${result.project.id}`, '1');
         const pendingPrompt = input.pendingPrompt ?? result.project.pendingPrompt;
         if (pendingPrompt !== undefined) {
-          sessionStorage.setItem(
+          studioWindowSessionStorage().setItem(
             `od:auto-send-prompt:${result.project.id}`,
             pendingPrompt,
           );
@@ -3688,12 +3688,12 @@ function AppInner() {
       );
       if (!outcome.ok) return outcome;
       try {
-        sessionStorage.setItem(
+        studioWindowSessionStorage().setItem(
           `od:auto-send-first:${outcome.project.id}`,
           '1',
         );
         if (outcome.project.pendingPrompt !== undefined) {
-          sessionStorage.setItem(
+          studioWindowSessionStorage().setItem(
             `od:auto-send-prompt:${outcome.project.id}`,
             outcome.project.pendingPrompt,
           );
@@ -4703,7 +4703,9 @@ function AppInner() {
   // it to that Workspace. Truly unbound local projects retain the ambient
   // account/workspace tab behavior.
   const workspaceTabsIdentityScopeKey =
-    route.kind === 'project'
+    studio.actor
+      ? `studio:${studio.actor.id}:${studio.generation}`
+      : route.kind === 'project'
       ? activeProject === null
         ? null
         : activeProject.workspaceId

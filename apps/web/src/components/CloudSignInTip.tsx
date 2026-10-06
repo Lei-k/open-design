@@ -1,4 +1,4 @@
-import { studioWindowSetTimeout, studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { studioWindowSetTimeout, studioWindowLocalStorage } from '../runtime/studio-transport';
 import { useEffect, useRef, useState } from 'react';
 import { VisuallyHidden } from '@open-design/components';
 import { Icon } from './Icon';
@@ -38,7 +38,7 @@ const DISMISSED_KEY = 'od.entry.cloudSignInTip.dismissed';
  */
 export function resetCloudSignInTipDismissal(): void {
   try {
-    localStorage.removeItem(DISMISSED_KEY);
+    studioWindowLocalStorage().removeItem(DISMISSED_KEY);
   } catch {
     // best-effort persistence
   }

@@ -1,5 +1,5 @@
 'use client';
-import { studioSetTimeout as setTimeout, studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { studioSetTimeout as setTimeout, studioWindowLocalStorage } from '../runtime/studio-transport';
 import { useStudioCapabilities, StudioUnavailable } from '../runtime/studio-capabilities';
 
 
@@ -6716,7 +6716,7 @@ function stripInlineMentionLabels(text: string, labels: string[]): string {
 function loadComposerDraft(key?: string): string | null {
   if (!key || typeof window === 'undefined') return null;
   try {
-    return localStorage.getItem(key);
+    return studioWindowLocalStorage().getItem(key);
   } catch {
     return null;
   }
@@ -6726,9 +6726,9 @@ function saveComposerDraft(key: string | undefined, draft: string) {
   if (!key || typeof window === 'undefined') return;
   try {
     if (draft) {
-      localStorage.setItem(key, draft);
+      studioWindowLocalStorage().setItem(key, draft);
     } else {
-      localStorage.removeItem(key);
+      studioWindowLocalStorage().removeItem(key);
     }
   } catch {
     // Storage can be unavailable in privacy modes; the composer should still work.

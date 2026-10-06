@@ -1,4 +1,4 @@
-import { studioSetTimeout as setTimeout, studioUsesLocalServices, studioFetch as fetch, studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { studioSetTimeout as setTimeout, studioUsesLocalServices, studioFetch as fetch, studioWindowLocalStorage } from '../runtime/studio-transport';
 import { registerStudioReset } from '../runtime/studio-resources';
 // Project / conversation / message / tab persistence — backed by the
 // daemon's SQLite store. All writes round-trip through HTTP so projects
@@ -1715,7 +1715,7 @@ function readCachedTabs(
   if (typeof window === 'undefined') return null;
   try {
     return normalizeTabsState(JSON.parse(
-      localStorage.getItem(tabsCacheKey(projectId, workspaceContext)) ?? 'null',
+      studioWindowLocalStorage().getItem(tabsCacheKey(projectId, workspaceContext)) ?? 'null',
     ));
   } catch {
     return null;
@@ -1728,7 +1728,7 @@ function removeCachedTabs(
 ): void {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.removeItem(tabsCacheKey(projectId, workspaceContext));
+    studioWindowLocalStorage().removeItem(tabsCacheKey(projectId, workspaceContext));
   } catch {
     // Ignore private-mode/quota errors; the cache entry is best-effort.
   }
@@ -1745,7 +1745,7 @@ function writeCachedTabs(
   };
   if (typeof window !== 'undefined') {
     try {
-      localStorage.setItem(
+      studioWindowLocalStorage().setItem(
         tabsCacheKey(projectId, workspaceContext),
         JSON.stringify(next),
       );

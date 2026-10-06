@@ -1,4 +1,4 @@
-import { studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { studioWindowLocalStorage } from '../runtime/studio-transport';
 // Persisted snapshot of the onboarding "About you" survey: role, org size,
 // use case(s), and how they heard about us.
 //
@@ -76,7 +76,7 @@ export function saveOnboardingProfile(
   const compacted = compact(profile, { defaultCompletedAt: completedAt });
   if (!compacted) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(compacted));
+    studioWindowLocalStorage().setItem(STORAGE_KEY, JSON.stringify(compacted));
   } catch {
     // Persistence is best-effort; never block onboarding completion.
   }
@@ -85,7 +85,7 @@ export function saveOnboardingProfile(
 export function readOnboardingProfile(): OnboardingProfile | null {
   if (typeof window === 'undefined') return null;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = studioWindowLocalStorage().getItem(STORAGE_KEY);
     if (!raw) return null;
     return compact(JSON.parse(raw) as Partial<OnboardingProfile>);
   } catch {

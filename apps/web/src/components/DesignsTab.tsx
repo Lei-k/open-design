@@ -1,4 +1,4 @@
-import { studioWindowSetInterval, studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { studioWindowSetInterval, studioWindowLocalStorage } from '../runtime/studio-transport';
 import type { CSSProperties } from "react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Dialog, DialogDescription, DialogFooter, DialogTitle } from "@open-design/components";
@@ -188,7 +188,7 @@ export function DesignsTab({
 	const [view, setView] = useState<ViewMode>(() => {
 		if (typeof window === "undefined") return "grid";
 		try {
-			const storedView = localStorage.getItem(DESIGNS_VIEW_STORAGE_KEY);
+			const storedView = studioWindowLocalStorage().getItem(DESIGNS_VIEW_STORAGE_KEY);
 			return storedView === "grid" || storedView === "kanban"
 				? storedView
 				: "grid";
@@ -343,7 +343,7 @@ export function DesignsTab({
 
 	useEffect(() => {
 		try {
-			localStorage.setItem(DESIGNS_VIEW_STORAGE_KEY, view);
+			studioWindowLocalStorage().setItem(DESIGNS_VIEW_STORAGE_KEY, view);
 		} catch {}
 	}, [view]);
 

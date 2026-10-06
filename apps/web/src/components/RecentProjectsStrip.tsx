@@ -1,4 +1,4 @@
-import { studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { studioWindowLocalStorage } from '../runtime/studio-transport';
 import { reportProjectFailure } from '../observability/experience-diagnostics';
 // Horizontal "Recent projects" rail for the Home view.
 //
@@ -653,7 +653,7 @@ export function RecentProjectsStrip({
   const [moveTarget, setMoveTarget] = useState<{ project: Project; action: 'to-team' | 'to-personal' } | null>(null);
   const [moveDontRemind, setMoveDontRemind] = useState<boolean>(() => {
     try {
-      return localStorage.getItem(MOVE_CONFIRM_SKIP_KEY) === '1';
+      return studioWindowLocalStorage().getItem(MOVE_CONFIRM_SKIP_KEY) === '1';
     } catch {
       return false;
     }
@@ -674,7 +674,7 @@ export function RecentProjectsStrip({
     if (!moveTarget) return;
     if (moveDontRemind) {
       try {
-        localStorage.setItem(MOVE_CONFIRM_SKIP_KEY, '1');
+        studioWindowLocalStorage().setItem(MOVE_CONFIRM_SKIP_KEY, '1');
       } catch {
         // best-effort persistence
       }

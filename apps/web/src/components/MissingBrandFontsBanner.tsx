@@ -1,4 +1,4 @@
-import { studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { studioWindowLocalStorage } from '../runtime/studio-transport';
 import { useEffect, useState } from 'react';
 import { Button } from '@open-design/components';
 
@@ -20,7 +20,7 @@ function fontBannerDismissKey(projectId: string): string {
 export function isFontBannerDismissed(projectId: string): boolean {
   if (!projectId || typeof window === 'undefined') return false;
   try {
-    return localStorage.getItem(fontBannerDismissKey(projectId)) === '1';
+    return studioWindowLocalStorage().getItem(fontBannerDismissKey(projectId)) === '1';
   } catch {
     return false;
   }
@@ -53,7 +53,7 @@ export function MissingBrandFontsBanner({
   function keepSubstitutes(): void {
     if (projectId && typeof window !== 'undefined') {
       try {
-        localStorage.setItem(fontBannerDismissKey(projectId), '1');
+        studioWindowLocalStorage().setItem(fontBannerDismissKey(projectId), '1');
       } catch {
         // Storage unavailable (private mode, quota). Still hide for this
         // session so the click does something useful.

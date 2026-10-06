@@ -1,4 +1,4 @@
-import { studioFetch as fetch, studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { studioFetch as fetch, studioLocalStorage } from '../runtime/studio-transport';
 import type { AppConfigPrefs } from '@open-design/contracts';
 import { MEDIA_PROVIDERS } from '../media/models';
 import { isOpenAICompatible } from '../providers/openai-compatible';
@@ -681,7 +681,7 @@ function migrateRetiredKnownProviderModel(
 
 export function loadConfig(): AppConfig {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = studioLocalStorage().getItem(STORAGE_KEY);
     if (!raw) {
       return {
         ...DEFAULT_CONFIG,
@@ -1054,7 +1054,7 @@ export function saveConfig(config: AppConfig): void {
   for (const key of RETIRED_SECURE_BYOK_KEYS) {
     delete (sanitized as unknown as Record<string, unknown>)[key];
   }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
+  studioLocalStorage().setItem(STORAGE_KEY, JSON.stringify(sanitized));
 }
 
 /**

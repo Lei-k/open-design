@@ -1,5 +1,5 @@
 import { registerStudioReset } from '../runtime/studio-resources';
-import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioSetInterval as setInterval, studioFetch as fetch, studioSessionStorage as sessionStorage } from '../runtime/studio-transport';
+import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioSetInterval as setInterval, studioFetch as fetch, studioWindowSessionStorage } from '../runtime/studio-transport';
 import { useExperienceError } from '../observability/use-experience-error';
 import { daemonErrorCodeProp, failureDetailProps } from '../analytics/failure-detail';
 import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
@@ -2826,7 +2826,7 @@ function exportReadyNudgeKey(projectId: string, fileName: string): string {
 
 function hasSeenExportReadyNudge(projectId: string, fileName: string): boolean {
   try {
-    return sessionStorage.getItem(exportReadyNudgeKey(projectId, fileName)) === '1';
+    return studioWindowSessionStorage().getItem(exportReadyNudgeKey(projectId, fileName)) === '1';
   } catch {
     return false;
   }
@@ -2834,7 +2834,7 @@ function hasSeenExportReadyNudge(projectId: string, fileName: string): boolean {
 
 function markExportReadyNudgeSeen(projectId: string, fileName: string) {
   try {
-    sessionStorage.setItem(exportReadyNudgeKey(projectId, fileName), '1');
+    studioWindowSessionStorage().setItem(exportReadyNudgeKey(projectId, fileName), '1');
   } catch {
     // Ignore storage-denied contexts; the in-memory state still prevents loops.
   }

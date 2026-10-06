@@ -1,4 +1,4 @@
-import { studioWindowSetTimeout, studioWindowSetInterval, studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { studioWindowSetTimeout, studioWindowSetInterval, studioWindowLocalStorage } from '../runtime/studio-transport';
 import { useEffect, useId, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Button, Dialog } from '@open-design/components';
@@ -103,7 +103,7 @@ function CampaignProviderMark({
 function hasSeenCampaign(campaignId: string): boolean {
   if (typeof window === 'undefined') return true;
   try {
-    return localStorage.getItem(`open-design:campaign-seen:${campaignId}`) === '1';
+    return studioWindowLocalStorage().getItem(`open-design:campaign-seen:${campaignId}`) === '1';
   } catch {
     // Fail closed: when the store is unreadable (private mode, disabled
     // localStorage) `markCampaignSeen` cannot persist either, so answering
@@ -115,7 +115,7 @@ function hasSeenCampaign(campaignId: string): boolean {
 
 function markCampaignSeen(campaignId: string): void {
   try {
-    localStorage.setItem(`open-design:campaign-seen:${campaignId}`, '1');
+    studioWindowLocalStorage().setItem(`open-design:campaign-seen:${campaignId}`, '1');
   } catch {
     // Campaign frequency control is advisory; storage failures must not block Home.
   }

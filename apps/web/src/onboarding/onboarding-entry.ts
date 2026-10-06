@@ -1,5 +1,5 @@
 import { registerStudioReset } from '../runtime/studio-resources';
-import { studioSessionStorage as sessionStorage } from '../runtime/studio-transport';
+import { studioWindowSessionStorage } from '../runtime/studio-transport';
 // Session-only carrier for the onboarding entry that started a project.
 //
 // The Home recommendation knows the entry context (which product path, which
@@ -99,7 +99,7 @@ export function stashOnboardingEntryForProject(
 ): void {
   if (!projectId) return;
   try {
-    sessionStorage.setItem(keyForProject(projectId), JSON.stringify(entry));
+    studioWindowSessionStorage().setItem(keyForProject(projectId), JSON.stringify(entry));
   } catch {
     // Storage-denied contexts just lose the funnel attribution — never throw.
   }
@@ -119,9 +119,9 @@ export function consumeOnboardingEntryForProject(
   if (cached) return cached;
   const key = keyForProject(projectId);
   try {
-    const raw = sessionStorage.getItem(key);
+    const raw = studioWindowSessionStorage().getItem(key);
     if (!raw) return null;
-    sessionStorage.removeItem(key);
+    studioWindowSessionStorage().removeItem(key);
     const parsed = JSON.parse(raw) as Partial<OnboardingEntry>;
     if (
       parsed &&

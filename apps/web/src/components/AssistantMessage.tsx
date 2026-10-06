@@ -1,5 +1,5 @@
 import { registerStudioReset } from '../runtime/studio-resources';
-import { studioSetTimeout as setTimeout, studioSetInterval as setInterval, studioSessionStorage as sessionStorage } from '../runtime/studio-transport';
+import { studioSetTimeout as setTimeout, studioSetInterval as setInterval, studioWindowSessionStorage } from '../runtime/studio-transport';
 import { Fragment, memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCharReveal } from "./chat/useCharReveal";
 import { ExecutionShell } from "./chat/ExecutionShell";
@@ -3538,7 +3538,7 @@ function readInlineQuestionFormDraft(
   const key = inlineQuestionFormDraftStorageKey(formKey);
   if (!key || typeof window === "undefined") return undefined;
   try {
-    const raw = sessionStorage.getItem(key);
+    const raw = studioWindowSessionStorage().getItem(key);
     if (!raw) return undefined;
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -3568,7 +3568,7 @@ function writeInlineQuestionFormDraft(
   const key = inlineQuestionFormDraftStorageKey(formKey);
   if (!key || typeof window === "undefined") return;
   try {
-    sessionStorage.setItem(key, JSON.stringify(answers));
+    studioWindowSessionStorage().setItem(key, JSON.stringify(answers));
   } catch {
     // Form input remains usable when browser storage is unavailable.
   }
@@ -3578,7 +3578,7 @@ function clearInlineQuestionFormDraft(formKey: string | null): void {
   const key = inlineQuestionFormDraftStorageKey(formKey);
   if (!key || typeof window === "undefined") return;
   try {
-    sessionStorage.removeItem(key);
+    studioWindowSessionStorage().removeItem(key);
   } catch {
     // The submitted answer message remains authoritative.
   }
@@ -3623,7 +3623,7 @@ function readInlineQuestionFormSubmitted(formKey: string | null): boolean {
   if (deniedStorageInlineQuestionFormSubmissions.has(key)) return true;
   if (typeof window === "undefined") return false;
   try {
-    return sessionStorage.getItem(key) !== null;
+    return studioWindowSessionStorage().getItem(key) !== null;
   } catch {
     return false;
   }
@@ -3657,7 +3657,7 @@ function markInlineQuestionFormSubmitted(formKey: string | null): void {
   if (!key) return;
   if (typeof window !== "undefined") {
     try {
-      sessionStorage.setItem(key, "1");
+      studioWindowSessionStorage().setItem(key, "1");
     } catch {
       // Denied storage costs the lock its reload survival, not the lock.
       deniedStorageInlineQuestionFormSubmissions.add(key);
@@ -3672,7 +3672,7 @@ function clearInlineQuestionFormSubmitted(formKey: string | null): void {
   deniedStorageInlineQuestionFormSubmissions.delete(key);
   if (typeof window !== "undefined") {
     try {
-      sessionStorage.removeItem(key);
+      studioWindowSessionStorage().removeItem(key);
     } catch {
       // A stale stored lock only blocks re-answering one already-sent form,
       // and the denied-storage fallback has already released it.

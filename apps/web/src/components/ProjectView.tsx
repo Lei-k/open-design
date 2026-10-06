@@ -1,5 +1,5 @@
 import { bindStudioPendingWrite } from '../runtime/studio-resources';
-import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioSetInterval as setInterval, studioFetch as fetch, studioLocalStorage as localStorage, studioSessionStorage as sessionStorage } from '../runtime/studio-transport';
+import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioSetInterval as setInterval, studioFetch as fetch, studioWindowLocalStorage, studioWindowSessionStorage } from '../runtime/studio-transport';
 import { StudioLane, useStudioCapabilities } from '../runtime/studio-capabilities';
 import { readRetriedErrorSurface, retriedErrorSurfaceKey, writeRetriedErrorSurface } from '../runtime/chat/retried-error-surface';
 import {
@@ -1472,7 +1472,7 @@ function designSystemAuditAutoRepairKey(projectId: string): string {
 function readAutoSendAttachments(projectId: string): ChatAttachment[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = sessionStorage.getItem(autoSendAttachmentsKey(projectId));
+    const raw = studioWindowSessionStorage().getItem(autoSendAttachmentsKey(projectId));
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
@@ -1485,7 +1485,7 @@ function readAutoSendAttachments(projectId: string): ChatAttachment[] {
 function readAutoSendPrompt(projectId: string): string | null {
   if (typeof window === 'undefined') return null;
   try {
-    return sessionStorage.getItem(autoSendPromptKey(projectId));
+    return studioWindowSessionStorage().getItem(autoSendPromptKey(projectId));
   } catch {
     return null;
   }
@@ -1494,7 +1494,7 @@ function readAutoSendPrompt(projectId: string): string | null {
 function readAutoSendContext(projectId: string): RunContextSelection | null {
   if (typeof window === 'undefined') return null;
   try {
-    const raw = sessionStorage.getItem(autoSendContextKey(projectId));
+    const raw = studioWindowSessionStorage().getItem(autoSendContextKey(projectId));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as unknown;
     return isStoredRunContextSelection(parsed) ? parsed : null;
@@ -1508,7 +1508,7 @@ function readAutoSendAmrGateWitness(
 ): AmrBalanceGateScope | undefined {
   if (typeof window === 'undefined') return undefined;
   try {
-    const raw = sessionStorage.getItem(
+    const raw = studioWindowSessionStorage().getItem(
       autoSendAmrGateWitnessKey(projectId),
     );
     if (!raw) return undefined;
@@ -1522,12 +1522,12 @@ function readAutoSendAmrGateWitness(
 function clearAutoSendSession(projectId: string): void {
   if (typeof window === 'undefined') return;
   try {
-    sessionStorage.removeItem(autoSendFirstMessageKey(projectId));
-    sessionStorage.removeItem(autoSendPromptKey(projectId));
-    sessionStorage.removeItem(autoSendAttachmentsKey(projectId));
-    sessionStorage.removeItem(autoSendContextKey(projectId));
-    sessionStorage.removeItem(autoSendAmrGateWitnessKey(projectId));
-    sessionStorage.removeItem(legacyAutoSendAmrGateOkKey(projectId));
+    studioWindowSessionStorage().removeItem(autoSendFirstMessageKey(projectId));
+    studioWindowSessionStorage().removeItem(autoSendPromptKey(projectId));
+    studioWindowSessionStorage().removeItem(autoSendAttachmentsKey(projectId));
+    studioWindowSessionStorage().removeItem(autoSendContextKey(projectId));
+    studioWindowSessionStorage().removeItem(autoSendAmrGateWitnessKey(projectId));
+    studioWindowSessionStorage().removeItem(legacyAutoSendAmrGateOkKey(projectId));
   } catch {
     /* ignore */
   }
@@ -1536,7 +1536,7 @@ function clearAutoSendSession(projectId: string): void {
 function markDesignSystemAuditAutoRepairEligible(projectId: string): void {
   if (typeof window === 'undefined') return;
   try {
-    sessionStorage.setItem(
+    studioWindowSessionStorage().setItem(
       designSystemAuditAutoRepairKey(projectId),
       String(DESIGN_SYSTEM_AUDIT_AUTO_REPAIR_ATTEMPTS),
     );
@@ -1549,17 +1549,17 @@ function consumeDesignSystemAuditAutoRepair(projectId: string): boolean {
   if (typeof window === 'undefined') return false;
   try {
     const key = designSystemAuditAutoRepairKey(projectId);
-    const raw = sessionStorage.getItem(key);
+    const raw = studioWindowSessionStorage().getItem(key);
     const attemptsRemaining = raw ? Number.parseInt(raw, 10) : 0;
     if (!Number.isFinite(attemptsRemaining) || attemptsRemaining <= 0) {
-      sessionStorage.removeItem(key);
+      studioWindowSessionStorage().removeItem(key);
       return false;
     }
     const nextAttemptsRemaining = attemptsRemaining - 1;
     if (nextAttemptsRemaining > 0) {
-      sessionStorage.setItem(key, String(nextAttemptsRemaining));
+      studioWindowSessionStorage().setItem(key, String(nextAttemptsRemaining));
     } else {
-      sessionStorage.removeItem(key);
+      studioWindowSessionStorage().removeItem(key);
     }
     return true;
   } catch {
@@ -1570,7 +1570,7 @@ function consumeDesignSystemAuditAutoRepair(projectId: string): boolean {
 function clearDesignSystemAuditAutoRepair(projectId: string): void {
   if (typeof window === 'undefined') return;
   try {
-    sessionStorage.removeItem(designSystemAuditAutoRepairKey(projectId));
+    studioWindowSessionStorage().removeItem(designSystemAuditAutoRepairKey(projectId));
   } catch {
     /* ignore */
   }
@@ -2181,7 +2181,7 @@ export function ProjectView({
     let isHomeAutoSend = false;
     try {
       isHomeAutoSend = Boolean(
-        sessionStorage.getItem(autoSendFirstMessageKey(project.id)),
+        studioWindowSessionStorage().getItem(autoSendFirstMessageKey(project.id)),
       );
     } catch {
       /* sessionStorage may be unavailable; use ordinary initial selection. */
@@ -12750,7 +12750,7 @@ export function ProjectView({
     let amrGateWitness: AmrBalanceGateScope | undefined;
     try {
       isAutoSend = Boolean(
-        sessionStorage.getItem(autoSendFirstMessageKey(project.id)),
+        studioWindowSessionStorage().getItem(autoSendFirstMessageKey(project.id)),
       );
       amrGateWitness = readAutoSendAmrGateWitness(project.id);
     } catch {
@@ -13467,7 +13467,7 @@ export function ProjectView({
     if (homeAttachmentUploads.length > 0) return;
     let flag: string | null = null;
     try {
-      flag = sessionStorage.getItem(autoSendFirstMessageKey(project.id));
+      flag = studioWindowSessionStorage().getItem(autoSendFirstMessageKey(project.id));
     } catch {
       flag = null;
     }
@@ -14659,7 +14659,7 @@ function queuedChatSendsStorageKey(projectId: string): string {
 function loadQueuedChatSends(projectId: string): QueuedChatSend[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(queuedChatSendsStorageKey(projectId));
+    const raw = studioWindowLocalStorage().getItem(queuedChatSendsStorageKey(projectId));
     const parsed = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return [];
     const seenIds = new Set<string>();
@@ -14681,10 +14681,10 @@ function saveQueuedChatSends(projectId: string, items: QueuedChatSend[]): void {
   try {
     const key = queuedChatSendsStorageKey(projectId);
     if (items.length === 0) {
-      localStorage.removeItem(key);
+      studioWindowLocalStorage().removeItem(key);
       return;
     }
-    localStorage.setItem(key, JSON.stringify(items.slice(0, 100)));
+    studioWindowLocalStorage().setItem(key, JSON.stringify(items.slice(0, 100)));
   } catch {
     // Ignore private-mode/quota failures. The in-memory queue still works.
   }

@@ -1,4 +1,4 @@
-import { studioLocalStorage as localStorage } from '../../runtime/studio-transport';
+import { studioWindowLocalStorage } from '../../runtime/studio-transport';
 // First-run Home guidance cascade.
 //
 // A brand-new user (no projects yet) gets a three-beat trail of sheen
@@ -21,7 +21,7 @@ const STORAGE_KEY = 'open-design:home-first-run-guide';
 export function readHomeGuideStage(): HomeGuideStage {
   if (typeof window === 'undefined') return 'done';
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = studioWindowLocalStorage().getItem(STORAGE_KEY);
     if (raw === 'card' || raw === 'done') return raw;
     return 'chip';
   } catch {
@@ -32,7 +32,7 @@ export function readHomeGuideStage(): HomeGuideStage {
 export function writeHomeGuideStage(stage: HomeGuideStage): void {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(STORAGE_KEY, stage);
+    studioWindowLocalStorage().setItem(STORAGE_KEY, stage);
   } catch {
     // Private-mode storage failures just skip the guide.
   }

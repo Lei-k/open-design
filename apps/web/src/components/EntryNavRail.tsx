@@ -1,6 +1,6 @@
 import { registerStudioReset } from '../runtime/studio-resources';
 import { useStudioCapabilities } from '../runtime/studio-capabilities';
-import { studioWindowSetTimeout, studioFetch as fetch, studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { studioWindowSetTimeout, studioFetch as fetch, studioWindowLocalStorage } from '../runtime/studio-transport';
 import { CodingPlanUsage } from './CodingPlanUsage';
 import planCardStyles from './PersonalPlanCard.module.css';
 // Team-edition entry navigation rail (Lovart/Manus-style labeled column).
@@ -389,7 +389,7 @@ function readStoredRecentOpen(): boolean {
   try {
     // Default OPEN: the section is new and a collapsed-by-default disclosure
     // reads as a missing feature.
-    return localStorage.getItem(RECENT_SECTION_STORAGE_KEY) !== 'false';
+    return studioWindowLocalStorage().getItem(RECENT_SECTION_STORAGE_KEY) !== 'false';
   } catch {
     return true;
   }
@@ -552,7 +552,7 @@ function RailRecentSection({
     setOpen((wasOpen) => {
       const next = !wasOpen;
       try {
-        localStorage.setItem(RECENT_SECTION_STORAGE_KEY, String(next));
+        studioWindowLocalStorage().setItem(RECENT_SECTION_STORAGE_KEY, String(next));
       } catch {
         // Private mode / storage disabled: the section still toggles, it just
         // forgets. Never let a storage failure swallow the interaction.

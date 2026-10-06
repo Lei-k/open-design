@@ -24,7 +24,7 @@ function Project() {
       .then((value) => { if (active) setName(value); }).catch(() => {});
     return () => { active = false; };
   }, []);
-  return <><span>{studio.actor!.username}</span><span>{name}</span><input aria-label="draft" defaultValue={studioLocalStorage.getItem('draft') ?? ''} /><Frame /></>;
+  return <><span>{studio.actor!.username}</span><span>{name}</span><input aria-label="draft" defaultValue={studioLocalStorage().getItem('draft') ?? ''} /><Frame /></>;
 }
 function Frame() {
   const studio = useStudioCapabilities(); const pool = useIframeKeepAlivePool(); const host = useRef<HTMLDivElement>(null);
@@ -52,7 +52,7 @@ it('clears cached project, draft and attachments before a B-pilot render; ignore
   await screen.findByText('actor-A-project');
   const frame = document.querySelector('iframe[data-owner="actor-A"]')!;
   expect(frame.isConnected).toBe(true);
-  studioLocalStorage.setItem('draft', 'A-private-draft');
+  studioLocalStorage().setItem('draft', 'A-private-draft');
   stashHomeComposerAttachments([new File(['synthetic'], 'A-private-file')]);
   const stale = studioFetch('/api/projects/delayed').catch((error: DOMException) => error.name);
   const frames: string[] = [];
@@ -61,7 +61,7 @@ it('clears cached project, draft and attachments before a B-pilot render; ignore
   act(() => session.withdraw());
   expect(frame.isConnected).toBe(false);
   capture();
-  expect(studioLocalStorage.getItem('draft')).toBeNull();
+  expect(studioLocalStorage().getItem('draft')).toBeNull();
   expect(peekHomeComposerAttachments()).toEqual([]);
   id = 'actor-B'; await act(() => session.verify());
   await screen.findByText('actor-B-project'); capture();

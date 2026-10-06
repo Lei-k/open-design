@@ -1,4 +1,4 @@
-import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioFetch as fetch, studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioFetch as fetch, studioWindowLocalStorage } from '../runtime/studio-transport';
 import { StudioLane } from '../runtime/studio-capabilities';
 // EntryShell — the centered-hero entry layout.
 //
@@ -261,7 +261,7 @@ export { ENTRY_RAIL_STATE_EVENT, ENTRY_RAIL_TOGGLE_EVENT };
 function writeStoredRailOpen(open: boolean): void {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(RAIL_OPEN_STORAGE_KEY, open ? 'true' : 'false');
+    studioWindowLocalStorage().setItem(RAIL_OPEN_STORAGE_KEY, open ? 'true' : 'false');
   } catch {
     /* ignore quota / disabled storage */
   }

@@ -1,4 +1,4 @@
-import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowLocalStorage } from '../runtime/studio-transport';
 import { reportProjectFailure } from '../observability/experience-diagnostics';
 import {
   type DragEvent,
@@ -529,7 +529,7 @@ function readPersistedTabsStore(): PersistedWorkspaceTabsStore {
   };
   if (typeof window === 'undefined') return empty;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = studioWindowLocalStorage().getItem(STORAGE_KEY);
     if (!raw) return empty;
     const parsed = JSON.parse(raw) as unknown;
     if (parsed === null || typeof parsed !== 'object') return empty;
@@ -584,7 +584,7 @@ function persistTabsStore(
         .slice(0, MAX_PERSISTED_TAB_SCOPES),
     );
     const payloadScopeKey = currentScopeKey ?? store.scopeKey;
-    localStorage.setItem(
+    studioWindowLocalStorage().setItem(
       STORAGE_KEY,
       JSON.stringify({
         ...normalizeTabsState(current),

@@ -1,4 +1,4 @@
-import { studioLocalStorage as localStorage } from '../studio-transport';
+import { studioWindowLocalStorage } from '../studio-transport';
 /**
  * 输入框草稿的**落盘规则**。
  *
@@ -229,7 +229,7 @@ export function loadComposerDraftExtras(key?: string): ComposerDraftExtras {
   if (!key || typeof window === 'undefined') return EMPTY_EXTRAS;
   let encoded: string | null = null;
   try {
-    encoded = localStorage.getItem(composerDraftExtrasKey(key));
+    encoded = studioWindowLocalStorage().getItem(composerDraftExtrasKey(key));
   } catch {
     return EMPTY_EXTRAS;
   }
@@ -247,8 +247,8 @@ export function saveComposerDraftExtras(key: string | undefined, extras: Compose
   const storageKey = composerDraftExtrasKey(key);
   const encoded = serializeComposerDraftExtras(sanitizeComposerDraftExtras(extras));
   try {
-    if (encoded) localStorage.setItem(storageKey, encoded);
-    else localStorage.removeItem(storageKey);
+    if (encoded) studioWindowLocalStorage().setItem(storageKey, encoded);
+    else studioWindowLocalStorage().removeItem(storageKey);
   } catch {
     // 隐私模式 / 配额满 —— 存不下不影响输入框继续用。
   }
@@ -257,7 +257,7 @@ export function saveComposerDraftExtras(key: string | undefined, extras: Compose
 export function clearComposerDraftExtras(key?: string): void {
   if (!key || typeof window === 'undefined') return;
   try {
-    localStorage.removeItem(composerDraftExtrasKey(key));
+    studioWindowLocalStorage().removeItem(composerDraftExtrasKey(key));
   } catch {
     // 同上。
   }

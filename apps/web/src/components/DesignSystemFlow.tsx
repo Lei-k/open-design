@@ -1,4 +1,4 @@
-import { studioWindowSetTimeout, studioSessionStorage as sessionStorage } from '../runtime/studio-transport';
+import { studioWindowSetTimeout, studioWindowSessionStorage, studioSessionStorage } from '../runtime/studio-transport';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ChangeEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { Button, Textarea } from '@open-design/components';
 import type {
@@ -301,7 +301,7 @@ function generationJobStorageKey(designSystemId: string): string {
 
 function readRememberedGenerationJob(designSystemId: string): string | null {
   try {
-    return sessionStorage.getItem(generationJobStorageKey(designSystemId));
+    return studioWindowSessionStorage().getItem(generationJobStorageKey(designSystemId));
   } catch {
     return null;
   }
@@ -335,7 +335,7 @@ async function resolveDesignSystemWorkspaceProject(
 
 function clearRememberedGenerationJob(designSystemId: string): void {
   try {
-    sessionStorage.removeItem(generationJobStorageKey(designSystemId));
+    studioWindowSessionStorage().removeItem(generationJobStorageKey(designSystemId));
   } catch {
     // Best-effort cleanup only.
   }
@@ -2510,7 +2510,7 @@ export function DesignSystemDetailView({
       // a pending revision and switch entry_from accordingly.
       const wasOnboardingHandoff =
         Boolean(peekOnboardingSessionId())
-        || sessionStorage.getItem(`od:auto-send-first:${projectId}`) === '1';
+        || studioSessionStorage().getItem(`od:auto-send-first:${projectId}`) === '1';
       void streamViaDaemon({
         agentId: config.agentId,
         history: agentHistory,
@@ -4560,8 +4560,8 @@ async function prepareCreatedDesignSystemProject({
       workspaceContext,
     );
     try {
-      sessionStorage.setItem(`od:auto-send-first:${project.id}`, '1');
-      sessionStorage.setItem(`od:auto-send-prompt:${project.id}`, prompt);
+      studioWindowSessionStorage().setItem(`od:auto-send-first:${project.id}`, '1');
+      studioWindowSessionStorage().setItem(`od:auto-send-prompt:${project.id}`, prompt);
     } catch {
       // If sessionStorage is unavailable, the project still opens with the
       // pending prompt ready for the user to send manually.

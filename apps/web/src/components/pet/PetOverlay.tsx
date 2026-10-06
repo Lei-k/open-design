@@ -1,4 +1,4 @@
-import { studioWindowSetTimeout, studioLocalStorage as localStorage } from '../../runtime/studio-transport';
+import { studioWindowSetTimeout, studioWindowLocalStorage } from '../../runtime/studio-transport';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useT } from '../../i18n';
 import type { PetConfig } from '../../types';
@@ -115,7 +115,7 @@ function recentTaskKey(task: PetRecentTaskSummary): string {
 function loadPosition(): Position {
   if (typeof window === 'undefined') return DEFAULT_POSITION;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = studioWindowLocalStorage().getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_POSITION;
     const parsed = JSON.parse(raw) as Partial<Position>;
     return {
@@ -129,7 +129,7 @@ function loadPosition(): Position {
 
 function savePosition(p: Position) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(p));
+    studioWindowLocalStorage().setItem(STORAGE_KEY, JSON.stringify(p));
   } catch {
     /* ignore */
   }

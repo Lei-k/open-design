@@ -1,4 +1,4 @@
-import { studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { studioWindowLocalStorage } from '../runtime/studio-transport';
 import type { BrowserViewportId } from './design-browser-tools';
 
 /** Persisted visit list for Design Browser, scoped per project. */
@@ -24,8 +24,8 @@ export function designBrowserViewportStorageKey(projectId: string): string {
 export function removeDesignBrowserProjectCache(projectId: string): void {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.removeItem(designBrowserHistoryStorageKey(projectId));
-    localStorage.removeItem(designBrowserViewportStorageKey(projectId));
+    studioWindowLocalStorage().removeItem(designBrowserHistoryStorageKey(projectId));
+    studioWindowLocalStorage().removeItem(designBrowserViewportStorageKey(projectId));
   } catch {
     // Ignore private-mode/quota errors; the cache entry is best-effort.
   }
@@ -46,7 +46,7 @@ export function isHistoryEntry(value: unknown): value is BrowserHistoryEntry {
 export function loadHistory(projectId: string): BrowserHistoryEntry[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(designBrowserHistoryStorageKey(projectId));
+    const raw = studioWindowLocalStorage().getItem(designBrowserHistoryStorageKey(projectId));
     const parsed = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return [];
     return parsed
@@ -61,7 +61,7 @@ export function loadHistory(projectId: string): BrowserHistoryEntry[] {
 export function saveHistory(projectId: string, history: BrowserHistoryEntry[]) {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(
+    studioWindowLocalStorage().setItem(
       designBrowserHistoryStorageKey(projectId),
       JSON.stringify(history.slice(0, DESIGN_BROWSER_HISTORY_LIMIT)),
     );
@@ -77,7 +77,7 @@ function isBrowserViewportId(value: unknown): value is BrowserViewportId {
 export function loadBrowserViewport(projectId: string): BrowserViewportId {
   if (typeof window === 'undefined') return 'desktop';
   try {
-    const stored = localStorage.getItem(designBrowserViewportStorageKey(projectId));
+    const stored = studioWindowLocalStorage().getItem(designBrowserViewportStorageKey(projectId));
     return isBrowserViewportId(stored) ? stored : 'desktop';
   } catch {
     return 'desktop';
@@ -87,7 +87,7 @@ export function loadBrowserViewport(projectId: string): BrowserViewportId {
 export function saveBrowserViewport(projectId: string, viewport: BrowserViewportId) {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(designBrowserViewportStorageKey(projectId), viewport);
+    studioWindowLocalStorage().setItem(designBrowserViewportStorageKey(projectId), viewport);
   } catch {
     // Ignore storage quota and private-mode failures.
   }

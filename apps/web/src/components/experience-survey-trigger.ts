@@ -1,4 +1,4 @@
-import { studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { studioWindowLocalStorage } from '../runtime/studio-transport';
 // Trigger + frequency state for the experience survey (CSAT + NPS).
 //
 // The survey is armed by a DELIVERED design run — a run that finished and
@@ -63,7 +63,7 @@ const listeners = new Set<Listener>();
 export function isSurveyRetired(): boolean {
   if (typeof window === 'undefined') return true;
   try {
-    return localStorage.getItem(RETIRED_KEY) === '1';
+    return studioWindowLocalStorage().getItem(RETIRED_KEY) === '1';
   } catch {
     return true;
   }
@@ -71,7 +71,7 @@ export function isSurveyRetired(): boolean {
 
 export function retireSurvey(): void {
   try {
-    localStorage.setItem(RETIRED_KEY, '1');
+    studioWindowLocalStorage().setItem(RETIRED_KEY, '1');
   } catch {
     // Frequency control is advisory. A locked-down store must never break
     // generating, so a failed write is swallowed the same way the campaign
@@ -87,7 +87,7 @@ export function retireSurvey(): void {
 export function deliveredCount(): number {
   if (typeof window === 'undefined') return 0;
   try {
-    const raw = localStorage.getItem(DELIVERY_COUNT_KEY);
+    const raw = studioWindowLocalStorage().getItem(DELIVERY_COUNT_KEY);
     const parsed = raw === null ? 0 : Number.parseInt(raw, 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
   } catch {
@@ -99,7 +99,7 @@ export function deliveredCount(): number {
 function recordDelivery(): number {
   const next = deliveredCount() + 1;
   try {
-    localStorage.setItem(DELIVERY_COUNT_KEY, String(next));
+    studioWindowLocalStorage().setItem(DELIVERY_COUNT_KEY, String(next));
   } catch {
     // Same contract as `retireSurvey`: an unwritable store degrades to never
     // qualifying, never to asking on every run.
