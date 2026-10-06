@@ -4,6 +4,10 @@ This deployment ships OpenDesign as a single Alpine-based runtime image. The
 daemon serves both the API and the built Next.js static export, so there is no
 separate nginx container.
 
+This is the **single-user** deployment: the shared `OD_API_TOKEN` authorizes the
+whole daemon and is not per-user sign-in. For several users with their own
+accounts, use the multi-user staging deployment in [`multiuser/`](multiuser/README.md).
+
 ## Local compose
 
 Before starting:

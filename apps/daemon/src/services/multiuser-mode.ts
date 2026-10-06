@@ -36,6 +36,14 @@ import { probePersonalSandbox, type PersonalSandbox } from './personal-sandbox.j
 export const MULTIUSER_NOT_LAUNCH_READY_ACK =
   'I acknowledge OpenDesign multi-user mode is not launch-ready: #3/#4 authorization gate only; run isolation (#5) and the deployment gate (#7/#8) are not done' as const;
 
+/**
+ * What an operator writes into the `multiuser-serve` config file (user decision
+ * 2026-10-06, #7/#18): a single-host staging deployment behind an HTTPS proxy.
+ * It is not launch approval; the deployment gate (#8) is not done.
+ */
+export const MULTIUSER_STAGING_DEPLOYMENT_ACK =
+  'I am deploying OpenDesign multi-user mode for staging behind an HTTPS proxy; the daemon stays on loopback and the #8 launch gate is not done' as const;
+
 /** Representative forbidden names; startup scans all environment keys. */
 export const MULTIUSER_ENV_SWITCH_NAMES: readonly string[] = [
   'OD_MULTIUSER_MODE',

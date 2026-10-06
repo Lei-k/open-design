@@ -1,0 +1,78 @@
+# OpenDesign multi-user staging deployment (#7/#18). See README.md first.
+#
+# Topology: `od` runs the daemon on loopback only. `caddy` shares od's network
+# namespace (network_mode: service:od), terminates HTTPS for OD_DOMAIN and
+# forwards to 127.0.0.1:7456. Only Caddy's ports are published (they are
+# declared on `od` because the two containers share one network namespace).
+name: open-design-multiuser
+
+services:
+  od:
+    image: ${OPEN_DESIGN_MULTIUSER_IMAGE:-neil0628/open-design:multiuser-latest}
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+      target: multiuser
+    restart: always
+    environment:
+      NODE_ENV: production
+    volumes:
+      - od_data:/app/.od
+      - ./multiuser.json:/etc/open-design/multiuser.json:ro
+    secrets:
+      - source: od_bootstrap
+        target: od_bootstrap
+    ports:
+      - "${OD_HTTP_PORT:-80}:80"
+      - "${OD_HTTPS_PORT:-443}:443"
+      - "${OD_HTTPS_PORT:-443}:443/udp"
+    read_only: true
+    tmpfs:
+      - /tmp
+    # Personal Codex children run in a per-run bubblewrap sandbox, which needs
+    # unprivileged user namespaces and its own /proc. Docker's default seccomp,
+    # AppArmor and masked /proc paths forbid that, so this container relaxes
+    # exactly those three. It is not privileged, adds no capabilities, and the
+    # daemon runs as a non-root user. Drop all three (and "personalCodex" from
+    # multiuser.json) to run without personal subscriptions.
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=unconfined
+      - apparmor=unconfined
+      - systempaths=unconfined
+    mem_limit: ${OD_MEM_LIMIT:-2g}
+    pids_limit: 512
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:7456/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2-alpine}
+    restart: always
+    network_mode: service:od
+    depends_on:
+      - od
+    environment:
+      OD_DOMAIN: ${OD_DOMAIN:?set OD_DOMAIN to the public host name}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+secrets:
+  od_bootstrap:
+    file: ./secrets/bootstrap
+
+volumes:
+  od_data:
+  caddy_data:
+  caddy_config:

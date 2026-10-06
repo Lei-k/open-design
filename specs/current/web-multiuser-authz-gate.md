@@ -7,12 +7,17 @@ Plan context: `specs/current/web-multiuser-ec2-plan.md` (milestone 2). Data path
 ## Mode switch
 
 - Default **off**. Off composes the daemon exactly as before: no auth routes, no gate, no auth store, no ownership table. Desktop/local single-user behaviour is unchanged.
-- On **only** through the direct, test-harness `startServer({ multiUser })` option, carrying the exact `MULTIUSER_NOT_LAUNCH_READY_ACK` literal (`apps/daemon/src/services/multiuser-mode.ts`). The exported production `startDaemonRuntime` helper rejects any supplied `multiUser` property before importing `startServer` or opening a listener; CLI and sidecar use that helper. The direct `startServer` path remains for tests.
+- On **only** through the direct `startServer({ multiUser })` option, carrying the exact `MULTIUSER_NOT_LAUNCH_READY_ACK` literal (`apps/daemon/src/services/multiuser-mode.ts`). The exported production `startDaemonRuntime` helper rejects any supplied `multiUser` property before importing `startServer` or opening a listener; CLI and sidecar use that helper. Two callers use the direct path: tests, and the staging launcher.
+- **Staging launcher** (owner decision 2026-10-06, #7): `apps/daemon/src/multiuser-serve.ts`, run as `node apps/daemon/dist/multiuser-serve.js --config <file>`. It is the one production module allowed to supply `multiUser` (`tests/auth/auth-not-wired.test.ts`).
+  - It is a separate program reading a config file, not an environment switch. The config must carry `MULTIUSER_STAGING_DEPLOYMENT_ACK` and exactly one `https` public origin, and it accepts nothing else unknown.
+  - `OD_DATA_DIR` must be set explicitly. The daemon binds `127.0.0.1`.
+  - Deployment topology: `deploy/multiuser/`. An HTTPS proxy shares the daemon's network namespace and is the only published listener, so the loopback-only rule below still holds.
+  - The company pool has no real provider (#14). Without the test mock it is unavailable: `GET /api/agent-accounts` reports `companyPoolAvailable: false`, the composer disables that choice, and company runs get `403 MULTIUSER_AGENT_FORBIDDEN`.
 - There is **no environment switch**. Any non-empty `OD_*` variable whose name contains `MULTIUSER` after uppercasing and stripping `_`/`-`, plus `OD_AUTH_MODE`, refuses startup in either mode. This includes `OD_MULTIUSER_ENABLED` and `OD_ENABLE_MULTI_USER`, so an operator cannot believe isolation is enabled while running a single-tenant daemon.
 - In multi-user mode, startup refuses when:
   - `OD_API_TOKEN` is set: the single-tenant token and its loopback bypass would substitute for per-user sessions;
   - `OD_DISABLE_API_AUTH` is truthy: proxy-delegated auth would substitute for per-user sessions;
-  - the bind host is not loopback (this slice is not deployable);
+  - the bind host is not loopback (a deployment puts an HTTPS proxy in the daemon's network namespace instead);
   - `allowedOrigins` are not exact `scheme://host[:port]` origins;
   - the live route inventory contains an unclassified route, an allowed classification has no registered route, or the gate wiring (body policy, ownership store) is incomplete.
 - The gate never looks at the peer address, so a loopback peer gets no bypass.

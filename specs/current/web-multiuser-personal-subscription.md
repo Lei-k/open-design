@@ -21,7 +21,7 @@ Status: test-only slice on top of #2/#13/#15/#16. **No production entrypoint ena
    - The deployment encrypts the volume that holds the daemon data root at rest (for example EBS encryption; #7). No application-level encryption: the CLI reads its credential file in plain text.
    - Backups exclude every provider home under the per-actor runtime directories (`codex-home`, `codex-home.previous` and `codex-login-*`). A data root restored from a backup therefore has account rows without credentials. On start, a `connected` account without its credential becomes `requires_reauth`, and only a new authorization restores it.
    - Unlink deletes local state only. The confirmation tells the owner to sign out of all devices in ChatGPT security settings to revoke the authorization at OpenAI.
-4. **Two real accounts end-to-end: deferred until after deployment.** It is tested on the deployed environment, which needs the production launcher and deployment gate of #7/#8. Until then, the real provider runs only through the direct `startServer` switch.
+4. **Two real accounts end-to-end: deferred until after deployment.** It is tested on the staging deployment (`deploy/multiuser/`). The staging launcher `multiuser-serve` enables the real provider when its config names `personalCodex: { binary, bwrap }`. The `multiuser` image target pins the official Codex release and bubblewrap. Its container relaxes seccomp, AppArmor and masked `/proc` paths so the per-run sandbox can be built, and it adds no capabilities and is not privileged.
 
 Also decided on 2026-10-06:
 
@@ -129,7 +129,7 @@ Normalized run events keep the safe part of `codexErrorInfo` (#21). A fatal `err
 
 | Route | Class | Notes |
 | --- | --- | --- |
-| `GET /api/agent-accounts` | actor-scoped | `{ mode, personalSubscriptionsEnabled, codex: { account, pendingAttempt }, claude: { available: false } }`; the summary never carries the code |
+| `GET /api/agent-accounts` | actor-scoped | `{ mode, personalSubscriptionsEnabled, companyPoolAvailable, codex: { account, pendingAttempt }, claude: { available: false } }`; the summary never carries the code. `companyPoolAvailable` is false when no company provider (today: the test mock) is configured; clients treat an absent field as true |
 | `POST /api/agent-accounts/codex/logins` | actor-scoped | 202 `{ attempt }` with `verificationUrl` + `userCode` |
 | `GET /api/agent-accounts/codex/logins/:attemptId` | owner-scoped-agent-account | code/URL only while pending |
 | `POST /api/agent-accounts/codex/logins/:attemptId/cancel` | owner-scoped-agent-account | idempotent |
