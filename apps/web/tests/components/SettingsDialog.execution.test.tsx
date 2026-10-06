@@ -2507,6 +2507,15 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
           headers: { 'content-type': 'application/json' },
         });
       }
+      // Only the connection endpoint advances the failed-first sequence; any
+      // other settings request gets a deterministic empty answer so an
+      // interleaved fetch can never consume the failed response.
+      if (url !== '/api/test/connection') {
+        return new Response(JSON.stringify({}), {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
       attempt += 1;
       return new Response(
         JSON.stringify(
@@ -2532,9 +2541,14 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
 
     renderSettingsDialog({ apiKey: 'sk-ant-test-provider' });
 
+    // Unrelated requests interleaved around both connection tests must not
+    // shift which attempt fails.
+    await fetch('/api/unrelated/settings-probe');
     fireEvent.click(screen.getByRole('button', { name: 'Test' }));
+    await fetch('/api/unrelated/settings-probe');
     expect(await screen.findByRole('button', { name: 'Retry test' })).toBeTruthy();
 
+    await fetch('/api/unrelated/settings-probe');
     fireEvent.click(screen.getByRole('button', { name: 'Retry test' }));
 
     expect(await screen.findByText(/Connected\. Replied in 18 ms/)).toBeTruthy();
@@ -2542,6 +2556,7 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
       ([input]) => input.toString() === '/api/test/connection',
     );
     expect(testConnectionCalls).toHaveLength(2);
+    expect(attempt).toBe(2);
   });
 
   it('marks a successful BYOK test after a config edit as success after action', async () => {

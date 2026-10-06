@@ -84,6 +84,13 @@ function lockDown(root: string): void {
   } else fs.chmodSync(root, 0o600);
 }
 
+/** The normalized e-mail of a ChatGPT `account/read` result, or '' when it carries none. */
+function chatgptEmail(read: Json): string {
+  const account = read.account && typeof read.account === 'object' ? read.account as Json : null;
+  const email = account?.type === 'chatgpt' && typeof account.email === 'string' ? account.email.trim().toLowerCase() : '';
+  return email.includes('@') ? email : '';
+}
+
 export function maskEmail(email: string): string {
   const at = email.lastIndexOf('@');
   if (at <= 0) return '***';
@@ -126,8 +133,10 @@ export interface PersonalTurnResult { ok: boolean; problem: PersonalAccountProbl
 
 /**
  * Drive one turn through the shared app-server session driver in `codexHome`.
- * A raw tap on the same stdout reads the failed turn's `codexErrorInfo`, which
- * the normalizer does not forward.
+ * A raw tap on the same stdout reads the failed turn's `codexErrorInfo` with its
+ * message. The normalized run events carry only the reason/status of the first
+ * error of a turn (`codex-error-info.ts`), which may be an earlier `error`
+ * notification, so classification keeps reading the failed turn itself.
  */
 export function runPersonalCodexTurn(input: AppServerEnvironment & {
   prompt: string; resumeThreadId: string | null; sandboxMode: CodexSandboxMode; onThread?: (threadId: string) => void;
@@ -226,10 +235,22 @@ export class PersonalCodexAccounts {
   private identityKey: Buffer;
   private stopped = false;
 
-  constructor(input: { db: Database.Database; dataRoot: string; appServerScript?: string; clock?: () => number }) {
+  constructor(input: {
+    db: Database.Database; dataRoot: string; appServerScript?: string; clock?: () => number;
+    /**
+     * Local real-provider acceptance only (`tests/real-provider/`): an explicit
+     * `codex app-server` command line. `startServer` never passes it, so the
+     * daemon itself still accepts nothing but the repository mock.
+     */
+    acceptanceAppServerCommand?: readonly [string, ...string[]];
+  }) {
     this.db = input.db;
     this.dataRoot = input.dataRoot;
-    this.command = input.appServerScript ? [process.execPath, input.appServerScript] : null;
+    if (input.appServerScript && input.acceptanceAppServerCommand) {
+      throw new Error('pass either appServerScript or acceptanceAppServerCommand, not both');
+    }
+    this.command = input.acceptanceAppServerCommand ? input.acceptanceAppServerCommand
+      : input.appServerScript ? [process.execPath, input.appServerScript] : null;
     this.enabled = this.command !== null;
     this.now = input.clock ?? Date.now;
     this.migrateIdentityUniqueness();
@@ -489,12 +510,21 @@ export class PersonalCodexAccounts {
     }
     clearTimeout(live.timer);
     await live.client.close();
+    // The real app-server (codex 0.154.0, 2026-10-06) announces a successful device login
+    // before its live auth state carries the account, so the read above can come back
+    // without an e-mail. The credential is already persisted in the login home: read the
+    // identity once more from a fresh child on that home. That read also proves the
+    // credential landed in this isolated home and nowhere else.
+    if (!chatgptEmail(read)) {
+      const cold = await this.readPersistedIdentity(live.loginHome);
+      if (cold) ({ read, limits } = { read: cold.read, limits: cold.limits ?? limits });
+    }
     if (this.attemptRow(attemptId)?.status !== 'pending' || this.stopped) { await this.finalize(attemptId, 'failed', 'interrupted', 'link_fail'); return; }
     // Re-checked after the provider reads and before any side effect (fence, cancellation, install).
     if (this.pastDeadline(attemptId)) { await this.finalize(attemptId, 'expired', null, 'link_expire'); return; }
     const account = read.account && typeof read.account === 'object' ? read.account as Json : null;
-    const email = account?.type === 'chatgpt' && typeof account.email === 'string' ? account.email.trim().toLowerCase() : '';
-    if (!email || !email.includes('@')) { await this.finalize(attemptId, 'failed', 'identity_unavailable', 'link_fail'); return; }
+    const email = chatgptEmail(read);
+    if (!email) { await this.finalize(attemptId, 'failed', 'identity_unavailable', 'link_fail'); return; }
     const identity = createHmac('sha256', this.identityKey).update(`codex:${email}`).digest('hex');
     const rateLimits = this.rateLimits(limits);
     const planType = typeof account?.planType === 'string' ? account.planType.slice(0, 64) : null;
@@ -764,6 +794,43 @@ export class PersonalCodexAccounts {
     }
   }
 
+  /**
+   * Re-apply 0700/0600 to every copy of an owner's provider state that survives a
+   * restart: the active home (with any credential backup inside it) and a retained
+   * home copy. Code before the retained-state record could leave an adopted copy, or
+   * the active credential beside it, with the provider's own umask (0644). Hardening
+   * only changes modes; it never moves or deletes a copy, so a retained record and its
+   * fence stay exactly as they were. Returns false when a mode could not be applied;
+   * the caller then keeps the account unusable.
+   */
+  private hardenOwnerState(ownerId: string): boolean {
+    try {
+      for (const copy of [personalCodexHome(this.dataRoot, ownerId), this.homeBackup(ownerId)]) {
+        if (fs.existsSync(copy)) lockDown(copy);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** `account/read` (+ rate limits) from a fresh app-server on a persisted login home; null on any failure. */
+  private async readPersistedIdentity(loginHome: string): Promise<{ read: Json; limits: Json | null } | null> {
+    if (!this.command) return null;
+    const client = new AppServerAccountClient({ command: this.command, codexHome: loginHome, home: loginHome,
+      temp: path.join(loginHome, 'tmp'), cwd: loginHome, dataRoot: this.dataRoot });
+    try {
+      await client.initialize();
+      const read = await client.request('account/read', { refreshToken: false });
+      const limits = await client.request('account/rateLimits/read', null).catch(() => null);
+      return { read, limits };
+    } catch {
+      return null;
+    } finally {
+      await client.close();
+    }
+  }
+
   private credentialBackup(ownerId: string): string {
     return path.join(personalCodexHome(this.dataRoot, ownerId), `${CREDENTIAL_FILE}.previous`);
   }
@@ -922,6 +989,7 @@ export class PersonalCodexAccounts {
     for (const { id } of owners) {
       const account = this.accountRow(id);
       if (!this.reconcileRetained(id) && account) this.recordProblem(id, account.id, 'reauth_required');
+      if (!this.hardenOwnerState(id) && account) this.recordProblem(id, account.id, 'reauth_required');
     }
     const root = path.join(this.dataRoot, 'multiuser-runtime');
     if (!fs.existsSync(root)) return;

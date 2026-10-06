@@ -194,3 +194,34 @@ it('does not resurrect credentials when unlink races an in-flight re-authorizati
   await linked(r);
   expect(r.service.usableAccount(r.owner)).not.toBeNull();
 });
+
+// Real codex 0.154.0 (2026-10-06 acceptance) announced a successful device login while
+// the same process's `account/read` still lacked the account; the identity is then read
+// from a fresh child on the persisted login home.
+function decide(r: Fixture, attempt: PersonalLoginAttempt, body: Record<string, unknown>): void {
+  const device = path.join(actorRuntimeDir(r.root, r.owner), loginDirs(r)[0]!, '.mock-device');
+  fs.mkdirSync(device, { recursive: true });
+  fs.writeFileSync(path.join(device, attempt.userCode!), JSON.stringify(body));
+}
+
+it('reads the identity from the persisted login home when the live read-back is stale', async () => {
+  const r = make();
+  const attempt = await r.service.startLogin(r.owner);
+  decide(r, attempt, { outcome: 'approve-stale-read', email: 'Owner@Example.com', planType: 'pro' });
+  expect((await settle(r, attempt.id)).status).toBe('connected');
+  expect(r.service.summary(r.owner).account).toMatchObject({ status: 'connected', maskedIdentity: 'o***@example.com', planType: 'pro' });
+  expect(fs.statSync(path.join(r.home, 'auth.json')).mode & 0o777).toBe(0o600);
+  await until(() => loginDirs(r), (names) => names.length === 0);
+});
+
+it('still fails with identity_unavailable when the persisted home has no e-mail either', async () => {
+  const r = make();
+  const attempt = await r.service.startLogin(r.owner);
+  decide(r, attempt, { outcome: 'approve-stale-read' });
+  expect((await settle(r, attempt.id)).status).toBe('failed');
+  expect(r.db.prepare('SELECT failure_code FROM multiuser_agent_login_attempts WHERE id = ?').get(attempt.id))
+    .toEqual({ failure_code: 'identity_unavailable' });
+  expect(r.service.summary(r.owner).account).toBeNull();
+  expect(fs.existsSync(r.home)).toBe(false);
+  await until(() => loginDirs(r), (names) => names.length === 0);
+});

@@ -36,6 +36,7 @@ import { createCodexTurnUsage } from '../../observability/codex-turn-usage.js';
  * "we render one thing less", never to "the run fails".
  */
 import { resolve } from 'node:path';
+import { codexErrorDetail } from '../../runtimes/codex-error-info.js';
 import { createCodexFrameHandler } from '../../runtimes/json-event-stream.js';
 
 type JsonObject = Record<string, unknown>;
@@ -616,7 +617,8 @@ export function createCodexAppServerNormalizer(
       emit({ type: 'status', label: message });
       return;
     }
-    routeFrame({ type: 'error', message });
+    const detail = codexErrorDetail(error?.codexErrorInfo);
+    routeFrame({ type: 'error', message, ...(detail ? { codexErrorInfo: detail } : {}) });
   }
 
   function handleTurnCompleted(params: JsonObject): void {
@@ -625,7 +627,11 @@ export function createCodexAppServerNormalizer(
     const turn = isRecord(params.turn) ? params.turn : null;
     if (!turn || turn.status !== 'failed') return;
     const error = isRecord(turn.error) ? turn.error : null;
-    routeFrame({ type: 'turn.failed', error: { message: str(error?.message) } });
+    const detail = codexErrorDetail(error?.codexErrorInfo);
+    routeFrame({
+      type: 'turn.failed',
+      error: { message: str(error?.message), ...(detail ? { codexErrorInfo: detail } : {}) },
+    });
   }
 
   function handleWarning(params: JsonObject): void {

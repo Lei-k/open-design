@@ -3,6 +3,7 @@ import {
   type OpenCodeTaskTerminalCandidate,
 } from './opencode-child-evidence.js';
 import { OpenCodeToolEvents } from './opencode-tool-events.js';
+import { parseCodexErrorDetail, type CodexErrorDetail } from './codex-error-info.js';
 import { boundedRawAgentEvent } from './run-event-payload-budget.js';
 
 type JsonObject = Record<string, unknown>;
@@ -1052,6 +1053,17 @@ function codexWebSearchQuery(item: JsonObject): string | null {
   return query.length > 0 ? query : null;
 }
 
+/**
+ * The structured reason/status of a Codex failure, re-validated at the event
+ * boundary. `exec --json` frames carry none; app-server frames carry the
+ * normalizer's `codexErrorInfo`. Absent or unrecognisable info adds nothing,
+ * so the error event keeps its historical `{ type, message }` shape.
+ */
+function codexErrorFields(info: unknown): { codexErrorInfo?: CodexErrorDetail } {
+  const detail = parseCodexErrorDetail(info);
+  return detail ? { codexErrorInfo: detail } : {};
+}
+
 function handleCodexEvent(obj: unknown, onEvent: StreamEventHandler, state: ParserState): boolean {
   if (!isRecord(obj)) return false;
 
@@ -1072,7 +1084,7 @@ function handleCodexEvent(obj: unknown, onEvent: StreamEventHandler, state: Pars
     }
     if (!state.codexErrorEmitted) {
       state.codexErrorEmitted = true;
-      onEvent({ type: 'error', message });
+      onEvent({ type: 'error', message, ...codexErrorFields(obj.codexErrorInfo) });
     }
     return true;
   }
@@ -1083,6 +1095,7 @@ function handleCodexEvent(obj: unknown, onEvent: StreamEventHandler, state: Pars
       onEvent({
         type: 'error',
         message: extractErrorMessage(obj.error ?? obj.message, 'Codex turn failed'),
+        ...codexErrorFields(isRecord(obj.error) ? obj.error.codexErrorInfo : undefined),
       });
     }
     return true;

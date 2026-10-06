@@ -748,3 +748,93 @@ describe('row 6: re-authorization out of ambiguous legacy state (commit = proof)
     expectPreserved(r, before);
   });
 });
+
+// ---- #20: legacy copies written with the provider's umask are hardened on start -----------
+//
+// 7329dfd2's fault paths could leave the active credential (and copies beside it) at 0644,
+// because the provider child writes with its own umask and the failed install never got to
+// re-apply modes. Adoption keeps every copy; the start that adopts them must also make them
+// private, without moving or deleting anything and without lifting the fence.
+
+/** Loosen every mode under the owner's state the way an un-hardened provider write leaves it. */
+function loosen(r: Fixture): void {
+  const walk = (dir: string) => {
+    fs.chmodSync(dir, 0o755);
+    for (const name of fs.readdirSync(dir)) {
+      const full = path.join(dir, name);
+      if (fs.lstatSync(full).isDirectory()) walk(full);
+      else fs.chmodSync(full, 0o644);
+    }
+  };
+  for (const dir of [r.home, aside(r)]) if (fs.existsSync(dir)) walk(dir);
+}
+
+/** Same paths and bytes as `before`, with every directory 0700 and every file 0600. */
+function hardened(before: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(before).map(([rel, value]) => [rel,
+    rel.endsWith('/') ? '700' : `600:${value.slice(value.indexOf(':') + 1)}`]));
+}
+
+describe('#20: hardening adopted legacy credential modes', () => {
+  it.each([
+    ['whole-home', 'owner@example.com'], ['auth-only', 'owner@example.com'], ['mixed', 'owner@example.com'],
+    ['whole-home', 'switched@example.org'], ['auth-only', 'switched@example.org'],
+  ] as const)('%s, then reauth as %s: every copy becomes private on start and stays fenced until commit', async (form, email) => {
+    const r = make();
+    const other = as(r, 'other');
+    await linked(other);
+    const otherAuth = fs.readFileSync(path.join(other.home, 'auth.json'), 'utf8');
+    await ambiguousState(r, form);
+    loosen(r);
+    const before = snapshot(r);
+    expect(Object.values(before).some((value) => value.startsWith('644:'))).toBe(true);
+    await restart(r);
+    expectPreserved(r, hardened(before));
+    await restart(r);
+    expectPreserved(r, hardened(before));
+    // Re-authorization out of the hardened ambiguous state still commits and retires both copies.
+    expect((await login(r, email)).status).toBe('connected');
+    noRetainedCopies(r);
+    expect(modeOf(r.home)).toBe(0o700);
+    expect(modeOf(path.join(r.home, 'auth.json'))).toBe(0o600);
+    expect(fs.readFileSync(path.join(other.home, 'auth.json'), 'utf8')).toBe(otherAuth);
+    expect(r.service.usableAccount('other')).not.toBeNull();
+  });
+
+  it('a hardening failure keeps every copy, the record and the fence; the next start hardens', async () => {
+    const r = make();
+    await ambiguousState(r, 'mixed');
+    loosen(r);
+    const before = snapshot(r);
+    await r.service.shutdown();
+    r.db.close();
+    const chmod = fs.chmodSync;
+    vi.spyOn(fs, 'chmodSync').mockImplementation((file, mode) => {
+      if (String(file) === path.join(r.home, 'auth.json')) throw new Error('harden chmod EIO');
+      return chmod(file, mode);
+    });
+    Object.assign(r, open(r.root, r.dbPath));
+    vi.restoreAllMocks();
+    const after = snapshot(r);
+    expect(Object.keys(after)).toEqual(Object.keys(before));
+    // Bytes are untouched; modes may be partly hardened before the injected failure.
+    for (const [rel, value] of Object.entries(before)) {
+      if (rel.endsWith('/')) continue;
+      expect(after[rel]!.slice(after[rel]!.indexOf(':') + 1)).toBe(value.slice(value.indexOf(':') + 1));
+    }
+    expect(retainedKind(r)).toBe('ambiguous');
+    expectFenced(r);
+    await restart(r);
+    expectPreserved(r, hardened(before));
+  });
+
+  it('hardens a connected home left at 0644 and keeps it usable', async () => {
+    const r = make();
+    await linked(r);
+    loosen(r);
+    await restart(r);
+    expect(modeOf(r.home)).toBe(0o700);
+    expect(modeOf(path.join(r.home, 'auth.json'))).toBe(0o600);
+    expect(r.service.usableAccount(r.owner)).not.toBeNull();
+  });
+});

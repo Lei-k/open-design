@@ -9,7 +9,9 @@
 //   waits for `$CODEX_HOME/.mock-device/<userCode>`, which stands for "the user
 //   typed this code on the official page". JSON body:
 //   { outcome, email?, planType? } where outcome is one of
-//   approve | deny | expire | workspace | approve-replay | approve-after-cancel | approve-on-close.
+//   approve | approve-stale-read | deny | expire | workspace | approve-replay | approve-after-cancel | approve-on-close.
+//   `approve-stale-read` persists the credential but, like codex 0.154.0, answers this
+//   process's next `account/read` without the account; a fresh process reads it from disk.
 // - Turns: `$CODEX_HOME/mock-control.json` { turn?: ok|usage-limit|auth-invalid|workspace,
 //   rateLimits?: ok|unavailable }. A prompt containing `[mock-delay-ms=N]` delays the turn.
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -30,6 +32,8 @@ const readJson = (file: string): Json | null => {
 const control = () => readJson(path.join(home, 'mock-control.json')) ?? {};
 
 let login: { loginId: string; userCode: string; timer: NodeJS.Timeout | null; outcome: Json | null } | null = null;
+/** Set by `approve-stale-read`: this process has not reloaded the auth it just wrote. */
+let staleAuth = false;
 
 function writeAuth(outcome: Json): void {
   // Default umask on purpose: the daemon, not the provider, must enforce 0600.
@@ -50,6 +54,7 @@ function applyOutcome(outcome: Json): void {
   const { loginId } = login;
   switch (outcome.outcome) {
     case 'approve': writeAuth(outcome); complete(loginId, true, null); login = null; return;
+    case 'approve-stale-read': writeAuth(outcome); staleAuth = true; complete(loginId, true, null); login = null; return;
     case 'approve-replay':
       writeAuth(outcome);
       complete(loginId, true, null);
@@ -135,7 +140,7 @@ function handle(frame: Json): void {
       return;
     }
     case 'account/read': {
-      const auth = readJson(authFile);
+      const auth = staleAuth ? null : readJson(authFile);
       return send({ id, result: { account: auth ? { type: 'chatgpt', email: auth.email ?? null, planType: auth.planType ?? 'unknown' } : null,
         requiresOpenaiAuth: true } });
     }
