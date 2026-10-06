@@ -13,6 +13,7 @@ import { WorkerQuotaLedger } from '../storage/worker-quota-ledger.js';
 import { AuthStore } from '../storage/auth-store.js';
 import { isSafeId } from '../projects.js';
 import { diffRunArtifacts, snapshotProjectArtifacts, snapshotProjectArtifactsAsync, type ArtifactSnapshot } from '../run-artifact-fs.js';
+import { codexResolvedSandboxMode } from '../runtimes/defs/codex.js';
 import { PROBLEM_ERRORS, runPersonalCodexTurn, type PersonalCodexAccounts } from '../services/personal-codex-accounts.js';
 import type { PersonalRunLaneControls } from './multiuser-agent-accounts.js';
 import type { MultiUserDesignRoutes } from './multiuser-design.js';
@@ -497,7 +498,17 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           const progressTools = new Map<string, { kind: 'file'; path: string } | { kind: 'command'; name: string }>();
           const turn = runPersonalCodexTurn({
             command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
-            prompt, resumeThreadId: session.thread_id, sandboxMode: 'workspace-write',
+            prompt, resumeThreadId: session.thread_id,
+            // A real personal provider always runs inside the per-run bubblewrap
+            // boundary. Its filesystem already contains only this account's
+            // CODEX_HOME, run HOME/TMPDIR and project cwd, with system paths
+            // read-only. Do not ask Codex to create a second Linux sandbox
+            // inside it: unprivileged container hosts commonly reject that
+            // nested sandbox and every file/command tool then fails to start.
+            // `danger-full-access` is scoped to the outer boundary, not the
+            // daemon container or host. Mock-only unsandboxed test lanes keep
+            // the normal platform/operator-resolved Codex policy.
+            sandboxMode: launch.sandbox ? 'danger-full-access' : codexResolvedSandboxMode(),
             onThread: (threadId) => db.prepare(`UPDATE multiuser_personal_sessions SET thread_id = ?, updated_at = ?
               WHERE conversation_id = ? AND personal_account_id = ?`).run(threadId, now(), next.conversation_id, accountId),
             onAgentEvent: (event) => {

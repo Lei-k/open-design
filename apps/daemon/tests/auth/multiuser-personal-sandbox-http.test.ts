@@ -6,12 +6,13 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts, startMultiUserDaemon,
   type Principal, type StartedMultiUserDaemon,
 } from './multiuser-harness.js';
 import { probePersonalSandbox } from '../../src/services/personal-sandbox.js';
+import * as personalCodexAccounts from '../../src/services/personal-codex-accounts.js';
 import { PERSONAL_CODEX_MOCK, RUN_MOCK, codexHome, linkCodex, until } from './personal-codex-helpers.js';
 
 const BWRAP = '/usr/bin/bwrap';
@@ -35,8 +36,11 @@ describe.skipIf(!usable)('sandboxed personal lane through the daemon', () => {
   }, 120_000);
 
   afterAll(async () => { await daemon?.close(); cleanupIsolatedDataRoot(); });
+  afterEach(() => vi.restoreAllMocks());
 
   it('a personal run reads its own state but not another user\'s credential or the daemon database', async () => {
+    const originalRun = personalCodexAccounts.runPersonalCodexTurn;
+    const runTurn = vi.spyOn(personalCodexAccounts, 'runPersonalCodexTurn').mockImplementation((input) => originalRun(input));
     const id = randomUUID();
     const project = await daemon.request({ method: 'POST', path: '/api/projects', cookie: alice.cookie, body: { id, name: id } });
     expect(project.status, project.text).toBe(200);
@@ -53,5 +57,12 @@ describe.skipIf(!usable)('sandboxed personal lane through the daemon', () => {
     const reply = JSON.parse(run.output.text) as { reads: Record<string, string>; envKeys: string[] };
     expect(reply.reads).toEqual({ [own]: 'readable', [other]: 'ENOENT', [database]: 'ENOENT' });
     expect(reply.envKeys).toContain('PATH');
+    // bubblewrap is already the filesystem security boundary for personal
+    // children. Asking Codex to create its own nested workspace-write sandbox
+    // fails on common unprivileged container hosts and leaves file tools dead.
+    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({
+      sandbox: expect.objectContaining({ bwrap: BWRAP }),
+      sandboxMode: 'danger-full-access',
+    }));
   });
 });
