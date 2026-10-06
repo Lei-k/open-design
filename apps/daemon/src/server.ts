@@ -3545,14 +3545,15 @@ export async function startServer({
   const db = openDatabase(PROJECT_ROOT, { dataDir: RUNTIME_DATA_DIR });
   multiUserFront?.attachProjectOwnership(db);
   // Personal subscription accounts (#18): always mounted in multi-user mode,
-  // enabled only when the test harness injected the repository mock app-server.
-  // Built right after the database opens, before any timer, watcher or service:
+  // enabled only when the test harness injected the repository mock app-server
+  // or the sandboxed real-provider test switch. Built right after the database opens, before any timer, watcher or service:
   // its schema migration and retained-state recovery are the remaining ways
   // personal setup can refuse a start, and then only what is open so far needs
   // releasing (the startup-failure cleanup further down covers listen only).
   const personalCodex = openPersonalCodexAccountsOrRelease(() => (multiUserMode ? new PersonalCodexAccounts({
     db, dataRoot: RUNTIME_DATA_DIR,
-    ...(multiUserMode.personalCodexAppServer ? { appServerScript: multiUserMode.personalCodexAppServer } : {}),
+    ...(multiUserMode.personalCodex
+      ? { appServerCommand: multiUserMode.personalCodex.command, sandbox: multiUserMode.personalCodex.sandbox } : {}),
     ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
   }) : null), () => {
     multiUserFront?.close();

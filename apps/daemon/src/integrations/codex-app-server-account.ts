@@ -9,6 +9,7 @@
 // stderr is drained and discarded and frames are never logged: device codes and
 // verification URLs travel on this channel.
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { sandboxedCommand, type PersonalSandbox } from '../services/personal-sandbox.js';
 
 type Json = Record<string, unknown>;
 
@@ -27,14 +28,26 @@ export interface AppServerEnvironment {
   temp: string;
   cwd: string;
   dataRoot: string;
+  /**
+   * When set, the child starts inside this bubblewrap sandbox: only CODEX_HOME,
+   * HOME, TMPDIR and the working directory are writable, and nothing else of the
+   * daemon data root exists inside (`personal-sandbox.ts`).
+   */
+  sandbox?: PersonalSandbox | null;
 }
 
+/** Fixed search path inside the sandbox, where only system directories exist. */
+const SANDBOX_PATH = '/usr/local/bin:/usr/bin:/bin';
+
 export function appServerEnv(env: AppServerEnvironment): NodeJS.ProcessEnv {
-  return { HOME: env.home, TMPDIR: env.temp, TMP: env.temp, TEMP: env.temp, OD_DATA_DIR: env.dataRoot, CODEX_HOME: env.codexHome };
+  return { HOME: env.home, TMPDIR: env.temp, TMP: env.temp, TEMP: env.temp, OD_DATA_DIR: env.dataRoot, CODEX_HOME: env.codexHome,
+    ...(env.sandbox ? { PATH: SANDBOX_PATH } : {}) };
 }
 
 export function spawnAppServer(env: AppServerEnvironment): ChildProcessWithoutNullStreams {
-  const [bin, ...args] = env.command;
+  const [bin, ...args] = env.sandbox
+    ? sandboxedCommand(env.sandbox, { codexHome: env.codexHome, home: env.home, temp: env.temp, cwd: env.cwd }, env.command)
+    : env.command;
   const child = spawn(bin, args, { cwd: env.cwd, env: appServerEnv(env), stdio: ['pipe', 'pipe', 'pipe'] });
   child.stderr.on('data', () => {});
   child.stdin.on('error', () => {});

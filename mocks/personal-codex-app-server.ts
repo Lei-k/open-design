@@ -13,7 +13,8 @@
 //   `approve-stale-read` persists the credential but, like codex 0.154.0, answers this
 //   process's next `account/read` without the account; a fresh process reads it from disk.
 // - Turns: `$CODEX_HOME/mock-control.json` { turn?: ok|usage-limit|auth-invalid|workspace,
-//   rateLimits?: ok|unavailable }. A prompt containing `[mock-delay-ms=N]` delays the turn.
+//   rateLimits?: ok|unavailable }. A prompt containing `[mock-delay-ms=N]` delays the turn;
+//   `[mock-read=/abs/path]` reports in the reply whether that path was readable.
 import { randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -106,8 +107,17 @@ async function turn(id: number, params: Json): Promise<void> {
   const record = readJson(threadFile(threadId)) ?? { turns: 0 };
   record.turns = Number(record.turns ?? 0) + 1;
   fs.writeFileSync(threadFile(threadId), JSON.stringify(record));
+  // `[mock-read=/abs/path]` stands for a task shell trying to read that path; the reply
+  // says whether it could (isolation tests compare sandboxed and unsandboxed children).
+  const reads: Record<string, string> = {};
+  for (const match of text.matchAll(/\[mock-read=([^\]]+)\]/gu)) {
+    try { fs.readFileSync(match[1]!); reads[match[1]!] = 'readable'; } catch (error) {
+      reads[match[1]!] = (error as NodeJS.ErrnoException).code ?? 'error';
+    }
+  }
   const reply = JSON.stringify({ codexHome: home, home: process.env.HOME ?? null, cwd: process.cwd(), threadId,
-    turnsInThread: record.turns, message: text, envKeys: Object.keys(process.env).sort() });
+    turnsInThread: record.turns, message: text, envKeys: Object.keys(process.env).sort(),
+    ...(Object.keys(reads).length > 0 ? { reads } : {}) });
   const itemId = `msg_${randomUUID()}`;
   notify('item/agentMessage/delta', { threadId, turnId, itemId, delta: reply });
   notify('item/completed', { threadId, turnId, item: { type: 'agentMessage', id: itemId, text: reply } });

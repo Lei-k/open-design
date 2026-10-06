@@ -21,13 +21,16 @@
 //   The gate itself never consults the peer address, so loopback peers get no
 //   bypass either.
 //
-// This module is pure (no Express, no I/O) so the rule table is unit-tested.
+// This module has no Express and no I/O beyond path resolution and the injectable
+// sandbox probe, so the rule table is unit-tested.
 
-import { realpathSync } from 'node:fs';
+import { accessSync, constants as fsConstants, realpathSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { apiTokenFromEnv, isApiAuthDisabled } from '../api-token-auth.js';
 import { isLoopbackHostname } from '../http/local-daemon-request.js';
 import type { ScryptParams } from './auth-passwords.js';
+import { probePersonalSandbox, type PersonalSandbox } from './personal-sandbox.js';
 
 /** The exact acknowledgement the programmatic option must carry. */
 export const MULTIUSER_NOT_LAUNCH_READY_ACK =
@@ -73,10 +76,40 @@ export interface MultiUserModeOptions {
    * app-server. There is no environment, admin or UI path to a real provider.
    */
   testPersonalCodexAppServer?: string;
+  /**
+   * Real-provider test switch (#18, user decision 2026-10-06): a real `codex`
+   * binary for the personal lane. Direct startServer harness only (staging and
+   * local acceptance); `startDaemonRuntime` still refuses every multi-user
+   * option. Requires `personalSandbox` and the exact acknowledgement.
+   */
+  testPersonalCodexRealBinary?: { path: string; acknowledge: typeof PERSONAL_CODEX_REAL_PROVIDER_ACK };
+  /**
+   * Bubblewrap sandbox for every personal app-server child. Mandatory with a
+   * real binary; optional with the mock (isolation tests). Startup refuses when
+   * bwrap cannot build the sandbox on this host.
+   */
+  personalSandbox?: { bwrapPath: string };
 }
 
-/** The only app-server the personal-subscription lane may spawn in this slice. */
+/** The only app-server the personal-subscription lane may spawn without the real-provider switch. */
 export const PERSONAL_CODEX_MOCK_RELATIVE_PATH = 'mocks/personal-codex-app-server.ts';
+
+/** The exact acknowledgement the real-provider test switch must carry. */
+export const PERSONAL_CODEX_REAL_PROVIDER_ACK =
+  'I acknowledge a real Codex provider in the personal lane is a test switch: every child runs sandboxed, but secret custody and two-account end-to-end acceptance (#7/#8) are not done' as const;
+
+/**
+ * Credentials stay in each isolated CODEX_HOME. Without this pin the CLI may
+ * choose an OS keyring, which every home of the same OS user shares.
+ */
+export const PERSONAL_CODEX_FILE_CREDENTIALS = ['-c', 'cli_auth_credentials_store="file"'] as const;
+
+export interface ResolvedPersonalCodex {
+  command: readonly [string, ...string[]];
+  sandbox: PersonalSandbox | null;
+  /** True only for the real-provider test switch. */
+  realProvider: boolean;
+}
 
 export interface ResolvedMultiUserMode {
   allowedOrigins: readonly string[];
@@ -84,8 +117,8 @@ export interface ResolvedMultiUserMode {
   auth: MultiUserAuthServiceOverrides;
   testMockAgentScript?: string;
   poolClock?: () => number;
-  /** Real path of the repository mock app-server; absent means the feature is off. */
-  personalCodexAppServer?: string;
+  /** How personal app-server children start; absent means the feature is off. */
+  personalCodex?: ResolvedPersonalCodex;
 }
 
 export class MultiUserModeRefusal extends Error {
@@ -124,6 +157,8 @@ export function resolveMultiUserMode(input: {
   host: string;
   /** Repository root used to pin the personal app-server to the repository mock. */
   repositoryRoot?: string;
+  /** Whether bwrap can build the personal sandbox here (injected in unit tests). */
+  probeSandbox?: (bwrapPath: string) => boolean;
 }): ResolvedMultiUserMode | null {
   const { options, env, host } = input;
   for (const [name, value] of Object.entries(env)) {
@@ -155,12 +190,65 @@ export function resolveMultiUserMode(input: {
   const allowedOrigins = assertExactOrigins(options.allowedOrigins);
   const bootstrapSecret =
     typeof options.bootstrapSecret === 'string' && options.bootstrapSecret.length > 0 ? options.bootstrapSecret : null;
-  const personalCodexAppServer = options.testPersonalCodexAppServer === undefined
-    ? undefined : resolvePersonalCodexMock(options.testPersonalCodexAppServer, input.repositoryRoot);
+  const personalCodex = resolvePersonalCodex(options, input.repositoryRoot,
+    input.probeSandbox ?? ((bwrap) => probePersonalSandbox(bwrap, tmpdir())));
   return { allowedOrigins, bootstrapSecret, auth: { ...(options.auth ?? {}) },
     ...(options.testMockAgentScript ? { testMockAgentScript: options.testMockAgentScript } : {}),
     ...(options.poolClock ? { poolClock: options.poolClock } : {}),
-    ...(personalCodexAppServer ? { personalCodexAppServer } : {}) };
+    ...(personalCodex ? { personalCodex } : {}) };
+}
+
+function resolvePersonalCodex(options: MultiUserModeOptions, repositoryRoot: string | undefined,
+  probeSandbox: (bwrapPath: string) => boolean): ResolvedPersonalCodex | undefined {
+  const mock = options.testPersonalCodexAppServer;
+  const real = options.testPersonalCodexRealBinary;
+  if (mock !== undefined && real !== undefined) {
+    throw new MultiUserModeRefusal('choose either the repository mock app-server or the real-provider test switch, not both');
+  }
+  if (mock === undefined && real === undefined) {
+    if (options.personalSandbox !== undefined) throw new MultiUserModeRefusal('personalSandbox needs a personal app-server');
+    return undefined;
+  }
+  let command: [string, ...string[]];
+  let readOnlyPaths: string[];
+  if (real !== undefined) {
+    if (!real || real.acknowledge !== PERSONAL_CODEX_REAL_PROVIDER_ACK) {
+      throw new MultiUserModeRefusal('the real-provider acknowledgement is missing or does not match');
+    }
+    if (options.personalSandbox === undefined) {
+      throw new MultiUserModeRefusal('a real Codex provider requires personalSandbox: personal children must not share the daemon filesystem');
+    }
+    const binary = resolveExecutable(real.path);
+    command = [binary, 'app-server', ...PERSONAL_CODEX_FILE_CREDENTIALS];
+    // The standalone package keeps helpers (e.g. a bundled bwrap) beside bin/.
+    readOnlyPaths = [path.dirname(path.dirname(binary))];
+  } else {
+    const script = resolvePersonalCodexMock(mock, repositoryRoot);
+    command = [process.execPath, script];
+    readOnlyPaths = [path.dirname(path.dirname(realpathSync(process.execPath))), path.dirname(script)];
+  }
+  let sandbox: PersonalSandbox | null = null;
+  if (options.personalSandbox !== undefined) {
+    const bwrap = options.personalSandbox?.bwrapPath;
+    if (typeof bwrap !== 'string' || !path.isAbsolute(bwrap) || !probeSandbox(bwrap)) {
+      throw new MultiUserModeRefusal('personalSandbox.bwrapPath cannot build the personal sandbox on this host');
+    }
+    sandbox = { bwrap, readOnlyPaths };
+  }
+  return { command, sandbox, realProvider: real !== undefined };
+}
+
+function resolveExecutable(candidate: unknown): string {
+  let resolved: string;
+  try {
+    if (typeof candidate !== 'string' || !path.isAbsolute(candidate)) throw new Error('not absolute');
+    resolved = realpathSync(candidate);
+    if (!statSync(resolved).isFile()) throw new Error('not a file');
+    accessSync(resolved, fsConstants.X_OK);
+  } catch {
+    throw new MultiUserModeRefusal('testPersonalCodexRealBinary.path must be an absolute path to an executable codex binary');
+  }
+  return resolved;
 }
 
 function resolvePersonalCodexMock(candidate: unknown, repositoryRoot: string | undefined): string {

@@ -113,6 +113,7 @@ describe('AgentAccountsSection', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Unlink' }));
     expect(calls).toHaveLength(0);
     expect(screen.getByText(/does not revoke access at the provider/)).toBeTruthy();
+    expect(screen.getByText(/sign out of all devices in your ChatGPT security settings/)).toBeTruthy();
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Unlink account' })); });
     expect(calls[0]).toMatchObject({ url: '/api/agent-accounts/codex/accounts/acc-1', method: 'DELETE' });
     expect(screen.getByRole('button', { name: 'Link my subscription' })).toBeTruthy();

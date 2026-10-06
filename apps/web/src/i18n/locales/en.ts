@@ -5578,6 +5578,7 @@ export const en: Dict = {
   'agentAccounts.unlink': "Unlink",
   'agentAccounts.unlinkConfirm': "Unlink this account? Its local sign-in is deleted from this server and your queued or running personal runs are canceled. This does not revoke access at the provider.",
   'agentAccounts.unlinkConfirmAction': "Unlink account",
+  'agentAccounts.unlinkRevokeHint': "To revoke it at OpenAI too, sign out of all devices in your ChatGPT security settings.",
   'agentAccounts.keep': "Keep",
   'agentAccounts.reauthHint': "Your sign-in expired or was revoked. Re-authorize to keep using it.",
   'agentAccounts.disabledHint': "Your provider workspace doesn't allow this use. Ask the workspace admin, then re-authorize — or unlink.",

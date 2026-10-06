@@ -219,6 +219,7 @@ export function AgentAccountsSection({ initial, api = defaultApi, errorText }: P
             ) : confirm === 'unlink' ? (
               <div className={styles.confirm} role="group" aria-label={t('agentAccounts.unlink')}>
                 <p className={styles.hint}>{t('agentAccounts.unlinkConfirm')}</p>
+                <p className={styles.hint}>{t('agentAccounts.unlinkRevokeHint')}</p>
                 <div className={styles.actions}>
                   <Button variant="primary" disabled={busy} onClick={() => void unlink(account)}>{t('agentAccounts.unlinkConfirmAction')}</Button>
                   <Button variant="ghost" onClick={() => setConfirm(null)}>{t('agentAccounts.keep')}</Button>

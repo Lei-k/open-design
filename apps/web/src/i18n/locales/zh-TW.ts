@@ -6015,6 +6015,7 @@ export const zhTW: Dict = {
   'agentAccounts.unlink': "解除連結",
   'agentAccounts.unlinkConfirm': "要解除連結此帳號嗎？此伺服器上的本機登入資料會被刪除，你排隊中或執行中的個人執行也會被取消。這不會在供應商端撤銷授權。",
   'agentAccounts.unlinkConfirmAction': "解除連結帳號",
+  'agentAccounts.unlinkRevokeHint': "若也要在 OpenAI 端撤銷授權，請到 ChatGPT 的安全設定登出所有裝置。",
   'agentAccounts.keep': "保留",
   'agentAccounts.reauthHint': "你的登入已過期或被撤銷。請重新授權以繼續使用。",
   'agentAccounts.disabledHint': "你的供應商工作區不允許此用途。請洽詢工作區管理員後重新授權，或解除連結。",
