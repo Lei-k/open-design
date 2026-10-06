@@ -413,8 +413,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
    * The company ledger and company slots are never touched.
    */
   dispatchPersonal = () => {
-    const command = personal?.appServerCommand();
-    if (personalDispatching || shuttingDown || !personal || !command) return;
+    const launch = personal?.appServerLaunch();
+    if (personalDispatching || shuttingDown || !personal || !launch) return;
     personalDispatching = true;
     try {
       while ((db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE status = 'active' AND ${personalRows}`).get() as { n: number }).n < personalCapacity()) {
@@ -461,7 +461,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           const owner = next.owner_account_id;
           const accountId = account.id;
           const turn = runPersonalCodexTurn({
-            command, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
+            command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
             prompt, resumeThreadId: session.thread_id, sandboxMode: 'workspace-write',
             onThread: (threadId) => db.prepare(`UPDATE multiuser_personal_sessions SET thread_id = ?, updated_at = ?
               WHERE conversation_id = ? AND personal_account_id = ?`).run(threadId, now(), next.conversation_id, accountId),

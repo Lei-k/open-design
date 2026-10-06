@@ -838,3 +838,23 @@ describe('#20: hardening adopted legacy credential modes', () => {
     expect(r.service.usableAccount(r.owner)).not.toBeNull();
   });
 });
+
+// ---- Restore from a backup that excluded provider homes (user decision 2026-10-06) --------
+
+describe('a data root restored without provider homes', () => {
+  it.each([
+    ['the whole home', (r: Fixture) => fs.rmSync(r.home, { recursive: true, force: true })],
+    ['only the credential', (r: Fixture) => fs.rmSync(path.join(r.home, 'auth.json'))],
+  ] as const)('missing %s: the account requires re-authorization on start, and re-authorization restores it', async (_name, drop) => {
+    const r = make();
+    await linked(r);
+    expect(r.service.usableAccount(r.owner)).not.toBeNull();
+    await r.service.shutdown();
+    drop(r);
+    await restart(r);
+    expect(r.service.summary(r.owner).account).toMatchObject({ status: 'requires_reauth', lastProblem: 'reauth_required' });
+    expect(r.service.usableAccount(r.owner)).toBeNull();
+    await linked(r);
+    expect(r.service.usableAccount(r.owner)).not.toBeNull();
+  });
+});

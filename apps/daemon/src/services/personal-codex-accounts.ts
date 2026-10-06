@@ -35,6 +35,7 @@ import type {
 } from '@open-design/contracts';
 import { attachCodexAppServerSession, type CodexSandboxMode } from '../agent-protocol/codex-app-server/session.js';
 import { AppServerAccountClient, closeChild, spawnAppServer, type AppServerEnvironment } from '../integrations/codex-app-server-account.js';
+import type { PersonalSandbox } from './personal-sandbox.js';
 
 type Json = Record<string, unknown>;
 
@@ -219,6 +220,7 @@ export class PersonalCodexAccounts {
   private readonly db: Database.Database;
   private readonly dataRoot: string;
   private readonly command: readonly [string, ...string[]] | null;
+  private readonly sandbox: PersonalSandbox | null;
   private readonly now: () => number;
   private readonly live = new Map<string, LiveAttempt>();
   private readonly verifying = new Map<string, ChildProcessWithoutNullStreams>();
@@ -238,19 +240,21 @@ export class PersonalCodexAccounts {
   constructor(input: {
     db: Database.Database; dataRoot: string; appServerScript?: string; clock?: () => number;
     /**
-     * Local real-provider acceptance only (`tests/real-provider/`): an explicit
-     * `codex app-server` command line. `startServer` never passes it, so the
-     * daemon itself still accepts nothing but the repository mock.
+     * An explicit `codex app-server` command line: the real-provider test switch
+     * (`resolveMultiUserMode`) and the local acceptance suite (`tests/real-provider/`).
      */
-    acceptanceAppServerCommand?: readonly [string, ...string[]];
+    appServerCommand?: readonly [string, ...string[]];
+    /** Bubblewrap sandbox for every app-server child; required with a real provider. */
+    sandbox?: PersonalSandbox | null;
   }) {
     this.db = input.db;
     this.dataRoot = input.dataRoot;
-    if (input.appServerScript && input.acceptanceAppServerCommand) {
-      throw new Error('pass either appServerScript or acceptanceAppServerCommand, not both');
+    if (input.appServerScript && input.appServerCommand) {
+      throw new Error('pass either appServerScript or appServerCommand, not both');
     }
-    this.command = input.acceptanceAppServerCommand ? input.acceptanceAppServerCommand
+    this.command = input.appServerCommand ? input.appServerCommand
       : input.appServerScript ? [process.execPath, input.appServerScript] : null;
+    this.sandbox = input.sandbox ?? null;
     this.enabled = this.command !== null;
     this.now = input.clock ?? Date.now;
     this.migrateIdentityUniqueness();
@@ -387,8 +391,9 @@ export class PersonalCodexAccounts {
     if (fs.existsSync(home)) lockDown(home);
   }
 
-  appServerCommand(): readonly [string, ...string[]] | null {
-    return this.command;
+  /** How personal runs start an app-server child: the command and its sandbox (if any). */
+  appServerLaunch(): { command: readonly [string, ...string[]]; sandbox: PersonalSandbox | null } | null {
+    return this.command ? { command: this.command, sandbox: this.sandbox } : null;
   }
 
   adminView(ownerIds: readonly string[]): Record<string, { linked: boolean; status: PersonalAccountStatus | null;
@@ -428,7 +433,7 @@ export class PersonalCodexAccounts {
     privateDir(actorRuntimeDir(this.dataRoot, ownerId));
     privateDir(loginHome);
     privateDir(path.join(loginHome, 'tmp'));
-    const client = new AppServerAccountClient({ command: this.command, codexHome: loginHome, home: loginHome,
+    const client = new AppServerAccountClient({ command: this.command, sandbox: this.sandbox, codexHome: loginHome, home: loginHome,
       temp: path.join(loginHome, 'tmp'), cwd: loginHome, dataRoot: this.dataRoot });
     try {
       await client.initialize();
@@ -817,7 +822,7 @@ export class PersonalCodexAccounts {
   /** `account/read` (+ rate limits) from a fresh app-server on a persisted login home; null on any failure. */
   private async readPersistedIdentity(loginHome: string): Promise<{ read: Json; limits: Json | null } | null> {
     if (!this.command) return null;
-    const client = new AppServerAccountClient({ command: this.command, codexHome: loginHome, home: loginHome,
+    const client = new AppServerAccountClient({ command: this.command, sandbox: this.sandbox, codexHome: loginHome, home: loginHome,
       temp: path.join(loginHome, 'tmp'), cwd: loginHome, dataRoot: this.dataRoot });
     try {
       await client.initialize();
@@ -893,7 +898,7 @@ export class PersonalCodexAccounts {
     privateDir(work);
     privateDir(path.join(work, 'tmp'));
     const home = personalCodexHome(this.dataRoot, ownerId);
-    const turn = runPersonalCodexTurn({ command: this.command, codexHome: home, home: work, temp: path.join(work, 'tmp'),
+    const turn = runPersonalCodexTurn({ command: this.command, sandbox: this.sandbox, codexHome: home, home: work, temp: path.join(work, 'tmp'),
       cwd: work, dataRoot: this.dataRoot, prompt: VERIFY_PROMPT, resumeThreadId: null, sandboxMode: 'read-only' });
     this.verifying.set(ownerId, turn.child);
     let result: PersonalTurnResult;
@@ -946,7 +951,7 @@ export class PersonalCodexAccounts {
       const home = personalCodexHome(this.dataRoot, ownerId);
       if (this.command && fs.existsSync(home)) {
         // Best effort local logout; this is not a provider-side revocation.
-        const client = new AppServerAccountClient({ command: this.command, codexHome: home, home, temp: home, cwd: home, dataRoot: this.dataRoot });
+        const client = new AppServerAccountClient({ command: this.command, sandbox: this.sandbox, codexHome: home, home, temp: home, cwd: home, dataRoot: this.dataRoot });
         try { await client.initialize(); await client.request('account/logout', null, 3_000); } catch { /* deletion below is authoritative */ }
         await client.close();
       }
@@ -990,6 +995,13 @@ export class PersonalCodexAccounts {
       const account = this.accountRow(id);
       if (!this.reconcileRetained(id) && account) this.recordProblem(id, account.id, 'reauth_required');
       if (!this.hardenOwnerState(id) && account) this.recordProblem(id, account.id, 'reauth_required');
+      // Provider homes are excluded from backups (user decision 2026-10-06): a data root
+      // restored from one has the account row but no credential. A missing credential
+      // never stays "connected"; only a new authorization brings the account back.
+      if (account?.status === 'connected' && !this.retained(id)
+          && !fs.existsSync(path.join(personalCodexHome(this.dataRoot, id), CREDENTIAL_FILE))) {
+        this.recordProblem(id, account.id, 'reauth_required');
+      }
     }
     const root = path.join(this.dataRoot, 'multiuser-runtime');
     if (!fs.existsSync(root)) return;

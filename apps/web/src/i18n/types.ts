@@ -5855,6 +5855,7 @@ export interface Dict {
   'agentAccounts.unlink': string;
   'agentAccounts.unlinkConfirm': string;
   'agentAccounts.unlinkConfirmAction': string;
+  'agentAccounts.unlinkRevokeHint': string;
   'agentAccounts.keep': string;
   'agentAccounts.reauthHint': string;
   'agentAccounts.disabledHint': string;

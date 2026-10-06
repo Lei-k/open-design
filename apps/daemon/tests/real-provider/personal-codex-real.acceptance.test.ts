@@ -1,8 +1,10 @@
 // Issue #18 — local real-provider acceptance for personal Codex subscriptions.
 //
 // Skipped unless OD_REAL_CODEX_ACCEPTANCE_BIN names a `codex` binary. It drives the
-// account service (not the daemon: `startServer` still accepts only the repository
-// mock) against the real `codex app-server`, in a throwaway data root:
+// account service against the real `codex app-server`, launched exactly as the
+// daemon's real-provider test switch launches it (file credentials, every child in
+// the per-run bubblewrap sandbox; OD_REAL_CODEX_ACCEPTANCE_BWRAP overrides
+// /usr/bin/bwrap), in a throwaway data root:
 //
 //   cancel a login → device-code login approved by a human → identity read-back →
 //   consented minimal verification turn → a turn plus a follow-up on the same native
@@ -17,22 +19,17 @@ import fs from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   PersonalCodexAccounts, actorRuntimeDir, personalCodexHome, runPersonalCodexTurn,
 } from '../../src/services/personal-codex-accounts.js';
+import {
+  MULTIUSER_NOT_LAUNCH_READY_ACK, PERSONAL_CODEX_REAL_PROVIDER_ACK, resolveMultiUserMode,
+} from '../../src/services/multiuser-mode.js';
 
 const BIN = process.env.OD_REAL_CODEX_ACCEPTANCE_BIN;
 const PROMPT_FILE = process.env.OD_REAL_CODEX_ACCEPTANCE_PROMPT_FILE;
-/** Optional private file for app-server stderr (the service itself discards it). */
-const STDERR_LOG = process.env.OD_REAL_CODEX_ACCEPTANCE_STDERR_LOG;
-/**
- * Credentials must stay in each isolated CODEX_HOME. Without this pin the CLI may
- * pick an OS keyring, which is shared by every home of the same OS user.
- */
-const COMMAND: [string, ...string[]] = STDERR_LOG
-  ? ['/bin/sh', '-c', 'exec "$0" app-server -c cli_auth_credentials_store=\'"file"\' 2>>"$1"', BIN ?? '', STDERR_LOG]
-  : [BIN ?? '', 'app-server', '-c', 'cli_auth_credentials_store="file"'];
+const BWRAP = process.env.OD_REAL_CODEX_ACCEPTANCE_BWRAP ?? '/usr/bin/bwrap';
 const LOGIN_WAIT_MS = 15 * 60_000;
 
 const sha = (file: string) => (fs.existsSync(file) ? createHash('sha256').update(fs.readFileSync(file)).digest('hex') : null);
@@ -49,10 +46,25 @@ async function until<T>(read: () => Promise<T> | T, done: (value: T) => boolean,
 }
 
 describe.skipIf(!BIN)('personal Codex subscription against the real provider', () => {
-  const root = fs.mkdtempSync(path.join(tmpdir(), 'od-real-codex-'));
-  const db = new Database(path.join(root, 'app.sqlite'));
-  const service = new PersonalCodexAccounts({ db, dataRoot: root, acceptanceAppServerCommand: COMMAND });
+  let root = '';
+  let db: Database.Database;
+  let service: PersonalCodexAccounts;
   const owner = 'acceptance-owner';
+
+  beforeAll(() => {
+    // The same resolution the daemon's real-provider test switch uses: the binary, the
+    // file-credential pin and the mandatory per-run sandbox.
+    const launch = resolveMultiUserMode({
+      options: { acknowledgeNotLaunchReady: MULTIUSER_NOT_LAUNCH_READY_ACK, allowedOrigins: ['https://od.test'],
+        testPersonalCodexRealBinary: { path: BIN!, acknowledge: PERSONAL_CODEX_REAL_PROVIDER_ACK },
+        personalSandbox: { bwrapPath: BWRAP } },
+      env: {}, host: '127.0.0.1',
+    })!.personalCodex!;
+    expect(launch.sandbox).not.toBeNull();
+    root = fs.mkdtempSync(path.join(tmpdir(), 'od-real-codex-'));
+    db = new Database(path.join(root, 'app.sqlite'));
+    service = new PersonalCodexAccounts({ db, dataRoot: root, appServerCommand: launch.command, sandbox: launch.sandbox });
+  });
   const operatorAuth = path.join(process.env.CODEX_HOME ?? path.join(homedir(), '.codex'), 'auth.json');
   let accountId = '';
 
@@ -79,9 +91,9 @@ describe.skipIf(!BIN)('personal Codex subscription against the real provider', (
 
   afterAll(async () => {
     if (PROMPT_FILE) fs.rmSync(PROMPT_FILE, { force: true });
-    await service.shutdown();
-    db.close();
-    fs.rmSync(root, { recursive: true, force: true });
+    await service?.shutdown();
+    db?.close();
+    if (root) fs.rmSync(root, { recursive: true, force: true });
   });
 
   it('cancels a pending device-code login without binding anything', async () => {
@@ -134,7 +146,7 @@ describe.skipIf(!BIN)('personal Codex subscription against the real provider', (
     expect(usable).toMatchObject({ id: accountId });
     const work = path.join(root, 'run-work');
     fs.mkdirSync(path.join(work, 'tmp'), { recursive: true, mode: 0o700 });
-    const env = { command: service.appServerCommand()!, codexHome: usable.codexHome, home: work,
+    const env = { ...service.appServerLaunch()!, codexHome: usable.codexHome, home: work,
       temp: path.join(work, 'tmp'), cwd: work, dataRoot: root, sandboxMode: 'read-only' as const };
     const first = await runPersonalCodexTurn({ ...env, prompt: 'Remember the word "teal". Reply with OK only.', resumeThreadId: null }).done;
     expect(first, JSON.stringify(first)).toMatchObject({ ok: true, problem: null });

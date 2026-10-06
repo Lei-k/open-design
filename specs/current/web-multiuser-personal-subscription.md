@@ -1,29 +1,50 @@
 # Web multi-user personal subscription linking (#18, epic #9)
 
-Status: local, test-only slice on top of #2/#13/#15/#16. **The real provider stays disabled.** This slice proves the account-linking state machine, per-user isolation and a separate personal run lane against a repository mock of `codex app-server`. Startup, gate and loopback rules in `web-multiuser-authz-gate.md` stay in force. Daemon data paths follow the root `AGENTS.md` **Daemon data directory contract**; this note does not restate them.
+Status: test-only slice on top of #2/#13/#15/#16. **No production entrypoint enables a real provider.** This slice proves the account-linking state machine, per-user isolation and a separate personal run lane against a repository mock of `codex app-server`. A sandboxed real-provider switch exists for the direct `startServer` harness only (staging and local acceptance). Startup, gate and loopback rules in `web-multiuser-authz-gate.md` stay in force; `startDaemonRuntime` still refuses every multi-user option. Daemon data paths follow the root `AGENTS.md` **Daemon data directory contract**; this note does not restate them.
 
 ## Enablement switch
 
-- Default **off**. The switch is the `testPersonalCodexAppServer` field of the direct `startServer({ multiUser })` test option. `resolveMultiUserMode` refuses startup unless its real path equals the repository mock `mocks/personal-codex-app-server.ts`. The real `codex` binary, the PATH mock wrapper and any other script are refused before any side effect.
+- Default **off**. Two mutually exclusive fields of the direct `startServer({ multiUser })` option turn it on. Both are resolved by `resolveMultiUserMode`, the first statement of `startServer`, and every refusal happens there, before any side effect.
+  - `testPersonalCodexAppServer`: its real path must equal the repository mock `mocks/personal-codex-app-server.ts`. The PATH mock wrapper and any other script are refused.
+  - `testPersonalCodexRealBinary: { path, acknowledge }` (user decision 2026-10-06): a real `codex` binary for the personal lane. It needs the exact `PERSONAL_CODEX_REAL_PROVIDER_ACK`, an absolute path to an executable, and `personalSandbox`. The command is always `<codex> app-server -c cli_auth_credentials_store="file"`.
+- `personalSandbox: { bwrapPath }` runs every personal app-server child in the per-run sandbox (see "Per-run sandbox"). It is mandatory with the real binary and optional with the mock. Startup refuses when bwrap cannot build the sandbox on the host, for example where unprivileged user namespaces are disabled or restricted by AppArmor.
 - There is no environment variable, admin API or UI that enables personal subscriptions or a real provider.
 - Off: `GET /api/agent-accounts` answers `personalSubscriptionsEnabled: false`. Login start, verify and personal runs answer `403 MULTIUSER_PERSONAL_DISABLED`. Company-pool runs are unchanged.
 - Single-user mode registers none of these routes.
-- An invalid `testPersonalCodexAppServer` is refused by `resolveMultiUserMode`, the first statement of `startServer`, before any side effect. The account service is built right after the database opens, before any timer or service. If its schema migration or retained-state recovery throws, startup closes the auth store and the database, ends the health session and rethrows (#22). A later start in the same process then succeeds.
+- The account service is built right after the database opens, before any timer or service. If its schema migration or retained-state recovery throws, startup closes the auth store and the database, ends the health session and rethrows (#22). A later start in the same process then succeeds.
 
-### Enablement gates (not satisfied)
+### Enablement gates and decisions (user decisions 2026-10-06)
 
-Real enablement needs all of the following. None is met by this slice.
+1. **Official applicability: accepted by the owner.** The owner allows hosted, multi-user use of personal ChatGPT plans through the native `codex app-server` device flow. SIWC is not used.
+2. **Per-user OS-level isolation: implemented as a per-run sandbox** (option A; not per-user uids or VMs). See "Per-run sandbox".
+3. **Secret custody and backup policy: decided.**
+   - The deployment encrypts the volume that holds the daemon data root at rest (for example EBS encryption; #7). No application-level encryption: the CLI reads its credential file in plain text.
+   - Backups exclude every provider home under the per-actor runtime directories (`codex-home`, `codex-home.previous` and `codex-login-*`). A data root restored from a backup therefore has account rows without credentials. On start, a `connected` account without its credential becomes `requires_reauth`, and only a new authorization restores it.
+   - Unlink deletes local state only. The confirmation tells the owner to sign out of all devices in ChatGPT security settings to revoke the authorization at OpenAI.
+4. **Two real accounts end-to-end: deferred until after deployment.** It is tested on the deployed environment, which needs the production launcher and deployment gate of #7/#8. Until then, the real provider runs only through the direct `startServer` switch.
 
-1. **Official applicability.** Record whether hosted, multi-user use of personal ChatGPT plans is allowed through the native `codex app-server` device flow, or only through Sign in with ChatGPT (SIWC) and its interest-form path for hosted apps. Record the conditions and approvals. Until then the provider stays disabled.
-2. **Per-user OS-level isolation.** Daemon and agent children run under the same OS uid. Filesystem modes (0700/0600) cannot stop a task shell in one user's run from reading another user's CODEX_HOME. Real enablement needs a per-user uid or sandbox boundary (#5/#7).
-3. **Secret custody and backup policy** for provider auth stores: encryption at rest, backup exclusion/retention, and restore/revocation handling (#7).
-4. **Two real accounts end-to-end** on staging, plus a browser regression (#8).
+Also decided on 2026-10-06:
+
+- **Version.** No further version runs. The real run used 0.154.0, whose generated schema contains every method and field below.
+- **CLI.** No `od` surface for personal accounts for now; see Follow-ups.
+- **Claude Code.** Not started.
+
+### Per-run sandbox
+
+Daemon and agent children share one OS uid, so file modes alone cannot stop a task shell in one user's run from reading another user's CODEX_HOME or the daemon database. With `personalSandbox`, every personal app-server child starts inside bubblewrap (`apps/daemon/src/services/personal-sandbox.ts`). This covers login, the fresh identity read, verification, runs and logout.
+
+- `--unshare-all --share-net --die-with-parent --new-session`. The network stays shared, because the provider is remote.
+- Read-only: `/usr` (with the merged-`/usr` top-level symlinks), TLS trust stores, and the `/etc` files needed for name resolution and user lookup. Also read-only: the program paths. For the real CLI that is the release directory holding `bin/` and its bundled helpers; for the mock it is the Node installation and `mocks/`.
+- Read-write: only this child's CODEX_HOME, HOME, TMPDIR and working directory. For a run, the working directory is the project directory. `/tmp` is a private tmpfs.
+- The rest of the daemon data root, other users' homes, the operator's home and the host's `/tmp` do not exist inside. `PATH` is fixed to the system directories.
+- Codex's own command sandbox runs nested inside this one.
+- Tests: `personal-codex-sandbox.test.ts` (service) and `multiuser-personal-sandbox-http.test.ts` (daemon run lane). In both, a task in alice's run gets `ENOENT` for bob's credential and for the daemon database, while its own credential stays readable. An unsandboxed control can read bob's credential. Both suites are skipped where bwrap cannot build the sandbox.
 
 ### Local real-provider acceptance (2026-10-06, codex 0.154.0)
 
-`apps/daemon/tests/real-provider/personal-codex-real.acceptance.test.ts` drives the account service, not the daemon, against a real `codex app-server`. It is skipped unless `OD_REAL_CODEX_ACCEPTANCE_BIN` names a binary. `startServer` never passes the service's `acceptanceAppServerCommand`, so gate 1–4 above and the mock-only startup rule are unchanged.
+`apps/daemon/tests/real-provider/personal-codex-real.acceptance.test.ts` drives the account service against a real `codex app-server`. It launches it exactly as `testPersonalCodexRealBinary` resolves it: file credentials, every child sandboxed, and `OD_REAL_CODEX_ACCEPTANCE_BWRAP` defaulting to `/usr/bin/bwrap`. It is skipped unless `OD_REAL_CODEX_ACCEPTANCE_BIN` names a binary.
 
-One run on a single Pro account passed all five steps:
+A first run on a single Pro account, before the sandbox existed, passed all five steps:
 
 1. A pending device login was canceled.
 2. A device-code login approved by the owner linked a private isolated home (0700/0600). Its credential was not a copy of the operator's own CODEX_HOME.
@@ -31,11 +52,12 @@ One run on a single Pro account passed all five steps:
 4. A turn and a follow-up resumed the same native thread and recalled the earlier turn.
 5. Unlink removed every copy.
 
+A second run on the same account with every child sandboxed also passed all five steps, including the device login, verification, the resumed follow-up thread and unlink.
+
 Findings:
 
 - The real app-server announces `account/login/completed { success: true }` before that process's `account/read` carries the account. The first acceptance attempt therefore failed with `identity_unavailable`. When the live read has no e-mail, the service now reads the identity once more from a fresh app-server on the persisted login home, which also proves the credential landed in that home. The mock reproduces this with the `approve-stale-read` outcome.
-- An isolated home has no `config.toml`, so the CLI may choose an OS keyring, which every home of the same OS user shares. Any real-provider command must pin `-c cli_auth_credentials_store="file"`; the acceptance command does.
-- The generated 0.154.0 schema contains every method and field listed below. The 0.160.0 pin still awaits a real run on that version.
+- An isolated home has no `config.toml`, so the CLI may choose an OS keyring, which every home of the same OS user shares. The real-provider command therefore always pins `-c cli_auth_credentials_store="file"`.
 
 ## Provider protocol (pinned: codex 0.160.0)
 
@@ -161,5 +183,6 @@ Settings → "Agent accounts" appears only on a daemon whose public `GET /api/ve
 Follow-ups:
 
 - A run-composer source picker.
-- A CLI (`od`) surface. The CLI has no multi-user session support yet, as in #13/#15/#16.
+- A CLI (`od`) surface: deferred by the owner (2026-10-06). The CLI has no multi-user session support yet, as in #13/#15/#16. Linking needs a browser for the device code in any case.
+- Claude Code personal subscriptions (#18 phase C): not started (owner decision 2026-10-06).
 - Integration into the capability-restricted multi-user shell (#6); the first bounded auth/admin/project-metadata slice is in `web-multiuser-web-ux.md`.

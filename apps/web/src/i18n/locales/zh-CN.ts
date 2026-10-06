@@ -6008,6 +6008,7 @@ export const zhCN: Dict = {
   'agentAccounts.unlink': "解除关联",
   'agentAccounts.unlinkConfirm': "要解除关联此账号吗？此服务器上的本地登录数据会被删除，你排队中或运行中的个人运行也会被取消。这不会在提供方撤销授权。",
   'agentAccounts.unlinkConfirmAction': "解除关联账号",
+  'agentAccounts.unlinkRevokeHint': "若也要在 OpenAI 端撤销授权，请到 ChatGPT 的安全设置中登出所有设备。",
   'agentAccounts.keep': "保留",
   'agentAccounts.reauthHint': "你的登录已过期或被撤销。请重新授权以继续使用。",
   'agentAccounts.disabledHint': "你的提供方工作区不允许此用途。请联系工作区管理员后重新授权，或解除关联。",
