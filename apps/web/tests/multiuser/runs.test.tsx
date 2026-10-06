@@ -18,6 +18,8 @@ let streamSignal: AbortSignal | null | undefined;
 let postStatus: number;
 let postCode: string;
 let eventsDown: boolean;
+let projectFiles: Array<{ name: string; kind: string; mime?: string }>;
+let postResponse: (() => Promise<Response>) | null;
 function mount() { return render(<I18nProvider initial="en"><MultiUserApp setupToken={null} /></I18nProvider>); }
 async function switchAccount() {
   identity = 'bob';
@@ -26,6 +28,7 @@ async function switchAccount() {
 }
 beforeEach(() => {
   identity = 'alice'; requests = []; streamSignal = null; eventsDown = false; postStatus = 409; postCode = 'MULTIUSER_PERSONAL_USAGE_LIMIT';
+  projectFiles = []; postResponse = null;
   window.history.replaceState({}, '', '/projects/p1/conversations/c1');
   runResponse = async () => json({ runs: [], nextCursor: null });
   detailResponse = async () => json(run);
@@ -37,9 +40,17 @@ beforeEach(() => {
     if (url === '/api/auth/logout') return new Response(null, { status: 204 });
     if (url === '/api/projects/p1') return json({ project: { id: 'p1', name: 'Project' } });
     if (url === '/api/projects/p1/conversations') return conversationResponse();
+    if (url === '/api/multiuser/projects/p1/conversations/c1/design') return json({ design: { skillId: 'builtin-skill', designSystemId: 'builtin-design', locale: 'en' } });
+    if (url === '/api/multiuser/design-catalog') return json({ skills: [{ id: 'builtin-skill', name: 'Built-in skill', displayName: { en: 'Built-in skill' } }], designSystems: [{ id: 'builtin-design', name: 'builtin-design', title: 'Built-in design' }] });
+    if (url === '/api/projects/p1/files') return json({ files: projectFiles });
+    if (url === '/api/multiuser/projects/p1/preview-url?file=index.html') return json({
+      url: 'https://preview.example.test/api/multiuser/projects/p1/preview/scope/index.html',
+      renewUrl: '/api/multiuser/projects/p1/preview/scope/renew', expiresAt: Date.now() + 300_000,
+    });
+    if (url === '/api/projects/p1/file-content/readme.txt') return new Response('private text file');
     if (url.endsWith('/messages')) return json({ error: { code: 'INTERNAL_ERROR' } }, 500);
     if (url === '/api/agent-accounts') return json(summary);
-    if (url === '/api/runs' && init?.method === 'POST') return json({ error: { code: postCode } }, postStatus);
+    if (url === '/api/runs' && init?.method === 'POST') return postResponse ? postResponse() : json({ error: { code: postCode } }, postStatus);
     if (url.startsWith('/api/runs?')) return runResponse(url);
     if (url === '/api/runs/r1/cancel') return cancelResponse();
     if (url === '/api/runs/r1') return detailResponse();
@@ -85,32 +96,80 @@ it('deduplicates persisted replay and live events by sequence', async () => {
   await vi.waitFor(() => expect(streamSignal).toBeTruthy());
   await act(async () => {
     stream.enqueue(new TextEncoder().encode('id: 1\nevent: queued\ndata: {}\n\nid: 2\nevent: start\ndata: {}\n\nid: 3\nevent: agent\ndata: {"text":"Only once"}\n\n'));
-    stream.enqueue(new TextEncoder().encode('id: 3\nevent: agent\ndata: {"text":"Only once"}\n\nid: 4\nevent: end\ndata: {"status":"succeeded"}\n\n'));
+    stream.enqueue(new TextEncoder().encode('id: 3\nevent: agent\ndata: {"text":"Only once"}\n\nid: 4\nevent: progress\ndata: {"kind":"command","name":"Bash","status":"completed"}\n\nid: 5\nevent: end\ndata: {"status":"succeeded"}\n\n'));
   });
   expect(screen.getAllByText('Only once')).toHaveLength(1);
+  expect(screen.getByText('Bash · completed')).toBeTruthy();
   expect(screen.getByText('Succeeded')).toBeTruthy();
 });
-it('requires an explicit source and never retries personal failure on company capacity', async () => {
+
+it('renders generated files with sandboxed HTML, image, text and download previews', async () => {
+  projectFiles = [
+    { name: 'index.html', kind: 'html' },
+    { name: 'image.png', kind: 'image' },
+    { name: 'unsafe.svg', kind: 'image', mime: 'image/svg+xml' },
+    { name: 'readme.txt', kind: 'text' },
+    { name: 'slides.pdf', kind: 'other' },
+  ];
+  runResponse = async () => json({ runs: [{ ...run, status: 'succeeded', executionSource: 'personal_subscription',
+    output: { text: 'Done', textTruncated: false, files: ['index.html'] } }], nextCursor: null });
+  mount();
+  const html = await screen.findByRole('button', { name: 'index.html •' });
+  expect(html.getAttribute('aria-current')).toBe('true');
+  const frame = await screen.findByTitle('index.html');
+  expect(frame.getAttribute('sandbox')).toBe('allow-scripts allow-forms');
+  expect(frame.getAttribute('referrerpolicy')).toBe('no-referrer');
+  expect(frame.getAttribute('src')).toMatch(/^https:\/\/preview\.example\.test\//u);
+  fireEvent.click(screen.getByRole('button', { name: 'image.png' }));
+  expect(screen.getByRole('img', { name: 'image.png' }).getAttribute('src')).toBe('/api/projects/p1/file-content/image.png');
+  fireEvent.click(screen.getByRole('button', { name: 'unsafe.svg' }));
+  expect(screen.getByRole('link', { name: 'Download update' }).getAttribute('href')).toBe('/api/projects/p1/file-content/unsafe.svg?download=1');
+  fireEvent.click(screen.getByRole('button', { name: 'readme.txt' }));
+  expect(await screen.findByText('private text file')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'slides.pdf' }));
+  expect(screen.getByRole('link', { name: 'Download update' }).getAttribute('href')).toBe('/api/projects/p1/file-content/slides.pdf?download=1');
+});
+
+it('submits question-form answers as the next turn in the same design conversation', async () => {
+  const question = '<question-form id="brief" title="Quick brief">{"questions":[{"id":"platform","label":"Platform","type":"radio","options":["Mobile","Desktop"],"required":true}]}</question-form>';
+  runResponse = async () => json({ runs: [{ ...run, status: 'succeeded', executionSource: 'personal_subscription',
+    output: { text: question, textTruncated: false, files: [] } }], nextCursor: null });
+  postResponse = async () => json({ run: { ...run, id: 'r2', status: 'queued', executionSource: 'personal_subscription', message: 'answer' } }, 202);
+  mount();
+  fireEvent.click(await screen.findByRole('radio', { name: 'Mobile' }));
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Next' })));
+  const post = requests.find(({ url, init }) => url === '/api/runs' && init?.method === 'POST');
+  expect(post).toBeTruthy();
+  expect(JSON.parse(String(post!.init?.body))).toMatchObject({
+    projectId: 'p1', conversationId: 'c1', executionSource: 'personal_subscription',
+    skillId: 'builtin-skill', designSystemId: 'builtin-design',
+  });
+  expect(JSON.parse(String(post!.init?.body)).message).toContain('[form answers — brief]');
+  expect(JSON.parse(String(post!.init?.body)).message).toContain('Platform: Mobile');
+});
+it('locks design conversations to personal Codex and never retries on company capacity', async () => {
   mount(); const send = await screen.findByRole('button', { name: 'Send' });
   expect((send as HTMLButtonElement).disabled).toBe(true);
   fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
   const sources = screen.getByRole('group', { name: 'Execution source' });
-  fireEvent.click(within(sources).getByRole('radio', { name: 'My Codex subscription' }));
+  expect(within(sources).queryByRole('radio')).toBeNull();
+  expect(within(sources).getByText('Locked to My Codex subscription')).toBeTruthy();
   await act(async () => fireEvent.click(send));
   expect(screen.getByRole('alert').textContent).toContain('subscription usage limit');
   const posts = requests.filter(({ url, init }) => url === '/api/runs' && init?.method === 'POST');
   expect(posts).toHaveLength(1);
   expect(JSON.parse(String(posts[0]!.init?.body))).toMatchObject({ executionSource: 'personal_subscription', agentId: 'codex' });
-  expect((screen.getByRole('radio', { name: 'My Codex subscription' }) as HTMLInputElement).checked).toBe(true);
+  expect(screen.queryByRole('radio')).toBeNull();
 });
-it.each(['company_pool', 'personal_subscription'])('derives the pinned %s source from history on reload', async (source) => {
-  runResponse = async () => json({ runs: [{ ...run, status: 'succeeded', ...(source === 'personal_subscription' ? { executionSource: source } : {}), output: { text: 'Saved result' } }] });
+it('keeps a design conversation on personal Codex when reloading legacy company-shaped history', async () => {
+  runResponse = async () => json({ runs: [{ ...run, status: 'succeeded', output: { text: 'Saved result' } }] });
   mount();
   await screen.findByText('Saved result');
-  // A pinned source reads as locked, not as two unavailable choices.
+  // Design conversations never expose the company source, even if an older
+  // row predates the personal-only design boundary.
   const sources = screen.getByRole('group', { name: 'Execution source' });
   expect(within(sources).queryByRole('radio')).toBeNull();
-  expect(within(sources).getByText(`Locked to ${source === 'company_pool' ? 'Company pool (test mock)' : 'My Codex subscription'}`)).toBeTruthy();
+  expect(within(sources).getByText('Locked to My Codex subscription')).toBeTruthy();
   expect(screen.getByText(/pinned to its first/)).toBeTruthy();
   expect(streamSignal).toBeNull();
 });
@@ -206,10 +265,11 @@ it.each([true, false])('warns before send when the personal pin is stale=%s', as
   }
 });
 it('labels a run card prompt and output', async () => {
-  runResponse = async () => json({ runs: [{ ...run, status: 'succeeded', output: { text: 'Saved result' } }], nextCursor: null });
+  runResponse = async () => json({ runs: [{ ...run, status: 'succeeded', output: { text: 'Saved result', textTruncated: true, files: [] } }], nextCursor: null });
   mount();
   const card = (await screen.findByText('Saved result')).closest('li')!;
   expect(within(card).getByText('Prompt')).toBeTruthy();
   expect(within(card).getByText('Output')).toBeTruthy();
   expect(within(card).getByText('Private prompt A')).toBeTruthy();
+  expect(within(card).getByRole('note').textContent).toContain('storage limit');
 });

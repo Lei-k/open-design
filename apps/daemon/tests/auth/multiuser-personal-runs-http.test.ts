@@ -93,6 +93,58 @@ afterEach(async () => {
 afterAll(async () => { await daemon?.close(); cleanupIsolatedDataRoot(); });
 
 describe('personal subscription run lane', () => {
+  it('pins built-in design inputs, sends the stable prompt once, and reports artifact diffs', async () => {
+    const project = await newProject(alice);
+    const catalog = await daemon.request({ path: '/api/multiuser/design-catalog', cookie: alice.cookie });
+    expect(catalog.status, catalog.text).toBe(200);
+    const skill = catalog.json.skills[0] as { id: string; name: string };
+    const system = catalog.json.designSystems[0] as { id: string; title: string };
+    const conversation = await daemon.request({
+      method: 'POST', path: `/api/multiuser/projects/${project.id}/conversations`, cookie: alice.cookie,
+      body: { title: 'Design flow', skillId: skill.id, designSystemId: system.id, locale: 'en' },
+    });
+    expect(conversation.status, conversation.text).toBe(201);
+    const conversationId = conversation.json.conversation.id as string;
+    const request = (message: string, skillId = skill.id) => daemon.request({
+      method: 'POST', path: '/api/runs', cookie: alice.cookie,
+      body: { projectId: project.id, conversationId, agentId: 'codex', executionSource: 'personal_subscription',
+        message, skillId, designSystemId: system.id },
+    });
+
+    const mismatch = await request('must not start', 'user:private');
+    expect(mismatch.status).toBe(400);
+    const companyMismatch = await daemon.request({
+      method: 'POST', path: '/api/runs', cookie: alice.cookie,
+      body: { projectId: project.id, conversationId, agentId: 'test-mock', executionSource: 'company_pool', message: 'must not use company' },
+    });
+    expect(companyMismatch.status).toBe(409);
+    expect(companyMismatch.json.error.code).toBe('MULTIUSER_EXECUTION_SOURCE_MISMATCH');
+    const firstRun = await request('create the page [mock-write=generated/result.html] [mock-progress]');
+    expect(firstRun.status, firstRun.text).toBe(202);
+    const first = await finished(alice, firstRun.json.run.id);
+    expect(first.status, JSON.stringify(first)).toBe('succeeded');
+    expect(first.output.files).toContain('generated/result.html');
+    const firstReply = JSON.parse(first.output.text);
+    expect(firstReply.message).toContain('# User request');
+    expect(firstReply.message).toContain('create the page [mock-write=generated/result.html]');
+    expect(firstReply.message).toContain(skill.name);
+    expect(firstReply.message).toContain(system.title);
+    const events = await daemon.request({ path: `/api/runs/${firstRun.json.run.id}/events`, cookie: alice.cookie });
+    expect(events.status, events.text).toBe(200);
+    expect(events.text).toContain('"kind":"todo"');
+    expect(events.text).toContain('"kind":"command","name":"Bash","status":"started"');
+    expect(events.text).toContain('"kind":"command","name":"Bash","status":"completed"');
+    expect(events.text).toContain('"kind":"file","path":"generated/result.html","status":"changed"');
+    expect(events.text).not.toContain('PRIVATE_COMMAND_OUTPUT');
+
+    const followUpRun = await request('make the heading shorter');
+    expect(followUpRun.status, followUpRun.text).toBe(202);
+    const followUp = await finished(alice, followUpRun.json.run.id);
+    const followUpReply = JSON.parse(followUp.output.text);
+    expect(followUpReply.threadId).toBe(firstReply.threadId);
+    expect(followUpReply.message).toBe('make the heading shorter');
+  });
+
   it('runs each user only through their own CODEX_HOME with an explicit environment', async () => {
     process.env.MULTIUSER_TEST_API_KEY = 'PLANTED_HOST_SECRET';
     try {
@@ -115,6 +167,16 @@ describe('personal subscription run lane', () => {
         expect(looseModes(home)).toEqual([]);
       }
     } finally { delete process.env.MULTIUSER_TEST_API_KEY; }
+  });
+
+  it('bounds oversized UTF-8 final text and reports truncation explicitly', async () => {
+    const accepted = await personal(alice, '[mock-large-output]');
+    expect(accepted.status, accepted.text).toBe(202);
+    const run = await finished(alice, accepted.json.run.id);
+    expect(run.status, JSON.stringify(run)).toBe('succeeded');
+    expect(run.output.textTruncated).toBe(true);
+    expect(Buffer.byteLength(run.output.text, 'utf8')).toBeLessThanOrEqual(512 * 1024);
+    expect(run.output.text.at(-1)).toBe('界');
   });
 
   it('is not charged to the company ledger and does not consume company slots or quota', async () => {

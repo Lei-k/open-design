@@ -11,6 +11,13 @@ function mount(load: () => Promise<Response>) {
     if (url === '/api/auth/me') return json({ account: { id: 'alice', username: 'alice', role: 'user', active: true } });
     if (url === '/api/projects/p1') return json({ project: { id: 'p1', name: 'Owned project' } });
     if (url === '/api/projects/p1/conversations') return load();
+    if (url === '/api/multiuser/design-catalog') return json({
+      skills: [{ id: 'builtin-skill', name: 'Built-in skill', displayName: { en: 'Built-in skill' } }],
+      designSystems: [{ id: 'builtin-design', name: 'builtin-design', title: 'Built-in design' }],
+    });
+    if (url === '/api/multiuser/projects/p1/design-selections') return json({
+      designs: [{ conversationId: 'c1', skillId: 'builtin-skill', designSystemId: 'builtin-design', locale: 'en' }],
+    });
     throw new Error(`Unexpected request ${url}`);
   }));
   return render(<I18nProvider initial="en"><MultiUserApp setupToken={null} /></I18nProvider>);
@@ -24,6 +31,8 @@ it('keeps creation behind loading and shows the empty owned conversation state',
   await act(async () => resolve(json({ conversations: [] })));
   expect(screen.getByText('No conversations yet. Create one to begin.')).toBeTruthy();
   expect(screen.getByLabelText('Conversation title')).toBeTruthy();
+  expect(screen.getByRole('option', { name: 'Built-in skill' }).getAttribute('value')).toBe('builtin-skill');
+  expect(screen.getByRole('option', { name: 'Built-in design' }).getAttribute('value')).toBe('builtin-design');
 });
 it('retries a failed read before exposing conversation links and creation', async () => {
   let fail = true;

@@ -44,7 +44,9 @@ export const PERSONAL_LOGIN_TTL_MS = 15 * 60_000;
 const VERIFY_PROMPT = 'Reply with the single word OK.';
 /** The provider's credential store inside CODEX_HOME; everything else there is native session state. */
 const CREDENTIAL_FILE = 'auth.json';
-const MAX_TURN_TEXT = 64 * 1024;
+// Large enough to preserve complete question-form payloads while remaining a
+// hard persistence bound. The result records whether any text was discarded.
+const MAX_TURN_TEXT_BYTES = 512 * 1024;
 
 export class PersonalAccountError extends Error {
   constructor(readonly status: number, readonly code: ApiErrorCode, message: string) {
@@ -130,7 +132,13 @@ function rateWindow(value: unknown): PersonalRateLimitWindow | null {
   return { usedPercent: record.usedPercent, windowDurationMins: optional(record.windowDurationMins), resetsAt: optional(record.resetsAt) };
 }
 
-export interface PersonalTurnResult { ok: boolean; problem: PersonalAccountProblem | null; text: string; threadId: string | null }
+export interface PersonalTurnResult {
+  ok: boolean;
+  problem: PersonalAccountProblem | null;
+  text: string;
+  textTruncated: boolean;
+  threadId: string | null;
+}
 
 /**
  * Drive one turn through the shared app-server session driver in `codexHome`.
@@ -141,11 +149,15 @@ export interface PersonalTurnResult { ok: boolean; problem: PersonalAccountProbl
  */
 export function runPersonalCodexTurn(input: AppServerEnvironment & {
   prompt: string; resumeThreadId: string | null; sandboxMode: CodexSandboxMode; onThread?: (threadId: string) => void;
+  /** Normalized progress tap. Callers must persist only a redacted projection. */
+  onAgentEvent?: (event: Json) => void;
   /** Called synchronously from the child's close event, before `done` settles. */
   onDone?: (result: PersonalTurnResult) => void;
 }): { child: ChildProcessWithoutNullStreams; done: Promise<PersonalTurnResult> } {
   const child = spawnAppServer(input);
   let text = '';
+  let textBytes = 0;
+  let textTruncated = false;
   let problem: PersonalAccountProblem | null = null;
   let tap = '';
   child.stdout.on('data', (chunk: Buffer) => {
@@ -165,7 +177,24 @@ export function runPersonalCodexTurn(input: AppServerEnvironment & {
     child, prompt: input.prompt, cwd: input.cwd, sandboxMode: input.sandboxMode,
     resumeSessionId: input.resumeThreadId, resumeSessionOwned: input.resumeThreadId !== null,
     onAgentEvent: (event) => {
-      if (event.type === 'text_delta' && typeof event.delta === 'string' && text.length < MAX_TURN_TEXT) text += event.delta;
+      input.onAgentEvent?.(event);
+      if (event.type === 'text_delta' && typeof event.delta === 'string') {
+        const room = MAX_TURN_TEXT_BYTES - textBytes;
+        const deltaBytes = Buffer.byteLength(event.delta, 'utf8');
+        if (deltaBytes <= room) {
+          text += event.delta;
+          textBytes += deltaBytes;
+        } else {
+          const bytes = Buffer.from(event.delta, 'utf8');
+          let end = Math.max(0, room);
+          // Never persist a partial UTF-8 sequence at the byte boundary.
+          while (end > 0 && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end -= 1;
+          const fragment = bytes.subarray(0, end).toString('utf8');
+          text += fragment;
+          textBytes += Buffer.byteLength(fragment, 'utf8');
+          textTruncated = true;
+        }
+      }
       if (event.type === 'status' && typeof event.sessionId === 'string') input.onThread?.(event.sessionId);
       // A fatal transport error never reaches turn/completed; end the child.
       if (event.type === 'error') { try { child.stdin.end(); } catch { /* gone */ } }
@@ -174,7 +203,7 @@ export function runPersonalCodexTurn(input: AppServerEnvironment & {
   const done = new Promise<PersonalTurnResult>((resolve) => {
     child.once('close', (code) => {
       const result = { ok: code === 0 && session.completedSuccessfully() && problem === null,
-        problem, text: text.slice(0, MAX_TURN_TEXT), threadId: session.getDurableSessionId() };
+        problem, text, textTruncated, threadId: session.getDurableSessionId() };
       input.onDone?.(result);
       resolve(result);
     });
@@ -234,6 +263,8 @@ export class PersonalCodexAccounts {
   private cancelPersonalRuns: (ownerId: string) => Promise<void> = async () => {};
   /** Clears the owner's native thread pins; called inside the switch's bind transaction. */
   private forgetNativeSessions: (ownerId: string) => void = () => {};
+  /** Revokes owner-bound preview capabilities when subscription authority changes. */
+  private invalidatePreviewScopes: (ownerId: string) => void = () => {};
   private identityKey: Buffer;
   private stopped = false;
 
@@ -343,9 +374,14 @@ export class PersonalCodexAccounts {
     }).immediate();
   }
 
-  setRunHooks(hooks: { cancelPersonalRuns: (ownerId: string) => Promise<void>; forgetNativeSessions?: (ownerId: string) => void }): void {
+  setRunHooks(hooks: {
+    cancelPersonalRuns: (ownerId: string) => Promise<void>;
+    forgetNativeSessions?: (ownerId: string) => void;
+    invalidatePreviewScopes?: (ownerId: string) => void;
+  }): void {
     this.cancelPersonalRuns = hooks.cancelPersonalRuns;
     if (hooks.forgetNativeSessions) this.forgetNativeSessions = hooks.forgetNativeSessions;
+    if (hooks.invalidatePreviewScopes) this.invalidatePreviewScopes = hooks.invalidatePreviewScopes;
   }
 
   audit(actorId: string, targetId: string, action: string, detail: string | null = null, refId: string | null = null): void {
@@ -539,7 +575,10 @@ export class PersonalCodexAccounts {
     // or dispatched on the old version, then stop the runs bound to it.
     if (existing) this.reauthorizing.add(live.ownerId);
     try {
-      if (existing) await this.cancelPersonalRuns(live.ownerId);
+      if (existing) {
+        this.invalidatePreviewScopes(live.ownerId);
+        await this.cancelPersonalRuns(live.ownerId);
+      }
       if (this.attemptRow(attemptId)?.status !== 'pending' || this.stopped || this.unlinking.has(live.ownerId)) {
         await this.finalize(attemptId, 'failed', 'interrupted', 'link_fail');
         return;
@@ -944,6 +983,7 @@ export class PersonalCodexAccounts {
     // Fence before the first await: the account is unusable until its row and home are gone.
     this.unlinking.add(ownerId);
     try {
+      this.invalidatePreviewScopes(ownerId);
       await this.cancelPendingFor(ownerId);
       await this.cancelPersonalRuns(ownerId);
       const verifying = this.verifying.get(ownerId);

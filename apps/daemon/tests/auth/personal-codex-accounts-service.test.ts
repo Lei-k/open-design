@@ -152,6 +152,23 @@ it('has no side effects when the attempt expires during the account read', async
   expect(fs.readFileSync(path.join(r.home, 'auth.json'), 'utf8')).toBe(auth);
 });
 
+it('revokes owner preview scopes before re-authorization and unlink change subscription authority', async () => {
+  const r = make();
+  await linked(r);
+  const invalidated: string[] = [];
+  r.service.setRunHooks({
+    cancelPersonalRuns: async () => {},
+    invalidatePreviewScopes: (owner) => { invalidated.push(owner); },
+  });
+  const attempt = await r.service.startLogin(r.owner);
+  approve(r, attempt);
+  expect((await settle(r, attempt.id)).status).toBe('connected');
+  expect(invalidated).toEqual([r.owner]);
+  const account = r.service.summary(r.owner).account!;
+  expect(await r.service.unlink(r.owner, account.id)).toBe(true);
+  expect(invalidated).toEqual([r.owner, r.owner]);
+});
+
 it('releases the re-authorization and unlink fences if cancellation rejects', async () => {
   const r = make();
   await linked(r);

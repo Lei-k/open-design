@@ -8,3 +8,11 @@
 		flush_interval -1
 	}
 }
+
+# Untrusted generated HTML is isolated on a cookie-free origin. The daemon
+# itself rejects every non-preview path on this host.
+{$OD_PREVIEW_DOMAIN} {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy 127.0.0.1:7456
+}

@@ -71,6 +71,8 @@ export interface MultiUserModeOptions {
   acknowledgeNotLaunchReady: typeof MULTIUSER_NOT_LAUNCH_READY_ACK;
   /** Exact browser origins allowed to make state-changing requests. */
   allowedOrigins: readonly string[];
+  /** Dedicated, cookie-free origin that serves only sandboxed project previews. */
+  previewOrigin?: string;
   /** One-time first-admin bootstrap secret; null/empty disables bootstrap. */
   bootstrapSecret?: string | null;
   auth?: MultiUserAuthServiceOverrides;
@@ -121,6 +123,7 @@ export interface ResolvedPersonalCodex {
 
 export interface ResolvedMultiUserMode {
   allowedOrigins: readonly string[];
+  previewOrigin: string;
   bootstrapSecret: string | null;
   auth: MultiUserAuthServiceOverrides;
   testMockAgentScript?: string;
@@ -196,11 +199,21 @@ export function resolveMultiUserMode(input: {
     );
   }
   const allowedOrigins = assertExactOrigins(options.allowedOrigins);
+  const publicOrigin = new URL(allowedOrigins[0]!);
+  const previewOrigin = options.previewOrigin ?? `${publicOrigin.protocol}//preview.${publicOrigin.host}`;
+  let parsedPreview: URL;
+  try { parsedPreview = new URL(previewOrigin); } catch {
+    throw new MultiUserModeRefusal('previewOrigin must be an exact https origin');
+  }
+  const publicHostnames = new Set(allowedOrigins.map((origin) => new URL(origin).hostname));
+  if (parsedPreview.protocol !== 'https:' || parsedPreview.origin !== previewOrigin || publicHostnames.has(parsedPreview.hostname)) {
+    throw new MultiUserModeRefusal('previewOrigin must be an exact https origin on a different hostname from every public origin');
+  }
   const bootstrapSecret =
     typeof options.bootstrapSecret === 'string' && options.bootstrapSecret.length > 0 ? options.bootstrapSecret : null;
   const personalCodex = resolvePersonalCodex(options, input.repositoryRoot,
     input.probeSandbox ?? ((bwrap) => probePersonalSandbox(bwrap, tmpdir())));
-  return { allowedOrigins, bootstrapSecret, auth: { ...(options.auth ?? {}) },
+  return { allowedOrigins, previewOrigin, bootstrapSecret, auth: { ...(options.auth ?? {}) },
     ...(options.testMockAgentScript ? { testMockAgentScript: options.testMockAgentScript } : {}),
     ...(options.poolClock ? { poolClock: options.poolClock } : {}),
     ...(personalCodex ? { personalCodex } : {}) };
