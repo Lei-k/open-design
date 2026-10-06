@@ -12,8 +12,10 @@ import { PROJECT_OWNERS_TABLE, ProjectOwnershipStore } from '../storage/project-
 import { WorkerQuotaLedger } from '../storage/worker-quota-ledger.js';
 import { AuthStore } from '../storage/auth-store.js';
 import { isSafeId } from '../projects.js';
+import { diffRunArtifacts, snapshotProjectArtifacts, snapshotProjectArtifactsAsync, type ArtifactSnapshot } from '../run-artifact-fs.js';
 import { PROBLEM_ERRORS, runPersonalCodexTurn, type PersonalCodexAccounts } from '../services/personal-codex-accounts.js';
 import type { PersonalRunLaneControls } from './multiuser-agent-accounts.js';
+import type { MultiUserDesignRoutes } from './multiuser-design.js';
 
 type RunRow = {
   id: string; owner_account_id: string; project_id: string; conversation_id: string;
@@ -49,6 +51,11 @@ function storedMessage(requestJson: string | null): string | null {
   const request = storedJson(requestJson);
   const message = request && typeof request === 'object' ? (request as { message?: unknown }).message : null;
   return typeof message === 'string' ? message : null;
+}
+
+function storedRequest(requestJson: string | null): Record<string, unknown> | null {
+  const value = storedJson(requestJson);
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
 type RunListQuery = {
@@ -102,6 +109,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   repositoryRoot: string;
   clock?: () => number;
   personal?: PersonalCodexAccounts;
+  design?: MultiUserDesignRoutes;
 }): { cancelAccountRuns(accountId: string): void; isRunOwner(runId: string, accountId: string): boolean;
   cancelPersonalRuns(accountId: string): Promise<void>; forgetNativeSessions(accountId: string): void; personalLane: PersonalRunLaneControls; listAccountIds(): string[];
   beginShutdown(): void; shutdown(): Promise<void>; companyPoolAvailable: boolean } {
@@ -192,12 +200,14 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     );
     CREATE TABLE IF NOT EXISTS multiuser_personal_sessions (
       conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
-      owner_account_id TEXT NOT NULL, personal_account_id TEXT NOT NULL, thread_id TEXT, updated_at INTEGER NOT NULL
+      owner_account_id TEXT NOT NULL, personal_account_id TEXT NOT NULL, thread_id TEXT, stable_prompt_hash TEXT, updated_at INTEGER NOT NULL
     );
     CREATE TRIGGER IF NOT EXISTS multiuser_personal_sessions_binding_immutable
       BEFORE UPDATE OF owner_account_id, personal_account_id ON multiuser_personal_sessions
       BEGIN SELECT RAISE(ABORT, 'personal session binding is immutable'); END;
   `);
+  const personalSessionColumns = new Set((db.prepare('PRAGMA table_info(multiuser_personal_sessions)').all() as Array<{ name: string }>).map((column) => column.name));
+  if (!personalSessionColumns.has('stable_prompt_hash')) db.exec('ALTER TABLE multiuser_personal_sessions ADD COLUMN stable_prompt_hash TEXT');
   const personal = input.personal ?? null;
   const company = "execution_source = 'company_pool'";
   const personalRows = "execution_source = 'personal_subscription'";
@@ -234,6 +244,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   let shuttingDown = false;
   let storesClosed = false;
   const listeners = new Map<string, Set<Response>>();
+  const artifactBaselines = new Map<string, { cwd: string; before: ArtifactSnapshot }>();
+  const progressCounts = new Map<string, number>();
   const row = (id: string) => db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id) as RunRow | undefined;
   const actor = (res: Response) => multiUserActorOf(res)?.accountId ?? '';
   const owned = (req: Request, res: Response): RunRow | null => {
@@ -253,7 +265,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     id: run.id, projectId: run.project_id, conversationId: run.conversation_id,
     agentId: isPersonal(run) ? 'codex' : 'test-mock', status: run.status === 'active' ? 'running' : run.status,
     queuePosition: queuePosition(run), createdAt: run.created_at,
-    updatedAt: run.updated_at, output: storedJson(run.output),
+    updatedAt: run.updated_at, output: (() => {
+      const value = storedJson(run.output);
+      return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+    })(),
     message: storedMessage(run.request_json),
     ...(isPersonal(run) ? { executionSource: 'personal_subscription' as const } : {}),
   });
@@ -269,6 +284,13 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   };
   const emit = <E extends MultiUserRunEvent['event']>(id: string, event: E, data: RunEventData<E>) => {
     publishEvent(id, persistEvent<E>(id, event, data));
+  };
+  const emitProgress = (id: string, data: RunEventData<'progress'>) => {
+    const count = progressCounts.get(id) ?? 0;
+    const payload = JSON.stringify(data);
+    if (count >= 256 || Buffer.byteLength(payload, 'utf8') > 8 * 1024) return;
+    progressCounts.set(id, count + 1);
+    emit(id, 'progress', data);
   };
   /** A run starts, consumes its lane's turn, and records its event together, before live publication. */
   const startRun = (run: RunRow) => {
@@ -310,6 +332,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     children.delete(id);
     cancelPending.delete(id);
     failurePending.delete(id);
+    artifactBaselines.delete(id);
+    progressCounts.delete(id);
     if (!shuttingDown && !suspendDispatch) { dispatch(); dispatchPersonal(); }
   };
   const capacity = () => Number((db.prepare("SELECT value FROM multiuser_pool_config WHERE key = 'test-mock-capacity'").get() as { value: string } | undefined)?.value ?? '2');
@@ -410,7 +434,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   let personalDispatching = false;
   // Declared before the startup dispatch below, which may already need it.
   const personalSession = (conversationId: string) => db.prepare('SELECT * FROM multiuser_personal_sessions WHERE conversation_id = ?')
-    .get(conversationId) as { owner_account_id: string; personal_account_id: string; thread_id: string | null } | undefined;
+    .get(conversationId) as { owner_account_id: string; personal_account_id: string; thread_id: string | null; stable_prompt_hash: string | null } | undefined;
   /**
    * Personal lane: its own host-wide ceiling, one active run per user, FIFO per
    * user and round-robin across users by their last personal dispatch turn.
@@ -450,8 +474,11 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           continue;
         }
         // A damaged request never starts: no runtime home, active mark, personal turn or start event.
-        const prompt = storedMessage(next.request_json);
-        if (prompt === null) {
+        const request = storedRequest(next.request_json);
+        const userPrompt = storedMessage(next.request_json);
+        const stablePrompt = typeof request?.stablePrompt === 'string' ? request.stablePrompt : '';
+        const stablePromptHash = typeof request?.stablePromptHash === 'string' ? request.stablePromptHash : '';
+        if (userPrompt === null) {
           finish(next.id, 'failed', { reason: 'MULTIUSER_RUN_REQUEST_INVALID' });
           continue;
         }
@@ -461,26 +488,85 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         for (const dir of [path.dirname(runHome), runHome, temp]) fs.chmodSync(dir, 0o700);
         const runId = next.id;
         try {
+          artifactBaselines.set(runId, { cwd: realCwd, before: snapshotProjectArtifacts(realCwd) });
           startRun(next);
           const owner = next.owner_account_id;
           const accountId = account.id;
+          const includeStable = Boolean(stablePrompt) && (!session.thread_id || session.stable_prompt_hash !== stablePromptHash);
+          const prompt = includeStable ? `${stablePrompt}\n\n---\n\n# User request\n\n${userPrompt}` : userPrompt;
+          const progressTools = new Map<string, { kind: 'file'; path: string } | { kind: 'command'; name: string }>();
           const turn = runPersonalCodexTurn({
             command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
             prompt, resumeThreadId: session.thread_id, sandboxMode: 'workspace-write',
             onThread: (threadId) => db.prepare(`UPDATE multiuser_personal_sessions SET thread_id = ?, updated_at = ?
               WHERE conversation_id = ? AND personal_account_id = ?`).run(threadId, now(), next.conversation_id, accountId),
-            onDone: (result) => {
+            onAgentEvent: (event) => {
+              const toolId = typeof event.id === 'string' ? event.id
+                : typeof event.toolUseId === 'string' ? event.toolUseId : '';
+              const name = typeof event.name === 'string' ? event.name : '';
+              const eventInput = event.input && typeof event.input === 'object' ? event.input as Record<string, unknown> : {};
+              const rawPath = typeof eventInput.file_path === 'string' ? eventInput.file_path
+                : typeof eventInput.path === 'string' ? eventInput.path : '';
+              if (event.type === 'tool_use' && /^(?:Write|Edit|MultiEdit|apply_patch|write_file|replace)$/iu.test(name) && rawPath) {
+                const absolute = path.resolve(realCwd, rawPath);
+                const relative = path.relative(realCwd, absolute).replaceAll('\\', '/');
+                if (toolId && relative && relative !== '..' && !relative.startsWith('../') && !path.isAbsolute(relative)) {
+                  progressTools.set(toolId, { kind: 'file', path: relative });
+                }
+              } else if (event.type === 'tool_use' && /todo|update_plan/iu.test(name)) {
+                const items = Array.isArray(eventInput.todos) ? eventInput.todos : Array.isArray(eventInput.plan) ? eventInput.plan : [];
+                const safeItems = items.slice(0, 64).flatMap((item) => {
+                  if (!item || typeof item !== 'object') return [];
+                  const value = item as Record<string, unknown>;
+                  return typeof value.content === 'string' || typeof value.step === 'string'
+                    ? [{ content: String(value.content ?? value.step).slice(0, 500), status: String(value.status ?? 'pending').slice(0, 32) }]
+                    : [];
+                });
+                if (safeItems.length) emitProgress(runId, { kind: 'todo', items: safeItems });
+              } else if (event.type === 'tool_use' && /^(?:Bash|Shell|command_execution|exec_command|shell_command)$/iu.test(name)) {
+                const safeName = name.slice(0, 80);
+                if (toolId) progressTools.set(toolId, { kind: 'command', name: safeName });
+                emitProgress(runId, { kind: 'command', name: safeName, status: 'started' });
+              } else if (event.type === 'tool_result' && toolId) {
+                const pending = progressTools.get(toolId);
+                progressTools.delete(toolId);
+                if (pending?.kind === 'file' && event.isError !== true) {
+                  emitProgress(runId, { kind: 'file', path: pending.path, status: 'changed' });
+                } else if (pending?.kind === 'command') {
+                  emitProgress(runId, { kind: 'command', name: pending.name, status: event.isError === true ? 'failed' : 'completed' });
+                }
+              }
+            },
+            onDone: (result) => { void (async () => {
               personal.secureHome(owner);
+              if (row(runId)?.status !== 'active') return;
               if (shuttingDown) return finish(runId, 'canceled', { reason: 'daemon_shutdown' });
               if (cancelPending.has(runId)) return finish(runId, 'canceled');
-              if (row(runId)?.status !== 'active') return;
+              const baseline = artifactBaselines.get(runId);
+              let files: string[] = [];
+              if (baseline) {
+                try {
+                  const after = await snapshotProjectArtifactsAsync(baseline.cwd);
+                  files = diffRunArtifacts(baseline.before, after).touchedPaths.map((filePath) => path.relative(baseline.cwd, filePath).replaceAll('\\', '/'))
+                    .filter((filePath) => filePath && filePath !== '..' && !filePath.startsWith('../') && !path.isAbsolute(filePath)).slice(0, 128);
+                } catch {
+                  // Artifact discovery is best-effort. A filesystem race must
+                  // not leave a completed provider turn stuck as active.
+                }
+              }
               if (result.ok) {
                 emit(runId, 'agent', { text: result.text });
-                return finish(runId, 'succeeded', { text: result.text, threadId: result.threadId });
+                if (includeStable && stablePromptHash) {
+                  db.prepare(`UPDATE multiuser_personal_sessions SET stable_prompt_hash = ?, updated_at = ?
+                    WHERE conversation_id = ? AND personal_account_id = ?`).run(stablePromptHash, now(), next.conversation_id, accountId);
+                }
+                return finish(runId, 'succeeded', { text: result.text, textTruncated: result.textTruncated, files, threadId: result.threadId });
               }
               if (result.problem) personal.recordProblem(owner, accountId, result.problem);
-              finish(runId, 'failed', { reason: result.problem ? PROBLEM_ERRORS[result.problem].code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
-            },
+              finish(runId, 'failed', { reason: result.problem ? PROBLEM_ERRORS[result.problem].code : 'MULTIUSER_PERSONAL_RUN_FAILED', files });
+            })().catch(() => {
+              if (row(runId)?.status === 'active') finish(runId, 'failed', { reason: 'MULTIUSER_PERSONAL_RUN_FAILED' });
+            }); },
           });
           children.set(runId, turn.child);
         } catch {
@@ -599,18 +685,29 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     fs.chmodSync(realCwd, 0o700);
     return { projectId, conversationId };
   };
-  const createPersonalRun = (inputBody: Record<string, unknown>, res: Response) => {
+  const createPersonalRun = async (inputBody: Record<string, unknown>, res: Response) => {
     if (inputBody.agentId !== 'codex' || inputBody.model !== undefined || inputBody.provider !== undefined ||
-        Object.keys(inputBody).some((key) => !['projectId', 'conversationId', 'agentId', 'executionSource', 'message'].includes(key))) {
+        Object.keys(inputBody).some((key) => !['projectId', 'conversationId', 'agentId', 'executionSource', 'message', 'skillId', 'designSystemId'].includes(key))) {
       return sendApiError(res, 403, 'MULTIUSER_AGENT_FORBIDDEN', 'personal subscription runs use the linked Codex account only');
     }
     if (!personal?.enabled) return sendApiError(res, 403, 'MULTIUSER_PERSONAL_DISABLED', 'personal subscriptions are not enabled on this server');
     const target = managedTarget(inputBody, res);
     if (!target) return;
     if (typeof inputBody.message !== 'string' || inputBody.message.length > 64_000) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid run request');
-    const request = JSON.stringify({ message: inputBody.message });
-    if (Buffer.byteLength(request, 'utf8') > 64 * 1024) return sendApiError(res, 400, 'BAD_REQUEST', 'run request is too large');
+    const encodedMessage = JSON.stringify({ message: inputBody.message });
+    if (Buffer.byteLength(encodedMessage, 'utf8') > 64 * 1024) return sendApiError(res, 400, 'BAD_REQUEST', 'run request is too large');
     const owner = actor(res);
+    const fixedDesign = input.design?.selection(target.conversationId, owner) ?? null;
+    const composed = fixedDesign
+      ? await input.design?.composeStablePrompt({ conversationId: target.conversationId, ownerId: owner, projectId: target.projectId })
+      : null;
+    if ((fixedDesign && (!composed || inputBody.skillId !== fixedDesign.skillId || inputBody.designSystemId !== fixedDesign.designSystemId))
+        || (!fixedDesign && (inputBody.skillId !== undefined || inputBody.designSystemId !== undefined))) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
+    }
+    const request = JSON.stringify({ message: inputBody.message,
+      ...(composed ? { skillId: composed.selection.skillId, designSystemId: composed.selection.designSystemId,
+        stablePrompt: composed.prompt, stablePromptHash: composed.hash } : {}) });
     // Never fall back: an unusable personal account is an error, not a company run.
     const account = personal.usableAccount(owner);
     if (!account) {
@@ -642,7 +739,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     dispatchPersonal();
     res.status(202).json({ run: body(row(id)!) });
   };
-  app.post('/api/runs', (req, res) => {
+  app.post('/api/runs', async (req, res) => {
     const inputBody = req.body as Record<string, unknown> | null;
     if (!inputBody || typeof inputBody !== 'object' || Array.isArray(inputBody)) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid run request');
     const source = inputBody.executionSource;
@@ -658,6 +755,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const target = managedTarget(inputBody, res);
     if (!target) return;
     const { projectId, conversationId } = target;
+    if (input.design?.selection(conversationId, actor(res))) {
+      return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'design conversations use the linked personal Codex subscription');
+    }
     if (personalSession(conversationId)) {
       return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation continues on a personal subscription');
     }

@@ -74,6 +74,7 @@ export interface Dict {
   'multiuserRuns.loadOlder': string;
   'multiuserRuns.prompt': string;
   'multiuserRuns.output': string;
+  'multiuserRuns.truncated': string;
 
   'multiuser.selfAccess': string;
   'multiuser.outcomeUnknown': string;

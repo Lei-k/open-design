@@ -4,7 +4,7 @@ This directory runs OpenDesign in **multi-user mode** on one host, for staging (
 
 What a deployment gets:
 
-- Username/password sign-in, an admin area for accounts and audit, and private projects and conversations per user.
+- Username/password sign-in, an admin area for accounts and audit, and private design projects, conversations, generated files, and previews per user.
 - **Personal Codex subscriptions.** Each user links their own ChatGPT plan through the official Codex device-code login and runs Codex on it. Every Codex child runs in a per-run bubblewrap sandbox.
 - **No company pool.** The shared company pool has no real provider yet (#14), so the server reports it unavailable and refuses company runs.
 
@@ -13,12 +13,13 @@ Single-user Docker deployment is `../docker-compose.yml`. Do not mix the two: th
 ## Topology
 
 ```
-browser ──HTTPS──▶ caddy ──http://127.0.0.1:7456──▶ od (multiuser-serve)
-                   └────── one network namespace ──────┘
+browser ──HTTPS──▶ app origin ──┐
+                               ├─ caddy ──http://127.0.0.1:7456──▶ od
+preview iframe ──▶ preview origin┘
 ```
 
 - `od` runs `node apps/daemon/dist/multiuser-serve.js --config /etc/open-design/multiuser.json`. The daemon binds `127.0.0.1` only.
-- `caddy` shares `od`'s network namespace (`network_mode: service:od`). It obtains the certificate for `OD_DOMAIN` and is the only listener on ports 80 and 443.
+- `caddy` shares `od`'s network namespace (`network_mode: service:od`). It obtains certificates for `OD_DOMAIN` and `OD_PREVIEW_DOMAIN` and is the only listener on ports 80 and 443. The daemon serves only sandboxed preview capabilities on the preview host and never serves login or ordinary APIs there.
 - Nothing else can reach the daemon, not even other containers on the host.
 - Sign-in cookies are `__Host-` and always `Secure`, so the site works only over HTTPS on the configured origin.
 
@@ -36,6 +37,7 @@ browser ──HTTPS──▶ caddy ──http://127.0.0.1:7456──▶ od (mult
 
 1. **Config.** Copy `multiuser.example.json` to `multiuser.json`.
    - Set `publicOrigin` to `https://<your domain>`, with the same host as `OD_DOMAIN` and no path.
+   - Create a second DNS A/AAAA record for the preview host, set `previewOrigin` to its exact HTTPS origin, and export the same host as `OD_PREVIEW_DOMAIN`. It must use a different hostname from `publicOrigin`; changing only the port would still send host cookies.
    - Keep `acknowledge` exactly as written. It records that this is a staging deployment.
    - To run without personal subscriptions, remove `personalCodex`. Then also remove the three `*=unconfined` entries from `security_opt` in `docker-compose.yml`.
 2. **Bootstrap secret** for the first administrator. It must be at least 32 characters, and the container user (uid 1001) must be able to read it:
@@ -46,6 +48,7 @@ browser ──HTTPS──▶ caddy ──http://127.0.0.1:7456──▶ od (mult
 3. **Start.**
    ```sh
    export OD_DOMAIN=<your domain>
+   export OD_PREVIEW_DOMAIN=<your preview domain>
    docker compose up -d
    docker compose logs -f od   # expect: "multi-user staging daemon listening on http://127.0.0.1:7456 for https://<domain>"
    ```
@@ -58,6 +61,16 @@ browser ──HTTPS──▶ caddy ──http://127.0.0.1:7456──▶ od (mult
    It answers `201` once; every later call is refused. Then remove `bootstrapSecretFile` from `multiuser.json`, delete `secrets/bootstrap`, and run `docker compose up -d` again. Sign in at `https://<your domain>/login`.
 5. **Add users** in Admin → Users. Each user sets their own password through the one-use link the admin hands over. There is no public registration.
 6. **Personal subscriptions.** Each user opens Settings → Agent accounts → Codex → Link my subscription, and completes the device-code sign-in on the official OpenAI page. ChatGPT may require device-code sign-in to be enabled in the user's security settings or by their workspace admin. Verification runs one minimal turn on the user's own plan, and only after explicit consent.
+
+## Two-account staging acceptance
+
+Before inviting anyone beyond the deployment owner, complete the #48/#8 gate with two platform accounts and two separately authorized Codex subscriptions:
+
+1. In each account, create a project and a design conversation, choose a built-in skill and design system, answer a question form, generate an HTML prototype, preview it, request a revision, and preview the revision on desktop and mobile.
+2. From account A, try account B's project, conversation, run, file-content, preview-URL, preview-renewal, and preview-capability paths. Repeat B → A. Every request must return the same not-found response and must not change either account's data.
+3. In a generated preview, attempt an app API fetch, cookie access, form submission, and top-level navigation. The preview must remain on the dedicated preview origin; CSP and the opaque-origin iframe must block all four attempts.
+4. Unlink or re-authorize one Codex account and confirm that its earlier preview URL no longer opens. Sign out and confirm the same. A newly issued preview URL must still work after signing back in.
+5. Save the exact steps, browser/device versions, results, and desktop/mobile screenshots on issue #48. Any failure gets its own issue; do not treat this checklist itself as launch approval.
 
 ## Image
 

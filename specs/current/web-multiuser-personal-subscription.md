@@ -160,7 +160,8 @@ Error codes: `MULTIUSER_PERSONAL_DISABLED` 403, `MULTIUSER_PERSONAL_UNAVAILABLE`
   - An admin-configurable host-wide ceiling caps concurrent personal workers (default 4; 0 pauses dispatch). Saturated runs wait in their durable queue and dispatch round-robin across users by last personal turn. Changes are audited in the pool audit table.
   - Personal worker time is recorded per row (start/end) for admin visibility only.
 - Cancellation, session revocation, deactivation, role change and admin password reset cancel queued and active personal runs, as in #16. Unlink and re-authorization cancel only that user's personal runs. Clean shutdown cancels active rows with `daemon_shutdown`. Crash recovery fails active rows. Queued rows survive a restart.
-- In this slice the prompt is the raw message (no system prompt), and runs are not wired to the web composer.
+- Ordinary legacy conversations retain the raw-message behavior. Fixed design conversations created through the multi-user design catalogue compose the legacy slim OpenDesign prompt from bundled-only skill and design-system inputs. The stable prompt is sent on the first native thread turn and again only when its hash changes; global memory, app-config instructions, user-imported resources, plugins, and workspace bindings are excluded.
+- Personal turns persist bounded, redacted progress events and a bounded final response. A filesystem baseline records generated or modified project paths in the run output. Command output and environment values are never persisted in progress events.
 
 ## Audit
 
@@ -182,7 +183,6 @@ Settings → "Agent accounts" appears only on a daemon whose public `GET /api/ve
 
 Follow-ups:
 
-- A run-composer source picker.
 - A CLI (`od`) surface: deferred by the owner (2026-10-06). The CLI has no multi-user session support yet, as in #13/#15/#16. Linking needs a browser for the device code in any case.
 - Claude Code personal subscriptions (#18 phase C): not started (owner decision 2026-10-06).
 - Integration into the capability-restricted multi-user shell (#6); the first bounded auth/admin/project-metadata slice is in `web-multiuser-web-ux.md`.

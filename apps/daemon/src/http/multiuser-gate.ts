@@ -156,6 +156,7 @@ export function multiUserActorOf(res: Response): AuthActor | null {
 export interface MultiUserGateDeps {
   auth: Pick<AuthService, 'resolveSession'>;
   allowedOrigins: readonly string[];
+  previewOrigin?: string;
   isProjectOwner: (projectId: string, accountId: string) => boolean;
   isRunOwner?: (runId: string, accountId: string) => boolean;
   isAgentAccountOwner?: (param: 'attemptId' | 'accountId', id: string, accountId: string) => boolean;
@@ -163,9 +164,23 @@ export interface MultiUserGateDeps {
 
 export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
   const allowedOrigins = new Set(deps.allowedOrigins);
+  const previewHost = deps.previewOrigin ? new URL(deps.previewOrigin).host : null;
   return (req, res, next) => {
     stripClientIdentityHeaders(req);
     const matches = matchMultiUserRoute(req.method, req.path);
+    const requestHost = req.get('host') ?? '';
+    const previewRoute = matches.length > 0 && matches.every((match) => match.entry.routeClass === 'preview-capability');
+    // The preview origin is structurally incapable of serving the app/API,
+    // and the main origin is structurally incapable of serving preview bytes.
+    if ((previewHost && requestHost === previewHost && !previewRoute) || (previewRoute && requestHost !== previewHost)) {
+      res.setHeader('Cache-Control', 'no-store');
+      sendApiError(res, 404, 'NOT_FOUND', 'not found');
+      return;
+    }
+    if (previewRoute) {
+      next();
+      return;
+    }
     const cookie = readSessionCookie(req.headers.cookie);
     const needsSession = decideMultiUserAccess({ matches, actor: null, isProjectOwner: () => false }).kind
       !== 'pass-unauthenticated';
@@ -341,6 +356,7 @@ export function installMultiUserFront(
   app.use(acknowledgePathlessUse(createMultiUserGate({
     auth,
     allowedOrigins: mode.allowedOrigins,
+    previewOrigin: mode.previewOrigin,
     isProjectOwner: (projectId, accountId) => ownership?.isOwnedBy(projectId, accountId) ?? false,
     isRunOwner: (runId, accountId) => isRunOwner?.(runId, accountId) ?? false,
     isAgentAccountOwner: (param, id, accountId) => isAgentAccountOwner?.(param, id, accountId) ?? false,

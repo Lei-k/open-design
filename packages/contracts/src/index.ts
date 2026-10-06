@@ -105,3 +105,4 @@ export * from './observability/index.js';
 
 export * from './api/amr-continuation.js';
 export * from './api/multiuser-runs.js';
+export * from './api/multiuser-design.js';

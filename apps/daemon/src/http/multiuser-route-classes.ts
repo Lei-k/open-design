@@ -17,6 +17,7 @@ import { MULTIUSER_SHELL_PATHS, MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROU
 //   owner-scoped-agent-account  session + the actor's own personal login attempt /
 //                         linked account id verified before the handler (#18)
 //   actor-scoped          session; the handler scopes to the actor (list filter/create bind)
+//   preview-capability    no cookie; handler validates a short-lived owner-bound scope
 //   blocked-in-multiuser  denied to everyone, including admins, with the stated reason
 //   middleware            a non-terminal `app.use` entry; never authorizes a request
 //
@@ -38,6 +39,7 @@ export type MultiUserRouteClass =
   | 'owner-scoped-run'
   | 'owner-scoped-agent-account'
   | 'actor-scoped'
+  | 'preview-capability'
   | 'blocked-in-multiuser'
   | 'middleware';
 
@@ -173,6 +175,13 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'GET /api/projects/:id/conversations',
     'POST /api/projects/:id/conversations',
     'GET /api/projects/:id/conversations/:cid/messages',
+    'GET /api/projects/:id/files',
+    'GET /api/projects/:id/file-content/*path',
+    'GET /api/multiuser/projects/:id/preview-url',
+    'POST /api/multiuser/projects/:id/preview/:scope/renew',
+    'POST /api/multiuser/projects/:id/conversations',
+    'GET /api/multiuser/projects/:id/conversations/:cid/design',
+    'GET /api/multiuser/projects/:id/design-selections',
   ], { projectParam: 'id' }),
   ...group(
     'owner-scoped-project',
@@ -250,7 +259,6 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'POST /api/projects/:id/export/html',
     'POST /api/projects/:id/export',
     'GET /api/projects/:id/export/*splat',
-    'GET /api/projects/:id/files',
     'GET /api/projects/:id/search',
     'GET /api/projects/:id/design-token-suggestions',
     'GET /api/projects/:id/folders',
@@ -319,6 +327,12 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
   ),
 
   // Execution --------------------------------------------------------------------
+  ...group('actor-scoped', 'body-free built-in design catalogue; handler excludes every user-installed entry', [
+    'GET /api/multiuser/design-catalog',
+  ]),
+  ...group('preview-capability', 'cookie-free preview origin; handler validates the owner/session-bound short-lived scope', [
+    'GET /api/multiuser/projects/:id/preview/:scope/*path',
+  ]),
   ...group('admin-only', 'aggregate pool operations; no project or run content', [
     'GET /api/admin/pool',
     'PUT /api/admin/pool/providers/:providerId',

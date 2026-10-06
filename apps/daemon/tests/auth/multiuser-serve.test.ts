@@ -16,14 +16,17 @@ import {
 } from '../../src/services/multiuser-mode.js';
 
 const SECRET = 'staging-bootstrap-secret-0123456789abcdef';
-const base = { acknowledge: MULTIUSER_STAGING_DEPLOYMENT_ACK, publicOrigin: 'https://od.example.test' };
+const base = { acknowledge: MULTIUSER_STAGING_DEPLOYMENT_ACK, publicOrigin: 'https://od.example.test',
+  previewOrigin: 'https://preview.od.example.test' };
 
 describe('config resolution', () => {
   it('turns a minimal config into loopback multi-user options with the company pool off', () => {
     expect(resolveMultiUserServeConfig({ ...base, bootstrapSecretFile: '/run/secrets/bootstrap' }, () => `${SECRET}\n`)).toEqual({
       port: 7456,
       publicOrigin: 'https://od.example.test',
+      previewOrigin: 'https://preview.od.example.test',
       multiUser: { acknowledgeNotLaunchReady: MULTIUSER_NOT_LAUNCH_READY_ACK, allowedOrigins: ['https://od.example.test'],
+        previewOrigin: 'https://preview.od.example.test',
         bootstrapSecret: SECRET },
     });
   });
@@ -44,6 +47,10 @@ describe('config resolution', () => {
     ['the test-harness acknowledgement', { ...base, acknowledge: MULTIUSER_NOT_LAUNCH_READY_ACK }],
     ['a plain http origin', { ...base, publicOrigin: 'http://od.example.test' }],
     ['an origin with a path', { ...base, publicOrigin: 'https://od.example.test/app' }],
+    ['a missing preview origin', { acknowledge: base.acknowledge, publicOrigin: base.publicOrigin }],
+    ['a preview origin matching public', { ...base, previewOrigin: base.publicOrigin }],
+    ['a preview origin sharing the cookie hostname', { ...base, previewOrigin: 'https://od.example.test:8443' }],
+    ['a plain http preview origin', { ...base, previewOrigin: 'http://preview.od.example.test' }],
     ['a port out of range', { ...base, port: 70000 }],
     ['a relative secret path', { ...base, bootstrapSecretFile: 'secret.txt' }],
     ['a short bootstrap secret', { ...base, bootstrapSecretFile: '/run/secrets/bootstrap', short: true }],

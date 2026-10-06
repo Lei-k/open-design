@@ -14,7 +14,7 @@ export function useOwnedRequest({ session, generation }: OwnedSession) {
     { active: () => !mount.controller.signal.aborted && session.snapshot().generation === generation },
   ), [session, generation, mount]);
 }
-export function useOwnedResource<T>(request: ReturnType<typeof useOwnedRequest>, url: string, revision = 0) {
+export function useOwnedResource<T>(request: ReturnType<typeof useOwnedRequest>, url: string, revision: unknown = 0) {
   const [state, setState] = useState<{ data: T | null; error: unknown }>({ data: null, error: null });
   useEffect(() => {
     const controller = new AbortController();

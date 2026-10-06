@@ -31,6 +31,8 @@ export interface MultiUserServeConfigFile {
   acknowledge: string;
   /** The exact public `https://host[:port]` origin users open. */
   publicOrigin: string;
+  /** Dedicated HTTPS origin for untrusted generated previews. */
+  previewOrigin: string;
   /** Loopback port the proxy forwards to; default 7456. */
   port?: number;
   /** File holding the one-time first-administrator bootstrap secret (>= 32 characters). */
@@ -42,6 +44,7 @@ export interface MultiUserServeConfigFile {
 export interface ResolvedMultiUserServe {
   port: number;
   publicOrigin: string;
+  previewOrigin: string;
   multiUser: MultiUserModeOptions;
 }
 
@@ -52,7 +55,7 @@ export class MultiUserServeConfigError extends Error {
   }
 }
 
-const KEYS = new Set(['acknowledge', 'publicOrigin', 'port', 'bootstrapSecretFile', 'personalCodex']);
+const KEYS = new Set(['acknowledge', 'publicOrigin', 'previewOrigin', 'port', 'bootstrapSecretFile', 'personalCodex']);
 const MIN_BOOTSTRAP_SECRET = 32;
 
 /** Validate a parsed config file and turn it into `startServer` options. Throws on anything off. */
@@ -69,6 +72,13 @@ export function resolveMultiUserServeConfig(raw: unknown,
   try { origin = new URL(String(config.publicOrigin)); } catch { throw new MultiUserServeConfigError('"publicOrigin" must be an https origin'); }
   if (origin.protocol !== 'https:' || origin.origin !== config.publicOrigin) {
     throw new MultiUserServeConfigError('"publicOrigin" must be an exact https://host[:port] origin (sign-in cookies are Secure-only)');
+  }
+  let previewOrigin: URL;
+  try { previewOrigin = new URL(String(config.previewOrigin)); } catch {
+    throw new MultiUserServeConfigError('"previewOrigin" must be an https origin');
+  }
+  if (previewOrigin.protocol !== 'https:' || previewOrigin.origin !== config.previewOrigin || previewOrigin.hostname === origin.hostname) {
+    throw new MultiUserServeConfigError('"previewOrigin" must be an exact https://host[:port] origin on a different hostname from publicOrigin');
   }
   const port = config.port ?? 7456;
   if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) {
@@ -97,9 +107,11 @@ export function resolveMultiUserServeConfig(raw: unknown,
   return {
     port,
     publicOrigin: origin.origin,
+    previewOrigin: previewOrigin.origin,
     multiUser: {
       acknowledgeNotLaunchReady: MULTIUSER_NOT_LAUNCH_READY_ACK,
       allowedOrigins: [origin.origin],
+      previewOrigin: previewOrigin.origin,
       bootstrapSecret,
       ...(codex ? {
         testPersonalCodexRealBinary: { path: codex.binary, acknowledge: PERSONAL_CODEX_REAL_PROVIDER_ACK },

@@ -380,6 +380,7 @@ import {
   listUserDesignSystemFiles,
   listUserDesignSystemRevisions,
   readDesignSystem,
+  readDesignSystemAssets,
   readDesignSystemPackageInfo,
   readDesignSystemStaticFile,
   readUserDesignSystemFile,
@@ -940,6 +941,7 @@ import { TranscriptExportLockedError } from './transcript-export.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerRunRoutes } from './routes/runs.js';
 import { registerMultiUserRunRoutes } from './routes/multiuser-runs.js';
+import { registerMultiUserDesignRoutes } from './routes/multiuser-design.js';
 import { registerMultiUserAgentAccountRoutes } from './routes/multiuser-agent-accounts.js';
 import { PersonalCodexAccounts } from './services/personal-codex-accounts.js';
 import { registerStrategyRolloutRoutes } from './routes/strategy-rollout.js';
@@ -17550,11 +17552,27 @@ export async function startServer({
     };
   });
 
+  const multiUserDesign = multiUserMode ? registerMultiUserDesignRoutes(app, {
+    db,
+    dataRoot: RUNTIME_DATA_DIR,
+    projectsRoot: PROJECTS_DIR,
+    previewOrigin: multiUserMode.previewOrigin,
+    listBuiltInSkills: async () => (await listSkills(SKILLS_DIR)).map((skill) => ({ ...skill, source: 'built-in' as const })),
+    listBuiltInDesignSystems: () => listDesignSystems(DESIGN_SYSTEMS_DIR, {
+      source: 'built-in', isEditable: false, defaultStatus: 'published',
+    }),
+    readBuiltInDesignSystem: (id) => readDesignSystem(DESIGN_SYSTEMS_DIR, id),
+    // Multi-user prompt composition is deliberately built-in only. Do not let
+    // an installed package with the same id fill missing bundled assets.
+    readBuiltInDesignSystemAssets: (id) => readDesignSystemAssets(DESIGN_SYSTEMS_DIR, id),
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
+  }) : null;
   const multiUserRuns = multiUserMode ? registerMultiUserRunRoutes(app, {
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
     ...(multiUserMode.testMockAgentScript ? { mockAgentScript: multiUserMode.testMockAgentScript } : {}),
     ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
     ...(personalCodex ? { personal: personalCodex } : {}),
+    ...(multiUserDesign ? { design: multiUserDesign } : {}),
   }) : null;
   if (multiUserRuns) multiUserFront?.setCancelAccountRuns((accountId) => {
     multiUserRuns.cancelAccountRuns(accountId);
@@ -17563,7 +17581,8 @@ export async function startServer({
   if (multiUserRuns) multiUserFront?.setIsRunOwner(multiUserRuns.isRunOwner);
   if (multiUserRuns && personalCodex) {
     personalCodex.setRunHooks({ cancelPersonalRuns: multiUserRuns.cancelPersonalRuns,
-      forgetNativeSessions: multiUserRuns.forgetNativeSessions });
+      forgetNativeSessions: multiUserRuns.forgetNativeSessions,
+      invalidatePreviewScopes: (ownerId) => multiUserDesign?.invalidateOwnerCapabilities(ownerId) });
     multiUserFront?.setIsAgentAccountOwner((param, id, accountId) => personalCodex.isOwner(param, id, accountId));
     registerMultiUserAgentAccountRoutes(app, {
       personal: personalCodex, runs: multiUserRuns.personalLane, listAccountIds: multiUserRuns.listAccountIds,
@@ -18187,6 +18206,7 @@ export async function startServer({
       proactiveContentPull.dispose();
       collabPublishWatcher.dispose();
       collabCloud?.dispose();
+      multiUserDesign?.close();
       multiUserFront?.close();
       void personalCodex?.shutdown();
       void multiUserRuns?.shutdown();
@@ -18199,6 +18219,7 @@ export async function startServer({
         multiUserRuns.beginShutdown();
         await personalCodex?.shutdown();
         await multiUserRuns.shutdown();
+        multiUserDesign?.close();
       }
       amrTerminalReportDelivery.stop();
       clearTerminalTelemetryFallbackTimers();

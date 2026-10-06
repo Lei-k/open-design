@@ -1,4 +1,5 @@
 import type { RunExecutionSource } from './personal-agent-accounts.js';
+import type { MultiUserRunOutput, MultiUserRunProgressEvent } from './multiuser-design.js';
 
 /** Test-only multi-user execution plane; independent of single-user chat runs. */
 export type MultiUserRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
@@ -13,7 +14,7 @@ export interface MultiUserRun {
   updatedAt: number;
   /** Owner-only persisted prompt; legacy rows may have no request. */
   message: string | null;
-  output: unknown;
+  output: MultiUserRunOutput | Record<string, unknown> | null;
   /** Omitted on existing company-pool responses. */
   executionSource?: RunExecutionSource;
 }
@@ -23,6 +24,9 @@ export interface MultiUserRunRequest {
   agentId: 'test-mock' | 'codex';
   message: string;
   executionSource: RunExecutionSource;
+  /** Fixed by the conversation on its first turn; later turns may omit both. */
+  skillId?: string;
+  designSystemId?: string;
 }
 export interface MultiUserRunResponse { run: MultiUserRun }
 /**
@@ -46,4 +50,5 @@ export type MultiUserRunEvent =
   | { event: 'queued'; data: { runId: string } }
   | { event: 'start'; data: { runId: string } }
   | { event: 'agent'; data: unknown }
+  | { event: 'progress'; data: MultiUserRunProgressEvent }
   | { event: 'end'; data: { status: 'succeeded' | 'failed' | 'canceled'; output?: unknown } };

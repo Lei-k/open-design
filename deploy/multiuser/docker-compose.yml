@@ -63,6 +63,7 @@ services:
       - od
     environment:
       OD_DOMAIN: ${OD_DOMAIN:?set OD_DOMAIN to the public host name}
+      OD_PREVIEW_DOMAIN: ${OD_PREVIEW_DOMAIN:?set OD_PREVIEW_DOMAIN to the preview host name}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

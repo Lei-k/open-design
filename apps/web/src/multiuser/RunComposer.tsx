@@ -16,10 +16,11 @@ export function validRunMessage(message: string): boolean {
  * A stale personal pin (its account was unlinked or replaced) is refused by the
  * server, so the composer warns and offers no send instead of a doomed one.
  */
-export function RunComposer({ accounts, pinnedSource, pinStale = false, send }: {
+export function RunComposer({ accounts, pinnedSource, pinStale = false, personalOnly = false, send }: {
   accounts: PersonalAgentAccountsResponse | null;
   pinnedSource: RunExecutionSource | null;
   pinStale?: boolean;
+  personalOnly?: boolean;
   send: (message: string, source: RunExecutionSource) => Promise<void>;
 }) {
   const t = useT();
@@ -27,7 +28,7 @@ export function RunComposer({ accounts, pinnedSource, pinStale = false, send }: 
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  const source = pinnedSource ?? choice;
+  const source = personalOnly ? 'personal_subscription' : (pinnedSource ?? choice);
   const personalEnabled = accounts?.personalSubscriptionsEnabled === true && accounts.codex.account?.status === 'connected';
   // Older daemons omit the field; only an explicit false withdraws the company pool.
   const companyEnabled = accounts?.companyPoolAvailable !== false;
@@ -50,7 +51,7 @@ export function RunComposer({ accounts, pinnedSource, pinStale = false, send }: 
   }
   return <form className={styles.composer} onSubmit={submit}>
     <fieldset className={styles.sources} aria-describedby={pinnedSource ? 'source-pinned' : undefined}><legend>{t('multiuserRuns.source')}</legend>
-      {pinnedSource ? <p className={styles.locked}><Lock size={16} aria-hidden="true" />{t('multiuserRuns.lockedTo', { source: sourceLabel(pinnedSource) })}</p>
+      {pinnedSource || personalOnly ? <p className={styles.locked}><Lock size={16} aria-hidden="true" />{t('multiuserRuns.lockedTo', { source: sourceLabel(source ?? 'personal_subscription') })}</p>
         : (['company_pool', 'personal_subscription'] as const).map((value) => <label key={value}>
           <input type="radio" name="execution-source" value={value} checked={source === value}
             disabled={busy || (value === 'personal_subscription' ? !personalEnabled : !companyEnabled)}
@@ -60,7 +61,7 @@ export function RunComposer({ accounts, pinnedSource, pinStale = false, send }: 
           <span>{sourceLabel(value)}</span>
         </label>)}
     </fieldset>
-    {pinnedSource && <p id="source-pinned" className={styles.hint}>{t('multiuserRuns.pinned')}</p>}
+    {(pinnedSource || personalOnly) && <p id="source-pinned" className={styles.hint}>{t('multiuserRuns.pinned')}</p>}
     {pinStale && <p className={styles.warning} role="note">{t('multiuserRuns.pinStale')}</p>}
     {companyReason && <p id="company-unavailable" className={styles.hint}>{t('multiuserRuns.companyUnavailable')}</p>}
     {personalReason && <p id="personal-unavailable" className={styles.hint}>{t(unavailableKey)} <a href="/account/agents">{t('agentAccounts.navTitle')}</a></p>}

@@ -22,11 +22,27 @@
 .exchange dd { margin: 0 0 8px; min-width: 0; }
 .prompt { white-space: pre-wrap; color: var(--text-strong); font-weight: 600; }
 .output { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.selection { margin: 0 0 16px; color: var(--text-muted); }
+.workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 0.8fr); gap: 24px; align-items: start; }
+.conversationPane { min-width: 0; }
+.filePane { position: sticky; top: 16px; min-width: 0; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-panel); }
+.files { list-style: none; margin: 0 0 16px; padding: 0; max-height: 220px; overflow: auto; border-block: 1px solid var(--border-soft); }
+.files li + li { border-top: 1px solid var(--border-soft); }
+.files button { width: 100%; justify-content: flex-start; border: 0; border-radius: 0; background: transparent; color: var(--text); padding: 8px; text-align: start; overflow-wrap: anywhere; }
+.files button[aria-current] { background: var(--accent-soft); color: var(--text-strong); }
+.preview { min-height: 280px; display: grid; place-items: center; overflow: hidden; border: 1px solid var(--border-soft); border-radius: var(--radius-sm); background: var(--bg); }
+.preview iframe { width: 100%; min-height: 560px; border: 0; background: white; }
+.preview img { display: block; max-width: 100%; max-height: 70vh; object-fit: contain; }
+.preview pre { width: 100%; max-height: 560px; margin: 0; padding: 16px; overflow: auto; white-space: pre-wrap; font: 500 12px/1.5 ui-monospace, monospace; }
+.progress { margin: 12px 0; padding-inline-start: 20px; color: var(--text-muted); font-size: 13px; }
 .accounts label { flex-direction: row; align-items: center; gap: 10px; }
 .accounts input[type='checkbox'] { width: 18px; height: 18px; min-height: 18px; padding: 0; flex-shrink: 0; accent-color: var(--accent); }
 @media (max-width: 640px) {
   .composer { padding: 16px; }
   .message textarea { font-size: 16px; }
+  .workspace { grid-template-columns: minmax(0, 1fr); }
+  .filePane { position: static; }
+  .preview iframe { min-height: 420px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .composer *, .history *, .accounts * { animation: none; transition: none; }
