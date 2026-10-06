@@ -1,3 +1,4 @@
+import { studioFetch as fetch, studioSessionStorage as sessionStorage } from './studio-transport';
 // Brand lookup shared by every design-system picker.
 //
 // A finalized brand registers a `user:<id>` design system (BrandMeta
@@ -31,7 +32,7 @@ export const DESIGN_SYSTEM_FOCUS_KEY = 'od:focus-design-system';
  *  falls back to its default selection). */
 export function setDesignSystemFocus(id: string): void {
   try {
-    window.sessionStorage.setItem(DESIGN_SYSTEM_FOCUS_KEY, id);
+    sessionStorage.setItem(DESIGN_SYSTEM_FOCUS_KEY, id);
   } catch {
     // sessionStorage unavailable — the tab opens on its default selection.
   }
@@ -41,8 +42,8 @@ export function setDesignSystemFocus(id: string): void {
  *  nothing is pending or storage is unavailable. */
 export function takeDesignSystemFocus(): string | null {
   try {
-    const id = window.sessionStorage.getItem(DESIGN_SYSTEM_FOCUS_KEY);
-    if (id) window.sessionStorage.removeItem(DESIGN_SYSTEM_FOCUS_KEY);
+    const id = sessionStorage.getItem(DESIGN_SYSTEM_FOCUS_KEY);
+    if (id) sessionStorage.removeItem(DESIGN_SYSTEM_FOCUS_KEY);
     return id || null;
   } catch {
     return null;

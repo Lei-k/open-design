@@ -1,3 +1,4 @@
+import { registerStudioReset } from './studio-resources';
 // 分享 / 导出请求信号的「只消费一次」记录 —— **跨组件重挂有效**。
 //
 // `shareRequest` / `downloadRequest` 是 `ProjectView` 的状态,带一个 `nonce`,
@@ -39,3 +40,5 @@ export function shouldConsumeActionRequest(key: string, nonce: number): boolean 
 export function resetConsumedActionRequestsForTests(): void {
   consumedActionNonces.clear();
 }
+
+registerStudioReset(() => { consumedActionNonces.clear(); });

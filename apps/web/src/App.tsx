@@ -1,3 +1,7 @@
+import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioFetch as fetch, studioLocalStorage as localStorage, studioSessionStorage as sessionStorage } from './runtime/studio-transport';
+import { AdminUsers, Audit } from './multiuser/MultiUserApp';
+import { useStudioCapabilities, StudioUnavailable } from './runtime/studio-capabilities';
+import { StudioAccountChrome } from './runtime/StudioAccountChrome';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { AnimatePresence, motion, MotionConfig } from 'motion/react';
@@ -920,6 +924,7 @@ export async function hydrateReadyTeamProject(
 }
 
 export function App() {
+  const studio = useStudioCapabilities();
   // `reducedMotion="user"` makes every motion/react component honor the OS
   // `prefers-reduced-motion` setting: transform/layout animations are zeroed
   // out while opacity-only changes are kept. The CSS `@media (prefers-reduced-
@@ -929,7 +934,7 @@ export function App() {
   return (
     <MotionConfig reducedMotion="user">
       <IframeKeepAliveProvider>
-        <WorkspaceMemberDirectoryPreloader />
+        {studio.hostServices && <WorkspaceMemberDirectoryPreloader />}
         <AppInner />
       </IframeKeepAliveProvider>
     </MotionConfig>
@@ -937,6 +942,7 @@ export function App() {
 }
 
 function AppInner() {
+  const studio = useStudioCapabilities();
   const { t } = useI18n();
   const iframeKeepAlivePool = useIframeKeepAlivePool();
   const clientType = useMemo(() => detectClientType(), []);
@@ -1025,7 +1031,7 @@ function AppInner() {
       root.classList.remove('is-window-blurred');
     };
   }, [clientType, hostPlatform]);
-  const [config, setConfig] = useState<AppConfig>(() => loadConfig());
+  const [config, setConfig] = useState<AppConfig>(() => studio.hostServices ? loadConfig() : { ...loadConfig(), onboardingCompleted: true, telemetry: { metrics: false, content: false }, notifications: { ...DEFAULT_NOTIFICATIONS, soundEnabled: false, desktopEnabled: false } });
   const configRef = useRef(config);
   configRef.current = config;
   const latestPersistedConfigRef = useRef(config);
@@ -1753,7 +1759,7 @@ function AppInner() {
       clearAmrAuthRetryContinuation(amrAuthRetryContinuation);
       return;
     }
-    const timeout = window.setTimeout(() => {
+    const timeout = studioWindowSetTimeout(() => {
       clearAmrAuthRetryContinuation(amrAuthRetryContinuation);
     }, remainingMs);
     return () => window.clearTimeout(timeout);
@@ -1934,7 +1940,7 @@ function AppInner() {
   // is running. Settings is irrelevant to visibility; the banner sits above
   // the modal-backdrop layer in index.css so opening Settings does not hide
   // it.
-  const showPrivacyConsent =
+  const showPrivacyConsent = studio.hostServices &&
     daemonConfigLoaded &&
     config.privacyDecisionAt == null &&
     config.onboardingCompleted === true;
@@ -1952,7 +1958,7 @@ function AppInner() {
   }, [activeProjectId, activeFileName]);
 
   useEffect(() => {
-    if (!daemonLive) return;
+    if (!daemonLive || !studio.hostServices) return;
     let cancelled = false;
     let timer: number | null = null;
     const pollGeneration = amrPollGenerationRef.current + 1;
@@ -1980,7 +1986,7 @@ function AppInner() {
         presetPolls < maxPresetPolls;
       if (shouldPollPreset) {
         presetPolls += 1;
-        timer = window.setTimeout(() => {
+        timer = studioWindowSetTimeout(() => {
           void applyAmrModels();
         }, pollDelayMs);
       }
@@ -2001,6 +2007,7 @@ function AppInner() {
   // AMR_LOGIN_STATUS_EVENT covers logins finishing in surfaces that
   // unmounted before their poll settled.
   useEffect(() => {
+    if (!studio.hostServices) return;
     let cancelled = false;
     const sync = async (
       options: { refresh?: boolean } = {},
@@ -2088,6 +2095,18 @@ function AppInner() {
   useEffect(() => {
     let cancelled = false;
     let effectAgentStreamAbort: AbortController | null = null;
+    if (!studio.hostServices) {
+      setDaemonLive(true); setAgentsLoading(false); setSkillsLoading(false); setDsLoading(false);
+      setPromptTemplatesLoading(false); setDaemonConfigLoaded(true); setComposioConfigLoading(false);
+      setWorkspaceSkills({ identity: currentWorkspaceCatalogIdentity, items: [] });
+      setWorkspaceDesignSystems({ identity: currentWorkspaceCatalogIdentity, items: [] });
+      const request = beginProjectListRequest(workspaceProjectViewRef.current);
+      void listCurrentWorkspaceProjects().then((list) => {
+        if (cancelled) return;
+        reconcileFetchedProjects(list, request); setProjectsLoading(false);
+      });
+      return () => { cancelled = true; };
+    }
     (async () => {
       const alive = await daemonIsLive();
       if (cancelled) return;
@@ -2550,6 +2569,7 @@ function AppInner() {
     const requestGeneration =
       (designSystemsRequestGenerationRef.current.get(issuedCatalogIdentity) ?? 0) + 1;
     designSystemsRequestGenerationRef.current.set(issuedCatalogIdentity, requestGeneration);
+    if (!studio.hostServices) return;
     const list = await fetchDesignSystems(issuedContext, options);
     if (
       workspaceContextStateRef.current.identityChangePending
@@ -2581,6 +2601,7 @@ function AppInner() {
   ]);
 
   const refreshSkills = useCallback(async () => {
+    if (!studio.hostServices) return;
     // Always scoped. `GET /api/skills` is fail-closed on a missing
     // `x-od-workspace-id` (`skills.ts`: `if (!scopeId) return !ownerId;`), so a
     // headerless read is not the "unfiltered" list — it is the list with every
@@ -2655,6 +2676,7 @@ function AppInner() {
   ]);
 
   const refreshTemplates = useCallback(async () => {
+    if (!studio.hostServices) return;
     const list = await listTemplates();
     setTemplates(list);
   }, []);
@@ -2851,8 +2873,8 @@ function AppInner() {
       // local selection or acknowledge the action in another route/identity.
       throw new Error('Cloud configuration acknowledgement no longer owns the active selection');
     }
-    latestPersistedConfigRef.current = next;
     saveConfig(next);
+    latestPersistedConfigRef.current = next;
     setConfig(next);
   }, []);
 
@@ -2925,6 +2947,7 @@ function AppInner() {
 
   const refreshAgents = useCallback(
     async (options?: { throwOnError?: boolean; agentCliEnv?: AppConfig['agentCliEnv'] }) => {
+      if (!studio.hostServices) return [];
       if (options && Object.prototype.hasOwnProperty.call(options, 'agentCliEnv')) {
         const current = latestPersistedConfigRef.current;
         const nextConfig = clearStaleAmrModelChoiceOnProfileChange(current, {
@@ -2994,6 +3017,7 @@ function AppInner() {
   }, [agentsLoading, daemonLive, refreshAgents]);
 
   useEffect(() => {
+    if (!studio.hostServices) return;
     const handleAppConfigChanged = () => {
       void fetchDaemonConfig().then((daemonConfig) => {
         const previous = latestPersistedConfigRef.current;
@@ -3410,50 +3434,50 @@ function AppInner() {
           (derivedPendingPrompt !== undefined || firstMessageAttachments.length > 0)
         ) {
           try {
-            window.sessionStorage.setItem(
+            sessionStorage.setItem(
               `od:auto-send-first:${result.project.id}`,
               '1',
             );
             if (derivedPendingPrompt !== undefined) {
-              window.sessionStorage.setItem(
+              sessionStorage.setItem(
                 `od:auto-send-prompt:${result.project.id}`,
                 derivedPendingPrompt,
               );
             } else {
-              window.sessionStorage.removeItem(
+              sessionStorage.removeItem(
                 `od:auto-send-prompt:${result.project.id}`,
               );
             }
             if (input.amrGatePrecheckWitness) {
-              window.sessionStorage.setItem(
+              sessionStorage.setItem(
                 `od:auto-send-amr-gate-witness:${result.project.id}`,
                 JSON.stringify(input.amrGatePrecheckWitness),
               );
             } else {
-              window.sessionStorage.removeItem(
+              sessionStorage.removeItem(
                 `od:auto-send-amr-gate-witness:${result.project.id}`,
               );
             }
-            window.sessionStorage.removeItem(
+            sessionStorage.removeItem(
               `od:auto-send-amr-gate-ok:${result.project.id}`,
             );
             if (firstMessageAttachments.length > 0) {
-              window.sessionStorage.setItem(
+              sessionStorage.setItem(
                 `od:auto-send-attachments:${result.project.id}`,
                 JSON.stringify(firstMessageAttachments),
               );
             } else {
-              window.sessionStorage.removeItem(
+              sessionStorage.removeItem(
                 `od:auto-send-attachments:${result.project.id}`,
               );
             }
             if (input.initialRunContext && Object.keys(input.initialRunContext).length > 0) {
-              window.sessionStorage.setItem(
+              sessionStorage.setItem(
                 `od:auto-send-context:${result.project.id}`,
                 JSON.stringify(input.initialRunContext),
               );
             } else {
-              window.sessionStorage.removeItem(
+              sessionStorage.removeItem(
                 `od:auto-send-context:${result.project.id}`,
               );
             }
@@ -3595,10 +3619,10 @@ function AppInner() {
         sourceWorkspaceContext,
       );
       try {
-        window.sessionStorage.setItem(`od:auto-send-first:${result.project.id}`, '1');
+        sessionStorage.setItem(`od:auto-send-first:${result.project.id}`, '1');
         const pendingPrompt = input.pendingPrompt ?? result.project.pendingPrompt;
         if (pendingPrompt !== undefined) {
-          window.sessionStorage.setItem(
+          sessionStorage.setItem(
             `od:auto-send-prompt:${result.project.id}`,
             pendingPrompt,
           );
@@ -3664,12 +3688,12 @@ function AppInner() {
       );
       if (!outcome.ok) return outcome;
       try {
-        window.sessionStorage.setItem(
+        sessionStorage.setItem(
           `od:auto-send-first:${outcome.project.id}`,
           '1',
         );
         if (outcome.project.pendingPrompt !== undefined) {
-          window.sessionStorage.setItem(
+          sessionStorage.setItem(
             `od:auto-send-prompt:${outcome.project.id}`,
             outcome.project.pendingPrompt,
           );
@@ -4103,7 +4127,7 @@ function AppInner() {
 
     void refresh();
     window.addEventListener(RUNS_CHANGED_EVENT, handleRunsChanged);
-    const id = window.setInterval(refresh, 2000);
+    const id = studioWindowSetInterval(refresh, 2000);
     return () => {
       cancelled = true;
       window.removeEventListener(RUNS_CHANGED_EVENT, handleRunsChanged);
@@ -5256,7 +5280,7 @@ function AppInner() {
     : null;
   useEffect(() => {
     if (!pendingCreationProjectId) return;
-    const timer = window.setTimeout(() => {
+    const timer = studioWindowSetTimeout(() => {
       setPendingProjectCreation((current) =>
         current?.projectId === pendingCreationProjectId ? null : current,
       );
@@ -5269,7 +5293,11 @@ function AppInner() {
     route.view === 'home' &&
     config.onboardingCompleted !== true &&
     !daemonConfigLoaded;
-  if (pendingFirstRunOnboardingRoute) {
+  if (studio.actor && studio.session && window.location.pathname.startsWith('/admin/')) {
+    appMain = studio.actor.role !== 'admin' ? <p role="alert">{t('multiuser.denied')}</p> : window.location.pathname === '/admin/audit' ? <Audit session={studio.session} account={studio.actor} generation={studio.generation} /> : <AdminUsers session={studio.session} account={studio.actor} generation={studio.generation} />;
+  } else if (!studio.hostServices && route.kind !== 'home' && route.kind !== 'project') {
+    appMain = <StudioUnavailable lane="catalogs" />;
+  } else if (pendingFirstRunOnboardingRoute) {
     appMain = (
       <div className="entry-shell entry-shell--no-header">
         <CenteredLoader label={t('entry.loadingWorkspace')} />
@@ -5702,8 +5730,10 @@ function AppInner() {
   }
   return (
     <>
+      <StudioAccountChrome />
       <div
         className={`workspace-shell workspace-shell--${clientType}`}
+        data-studio-pilot={!studio.hostServices || undefined}
         data-client-type={clientType}
         data-host-platform={hostPlatform}
       >
@@ -5731,7 +5761,7 @@ function AppInner() {
             though EntryShell — the cluster's usual owner — is unmounted here.
             Home and the other entry views mount theirs through EntryNavRail;
             the routes are mutually exclusive, so exactly one is on screen. */}
-        {route.kind === 'project' ? (
+        {studio.hostServices && route.kind === 'project' ? (
           <WorkspaceTopRightAccountCluster
             onOpenSettings={openSettings}
             onSignedOut={handleActiveCloudSignOut}
@@ -5797,7 +5827,7 @@ function AppInner() {
         </>
       )}
       <TooltipLayer />
-      <UpdateDialog />
+      {studio.hostServices && <UpdateDialog />}
       {/* Mounted at shell level, outside the route views, so a survey armed by
           an export inside a project stays on screen when the user navigates
           back to home. */}
@@ -5834,7 +5864,7 @@ function AppInner() {
         renderSettingsSurface('modal')
       ) : null}
       </AnimatePresence>
-      <MemoryToast
+      {studio.hostServices && <MemoryToast
         onOpenMemory={() => openSettings('memory')}
         subscriptionMode={memoryToastSubscriptionMode({
           routeKind: route.kind,
@@ -5849,7 +5879,7 @@ function AppInner() {
               || (route.kind === 'home' && route.view === 'settings')
             ),
         })}
-      />
+      />}
       {workingDirError ? (
         <Toast
           message={workingDirError}

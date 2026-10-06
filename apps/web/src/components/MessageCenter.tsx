@@ -1,3 +1,4 @@
+import { useStudioCapabilities, StudioUnavailable } from '../runtime/studio-capabilities';
 import { Button } from '@open-design/components';
 import { useCallback, useEffect, useId, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
@@ -63,7 +64,12 @@ interface Props {
 
 type SyncState = 'loading' | 'ready' | 'error';
 
-export function MessageCenter({
+export function MessageCenter(props: Props) {
+  const studio = useStudioCapabilities();
+  return studio.hostServices ? <LocalMessageCenter {...props} /> : props.hideTrigger ? null : <StudioUnavailable lane="settings" />;
+}
+
+function LocalMessageCenter({
   hideTrigger = false,
   returnFocusRef,
   open: controlledOpen,

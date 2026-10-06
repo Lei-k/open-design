@@ -1,3 +1,4 @@
+import { studioLocalStorage as localStorage } from '../../runtime/studio-transport';
 // Helpers for turning a user-picked image file into a self-contained
 // pet sprite payload that is safe to drop into localStorage. We do
 // three things:

@@ -1,3 +1,5 @@
+import { studioSetTimeout as setTimeout, studioUsesLocalServices, studioFetch as fetch, studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { registerStudioReset } from '../runtime/studio-resources';
 // Project / conversation / message / tab persistence — backed by the
 // daemon's SQLite store. All writes round-trip through HTTP so projects
 // stay coherent across multiple browser tabs and across restarts.
@@ -372,7 +374,7 @@ export type ProjectRouteBootstrapResult =
   | {
       kind: 'found';
       project: Project;
-      scope: ProjectWorkspaceScopeResponse['scope'];
+      scope?: ProjectWorkspaceScopeResponse['scope'];
       resolvedDir: string | null;
     }
   | { kind: 'not-found' }
@@ -405,6 +407,10 @@ export async function bootstrapProjectRoute(
     exactContext?: WorkspaceCollabContext | null;
   },
 ): Promise<ProjectRouteBootstrapResult> {
+  if (!studioUsesLocalServices()) {
+    const project = await getProject(projectId);
+    return project ? { kind: 'found', project, resolvedDir: null } : { kind: 'not-found' };
+  }
   const suppliedContext = options.exactContext ?? null;
   const suppliedIdentity = workspaceIdentityCacheKey(suppliedContext);
   const key = [
@@ -597,7 +603,7 @@ export async function bootstrapFirstOpenTeamProjectRoute(
   if (bootstrap.kind === 'forbidden') return { kind: 'unavailable' };
   if (bootstrap.kind !== 'found') return bootstrap;
   if (
-    bootstrap.scope.kind !== 'team'
+    !bootstrap.scope || bootstrap.scope.kind !== 'team'
     || bootstrap.scope.context?.workspaceType !== 'team'
     // Same question, same answer as the re-confirmation above: does this local
     // binding belong to the exact principal that authorized the bootstrap? The
@@ -614,6 +620,7 @@ export async function bootstrapFirstOpenTeamProjectRoute(
   }
   return {
     ...bootstrap,
+    scope: bootstrap.scope,
     awaitingFirstMaterialization:
       bootstrapResponse.awaitingFirstMaterialization === true,
   };
@@ -791,7 +798,7 @@ export async function createProject(
           'Content-Type': 'application/json',
           ...(input.workspaceContext ? workspaceProjectHeaders(input.workspaceContext) : {}),
         },
-        body: JSON.stringify({ id, ...omitWorkspaceContext(input) }),
+        body: JSON.stringify(studioUsesLocalServices() ? { id, ...omitWorkspaceContext(input) } : { id, name: input.name }),
       });
       if (resp.ok) {
         const created = (await resp.json()) as {
@@ -1708,7 +1715,7 @@ function readCachedTabs(
   if (typeof window === 'undefined') return null;
   try {
     return normalizeTabsState(JSON.parse(
-      window.localStorage.getItem(tabsCacheKey(projectId, workspaceContext)) ?? 'null',
+      localStorage.getItem(tabsCacheKey(projectId, workspaceContext)) ?? 'null',
     ));
   } catch {
     return null;
@@ -1721,7 +1728,7 @@ function removeCachedTabs(
 ): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.removeItem(tabsCacheKey(projectId, workspaceContext));
+    localStorage.removeItem(tabsCacheKey(projectId, workspaceContext));
   } catch {
     // Ignore private-mode/quota errors; the cache entry is best-effort.
   }
@@ -1738,7 +1745,7 @@ function writeCachedTabs(
   };
   if (typeof window !== 'undefined') {
     try {
-      window.localStorage.setItem(
+      localStorage.setItem(
         tabsCacheKey(projectId, workspaceContext),
         JSON.stringify(next),
       );
@@ -2910,3 +2917,5 @@ function isStringMap(value: unknown): value is Record<string, string> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   return Object.values(value).every((entry) => typeof entry === 'string');
 }
+
+registerStudioReset(resetPluginsCache);

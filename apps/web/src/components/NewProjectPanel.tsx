@@ -1,3 +1,4 @@
+import { useStudioCapabilities, StudioUnavailable } from '../runtime/studio-capabilities';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Dialog, DialogDescription, DialogFooter, DialogTitle } from '@open-design/components';
@@ -292,6 +293,7 @@ export function NewProjectPanel({
   loading = false,
   initialTab = 'prototype',
 }: Props) {
+  const studio = useStudioCapabilities();
   const t = useT();
   const { locale } = useI18n();
   const analytics = useAnalytics();
@@ -852,6 +854,12 @@ export function NewProjectPanel({
     onImportFolder,
     onImportFolderResponse,
   });
+
+  if (!studio.hostServices) return <form className="newproj" data-testid="new-project-panel" onSubmit={(event) => {
+    event.preventDefault(); if (!name.trim() || loading) return;
+    onCreate({ name: name.trim(), skillId: null, designSystemId: null, metadata: { kind: 'prototype' } });
+  }}><label>{t('multiuser.projectName')}<input data-testid="new-project-name" value={name} onChange={(event) => setName(event.target.value)} required maxLength={120} /></label>
+    <button type="submit" disabled={loading || !name.trim()}>{t('multiuser.createProject')}</button><StudioUnavailable lane="home" /></form>;
 
   return (
     <div className="newproj" data-testid="new-project-panel">

@@ -1,3 +1,4 @@
+import { studioWindowSetInterval, studioLocalStorage as localStorage } from '../runtime/studio-transport';
 // InlineModelSwitcher — top-bar chip exposing CLI/BYOK + model picker.
 //
 // Lives in the entry view's sticky top-bar so users can swap between a
@@ -145,8 +146,8 @@ let amrReminderSeenFallback = false;
 function readAmrReminderSeen(): boolean {
   if (typeof window === 'undefined') return true;
   try {
-    return window.localStorage
-      ? window.localStorage.getItem(AMR_REMINDER_SEEN_KEY) === '1'
+    return localStorage
+      ? localStorage.getItem(AMR_REMINDER_SEEN_KEY) === '1'
       : amrReminderSeenFallback;
   } catch {
     return amrReminderSeenFallback;
@@ -156,8 +157,8 @@ function readAmrReminderSeen(): boolean {
 function markAmrReminderSeen(): void {
   if (typeof window === 'undefined') return;
   try {
-    if (window.localStorage) {
-      window.localStorage.setItem(AMR_REMINDER_SEEN_KEY, '1');
+    if (localStorage) {
+      localStorage.setItem(AMR_REMINDER_SEEN_KEY, '1');
       return;
     }
   } catch {
@@ -366,7 +367,7 @@ export function InlineModelSwitcher({
         setAmrLoginError(t('settings.amrLoginErrorCompact'));
       }
     };
-    amrPollRef.current = window.setInterval(() => {
+    amrPollRef.current = studioWindowSetInterval(() => {
       void tick();
     }, AMR_LOGIN_POLL_INTERVAL_MS);
   }, [analytics.track, refreshAmrStatus, stopAmrPolling, t]);

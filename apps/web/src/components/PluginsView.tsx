@@ -1,3 +1,4 @@
+import { studioWindowSetTimeout, studioWindowSetInterval, studioFetch as fetch } from '../runtime/studio-transport';
 import {
   useCallback,
   useEffect,
@@ -1603,7 +1604,7 @@ export function ExtensionsMarketplace({
       sharedResourcesStaleRef.current = false;
       void refreshSharedResources();
     }
-    const interval = window.setInterval(() => {
+    const interval = studioWindowSetInterval(() => {
       if (document.visibilityState === 'visible') void refreshSharedResources();
     }, 10_000);
     return () => {
@@ -3223,7 +3224,7 @@ function AvailablePluginDetailsModal({
     const ok = await copyToClipboard(installCommand);
     if (!ok) return;
     setCopiedInstall(true);
-    window.setTimeout(() => setCopiedInstall(false), 1500);
+    studioWindowSetTimeout(() => setCopiedInstall(false), 1500);
   }
 
   function installSelectedVersion() {
@@ -4329,7 +4330,7 @@ function TeamPanel({
     const refreshVisible = () => {
       if (document.visibilityState === 'visible') void refreshTeamPanelShared(() => cancelled);
     };
-    const interval = window.setInterval(refreshVisible, 10_000);
+    const interval = studioWindowSetInterval(refreshVisible, 10_000);
     window.addEventListener('focus', refreshVisible);
     window.addEventListener('pageshow', refreshVisible);
     document.addEventListener('visibilitychange', refreshVisible);

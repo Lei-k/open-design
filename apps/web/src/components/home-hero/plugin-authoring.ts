@@ -1,3 +1,4 @@
+import { registerStudioReset } from '../../runtime/studio-resources';
 import type { ProjectKind, SkillSummary } from '@open-design/contracts';
 import type { PluginUseAction } from '../plugins-home/useActions';
 
@@ -164,3 +165,5 @@ export function takeHomePromptHandoff(): HomePromptHandoff | null {
   pendingHomePromptHandoff = null;
   return handoff;
 }
+
+registerStudioReset(() => { pendingHomePromptHandoff = null; });

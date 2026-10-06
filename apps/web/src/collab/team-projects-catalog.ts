@@ -1,3 +1,5 @@
+import { registerStudioReset } from '../runtime/studio-resources';
+import { studioFetch as fetch } from '../runtime/studio-transport';
 // The ONE read of the team-shared project catalog
 // (`GET /api/workspace/projects/team`).
 //
@@ -294,3 +296,5 @@ export async function fetchTeamProjectCatalogEntry(options: {
   });
   return projects.find((project) => project.projectId === options.projectId) ?? null;
 }
+
+registerStudioReset(resetTeamProjectMetadataRefreshOrdering);

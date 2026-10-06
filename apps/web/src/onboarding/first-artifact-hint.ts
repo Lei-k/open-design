@@ -1,3 +1,4 @@
+import { studioLocalStorage as localStorage } from '../runtime/studio-transport';
 // One-time "your first design is ready" hint (onboarding spec §8.3).
 //
 // A new user's first generation drops them into Studio with a produced
@@ -16,7 +17,7 @@ const STORAGE_KEY = 'open-design:seen-first-artifact-hint';
 
 export function hasSeenFirstArtifactHint(): boolean {
   try {
-    return window.localStorage.getItem(STORAGE_KEY) === '1';
+    return localStorage.getItem(STORAGE_KEY) === '1';
   } catch {
     return false;
   }
@@ -24,7 +25,7 @@ export function hasSeenFirstArtifactHint(): boolean {
 
 export function markFirstArtifactHintSeen(): void {
   try {
-    window.localStorage.setItem(STORAGE_KEY, '1');
+    localStorage.setItem(STORAGE_KEY, '1');
   } catch {
     // Ignore storage-denied contexts (private mode / disabled storage).
   }

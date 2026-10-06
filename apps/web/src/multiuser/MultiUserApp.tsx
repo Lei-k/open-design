@@ -9,6 +9,9 @@ import { AgentAccountsPage } from './AgentAccountsPage';
 import { ProjectConversations } from './ProjectConversations';
 import { ConversationRuns } from './ConversationRuns';
 import styles from './MultiUserApp.module.css';
+import { lazy, Suspense } from 'react';
+import { StudioCapabilitiesProvider } from '../runtime/studio-capabilities';
+const StudioApp = lazy(() => import('../App').then(({ App }) => ({ default: App })));
 
 function failureKey(error: unknown) {
   if (error instanceof RequestFailure) {
@@ -86,6 +89,9 @@ function MultiUserEntry({ setupToken, clearSetupToken }: { setupToken: string | 
   if (!state.account) return <>{outcome}<main className={styles.auth}><Brand /><h1>{t('multiuser.signIn')}</h1><p>{t('multiuser.inviteOnly')}</p>
     <Credentials busy={false} submit={(username, password) => { setLoginError(false); void session.login(username, password).catch(() => setLoginError(true)); }} />
     {loginError && <Alert>{t('multiuser.loginError')}</Alert>}<p className={styles.muted}>{t('multiuser.testOnly')}</p></main></>;
+  if (state.studio?.shell === 'studio') return <>{outcome}<StudioCapabilitiesProvider key={`${state.generation}:${state.account.id}:${state.account.role}`} session={session} actor={state.account} capabilities={state.studio} generation={state.generation}>
+    <Suspense fallback={<p role="status">{t('multiuser.loading')}</p>}><StudioApp /></Suspense>
+  </StudioCapabilitiesProvider></>;
   return <>{outcome}<SignedIn key={`${state.generation}:${state.account.id}:${state.account.role}`} session={session} account={state.account} generation={state.generation} /></>;
 }
 
@@ -149,7 +155,7 @@ function SetupLink({ setup, dismiss }: { setup: AuthSetupCredential; dismiss: ()
     <p role="status">{copied ? t('multiuser.copied') : failed ? t('multiuser.copyFailed') : ''}</p></section>;
 }
 
-function AdminUsers(props: OwnedProps) {
+export function AdminUsers(props: OwnedProps) {
   const t = useT();
   const [query, setQuery] = useState(''); const [offset, setOffset] = useState(0); const [revision, setRevision] = useState(0);
   const { data, error } = useOwnedLoad<AuthAccountListResponse>(props, `/api/auth/users?limit=20&offset=${offset}${query ? `&q=${encodeURIComponent(query)}` : ''}`, revision);
@@ -235,7 +241,7 @@ function StudioPilotControl(props: OwnedProps & { targetId: string }) {
   </div>;
 }
 
-function Audit(props: OwnedProps) {
+export function Audit(props: OwnedProps) {
   const { t, locale } = useI18n(); const [before, setBefore] = useState<number | null>(null); const [revision, setRevision] = useState(0);
   const { data, error } = useOwnedLoad<AuthAuditListResponse>(props, `/api/auth/audit?limit=20${before === null ? '' : `&before=${before}`}`, revision);
   return <><h1>{t('multiuser.audit')}</h1><p>{t('multiuser.auditHelp')}</p>

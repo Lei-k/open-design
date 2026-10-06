@@ -1,3 +1,4 @@
+import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioSetInterval as setInterval, studioLocalStorage as localStorage } from './studio-transport';
 /**
  * Wrap an artifact's HTML for a sandboxed iframe. Corresponds to
  * buildSrcdoc in packages/runtime/src/index.ts — the reference version also
@@ -2289,7 +2290,7 @@ function meaningfulDomFallbackTarget(el) {
     if (!active() || postTargetsPending) return;
     postTargetsPending = true;
     if (postTargetsTimer) window.clearTimeout(postTargetsTimer);
-    postTargetsTimer = window.setTimeout(function(){
+    postTargetsTimer = studioWindowSetTimeout(function(){
       window.requestAnimationFrame(function(){
         postTargetsPending = false;
         postTargetsTimer = null;
@@ -2645,7 +2646,7 @@ function meaningfulDomFallbackTarget(el) {
     restoreIfCurrent();
     window.requestAnimationFrame(function(){
       restoreIfCurrent();
-      window.setTimeout(function(){
+      studioWindowSetTimeout(function(){
         var restored = restoreIfCurrent();
         // Completion is terminal even when a genuine user interaction canceled
         // the replay. The host must always be able to retire its inert handoff.

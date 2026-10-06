@@ -1,3 +1,4 @@
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
 import {
   useCallback,
   useEffect,
@@ -319,14 +320,16 @@ export function EntryView({
   onAmrLoginStatusChange,
   artifactUpgradeSlot,
 }: Props) {
+  const studio = useStudioCapabilities();
   const [connectors, setConnectors] = useState<ConnectorDetail[]>([]);
   const [connectorsLoading, setConnectorsLoading] = useState(false);
 
   const reloadConnectorCatalog = useCallback(async (options: { refreshDiscovery?: boolean } = {}) => {
-    setConnectors(await fetchConnectorCatalogSnapshot(options));
+    if (studio.hostServices) setConnectors(await fetchConnectorCatalogSnapshot(options));
   }, []);
 
   useEffect(() => {
+    if (!studio.hostServices) return;
     let cancelled = false;
     // Fetch connectors on mount so the New project modal can show
     // already-configured connectors without waiting for the user to
@@ -344,6 +347,7 @@ export function EntryView({
   }, []);
 
   useEffect(() => {
+    if (!studio.hostServices) return;
     function onMessage(event: MessageEvent) {
       const data = event.data;
       if (!data || typeof data !== 'object' || (data as { type?: unknown }).type !== CONNECTOR_CALLBACK_MESSAGE_TYPE) return;
@@ -355,6 +359,7 @@ export function EntryView({
   }, [reloadConnectorCatalog]);
 
   useEffect(() => {
+    if (!studio.hostServices) return;
     function onConnectorsChanged() {
       void reloadConnectorCatalog({ refreshDiscovery: true });
     }
@@ -367,6 +372,7 @@ export function EntryView({
   // Refresh connector statuses whenever the window regains focus so the UI
   // picks up a just-completed connection without manual intervention.
   useEffect(() => {
+    if (!studio.hostServices) return;
     function refreshAfterReturn() {
       void reloadConnectorCatalog({ refreshDiscovery: true });
     }

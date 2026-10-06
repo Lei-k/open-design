@@ -258,12 +258,11 @@ async function runTurn(options: {
   await waitFor(() => expect(chatPaneHarness.onSend).toBeTruthy());
   await waitFor(() => expect(fetchProjectFiles).toHaveBeenCalled());
 
-  // Every read after the turn starts sees the finished set of files. The
-  // pre-turn snapshot is already captured by the send above.
-  fetchProjectFiles.mockResolvedValue(options.afterFiles);
-
   void chatPaneHarness.onSend!('Generate four images', [], []);
   await waitFor(() => expect(handlers).toBeTruthy());
+  // Publish generated files only once the run has started. Publishing before
+  // onSend races the initial file read and can make outputs part of its baseline.
+  fetchProjectFiles.mockResolvedValue(options.afterFiles);
   handlers!.onDone(options.doneText ?? 'Done.');
 }
 

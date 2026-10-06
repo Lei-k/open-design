@@ -1,3 +1,4 @@
+import { studioUsesLocalServices, studioSetTimeout as setTimeout, studioSetInterval as setInterval, studioFetch as fetch } from '../runtime/studio-transport';
 /**
  * Daemon provider — fetch-based SSE client for /api/runs. The daemon can
  * emit three event streams depending on the agent's streamFormat:
@@ -1427,6 +1428,7 @@ export interface VelaLoginStatusRead {
 export function readVelaLoginStatus(
   options: { refresh?: boolean } = {},
 ): Promise<VelaLoginStatusRead> {
+  if (!studioUsesLocalServices()) return Promise.resolve({ ok: false, httpStatus: 503, body: null });
   const query = options.refresh ? '?refresh=1' : '';
   const url = `/api/integrations/vela/status${query}`;
   const accountGeneration = currentWorkspaceAccountGeneration();
@@ -1443,6 +1445,7 @@ export function readVelaLoginStatus(
 }
 
 export async function fetchVelaLoginStatus(options: { refresh?: boolean } = {}): Promise<VelaLoginStatus | null> {
+  if (!studioUsesLocalServices()) return null;
   try {
     const read = await readVelaLoginStatus(options);
     if (!read.ok) return null;

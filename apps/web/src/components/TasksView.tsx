@@ -1,3 +1,4 @@
+import { studioWindowSetTimeout, studioFetch as fetch } from '../runtime/studio-transport';
 // Automations tab: one surface for scheduled routines, Orbit-style digests,
 // and live artifact refreshers. The daemon still stores these as routines;
 // the UI presents them as scheduled agent conversations.
@@ -553,7 +554,7 @@ export function TasksView({ skills = [], designTemplates = [], connectors = [], 
     if (!focusRoutineId) return;
     const node = routineRowRefs.current[focusRoutineId];
     node?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    const timer = window.setTimeout(() => setFocusRoutineId(null), 4000);
+    const timer = studioWindowSetTimeout(() => setFocusRoutineId(null), 4000);
     return () => window.clearTimeout(timer);
   }, [focusRoutineId, sortedRoutines]);
 

@@ -1,3 +1,4 @@
+import { studioLocalStorage as localStorage } from '../../runtime/studio-transport';
 // Sort-order preference for the plugins home gallery.
 //
 // The Community gallery leads with the visual-appeal ranking
@@ -17,7 +18,7 @@ const SORT_ORDER_KEY = 'open-design:plugins-sort-order';
 
 function isBrowserStorageAvailable(): boolean {
   try {
-    return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+    return typeof window !== 'undefined' && typeof localStorage !== 'undefined';
   } catch {
     return false;
   }
@@ -30,7 +31,7 @@ function isPluginSortOrder(value: unknown): value is PluginSortOrder {
 export function readStoredSortOrder(): PluginSortOrder {
   if (!isBrowserStorageAvailable()) return DEFAULT_PLUGIN_SORT_ORDER;
   try {
-    const raw = window.localStorage.getItem(SORT_ORDER_KEY);
+    const raw = localStorage.getItem(SORT_ORDER_KEY);
     return isPluginSortOrder(raw) ? raw : DEFAULT_PLUGIN_SORT_ORDER;
   } catch {
     return DEFAULT_PLUGIN_SORT_ORDER;
@@ -40,7 +41,7 @@ export function readStoredSortOrder(): PluginSortOrder {
 export function writeStoredSortOrder(order: PluginSortOrder): void {
   if (!isBrowserStorageAvailable()) return;
   try {
-    window.localStorage.setItem(SORT_ORDER_KEY, order);
+    localStorage.setItem(SORT_ORDER_KEY, order);
   } catch {
     // Preference persistence is best-effort; sorting still works
     // for the session when storage is unavailable.

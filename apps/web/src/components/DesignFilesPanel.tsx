@@ -1,3 +1,4 @@
+import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioFetch as fetch } from '../runtime/studio-transport';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { TrackingProjectKind } from '@open-design/contracts/analytics';
 import { useAnalytics } from '../analytics/provider';
@@ -404,7 +405,7 @@ function RotatingTip({ auxiliary = false }: { auxiliary?: boolean }) {
     if (prefersReducedMotion()) {
       setTyped(full);
       if (tips.length < 2) return;
-      const hold = window.setTimeout(
+      const hold = studioWindowSetTimeout(
         () => setIndex((i) => (i + 1) % tips.length),
         TIP_HOLD_MS,
       );
@@ -413,13 +414,13 @@ function RotatingTip({ auxiliary = false }: { auxiliary?: boolean }) {
     setTyped('');
     let i = 0;
     let holdTimer = 0;
-    const typeTimer = window.setInterval(() => {
+    const typeTimer = studioWindowSetInterval(() => {
       i += 1;
       setTyped(full.slice(0, i));
       if (i >= full.length) {
         window.clearInterval(typeTimer);
         if (tips.length < 2) return;
-        holdTimer = window.setTimeout(
+        holdTimer = studioWindowSetTimeout(
           () => setIndex((p) => (p + 1) % tips.length),
           TIP_HOLD_MS,
         );
@@ -849,7 +850,7 @@ export function DesignFilesPanel({
     const copied = await copyToClipboard(localPath);
     if (copied) {
       setCopiedLocalPath(fileName);
-      window.setTimeout(() => {
+      studioWindowSetTimeout(() => {
         setCopiedLocalPath((current) => (current === fileName ? null : current));
       }, 1600);
     }

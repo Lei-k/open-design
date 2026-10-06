@@ -1,3 +1,4 @@
+import { studioFetch as fetch } from './studio-transport';
 export interface PluginSkillDescriptionSource {
   key: string;
   assetPath: string | null;

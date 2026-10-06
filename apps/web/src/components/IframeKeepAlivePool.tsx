@@ -1,3 +1,4 @@
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
 import {
   createContext,
   forwardRef,
@@ -81,6 +82,7 @@ export function IframeKeepAliveProvider({
   children: ReactNode;
   maxEntries?: number;
 }) {
+  const studio = useStudioCapabilities();
   const parkedHostRef = useRef<HTMLDivElement | null>(null);
   const entriesRef = useRef<Map<string, PoolEntry>>(new Map());
   const activeKeysRef = useRef<Set<string>>(new Set());
@@ -88,6 +90,11 @@ export function IframeKeepAliveProvider({
   const keyRevisionsRef = useRef<Map<string, number>>(new Map());
   const keyListenersRef = useRef<Map<string, Set<() => void>>>(new Map());
   maxEntriesRef.current = maxEntries;
+
+  useLayoutEffect(() => studio.session?.bindResource(() => {
+    for (const entry of entriesRef.current.values()) { entry.element.src = 'about:blank'; entry.element.remove(); }
+    entriesRef.current.clear(); activeKeysRef.current.clear(); keyRevisionsRef.current.clear(); keyListenersRef.current.clear();
+  }, studio.generation), [studio.session, studio.generation]);
 
   const invalidateKey = (key: string) => {
     keyRevisionsRef.current.set(key, (keyRevisionsRef.current.get(key) ?? 0) + 1);

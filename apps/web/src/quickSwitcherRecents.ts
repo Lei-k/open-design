@@ -1,3 +1,4 @@
+import { studioLocalStorage as localStorage } from './runtime/studio-transport';
 // Recently-opened file tracking for the Quick Switcher (Cmd/Ctrl+P).
 // Scoped per-project so each project keeps its own list. localStorage is
 // the right home: recents are a UX nicety, not source-of-truth state, and

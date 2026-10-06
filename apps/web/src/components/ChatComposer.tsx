@@ -1,4 +1,8 @@
 'use client';
+import { studioSetTimeout as setTimeout, studioLocalStorage as localStorage } from '../runtime/studio-transport';
+import { useStudioCapabilities, StudioUnavailable } from '../runtime/studio-capabilities';
+
+
 
 import {
   forwardRef,
@@ -560,7 +564,14 @@ function dataTransferContainsDirectory(dataTransfer: DataTransfer): boolean {
  * Selecting one inserts `@<path>` into the prompt and stages it as an
  * attachment so the daemon also includes it explicitly.
  */
-export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
+export const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer(props, ref) {
+  const studio = useStudioCapabilities();
+  return studio.available('composer')
+    ? <EnabledChatComposer {...props} ref={ref} />
+    : <div className="composer" data-testid="chat-composer"><StudioUnavailable lane="execution" /></div>;
+});
+
+const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
   function ChatComposer(
     {
       projectId,
@@ -3258,6 +3269,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
         trigger.focus({ preventScroll: true });
       });
     };
+
 
     return (
       <div
@@ -6704,7 +6716,7 @@ function stripInlineMentionLabels(text: string, labels: string[]): string {
 function loadComposerDraft(key?: string): string | null {
   if (!key || typeof window === 'undefined') return null;
   try {
-    return window.localStorage.getItem(key);
+    return localStorage.getItem(key);
   } catch {
     return null;
   }
@@ -6714,9 +6726,9 @@ function saveComposerDraft(key: string | undefined, draft: string) {
   if (!key || typeof window === 'undefined') return;
   try {
     if (draft) {
-      window.localStorage.setItem(key, draft);
+      localStorage.setItem(key, draft);
     } else {
-      window.localStorage.removeItem(key);
+      localStorage.removeItem(key);
     }
   } catch {
     // Storage can be unavailable in privacy modes; the composer should still work.

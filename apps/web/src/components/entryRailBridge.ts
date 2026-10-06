@@ -1,3 +1,4 @@
+import { studioLocalStorage as localStorage } from '../runtime/studio-transport';
 // Bridge between EntryShell (the owner of the entry nav-rail open state) and
 // chrome that lives in a sibling React tree — the pinned Home tab's sidebar
 // toggle in WorkspaceTabsBar. Kept in a leaf module so the tabs bar can share
@@ -25,7 +26,7 @@ export const ENTRY_RAIL_STATE_EVENT = 'od:entry-rail-state';
 export function readStoredRailOpen(): boolean {
   if (typeof window === 'undefined') return false;
   try {
-    return window.localStorage.getItem(RAIL_OPEN_STORAGE_KEY) === 'true';
+    return localStorage.getItem(RAIL_OPEN_STORAGE_KEY) === 'true';
   } catch {
     return false;
   }

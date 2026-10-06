@@ -1,3 +1,4 @@
+import { studioWindowSetTimeout, studioFetch as fetch } from '../runtime/studio-transport';
 // Use OpenDesign Everywhere — modal entry that documents OpenDesign's
 // non-UI surfaces (CLI, MCP, HTTP, Skills) and ships a one-click "copy
 // guide for an agent" payload. Reachable from the entry top-bar and
@@ -219,7 +220,7 @@ export function UseEverywhereGuidePanel({
     const state = await copyText(guide);
     setGuideCopy(state);
     if (state !== 'idle') {
-      window.setTimeout(() => setGuideCopy('idle'), COPY_RESET_MS);
+      studioWindowSetTimeout(() => setGuideCopy('idle'), COPY_RESET_MS);
     }
   }
 
@@ -243,7 +244,7 @@ export function UseEverywhereGuidePanel({
     const state = await copyText(text);
     setSnippetCopy({ key, state });
     if (state !== 'idle') {
-      window.setTimeout(() => setSnippetCopy(null), COPY_RESET_MS);
+      studioWindowSetTimeout(() => setSnippetCopy(null), COPY_RESET_MS);
     }
   }
 

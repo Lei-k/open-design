@@ -7,7 +7,7 @@ import type { ProjectCollab } from './useProjectCollab';
 // to deep descendants (FileViewer's comment overlay) without prop-threading
 // through the big intermediate components, and without a second collab client.
 
-export type ProjectResourceAuthority = 'pending' | 'denied' | 'local' | 'workspace';
+export type ProjectResourceAuthority = 'pending' | 'denied' | 'local' | 'workspace' | 'session';
 
 export interface CollabContextValue extends ProjectCollab {
   /** Exact persisted scope of the project being rendered. Never shell navigation state. */

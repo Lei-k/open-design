@@ -1,3 +1,4 @@
+import { registerStudioReset } from '../runtime/studio-resources';
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import type { AppState, BinaryFiles } from '@excalidraw/excalidraw/types';
 import type { ExcalidrawElement, NonDeleted } from '@excalidraw/excalidraw/element/types';
@@ -421,3 +422,5 @@ function renderSketchSvgItem(item: SketchItem, index: number) {
     </text>
   );
 }
+
+registerStudioReset(() => { previewCache.clear(); });

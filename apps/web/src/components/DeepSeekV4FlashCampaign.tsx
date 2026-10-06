@@ -1,3 +1,4 @@
+import { studioWindowSetTimeout, studioWindowSetInterval, studioLocalStorage as localStorage } from '../runtime/studio-transport';
 import { useEffect, useId, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Button, Dialog } from '@open-design/components';
@@ -102,7 +103,7 @@ function CampaignProviderMark({
 function hasSeenCampaign(campaignId: string): boolean {
   if (typeof window === 'undefined') return true;
   try {
-    return window.localStorage.getItem(`open-design:campaign-seen:${campaignId}`) === '1';
+    return localStorage.getItem(`open-design:campaign-seen:${campaignId}`) === '1';
   } catch {
     // Fail closed: when the store is unreadable (private mode, disabled
     // localStorage) `markCampaignSeen` cannot persist either, so answering
@@ -114,7 +115,7 @@ function hasSeenCampaign(campaignId: string): boolean {
 
 function markCampaignSeen(campaignId: string): void {
   try {
-    window.localStorage.setItem(`open-design:campaign-seen:${campaignId}`, '1');
+    localStorage.setItem(`open-design:campaign-seen:${campaignId}`, '1');
   } catch {
     // Campaign frequency control is advisory; storage failures must not block Home.
   }
@@ -132,7 +133,7 @@ function highlightModelSwitcher(): void {
   );
   if (!chip) return;
   chip.setAttribute('data-campaign-highlight', 'true');
-  window.setTimeout(() => chip.removeAttribute('data-campaign-highlight'), 1_500);
+  studioWindowSetTimeout(() => chip.removeAttribute('data-campaign-highlight'), 1_500);
 }
 
 export function DeepSeekV4FlashCampaign({
@@ -198,7 +199,7 @@ export function DeepSeekV4FlashCampaign({
     // boundary (via formatDeepSeekV4FlashCampaignCountdown) — there is no
     // synthetic per-open countdown.
     setCountdownNow(Date.now());
-    const countdownTimer = window.setInterval(() => setCountdownNow(Date.now()), 1_000);
+    const countdownTimer = studioWindowSetInterval(() => setCountdownNow(Date.now()), 1_000);
     return () => window.clearInterval(countdownTimer);
   }, [modalOpen]);
 
@@ -242,7 +243,7 @@ export function DeepSeekV4FlashCampaign({
       // 产品拍板 D5: 立即使用 switches the workbench to the campaign model
       // for real; the chip pulse is feedback for a switch that happened.
       onUseCampaignModel?.('amr', campaign.modelId);
-      window.setTimeout(highlightModelSwitcher, 0);
+      studioWindowSetTimeout(highlightModelSwitcher, 0);
       return;
     }
     const attribution = recordAmrEntry(

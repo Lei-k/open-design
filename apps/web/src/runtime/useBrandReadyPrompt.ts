@@ -1,3 +1,4 @@
+import { studioWindowSetTimeout, studioSessionStorage as sessionStorage } from './studio-transport';
 // `useBrandReadyPrompt` — surface a one-shot "your design system is ready"
 // prompt when a brand-extraction project finishes.
 //
@@ -40,7 +41,7 @@ function shownStorageKey(brandId: string): string {
 
 function readFlag(key: string): boolean {
   try {
-    return window.sessionStorage.getItem(key) === '1';
+    return sessionStorage.getItem(key) === '1';
   } catch {
     return false;
   }
@@ -48,7 +49,7 @@ function readFlag(key: string): boolean {
 
 function writeFlag(key: string): void {
   try {
-    window.sessionStorage.setItem(key, '1');
+    sessionStorage.setItem(key, '1');
   } catch {
     // sessionStorage unavailable — the prompt may re-show on a later visit,
     // which is a far smaller problem than never showing it at all.
@@ -189,7 +190,7 @@ export function useBrandReadyPrompt(
         });
       }
       if (polls >= MAX_POLLS) return;
-      timer = window.setTimeout(() => void check(), POLL_INTERVAL_MS);
+      timer = studioWindowSetTimeout(() => void check(), POLL_INTERVAL_MS);
     };
 
     void check();

@@ -1,3 +1,4 @@
+import { studioWindowSetInterval, studioFetch as fetch } from '../runtime/studio-transport';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { coalescedGet, evictCoalescedGet } from '../lib/coalesced-get';
 import { Button, VisuallyHidden } from '@open-design/components';
@@ -560,7 +561,7 @@ export function DesignSystemsTab({
 
   useEffect(() => {
     if (!isActive) return;
-    const interval = window.setInterval(() => {
+    const interval = studioWindowSetInterval(() => {
       if (document.visibilityState === 'visible') void refreshTeamShared();
     }, 10_000);
     return () => {

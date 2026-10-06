@@ -1,3 +1,4 @@
+import { studioSetTimeout as setTimeout, studioFetch as fetch, studioLocalStorage as localStorage } from '../runtime/studio-transport';
 import { useExperienceError } from '../observability/use-experience-error';
 import type { RecoveryActionBlockReason } from '../runtime/chat/recovery-gating';
 import {

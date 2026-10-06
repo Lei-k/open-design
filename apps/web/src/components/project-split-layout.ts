@@ -1,3 +1,4 @@
+import { studioLocalStorage as localStorage } from '../runtime/studio-transport';
 import type { CSSProperties } from 'react';
 
 /*
@@ -86,7 +87,7 @@ export function readSavedChatPanelWidth(): SavedChatPanelWidth {
     return { width: DEFAULT_CHAT_PANEL_WIDTH, customized: false };
   }
   try {
-    const raw = window.localStorage.getItem(CHAT_PANEL_WIDTH_STORAGE_KEY);
+    const raw = localStorage.getItem(CHAT_PANEL_WIDTH_STORAGE_KEY);
     const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
     return Number.isFinite(parsed)
       ? { width: clampPreferredChatPanelWidth(parsed), customized: true }
@@ -99,7 +100,7 @@ export function readSavedChatPanelWidth(): SavedChatPanelWidth {
 export function saveChatPanelWidth(width: number): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(
+    localStorage.setItem(
       CHAT_PANEL_WIDTH_STORAGE_KEY,
       String(clampPreferredChatPanelWidth(width)),
     );

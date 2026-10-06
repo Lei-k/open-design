@@ -1,3 +1,4 @@
+import { studioFetch as fetch, studioLocalStorage as localStorage } from '../runtime/studio-transport';
 import type { AppConfigPrefs } from '@open-design/contracts';
 import { MEDIA_PROVIDERS } from '../media/models';
 import { isOpenAICompatible } from '../providers/openai-compatible';

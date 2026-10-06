@@ -1,3 +1,4 @@
+import { studioWindowSetInterval, studioSessionStorage as sessionStorage } from '../runtime/studio-transport';
 import {
   useCallback,
   useEffect,
@@ -72,7 +73,7 @@ function mergeConnectors(current: ConnectorDetail[], incoming: ConnectorDetail[]
 function loadConnectorAuthorizationPending(): ConnectorAuthorizationPendingState {
   if (typeof window === 'undefined') return {};
   try {
-    const raw = window.sessionStorage.getItem(CONNECTOR_AUTH_PENDING_STORAGE_KEY);
+    const raw = sessionStorage.getItem(CONNECTOR_AUTH_PENDING_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
@@ -100,9 +101,9 @@ function saveConnectorAuthorizationPending(pending: ConnectorAuthorizationPendin
   if (typeof window === 'undefined') return;
   try {
     if (Object.keys(pending).length === 0) {
-      window.sessionStorage.removeItem(CONNECTOR_AUTH_PENDING_STORAGE_KEY);
+      sessionStorage.removeItem(CONNECTOR_AUTH_PENDING_STORAGE_KEY);
     } else {
-      window.sessionStorage.setItem(CONNECTOR_AUTH_PENDING_STORAGE_KEY, JSON.stringify(pending));
+      sessionStorage.setItem(CONNECTOR_AUTH_PENDING_STORAGE_KEY, JSON.stringify(pending));
     }
   } catch {
     /* Ignore unavailable sessionStorage. */
@@ -525,7 +526,7 @@ export function ConnectorsBrowser({
 
   useEffect(() => {
     if (Object.keys(connectorAuthorizationPending).length === 0) return;
-    const interval = window.setInterval(() => {
+    const interval = studioWindowSetInterval(() => {
       setConnectorAuthorizationPending((curr) => pruneConnectorAuthorizationPending(curr));
       void reloadConnectorStatuses();
     }, CONNECTOR_AUTH_PENDING_POLL_MS);

@@ -1,3 +1,6 @@
+import { bindStudioPendingWrite } from '../runtime/studio-resources';
+import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioSetInterval as setInterval, studioFetch as fetch, studioLocalStorage as localStorage, studioSessionStorage as sessionStorage } from '../runtime/studio-transport';
+import { StudioLane, useStudioCapabilities } from '../runtime/studio-capabilities';
 import { readRetriedErrorSurface, retriedErrorSurfaceKey, writeRetriedErrorSurface } from '../runtime/chat/retried-error-surface';
 import {
   startTransition,
@@ -496,7 +499,7 @@ export function mergeSavedPreviewComment(current: PreviewComment[], saved: Previ
 }
 
 function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
+  return new Promise((resolve) => studioWindowSetTimeout(resolve, ms));
 }
 
 function conversationForkErrorCode(error: unknown): TrackingConversationForkErrorCode {
@@ -1469,7 +1472,7 @@ function designSystemAuditAutoRepairKey(projectId: string): string {
 function readAutoSendAttachments(projectId: string): ChatAttachment[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = window.sessionStorage.getItem(autoSendAttachmentsKey(projectId));
+    const raw = sessionStorage.getItem(autoSendAttachmentsKey(projectId));
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
@@ -1482,7 +1485,7 @@ function readAutoSendAttachments(projectId: string): ChatAttachment[] {
 function readAutoSendPrompt(projectId: string): string | null {
   if (typeof window === 'undefined') return null;
   try {
-    return window.sessionStorage.getItem(autoSendPromptKey(projectId));
+    return sessionStorage.getItem(autoSendPromptKey(projectId));
   } catch {
     return null;
   }
@@ -1491,7 +1494,7 @@ function readAutoSendPrompt(projectId: string): string | null {
 function readAutoSendContext(projectId: string): RunContextSelection | null {
   if (typeof window === 'undefined') return null;
   try {
-    const raw = window.sessionStorage.getItem(autoSendContextKey(projectId));
+    const raw = sessionStorage.getItem(autoSendContextKey(projectId));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as unknown;
     return isStoredRunContextSelection(parsed) ? parsed : null;
@@ -1505,7 +1508,7 @@ function readAutoSendAmrGateWitness(
 ): AmrBalanceGateScope | undefined {
   if (typeof window === 'undefined') return undefined;
   try {
-    const raw = window.sessionStorage.getItem(
+    const raw = sessionStorage.getItem(
       autoSendAmrGateWitnessKey(projectId),
     );
     if (!raw) return undefined;
@@ -1519,12 +1522,12 @@ function readAutoSendAmrGateWitness(
 function clearAutoSendSession(projectId: string): void {
   if (typeof window === 'undefined') return;
   try {
-    window.sessionStorage.removeItem(autoSendFirstMessageKey(projectId));
-    window.sessionStorage.removeItem(autoSendPromptKey(projectId));
-    window.sessionStorage.removeItem(autoSendAttachmentsKey(projectId));
-    window.sessionStorage.removeItem(autoSendContextKey(projectId));
-    window.sessionStorage.removeItem(autoSendAmrGateWitnessKey(projectId));
-    window.sessionStorage.removeItem(legacyAutoSendAmrGateOkKey(projectId));
+    sessionStorage.removeItem(autoSendFirstMessageKey(projectId));
+    sessionStorage.removeItem(autoSendPromptKey(projectId));
+    sessionStorage.removeItem(autoSendAttachmentsKey(projectId));
+    sessionStorage.removeItem(autoSendContextKey(projectId));
+    sessionStorage.removeItem(autoSendAmrGateWitnessKey(projectId));
+    sessionStorage.removeItem(legacyAutoSendAmrGateOkKey(projectId));
   } catch {
     /* ignore */
   }
@@ -1533,7 +1536,7 @@ function clearAutoSendSession(projectId: string): void {
 function markDesignSystemAuditAutoRepairEligible(projectId: string): void {
   if (typeof window === 'undefined') return;
   try {
-    window.sessionStorage.setItem(
+    sessionStorage.setItem(
       designSystemAuditAutoRepairKey(projectId),
       String(DESIGN_SYSTEM_AUDIT_AUTO_REPAIR_ATTEMPTS),
     );
@@ -1546,17 +1549,17 @@ function consumeDesignSystemAuditAutoRepair(projectId: string): boolean {
   if (typeof window === 'undefined') return false;
   try {
     const key = designSystemAuditAutoRepairKey(projectId);
-    const raw = window.sessionStorage.getItem(key);
+    const raw = sessionStorage.getItem(key);
     const attemptsRemaining = raw ? Number.parseInt(raw, 10) : 0;
     if (!Number.isFinite(attemptsRemaining) || attemptsRemaining <= 0) {
-      window.sessionStorage.removeItem(key);
+      sessionStorage.removeItem(key);
       return false;
     }
     const nextAttemptsRemaining = attemptsRemaining - 1;
     if (nextAttemptsRemaining > 0) {
-      window.sessionStorage.setItem(key, String(nextAttemptsRemaining));
+      sessionStorage.setItem(key, String(nextAttemptsRemaining));
     } else {
-      window.sessionStorage.removeItem(key);
+      sessionStorage.removeItem(key);
     }
     return true;
   } catch {
@@ -1567,7 +1570,7 @@ function consumeDesignSystemAuditAutoRepair(projectId: string): boolean {
 function clearDesignSystemAuditAutoRepair(projectId: string): void {
   if (typeof window === 'undefined') return;
   try {
-    window.sessionStorage.removeItem(designSystemAuditAutoRepairKey(projectId));
+    sessionStorage.removeItem(designSystemAuditAutoRepairKey(projectId));
   } catch {
     /* ignore */
   }
@@ -2149,6 +2152,7 @@ export function ProjectView({
   creationHandoff = null,
   onCreationHandoffSettled,
 }: Props) {
+  const studio = useStudioCapabilities();
   const { locale, t } = useI18n();
   const amrAuthRetryMountIdRef = useRef<string | null>(null);
   if (amrAuthRetryMountIdRef.current === null) {
@@ -2177,7 +2181,7 @@ export function ProjectView({
     let isHomeAutoSend = false;
     try {
       isHomeAutoSend = Boolean(
-        window.sessionStorage.getItem(autoSendFirstMessageKey(project.id)),
+        sessionStorage.getItem(autoSendFirstMessageKey(project.id)),
       );
     } catch {
       /* sessionStorage may be unavailable; use ordinary initial selection. */
@@ -2271,7 +2275,7 @@ export function ProjectView({
   }
   const projectRunWorkspaceContext =
     canonicalProjectRunWorkspaceContextRef.current.context;
-  const projectResourceAuthority: ProjectResourceAuthority =
+  const projectResourceAuthority: ProjectResourceAuthority = studio.actor ? 'session' :
     projectWorkspaceScopeState.failure === 'forbidden'
     || projectWorkspaceScopeState.failure === 'unsupported'
       ? 'denied'
@@ -2435,7 +2439,7 @@ export function ProjectView({
   // unbound projects retain their existing local-daemon persistence once the
   // daemon has settled that scope. The local project row is not an unbound
   // authority witness: it can lag a daemon-side Team binding.
-  const projectTabsCanPersistToDaemon =
+  const projectTabsCanPersistToDaemon = !!studio.actor ||
     projectWorkspaceScopeState.scope?.kind === 'unbound'
     || projectWorkspaceScopeState.scope?.kind === 'personal'
     || (
@@ -3009,6 +3013,7 @@ export function ProjectView({
     (messageId: string, balanceUsd: number) => void
   >(() => undefined);
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (!amrBalanceFailureMessageId) {
       setAmrBalanceFailureWalletUnavailable(false);
       return;
@@ -4053,7 +4058,7 @@ export function ProjectView({
         // contains) behind ChatPane's Loading gate. Keep both reads under this
         // effect's project/conversation/authority lifetime, but settle them
         // independently.
-        void fetchPreviewComments(
+        if (studio.available('collaboration')) void fetchPreviewComments(
           project.id,
           activeConversationId,
           requestWorkspaceContext,
@@ -4154,7 +4159,7 @@ export function ProjectView({
     const delay = BRAND_EMPTY_TRANSCRIPT_RETRY_DELAYS_MS[retries];
     if (delay === undefined) return undefined;
     brandEmptyTranscriptRetriesRef.current.set(key, retries + 1);
-    const timer = window.setTimeout(() => {
+    const timer = studioWindowSetTimeout(() => {
       void projectDetail.refresh();
       setMessageLoadRetryNonce((nonce) => nonce + 1);
     }, delay);
@@ -4364,6 +4369,14 @@ export function ProjectView({
     }
   }, []);
 
+  useLayoutEffect(() => studio.session ? bindStudioPendingWrite(
+    studio.session, studio.generation, flushTabsDaemonSave, () => {
+      if (tabsDaemonSaveTimerRef.current != null) clearTimeout(tabsDaemonSaveTimerRef.current);
+      tabsDaemonSaveTimerRef.current = null;
+      pendingDaemonTabsRef.current = null;
+    },
+  ) : undefined, [studio.session, studio.generation, flushTabsDaemonSave]);
+
   const persistTabsState = useCallback(
     (next: OpenTabsState) => {
       // A tab activation the host did not ask for is the user steering the
@@ -4462,6 +4475,7 @@ export function ProjectView({
     options?: { fresh?: boolean },
     onAcceptedGeneration?: (generation: number) => void,
   ): Promise<ProjectFile[]> => {
+    if (!studio.available('files')) return [];
     const requestSeq = ++projectFilesRequestSeqRef.current;
     const requestedRefreshKey = filesRefreshRequestKeyRef.current;
     let next: ProjectFile[];
@@ -4526,6 +4540,7 @@ export function ProjectView({
   );
 
   const refreshLiveArtifacts = useCallback(async (): Promise<LiveArtifactSummary[]> => {
+    if (!studio.available('files')) return [];
     const next = await fetchLiveArtifacts(project.id, {
       workspaceContext: projectRunWorkspaceContextRef.current,
     });
@@ -5301,7 +5316,7 @@ export function ProjectView({
   // not sufficient: that project row can lag a hidden daemon-side Team mirror.
   const projectEventsEnabled =
     daemonLive
-    && projectWorkspaceScopeReady(projectWorkspaceScopeState.scope);
+    && (!!studio.actor || projectWorkspaceScopeReady(projectWorkspaceScopeState.scope));
   useProjectFileEvents(project.id, projectEventsEnabled, handleProjectEvent, {
     onConnectedChange: setProjectEventsSseConnected,
     // Files or comments can change after their initial snapshots but before
@@ -5602,7 +5617,7 @@ export function ProjectView({
         return Promise.race([
           promise,
           new Promise<string>((_, reject) =>
-            window.setTimeout(
+            studioWindowSetTimeout(
               () => reject(new Error(t('chat.brandBrowserAssistReadFailed'))),
               timeoutMs,
             ),
@@ -5653,7 +5668,7 @@ export function ProjectView({
       const result: BrandBrowserPageSnapshotResult = await Promise.race<BrandBrowserPageSnapshotResult>([
         handle.downloadPageSnapshot(),
         new Promise<BrandBrowserPageSnapshotResult>((_, reject) =>
-          window.setTimeout(
+          studioWindowSetTimeout(
             () => reject(new Error(t('chat.brandBrowserSnapshotSaveFailed'))),
             timeoutMs,
           ),
@@ -5685,7 +5700,7 @@ export function ProjectView({
       // hung/walled page fails fast instead of stacking full timeout windows.
       for (let attempt = 0; attempt < 3 && snapshot.status !== 'ready'; attempt += 1) {
         await new Promise((resolve) => {
-          window.setTimeout(resolve, 500);
+          studioWindowSetTimeout(resolve, 500);
         });
         snapshot = await readBrandBrowserSnapshot(tabId, 3000);
       }
@@ -5895,7 +5910,7 @@ export function ProjectView({
     if (!hasRunningBrandTranscriptRow || streaming) return undefined;
     const conversationId = activeConversationId;
     if (!conversationId) return undefined;
-    const timer = window.setInterval(() => {
+    const timer = studioWindowSetInterval(() => {
       void refreshConversationMessagesFromServer(conversationId);
     }, 4000);
     return () => window.clearInterval(timer);
@@ -6446,7 +6461,7 @@ export function ProjectView({
   );
 
   useEffect(() => {
-    if (config.mode !== 'daemon' || !daemonLive || !activeConversationId || streaming) return;
+    if (!studio.available('execution') || config.mode !== 'daemon' || !daemonLive || !activeConversationId || streaming) return;
     let cancelled = false;
     const reattachConversationId = activeConversationId;
 
@@ -7996,7 +8011,7 @@ export function ProjectView({
   ]);
 
   useEffect(() => {
-    if (config.mode !== 'daemon' || !daemonLive || !activeConversationId) return;
+    if (!studio.available('execution') || config.mode !== 'daemon' || !daemonLive || !activeConversationId) return;
     if (!currentConversationHasRecoverableArtifact) return;
     let cancelled = false;
     let recovering = false;
@@ -8234,7 +8249,7 @@ export function ProjectView({
     };
 
     void recoverArtifacts();
-    const interval = window.setInterval(() => {
+    const interval = studioWindowSetInterval(() => {
       void recoverArtifacts();
     }, 1000);
 
@@ -11717,6 +11732,7 @@ export function ProjectView({
     // Only block if we're sure the current conversation is empty:
     // messages must be loaded AND match the active conversation.
     if (
+      studio.available('execution') &&
       messagesConversationIdRef.current === activeConversationId &&
       messages.length === 0
     ) {
@@ -12606,7 +12622,7 @@ export function ProjectView({
     // that covers `prefers-reduced-motion` (duration collapses to ~0 globally,
     // which some engines never fire a `transitionend` for) and any
     // already-collapsed-width edge case where the property never changes.
-    const fallback = window.setTimeout(finish, 220);
+    const fallback = studioWindowSetTimeout(finish, 220);
     return () => {
       split.removeEventListener('transitionend', handleTransitionEnd);
       window.clearTimeout(fallback);
@@ -12734,7 +12750,7 @@ export function ProjectView({
     let amrGateWitness: AmrBalanceGateScope | undefined;
     try {
       isAutoSend = Boolean(
-        window.sessionStorage.getItem(autoSendFirstMessageKey(project.id)),
+        sessionStorage.getItem(autoSendFirstMessageKey(project.id)),
       );
       amrGateWitness = readAutoSendAmrGateWitness(project.id);
     } catch {
@@ -12886,7 +12902,7 @@ export function ProjectView({
     void (async () => {
       const delay = (ms: number) =>
         new Promise<void>((resolve) => {
-          window.setTimeout(resolve, ms);
+          studioWindowSetTimeout(resolve, ms);
         });
       const snapshotMessage = (snapshot: BrandBrowserSnapshot): string | null =>
         snapshot.status === 'ready' ? null : snapshot.message;
@@ -13451,7 +13467,7 @@ export function ProjectView({
     if (homeAttachmentUploads.length > 0) return;
     let flag: string | null = null;
     try {
-      flag = window.sessionStorage.getItem(autoSendFirstMessageKey(project.id));
+      flag = sessionStorage.getItem(autoSendFirstMessageKey(project.id));
     } catch {
       flag = null;
     }
@@ -13862,6 +13878,7 @@ export function ProjectView({
               messagesConversationId={messagesConversationId}
               onSelectConversation={handleSelectConversation}
               onDeleteConversation={handleDeleteConversation}
+              onRenameConversation={handleRenameConversation}
               config={config}
               onOpenSettings={onOpenSettings}
               amrBalanceCardUsd={amrBalanceCardUsd}
@@ -14012,7 +14029,7 @@ export function ProjectView({
             onBlur={handleChatResizeBlur}
           />
         ) : null}
-        <FileWorkspace
+        <StudioLane lane="files"><FileWorkspace
           projectId={project.id}
           projectName={currentProject.name}
           viewerOnly={projectMutationReadOnly}
@@ -14133,7 +14150,7 @@ export function ProjectView({
           onAuthorizeAndRetry={handleSwitchToAmrAndRetry}
           onLaunchTerminalAuth={handleLaunchAntigravityOauth}
           conversationId={activeConversationId}
-        />
+        /></StudioLane>
       </div>
       {contextPluginDetails ? (
         <PluginDetailsModal
@@ -14642,7 +14659,7 @@ function queuedChatSendsStorageKey(projectId: string): string {
 function loadQueuedChatSends(projectId: string): QueuedChatSend[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = window.localStorage.getItem(queuedChatSendsStorageKey(projectId));
+    const raw = localStorage.getItem(queuedChatSendsStorageKey(projectId));
     const parsed = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return [];
     const seenIds = new Set<string>();
@@ -14664,10 +14681,10 @@ function saveQueuedChatSends(projectId: string, items: QueuedChatSend[]): void {
   try {
     const key = queuedChatSendsStorageKey(projectId);
     if (items.length === 0) {
-      window.localStorage.removeItem(key);
+      localStorage.removeItem(key);
       return;
     }
-    window.localStorage.setItem(key, JSON.stringify(items.slice(0, 100)));
+    localStorage.setItem(key, JSON.stringify(items.slice(0, 100)));
   } catch {
     // Ignore private-mode/quota failures. The in-memory queue still works.
   }

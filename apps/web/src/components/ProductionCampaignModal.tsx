@@ -1,3 +1,4 @@
+import { studioSetTimeout as setTimeout, studioFetch as fetch, studioLocalStorage as localStorage } from '../runtime/studio-transport';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { getOpenDesignHost } from "@open-design/host";

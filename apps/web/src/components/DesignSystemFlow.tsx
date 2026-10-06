@@ -1,3 +1,4 @@
+import { studioWindowSetTimeout, studioSessionStorage as sessionStorage } from '../runtime/studio-transport';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ChangeEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { Button, Textarea } from '@open-design/components';
 import type {
@@ -300,7 +301,7 @@ function generationJobStorageKey(designSystemId: string): string {
 
 function readRememberedGenerationJob(designSystemId: string): string | null {
   try {
-    return window.sessionStorage.getItem(generationJobStorageKey(designSystemId));
+    return sessionStorage.getItem(generationJobStorageKey(designSystemId));
   } catch {
     return null;
   }
@@ -334,7 +335,7 @@ async function resolveDesignSystemWorkspaceProject(
 
 function clearRememberedGenerationJob(designSystemId: string): void {
   try {
-    window.sessionStorage.removeItem(generationJobStorageKey(designSystemId));
+    sessionStorage.removeItem(generationJobStorageKey(designSystemId));
   } catch {
     // Best-effort cleanup only.
   }
@@ -1941,7 +1942,7 @@ export function DesignSystemDetailView({
         );
         return;
       }
-      timeoutId = window.setTimeout(() => void pollGenerationJob(), 700);
+      timeoutId = studioWindowSetTimeout(() => void pollGenerationJob(), 700);
     }
 
     void pollGenerationJob();
@@ -1987,10 +1988,10 @@ export function DesignSystemDetailView({
         );
         return;
       }
-      timeoutId = window.setTimeout(() => void pollRevisionJob(), 650);
+      timeoutId = studioWindowSetTimeout(() => void pollRevisionJob(), 650);
     }
 
-    timeoutId = window.setTimeout(() => void pollRevisionJob(), 250);
+    timeoutId = studioWindowSetTimeout(() => void pollRevisionJob(), 250);
     return () => {
       cancelled = true;
       if (timeoutId !== undefined) window.clearTimeout(timeoutId);
@@ -3859,11 +3860,11 @@ function DropZone({
     previousFinish?.();
     fileDialogPendingRef.current = true;
     fileDialogCanShowLoadingRef.current = false;
-    fileDialogFocusDelayRef.current = window.setTimeout(() => {
+    fileDialogFocusDelayRef.current = studioWindowSetTimeout(() => {
       fileDialogCanShowLoadingRef.current = true;
       fileDialogFocusDelayRef.current = undefined;
     }, SOURCE_FILE_DIALOG_FOCUS_DELAY_MS);
-    fileDialogWarmupRef.current = window.setTimeout(() => {
+    fileDialogWarmupRef.current = studioWindowSetTimeout(() => {
       fileDialogCanShowLoadingRef.current = true;
       fileDialogWarmupRef.current = undefined;
       beginFileDialogReturnLoading();
@@ -3876,7 +3877,7 @@ function DropZone({
     if (!onProcessingStart) return;
     if (fileDialogLoadingFinishRef.current) return;
     fileDialogLoadingFinishRef.current = onProcessingStart();
-    fileDialogStaleRef.current = window.setTimeout(() => {
+    fileDialogStaleRef.current = studioWindowSetTimeout(() => {
       const finish = completeFileDialogTracking();
       finishProcessingLater(finish);
     }, SOURCE_FILE_DIALOG_STALE_MS);
@@ -3895,7 +3896,7 @@ function DropZone({
 
   function finishProcessingLater(finish: (() => void) | undefined) {
     if (!finish) return;
-    window.setTimeout(finish, SOURCE_PROCESSING_MIN_VISIBLE_MS);
+    studioWindowSetTimeout(finish, SOURCE_PROCESSING_MIN_VISIBLE_MS);
   }
   function shouldShowProcessing(files: File[]) {
     if (files.length >= SOURCE_PROCESSING_LOADING_FILE_COUNT) return true;
@@ -3998,10 +3999,10 @@ function DropZone({
 
 function runAfterNextPaint(callback: () => void) {
   if (typeof window.requestAnimationFrame === 'function') {
-    window.requestAnimationFrame(() => window.setTimeout(callback, 0));
+    window.requestAnimationFrame(() => studioWindowSetTimeout(callback, 0));
     return;
   }
-  window.setTimeout(callback, 0);
+  studioWindowSetTimeout(callback, 0);
 }
 
 async function filesFromDataTransfer(dataTransfer: DataTransfer): Promise<File[]> {
@@ -4392,7 +4393,7 @@ function scheduleAfterProjectHandoff(task: () => void): void {
     task();
     return;
   }
-  const run = () => window.setTimeout(task, 0);
+  const run = () => studioWindowSetTimeout(task, 0);
   if (typeof window.requestAnimationFrame === 'function') {
     window.requestAnimationFrame(run);
     return;
@@ -4559,8 +4560,8 @@ async function prepareCreatedDesignSystemProject({
       workspaceContext,
     );
     try {
-      window.sessionStorage.setItem(`od:auto-send-first:${project.id}`, '1');
-      window.sessionStorage.setItem(`od:auto-send-prompt:${project.id}`, prompt);
+      sessionStorage.setItem(`od:auto-send-first:${project.id}`, '1');
+      sessionStorage.setItem(`od:auto-send-prompt:${project.id}`, prompt);
     } catch {
       // If sessionStorage is unavailable, the project still opens with the
       // pending prompt ready for the user to send manually.
@@ -5129,7 +5130,7 @@ async function fetchGithubConnectorStatusWithTimeout(): Promise<{ connector: Con
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
   try {
     const timeout = new Promise<null>((resolve) => {
-      timeoutId = window.setTimeout(() => {
+      timeoutId = studioWindowSetTimeout(() => {
         timedOut = true;
         controller?.abort();
         resolve(null);

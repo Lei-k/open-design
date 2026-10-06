@@ -1,3 +1,5 @@
+import { studioSetTimeout as setTimeout, studioSetInterval as setInterval, studioUsesLocalServices, studioFetch as fetch, studioLocalStorage as localStorage, studioSessionStorage as sessionStorage } from '../runtime/studio-transport';
+import { registerStudioReset } from '../runtime/studio-resources';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   TeamProject,
@@ -464,7 +466,7 @@ function readWorkspaceSelectionResult(): WorkspaceSelectionRead {
   }
   let storedSelection: string | null;
   try {
-    storedSelection = window.sessionStorage.getItem(WORKSPACE_SELECTION_SESSION_KEY);
+    storedSelection = sessionStorage.getItem(WORKSPACE_SELECTION_SESSION_KEY);
   } catch {
     return { available: false, selection: null };
   }
@@ -497,9 +499,9 @@ function writeWorkspaceSelection(selection: WorkspaceSelection | null): void {
   inMemoryWorkspaceSelection = selection ? { ...selection } : null;
   try {
     if (selection) {
-      window.sessionStorage.setItem(WORKSPACE_SELECTION_SESSION_KEY, JSON.stringify(selection));
+      sessionStorage.setItem(WORKSPACE_SELECTION_SESSION_KEY, JSON.stringify(selection));
     } else {
-      window.sessionStorage.removeItem(WORKSPACE_SELECTION_SESSION_KEY);
+      sessionStorage.removeItem(WORKSPACE_SELECTION_SESSION_KEY);
     }
     inMemoryWorkspaceSelection = undefined;
   } catch {
@@ -711,6 +713,7 @@ export function useWorkspaceContext(): WorkspaceContextState {
       exactScopeOnly?: boolean;
     } = {},
   ) => {
+    if (!studioUsesLocalServices()) { setState({ context: null, resourceReadIdentity: null, loading: false, failure: 'unsupported' }); return; }
     const requestEpoch = ++requestEpochRef.current;
     const requestGeneration = workspaceContextRequestToken;
     if (options.markLoading && mountedRef.current) {
@@ -1123,7 +1126,7 @@ export function notifyWorkspaceContextRefresh(
   // Sign-in/sign-out has no seed and remains account-wide across tabs.
   if (!seed?.context) {
     try {
-      window.localStorage.setItem(WORKSPACE_ACCOUNT_BOUNDARY_STORAGE_KEY, stamp);
+      localStorage.setItem(WORKSPACE_ACCOUNT_BOUNDARY_STORAGE_KEY, stamp);
     } catch {
       // The in-window event is enough when localStorage is unavailable.
     }
@@ -1954,7 +1957,7 @@ export function notifyWorkspaceBillingRefresh(): void {
   if (typeof window === 'undefined') return;
   window.dispatchEvent(new Event(WORKSPACE_BILLING_REFRESH_EVENT));
   try {
-    window.localStorage.setItem(WORKSPACE_BILLING_REFRESH_STORAGE_KEY, String(Date.now()));
+    localStorage.setItem(WORKSPACE_BILLING_REFRESH_STORAGE_KEY, String(Date.now()));
   } catch {
     // The in-window event is enough when localStorage is unavailable.
   }
@@ -2003,7 +2006,7 @@ export function notifyTeamProjectsChanged(
   try {
     // Include a monotonic suffix so two genuine mutations in the same
     // millisecond still change the storage value and both reach other tabs.
-    window.localStorage.setItem(
+    localStorage.setItem(
       TEAM_PROJECTS_CHANGED_STORAGE_KEY,
       `${Date.now()}:${++teamProjectsChangedNotificationSequence}`,
     );
@@ -2372,3 +2375,7 @@ export function useTeamProjects(): TeamProjectsState {
     reload,
   };
 }
+
+registerStudioReset(resetWorkspaceContextCache);
+registerStudioReset(resetTeamProjectsCache);
+registerStudioReset(resetWorkspaceBillingCache);

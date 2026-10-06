@@ -50,16 +50,23 @@ export class CookieSession {
   private hasPendingMutation() {
     return [...this.pendingMutations.values()].includes(this.state.generation);
   }
+  /** Shared App and legacy transports enroll writes in the same withdrawal ledger. */
+  beginMutation(generation: number): () => void {
+    if (generation !== this.state.generation) throw new DOMException('Stale request', 'AbortError');
+    const operation = Symbol();
+    this.pendingMutations.set(operation, generation);
+    this.verificationRevision++;
+    if (this.checking) this.recheckRequested = true;
+    return () => {
+      this.pendingMutations.delete(operation);
+      if (this.recheckRequested && !this.hasPendingMutation() && !this.mutation && !this.externalMutation && !this.checking) void this.verify();
+    };
+  }
   async request<T>(url: string, init?: RequestInit, generation = this.state.generation): Promise<T> {
     if (generation !== this.state.generation) throw new DOMException('Stale request', 'AbortError');
     const signal = init?.signal ? AbortSignal.any([this.abort.signal, init.signal]) : this.abort.signal;
     const ownedMutation = !['GET', 'HEAD'].includes((init?.method ?? 'GET').toUpperCase()) && !['/api/auth/login', '/api/auth/logout', '/api/auth/setup'].includes(url);
-    const operation = Symbol();
-    if (ownedMutation) {
-      this.pendingMutations.set(operation, generation);
-      this.verificationRevision++; // A check started before this write cannot publish over it.
-      if (this.checking) this.recheckRequested = true;
-    }
+    const finish = ownedMutation ? this.beginMutation(generation) : () => {};
     try {
       const response = await fetch(url, { ...init, credentials: 'same-origin', cache: 'no-store', signal,
         headers: { 'Content-Type': 'application/json', ...init?.headers } });
@@ -77,8 +84,7 @@ export class CookieSession {
       }
       return body as T;
     } finally {
-      this.pendingMutations.delete(operation);
-      if (this.recheckRequested && !this.hasPendingMutation() && !this.mutation && !this.externalMutation && !this.checking) void this.verify();
+      finish();
     }
   }
   /** Stream transport uses the same generation fence and cookie as JSON requests. */

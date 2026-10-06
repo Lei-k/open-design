@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
 import { BackoffController } from '../lib/backoff';
 import { bindStreamVisibility } from '../lib/stream-visibility';
 import {
@@ -322,6 +323,7 @@ export function useProjectFileEvents(
   options: ProjectEventsConnectionOptions = {},
   workspaceContext?: WorkspaceCollabContext | null,
 ): void {
+  const studio = useStudioCapabilities();
   const onChangeRef = useRef(onChange);
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -354,8 +356,9 @@ export function useProjectFileEvents(
       },
       workspaceContext,
     );
+    const release = studio.session?.bindResource(() => conn.close(), studio.generation) ?? (() => conn.close());
     return () => {
-      conn.close();
+      release();
       // Reset to "not connected" on teardown so a consumer's poll resumes full
       // cadence between projects / when the stream is intentionally closed.
       onConnectedChangeRef.current?.(false);

@@ -1,3 +1,4 @@
+import { studioSetTimeout as setTimeout, studioWindowSetInterval, studioSetInterval as setInterval, studioFetch as fetch, studioSessionStorage as sessionStorage } from '../runtime/studio-transport';
 import {
   useCallback,
   useEffect,
@@ -162,7 +163,7 @@ function isTrustedConnectorCallbackOrigin(origin: string): boolean {
 function readPendingConnectorAuthIds(): Set<string> {
   if (typeof window === 'undefined') return new Set();
   try {
-    const raw = window.sessionStorage.getItem(MEMORY_CONNECTOR_PENDING_AUTH_STORAGE_KEY);
+    const raw = sessionStorage.getItem(MEMORY_CONNECTOR_PENDING_AUTH_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
     if (!Array.isArray(parsed)) return new Set();
     return new Set(parsed.filter((id): id is string => typeof id === 'string' && id.trim().length > 0));
@@ -175,10 +176,10 @@ function writePendingConnectorAuthIds(ids: Set<string>): void {
   if (typeof window === 'undefined') return;
   try {
     if (ids.size === 0) {
-      window.sessionStorage.removeItem(MEMORY_CONNECTOR_PENDING_AUTH_STORAGE_KEY);
+      sessionStorage.removeItem(MEMORY_CONNECTOR_PENDING_AUTH_STORAGE_KEY);
       return;
     }
-    window.sessionStorage.setItem(
+    sessionStorage.setItem(
       MEMORY_CONNECTOR_PENDING_AUTH_STORAGE_KEY,
       JSON.stringify([...ids]),
     );
@@ -1181,7 +1182,7 @@ export function MemorySection({
 
   useEffect(() => {
     if (pendingConnectorAuthIds.size === 0) return;
-    const interval = window.setInterval(() => {
+    const interval = studioWindowSetInterval(() => {
       void refreshMemoryConnectorStatuses();
     }, 2_000);
     const onFocus = () => {

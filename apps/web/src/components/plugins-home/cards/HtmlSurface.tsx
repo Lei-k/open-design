@@ -1,3 +1,4 @@
+import { studioWindowSetTimeout, studioFetch as fetch } from '../../../runtime/studio-transport';
 // Sandboxed HTML preview surface — used for `examples/*` plugins
 // and any scenario plugin that ships a runnable `od.preview.entry`.
 //
@@ -95,7 +96,7 @@ export function HtmlSurface({ preview, pluginId, pluginTitle, inView, eager = fa
       setShouldProbe(true);
       return;
     }
-    const id = window.setTimeout(() => setShouldProbe(true), eager ? 60 : 520);
+    const id = studioWindowSetTimeout(() => setShouldProbe(true), eager ? 60 : 520);
     return () => window.clearTimeout(id);
   }, [inView, preview.src, eager]);
 
@@ -133,7 +134,7 @@ export function HtmlSurface({ preview, pluginId, pluginTitle, inView, eager = fa
       if (inView) setArmed(true);
       return;
     }
-    const id = window.setTimeout(() => {
+    const id = studioWindowSetTimeout(() => {
       if (inView) setArmed(true);
     }, 720);
     return () => window.clearTimeout(id);

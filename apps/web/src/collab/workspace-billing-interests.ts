@@ -1,3 +1,5 @@
+import { studioSetTimeout as setTimeout, studioFetch as fetch } from '../runtime/studio-transport';
+import { registerStudioReset } from '../runtime/studio-resources';
 import type {
   WorkspaceBillingInterestResponse,
   WorkspaceBillingInterestScope,
@@ -293,3 +295,5 @@ function createClientId(): string {
     ? crypto.randomUUID()
     : `runtime-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
+
+registerStudioReset(resetWorkspaceBillingInterestRegistry);

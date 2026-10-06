@@ -1,3 +1,4 @@
+import { studioWindowSetTimeout, studioLocalStorage as localStorage } from '../runtime/studio-transport';
 import { useEffect, useRef, useState } from 'react';
 import { VisuallyHidden } from '@open-design/components';
 import { Icon } from './Icon';
@@ -37,7 +38,7 @@ const DISMISSED_KEY = 'od.entry.cloudSignInTip.dismissed';
  */
 export function resetCloudSignInTipDismissal(): void {
   try {
-    window.localStorage.removeItem(DISMISSED_KEY);
+    localStorage.removeItem(DISMISSED_KEY);
   } catch {
     // best-effort persistence
   }
@@ -146,7 +147,7 @@ export function CloudSignInTip() {
     }
     const startedAt = Date.now();
     while (!cancelledRef.current && mountedRef.current) {
-      await new Promise((resolve) => window.setTimeout(resolve, AMR_LOGIN_POLL_INTERVAL_MS));
+      await new Promise((resolve) => studioWindowSetTimeout(resolve, AMR_LOGIN_POLL_INTERVAL_MS));
       if (cancelledRef.current || !mountedRef.current) return;
       const next = await fetchVelaLoginStatus();
       if (cancelledRef.current || !mountedRef.current) return;

@@ -1,3 +1,4 @@
+import { registerStudioReset } from '../runtime/studio-resources';
 import { useEffect, useRef, useState } from 'react';
 import type {
   CollabMemberRole,
@@ -656,3 +657,5 @@ export function useProjectCollab(
     applyContentTransferState: collab.applyContentTransferState,
   };
 }
+
+registerStudioReset(resetProjectsCreatedByViewerCache);

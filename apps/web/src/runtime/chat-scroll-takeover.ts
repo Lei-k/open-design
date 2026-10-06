@@ -1,3 +1,4 @@
+import { studioLocalStorage as localStorage } from './studio-transport';
 // Answering the wheel from JavaScript, once the compositor stops answering it.
 //
 // The defect

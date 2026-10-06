@@ -1,3 +1,4 @@
+import { registerStudioReset } from '../runtime/studio-resources';
 import {
   workspacePrincipalKey,
   type WorkspaceCollabContext,
@@ -148,3 +149,5 @@ export function resetProjectDisplaySnapshots(): void {
 export function projectDisplaySnapshotCount(): number {
   return snapshots.size;
 }
+
+registerStudioReset(resetProjectDisplaySnapshots);

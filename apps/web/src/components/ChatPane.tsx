@@ -1,3 +1,4 @@
+import { studioUsesLocalServices, studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioSessionStorage as sessionStorage } from '../runtime/studio-transport';
 import { reportExperienceEvent } from '../observability/experience-diagnostics';
 import { conversationMetaLabel } from '../runtime/chat/conversation-time';
 export { conversationMetaLabel } from '../runtime/chat/conversation-time';
@@ -764,6 +765,7 @@ interface Props {
   messagesConversationId?: string | null;
   onSelectConversation: (id: string) => void;
   onDeleteConversation: (id: string) => void;
+  onRenameConversation?: (id: string, title: string) => void;
   // Composer settings/CLI button forwards to here. The dialog lives in App
   // (it owns the AppConfig lifecycle) so we just pass the open trigger.
   onOpenSettings?: (section?: SettingsSection) => void;
@@ -1372,6 +1374,7 @@ export function ChatPane({
   messagesConversationId = null,
   onSelectConversation,
   onDeleteConversation,
+  onRenameConversation,
   onOpenSettings,
   amrBalanceCardUsd = null,
   amrBalanceCardAnchorMessageId = null,
@@ -1553,13 +1556,13 @@ export function ChatPane({
           )
         ));
         if (liveMediaRun || hasActiveTask) {
-          timer = window.setTimeout(() => void refresh(), 750);
+          timer = studioWindowSetTimeout(() => void refresh(), 750);
         } else if (
           needsTerminalFileConfirmation
           && terminalConfirmationPolls < TERMINAL_MEDIA_FILE_CONFIRMATION_MAX_POLLS
         ) {
           terminalConfirmationPolls += 1;
-          timer = window.setTimeout(
+          timer = studioWindowSetTimeout(
             () => void refresh(),
             TERMINAL_MEDIA_FILE_CONFIRMATION_INTERVAL_MS,
           );
@@ -1567,10 +1570,10 @@ export function ChatPane({
       } catch {
         if (canceled) return;
         if (liveMediaRun) {
-          timer = window.setTimeout(() => void refresh(), 1500);
+          timer = studioWindowSetTimeout(() => void refresh(), 1500);
         } else if (terminalConfirmationPolls < TERMINAL_MEDIA_FILE_CONFIRMATION_MAX_POLLS) {
           terminalConfirmationPolls += 1;
-          timer = window.setTimeout(
+          timer = studioWindowSetTimeout(
             () => void refresh(),
             TERMINAL_MEDIA_FILE_CONFIRMATION_INTERVAL_MS,
           );
@@ -1653,12 +1656,14 @@ export function ChatPane({
   const wheelWitnessFrameRef = useRef<number | null>(null);
   const scrolledToFormRef = useRef<Set<string>>(new Set());
   const refreshInlineAmrLoginStatus = useCallback(async (options: { refresh?: boolean } = {}) => {
+    if (!studioUsesLocalServices()) return null;
     const next = await fetchVelaLoginStatus(options).catch(() => null);
     if (next) setInlineAmrLoginStatus(next);
     return next;
   }, []);
 
   useEffect(() => {
+    if (!studioUsesLocalServices()) return;
     void refreshInlineAmrLoginStatus();
     const onAmrLoginStatusChange = (event: Event) => {
       const reason = amrLoginStatusEventReason(event);
@@ -1672,6 +1677,7 @@ export function ChatPane({
   }, [refreshInlineAmrLoginStatus]);
 
   useEffect(() => {
+    if (!studioUsesLocalServices()) return;
     const refreshAfterExternalAmrReturn = () => {
       if (document.visibilityState === 'hidden') return;
       void refreshInlineAmrLoginStatus({ refresh: true });
@@ -2263,7 +2269,7 @@ export function ChatPane({
       consumeAmrAuthRetryIfAuthorized(next);
     };
     void retryIfSignedIn();
-    const interval = window.setInterval(() => {
+    const interval = studioWindowSetInterval(() => {
       void retryIfSignedIn();
     }, 500);
     return () => {
@@ -4238,6 +4244,8 @@ export function ChatPane({
                 <ConversationRow
                   key={c.id}
                   conversation={c}
+                  onRename={onRenameConversation ? (title) => onRenameConversation(c.id, title) : undefined}
+                  onDelete={() => onDeleteConversation(c.id)}
                   active={c.id === activeConversationId}
                   onSelect={() => {
                     onSelectConversation(c.id);
@@ -5910,7 +5918,7 @@ function includeVirtualRowByKey<T extends { key: string }>(
   function readContinuedTodoSnapshotKey(storageKey: string): string | null {
   if (typeof window === 'undefined') return null;
   try {
-    return window.sessionStorage.getItem(storageKey);
+    return sessionStorage.getItem(storageKey);
   } catch {
     return null;
   }
@@ -5919,7 +5927,7 @@ function includeVirtualRowByKey<T extends { key: string }>(
 function writeContinuedTodoSnapshotKey(storageKey: string, snapshotKey: string): void {
   if (typeof window === 'undefined') return;
   try {
-    window.sessionStorage.setItem(storageKey, snapshotKey);
+    sessionStorage.setItem(storageKey, snapshotKey);
   } catch {
     // sessionStorage may be unavailable in sandboxed or privacy-restricted contexts.
   }
@@ -6556,16 +6564,23 @@ function filterConversations(
 }
 
 function ConversationRow({
+  onRename,
+  onDelete,
   conversation,
   active,
   onSelect,
   t,
 }: {
+  onRename?: (title: string) => void;
+  onDelete: () => void;
   conversation: Conversation;
   active: boolean;
   onSelect: () => void;
   t: TranslateFn;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(conversation.title ?? '');
+  const [deleting, setDeleting] = useState(false);
   const displayTitle =
     conversation.title || t('chat.untitledConversation');
 
@@ -6583,6 +6598,16 @@ function ConversationRow({
       >
         {displayTitle}
       </button>
+      {onRename && <span onClick={(event) => event.stopPropagation()}>
+        {editing ? <input aria-label={t('chat.renameConversationLabel', { title: displayTitle })} value={title} autoFocus
+          onChange={(event) => setTitle(event.target.value)} onKeyDown={(event) => {
+            if (event.key === 'Enter') { onRename(title); setEditing(false); }
+            if (event.key === 'Escape') setEditing(false);
+          }} /> : <button type="button" onClick={() => { setTitle(conversation.title ?? ''); setEditing(true); }}>{t('common.rename')}</button>}
+        {deleting ? <><span>{t('chat.deleteConversationConfirm', { title: displayTitle })}</span>
+          <button type="button" onClick={onDelete}>{t('common.delete')}</button><button type="button" onClick={() => setDeleting(false)}>{t('common.cancel')}</button></>
+          : <button type="button" onClick={() => setDeleting(true)}>{t('chat.deleteConversation')}</button>}
+      </span>}
       <span
         className="chat-conv-item-meta"
         data-testid={`conversation-meta-${conversation.id}`}

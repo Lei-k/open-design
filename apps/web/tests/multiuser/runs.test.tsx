@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { MultiUserApp } from '../../src/multiuser/MultiUserApp';
 import { I18nProvider } from '../../src/i18n';
@@ -115,7 +115,7 @@ it('renders generated files with sandboxed HTML, image, text and download previe
     output: { text: 'Done', textTruncated: false, files: ['index.html'] } }], nextCursor: null });
   mount();
   const html = await screen.findByRole('button', { name: 'index.html •' });
-  expect(html.getAttribute('aria-current')).toBe('true');
+  await waitFor(() => expect(html.getAttribute('aria-current')).toBe('true'));
   const frame = await screen.findByTitle('index.html');
   expect(frame.getAttribute('sandbox')).toBe('allow-scripts allow-forms');
   expect(frame.getAttribute('referrerpolicy')).toBe('no-referrer');

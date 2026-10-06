@@ -125,8 +125,8 @@ Remote origin 只接受 HTTPS，HTTP 只准 numeric loopback 的本地測試／�
 | 範圍 | 本地實作與證據 | 尚未通過的需求 | 判定 |
 | --- | --- | --- | --- |
 | #52 | 三份權威 registry、runtime contract、本架構文件；daemon parity tests、host mapped-type 及 native action coverage | 後續新能力必須繼續補 matrix | 基線交付，非 Studio 完成 |
-| #53 | 共用 `StudioSessionProvider`、generation transport、pilot authority/admin UI/CLI、canonical static allowlist；HTTP/session/migration/route tests | 完整 App/capability providers、cache/draft/tab/frame 全量註冊、App deep links/mobile/Settings 與 browser acceptance | 未完成 |
-| #54 | 標準 conversations/messages/tabs/events 授權、session-scoped active context、bounded body、immutable message bindings、刪除等待 workers；HTTP/SSE、migration/reopen/rollback 與 scoped CLI tests | 全量 artifact/upload/background lineage、完整 App provider closure | 未完成 |
+| #53 / S2 | server pilot、shared App/capability provider、withdrawal registry、owner project/conversation UI、actor Settings、canonical static allowlist；HTTP/CLI、App boot/withdrawal 與 HTTPS browser chain | 後續 lanes 仍按下表分期；不得據此宣告部署級 rollout | S2 本地實作閉合，保留 legacy fallback |
+| #54 | 標準 conversations/messages/tabs/events 授權、session-scoped active context、bounded body、immutable message bindings、刪除等待 workers；HTTP/SSE、migration/reopen/rollback 與 scoped CLI tests | 全量 artifact/upload/background lineage | 未完成 |
 | #55 | run admission/terminal state 與標準 transcript 同 transaction、durable cursor replay，既有 personal source/account pin 保留；run HTTP regressions | normalized rich events、steer/restart acceptance、標準 chat pipeline 全量整合 | 未完成 |
 | #68 | pinned-origin password session、private files、JSON/prompt-file、run cursor；CLI transport 與 real-daemon A/B tests | rich headless chat 與其餘 domain lanes、TLS MITM integration acceptance | 未完成 |
 | Phase 0 | #52 基線及 #53/#54 上述基礎 | #53/#54 的剩餘驗收不可跳過 | 不可標記完成 |
@@ -144,7 +144,7 @@ pnpm --filter @open-design/daemon exec vitest run -c vitest.config.ts tests/auth
 ```
 
 
-### S2 pilot authority checkpoint（尚未完成 #53）
+### S2 shared shell 與 pilot boundary
 
 - `GET/PUT /api/admin/users/:id/studio-pilot` 是 `admin-only`；PUT 接受且只接受
   `{ studioPilot: boolean, revision: nonnegative integer }`。預設 false / revision 0，
@@ -160,11 +160,13 @@ pnpm --filter @open-design/daemon exec vitest run -c vitest.config.ts tests/auth
   衝突後必須重新讀取，不自動重送 mutation。
 - CookieSession 在 shell、capability 或 revision 變更時先同步釋放既有 resource
   registrations，再發佈下一個 generation；open project streams 的 server-side authority
-  witness 也包含 revision。這只涵蓋已註冊資源，不代表完整 App cache withdrawal 已完成。
+  witness 也包含 revision。App 以 generation 為 key remount，先釋放 private resources 再發佈新身份。
 - Public static allowlist 覆蓋 router 的 canonical App paths。動態 segment 必須符合
   `encodeURIComponent` 的唯一拼字；分隔符、dot segments、double encoding、source maps
   與任意 static paths 仍拒絕。跨 runtime router → static contract 位於 e2e 測試。
-- **尚未完成**：pilot `StudioCapabilitiesProvider → App` mounting、全量 boot/route
-  capability gates、App module cache/draft/tab/frame withdrawal registry、shared project/chat
-  partial UI、actor-safe Settings、zero-blocked-request / A→B no-frame-leak App oracle，
-  以及 S2-A10 完整瀏覽器流程。#53、Phase 0 和 S2 不得標記完成或宣告 rollout。
+- Pilot 走 `StudioSessionProvider → StudioCapabilitiesProvider → App`，沿用 Home、ProjectView、ChatPane、Settings 與 workspace tabs；non-pilot 保留 `SignedIn`，login/setup 不載入 App。唯一 typed capability context 提供 actor、role（account.role）、effective lanes 與 server reason。public capability 不因這個 partial pilot 改為 supported。
+- App bootstrap、host catalog providers、Settings/composer 的 local hooks 在 unavailable lane 不啟動；`studio-transport.ts` 是最後一層 UI request boundary，只允許標準 project/conversation/messages/tabs/events/active API。它不提供身份權威；daemon 仍使用 cookie 授權。Actor-safe Settings 重用 personal agent accounts UI 和 session transport；其餘設定顯示 unavailable reason。App chrome 提供身份、sign-out、projects、Settings 和 admin links。
+- `studio-resources.ts` 統一註冊 query/project/catalog、attachment/draft handoff、HTML/cover/highlight 等 module caches。Session 同步中止 fetch/parse、SSE、timers、iframe pool 並捨棄 queued tab writes。Pilot private storage 只存在 generation-scoped memory，不讀寫 local-mode storage；沒有 cookie/token persistence。身份、role、pilot revision、401、logout、pagehide 都走同一 withdrawal boundary。
+- Shared tree 的 project/conversation CRUD、messages read、tabs 與 project events 使用標準 owner APIs。空 conversation 在 pilot 可再建立；composer 顯示 #55 unavailable reason。FileViewer/preview、catalogs、generation、host-global Settings 等仍未啟用；不使用 legacy RunCard 補洞。
+- 驗證入口：web `tests/multiuser/studio-app-boot.test.tsx` 記錄 adapter 前的 request attempts 並實際 render App 的 A→B；`studio-runtime.test.tsx` 驗證 late responses、draft/cache、timers 和真實 iframe pool。e2e `studio-shell-transport.test.ts` 以 daemon registry 檢查 request boundary，`studio-shell-routes.test.ts` 對照 router/static paths。外部 browser harness 以 production export、isolated daemon、HTTPS、1440/390 viewport 走 S2-A10 全鏈，並以真實 daemon matcher 驗證所有 request starts，包含 unknown route 拒絕。
+- S2 不代表 Phase 0、#54 全量 lineage、#55 execution 或 #70 rollout 已完成；保留未完成 lane reasons 與 legacy fallback，後續按 S3–S9 驗收。

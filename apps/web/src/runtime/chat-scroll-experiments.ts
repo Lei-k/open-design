@@ -1,3 +1,4 @@
+import { studioLocalStorage as localStorage } from './studio-transport';
 // 聊天记录滚动冻结 —— 两个未证伪假设的运行时 A/B 开关。
 //
 // ═══════════════════════════════════════════════════════════════════

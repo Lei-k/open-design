@@ -1,3 +1,4 @@
+import { studioWindowSetTimeout, studioFetch as fetch } from '../runtime/studio-transport';
 // New / edit automation modal. The persistence layer is /api/routines; the
 // user-facing model is a scheduled agent conversation that can start in a new
 // project or append a new conversation to an existing project.
@@ -353,7 +354,7 @@ export function NewAutomationModal({
 
   useEffect(() => {
     if (!open) return;
-    const id = window.setTimeout(() => titleRef.current?.focus(), 30);
+    const id = studioWindowSetTimeout(() => titleRef.current?.focus(), 30);
     return () => window.clearTimeout(id);
   }, [open]);
 

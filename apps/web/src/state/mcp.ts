@@ -1,3 +1,4 @@
+import { studioFetch as fetch } from '../runtime/studio-transport';
 // Web client for the daemon's external-MCP endpoints.
 //
 // `GET /api/mcp/servers` returns both the user's saved entries AND the

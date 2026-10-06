@@ -1,3 +1,6 @@
+import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioFetch as fetch } from '../runtime/studio-transport';
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
+import { StudioAccountSettings } from '../runtime/StudioAccountSettings';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, SetStateAction } from 'react';
 import { Button, VisuallyHidden } from '@open-design/components';
@@ -1502,7 +1505,12 @@ export function switchApiProtocolConfig(
   );
 }
 
-export function SettingsDialog({
+export function SettingsDialog(props: Props) {
+  const studio = useStudioCapabilities();
+  return studio.hostServices ? <LocalSettingsDialog {...props} /> : <StudioAccountSettings />;
+}
+
+function LocalSettingsDialog({
   presentation = 'modal',
   initial,
   agents,
@@ -2145,7 +2153,7 @@ export function SettingsDialog({
   // notice immediately, so this only affects "user moved on" cases.
   useEffect(() => {
     if (!agentRescanNotice) return;
-    const id = window.setTimeout(() => setAgentRescanNotice(null), 6000);
+    const id = studioWindowSetTimeout(() => setAgentRescanNotice(null), 6000);
     return () => window.clearTimeout(id);
   }, [agentRescanNotice]);
   useEffect(() => {
@@ -3116,7 +3124,7 @@ export function SettingsDialog({
     fields.map(byokRequiredLabel).join(', ');
   const focusByokRequiredField = (field: ByokRequiredField | undefined) => {
     if (!field) return;
-    window.setTimeout(() => {
+    studioWindowSetTimeout(() => {
       if (field === 'api_key') {
         apiKeyInputRef.current?.focus();
         return;
@@ -3297,7 +3305,7 @@ export function SettingsDialog({
       window.clearTimeout(autosaveTimerRef.current);
     }
     autosavePendingFlushRef.current = true;
-    autosaveTimerRef.current = window.setTimeout(() => {
+    autosaveTimerRef.current = studioWindowSetTimeout(() => {
       autosavePendingFlushRef.current = false;
       autosaveTimerRef.current = null;
       const snapshot = autosaveLatestRef.current;
@@ -3379,7 +3387,7 @@ export function SettingsDialog({
             setPendingMediaProviderEditIds(new Set());
           }
           settleAutosaveStatus(autosaveClaim, 'saved');
-          autosaveSavedTimerRef.current = window.setTimeout(() => {
+          autosaveSavedTimerRef.current = studioWindowSetTimeout(() => {
             autosaveSavedTimerRef.current = null;
             // Settle to idle after a moment so the indicator doesn't
             // stay on "Saved" forever and become noise.
@@ -3393,7 +3401,7 @@ export function SettingsDialog({
             && lastSyncedMediaProvidersVersionRef.current < mediaProvidersVersion
           ) {
             settleAutosaveStatus(autosaveClaim, 'pending');
-            autosaveRetryTimerRef.current = window.setTimeout(() => {
+            autosaveRetryTimerRef.current = studioWindowSetTimeout(() => {
               autosaveRetryTimerRef.current = null;
               if (
                 autosaveLatestRef.current !== snapshot
@@ -3724,7 +3732,7 @@ export function SettingsDialog({
         apiProtocol !== 'aihubmix' &&
         providerModelsCommittedKey !== providerModelsKey
       ) {
-        const timer = window.setTimeout(() => {
+        const timer = studioWindowSetTimeout(() => {
           setProviderModelsCommittedKey(providerModelsKey);
         }, 200);
         return () => window.clearTimeout(timer);
@@ -3744,7 +3752,7 @@ export function SettingsDialog({
     }
     const key = providerConnectionTestKey(apiProtocol, cfg);
     if (providerAutoTestKeyRef.current === key) return;
-    const timer = window.setTimeout(() => {
+    const timer = studioWindowSetTimeout(() => {
       handleAutoTestProvider();
     }, providerModelDiscoverySupported ? 0 : 500);
     return () => window.clearTimeout(timer);
@@ -3776,7 +3784,7 @@ export function SettingsDialog({
     // protocol waits until the key/baseUrl inputs are committed (on blur) so we
     // don't fire on each keystroke.
     if (apiProtocol !== 'aihubmix' && providerModelsCommittedKey !== providerModelsKey) return;
-    const timer = window.setTimeout(() => {
+    const timer = studioWindowSetTimeout(() => {
       void handleFetchProviderModels({ silent: true });
     }, 300);
     return () => window.clearTimeout(timer);
@@ -4251,6 +4259,7 @@ export function SettingsDialog({
   const settingsFullscreenLabel = settingsFullscreen
     ? t('common.exitFullscreen')
     : t('common.fullscreen');
+
   const pageMode = presentation === 'page';
 
   const surface = (
@@ -5670,7 +5679,7 @@ export function SettingsDialog({
                   }
                   onCustomize={() => {
                     updateApiConfig({ apiProviderBaseUrl: null });
-                    window.setTimeout(() => baseUrlInputRef.current?.focus(), 0);
+                    studioWindowSetTimeout(() => baseUrlInputRef.current?.focus(), 0);
                   }}
                   onFocus={() => {
                     const byokProviderId = byokProtocolToTracking(apiProtocol);
@@ -6213,7 +6222,7 @@ export function SettingsDialog({
                           if (autosaveSavedTimerRef.current != null) {
                             window.clearTimeout(autosaveSavedTimerRef.current);
                           }
-                          autosaveSavedTimerRef.current = window.setTimeout(() => {
+                          autosaveSavedTimerRef.current = studioWindowSetTimeout(() => {
                             autosaveSavedTimerRef.current = null;
                             settleAutosaveStatus(autosaveClaim, 'idle');
                           }, 1800);
@@ -6477,7 +6486,7 @@ export function ConnectorSection({
         window.clearTimeout(keySavedTimerRef.current);
       }
       setKeySaveStatus('saved');
-      keySavedTimerRef.current = window.setTimeout(() => {
+      keySavedTimerRef.current = studioWindowSetTimeout(() => {
         setKeySaveStatus('idle');
       }, 2000);
     } catch {
@@ -6533,11 +6542,11 @@ export function ConnectorSection({
       return;
     }
     setClearArmed(false);
-    const timer = window.setTimeout(() => setClearArmed(true), 700);
+    const timer = studioWindowSetTimeout(() => setClearArmed(true), 700);
     // Pull focus to the final confirm button so keyboard users can
     // see the arming animation finish and choose deliberately rather
     // than tabbing through stale focus state.
-    const focusTimer = window.setTimeout(() => {
+    const focusTimer = studioWindowSetTimeout(() => {
       finalConfirmButtonRef.current?.focus({ preventScroll: true });
     }, 720);
     return () => {
@@ -7010,7 +7019,7 @@ function OrbitSection({
 
   useEffect(() => {
     if (!status?.running) return undefined;
-    const interval = window.setInterval(() => {
+    const interval = studioWindowSetInterval(() => {
       void refreshStatus();
     }, 3000);
     return () => window.clearInterval(interval);
@@ -7157,7 +7166,7 @@ function OrbitSection({
     try {
       await navigator.clipboard.writeText(lastRun.markdown);
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
+      studioWindowSetTimeout(() => setCopied(false), 1600);
     } catch {
       // Clipboard access may be denied in some browsing contexts; silently skip.
     }
@@ -7837,7 +7846,7 @@ function MediaProvidersSection({
   // attention.
   useEffect(() => {
     if (reloadNotice?.kind !== 'success') return;
-    const handle = window.setTimeout(() => setReloadNotice(null), 2000);
+    const handle = studioWindowSetTimeout(() => setReloadNotice(null), 2000);
     return () => window.clearTimeout(handle);
   }, [reloadNotice]);
 

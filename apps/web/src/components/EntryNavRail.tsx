@@ -1,3 +1,6 @@
+import { registerStudioReset } from '../runtime/studio-resources';
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
+import { studioWindowSetTimeout, studioFetch as fetch, studioLocalStorage as localStorage } from '../runtime/studio-transport';
 import { CodingPlanUsage } from './CodingPlanUsage';
 import planCardStyles from './PersonalPlanCard.module.css';
 // Team-edition entry navigation rail (Lovart/Manus-style labeled column).
@@ -386,7 +389,7 @@ function readStoredRecentOpen(): boolean {
   try {
     // Default OPEN: the section is new and a collapsed-by-default disclosure
     // reads as a missing feature.
-    return window.localStorage.getItem(RECENT_SECTION_STORAGE_KEY) !== 'false';
+    return localStorage.getItem(RECENT_SECTION_STORAGE_KEY) !== 'false';
   } catch {
     return true;
   }
@@ -549,7 +552,7 @@ function RailRecentSection({
     setOpen((wasOpen) => {
       const next = !wasOpen;
       try {
-        window.localStorage.setItem(RECENT_SECTION_STORAGE_KEY, String(next));
+        localStorage.setItem(RECENT_SECTION_STORAGE_KEY, String(next));
       } catch {
         // Private mode / storage disabled: the section still toggles, it just
         // forgets. Never let a storage failure swallow the interaction.
@@ -1054,7 +1057,11 @@ interface EntryTopRightClusterProps {
  * `WorkspaceTopRightAccountCluster`) on the project route — those routes are
  * mutually exclusive.
  */
-export function EntryTopRightCluster({
+export function EntryTopRightCluster(props: Parameters<typeof LocalEntryTopRightCluster>[0]) {
+  return useStudioCapabilities().hostServices ? <LocalEntryTopRightCluster {...props} /> : null;
+}
+
+function LocalEntryTopRightCluster({
   page,
   context,
   billing,
@@ -1184,7 +1191,7 @@ export function EntryTopRightCluster({
   };
   const scheduleCreditsPanelClose = () => {
     if (creditsCloseTimer.current !== null) window.clearTimeout(creditsCloseTimer.current);
-    creditsCloseTimer.current = window.setTimeout(() => {
+    creditsCloseTimer.current = studioWindowSetTimeout(() => {
       creditsCloseTimer.current = null;
       // Pointer exit must not unmount actions a keyboard user is navigating.
       if (!creditsAnchorRef.current?.contains(document.activeElement)) {
@@ -1243,7 +1250,7 @@ export function EntryTopRightCluster({
   };
   const scheduleAccountClose = () => {
     cancelAccountClose();
-    accountCloseTimer.current = window.setTimeout(() => {
+    accountCloseTimer.current = studioWindowSetTimeout(() => {
       setAccountMenuMode((mode) => (mode === 'hover' ? 'closed' : mode));
     }, 220);
   };
@@ -1379,7 +1386,7 @@ export function EntryTopRightCluster({
   function openBillingUpgrade() {
     if (!billingUpgradeUrl) return;
     window.open(billingUpgradeUrl, '_blank', 'noopener,noreferrer');
-    window.setTimeout(() => {
+    studioWindowSetTimeout(() => {
       notifyWorkspaceBillingRefresh();
       notifyWorkspaceContextRefresh();
     }, 3000);
@@ -2861,3 +2868,5 @@ export function EntryNavRail({
     </nav>
   );
 }
+
+registerStudioReset(() => { resetWorkspaceDirectoryCache(); });

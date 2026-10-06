@@ -1,3 +1,4 @@
+import { studioSetTimeout as setTimeout, studioSetInterval as setInterval, studioFetch as fetch } from '../runtime/studio-transport';
 import { useCallback, useEffect, useState } from "react";
 import { emitWebTouchpointDiagnostic } from "./touchpoint-component";
 import type { TouchpointStaticAction } from "./touchpoint-static-actions";

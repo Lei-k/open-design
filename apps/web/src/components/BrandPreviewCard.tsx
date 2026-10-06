@@ -1,3 +1,4 @@
+import { studioFetch as fetch } from '../runtime/studio-transport';
 // Shared rich brand preview.
 //
 // Thin adapter: builds a normalized DesignKit from a BrandSummary and renders

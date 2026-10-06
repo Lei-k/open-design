@@ -1,3 +1,4 @@
+import { registerStudioReset } from '../runtime/studio-resources';
 // Correlation context + breadcrumbs for chat observability.
 //
 // Why this exists
@@ -275,3 +276,5 @@ export function __resetChatContextForTest(): void {
   breadcrumbs.length = 0;
   heapTrendMb.length = 0;
 }
+
+registerStudioReset(() => { __resetChatContextForTest(); });
