@@ -22,6 +22,7 @@ type RunRow = {
   execution_source: 'company_pool' | 'personal_subscription'; personal_account_id: string | null;
   credential_version: number | null; started_at: number | null; ended_at: number | null;
 };
+type RunEventData<E extends MultiUserRunEvent['event']> = Extract<MultiUserRunEvent, { event: E }>['data'];
 
 const table = 'multiuser_runs';
 /** Personal-subscription lane defaults (#18): host-wide worker ceiling and per-user queue. */
@@ -41,7 +42,7 @@ function storedJson(text: string | null): unknown {
 }
 /**
  * The stored request's string `message`, or null when the request is damaged
- * (missing, not JSON, or not an object with a string message). Personal
+ * (missing, not JSON, or not an object with a string message). Both lanes'
  * dispatch refuses a null before it changes any state, never running an empty prompt.
  */
 function storedMessage(requestJson: string | null): string | null {
@@ -252,11 +253,35 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     message: storedMessage(run.request_json),
     ...(isPersonal(run) ? { executionSource: 'personal_subscription' as const } : {}),
   });
-  const emit = <E extends MultiUserRunEvent['event']>(id: string, event: E, data: Extract<MultiUserRunEvent, { event: E }>['data']) => {
+  /** Persist before publishing; start events participate in the row/turn transaction. */
+  const persistEvent = <E extends MultiUserRunEvent['event']>(id: string, event: E, data: RunEventData<E>) => {
     const seq = (db.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM multiuser_run_events WHERE run_id = ?').get(id) as { seq: number }).seq;
     const payload = JSON.stringify(data);
     db.prepare('INSERT INTO multiuser_run_events (run_id, seq, event, data) VALUES (?, ?, ?, ?)').run(id, seq, event, payload);
-    for (const res of listeners.get(id) ?? []) res.write(`id: ${seq}\nevent: ${event}\ndata: ${payload}\n\n`);
+    return `id: ${seq}\nevent: ${event}\ndata: ${payload}\n\n`;
+  };
+  const publishEvent = (id: string, frame: string) => {
+    for (const res of listeners.get(id) ?? []) res.write(frame);
+  };
+  const emit = <E extends MultiUserRunEvent['event']>(id: string, event: E, data: RunEventData<E>) => {
+    publishEvent(id, persistEvent<E>(id, event, data));
+  };
+  /** A run starts, consumes its lane's turn, and records its event together, before live publication. */
+  const startRun = (run: RunRow) => {
+    const frame = db.transaction(() => {
+      const time = now();
+      if (isPersonal(run)) {
+        db.prepare(`UPDATE ${table} SET status = 'active', started_at = ?, updated_at = ? WHERE id = ?`).run(time, time, run.id);
+      } else {
+        db.prepare(`UPDATE ${table} SET status = 'active', updated_at = ? WHERE id = ?`).run(time, run.id);
+      }
+      const turnsTable = isPersonal(run) ? 'multiuser_personal_turns' : 'multiuser_pool_turns';
+      db.prepare(`INSERT INTO ${turnsTable} (account_id, last_seq)
+        VALUES (?, (SELECT COALESCE(MAX(last_seq), 0) + 1 FROM ${turnsTable}))
+        ON CONFLICT(account_id) DO UPDATE SET last_seq = excluded.last_seq`).run(run.owner_account_id);
+      return persistEvent(run.id, 'start', { runId: run.id });
+    })();
+    publishEvent(run.id, frame);
   };
   let dispatching = false;
   let suspendDispatch = false;
@@ -314,6 +339,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           finish(next.id, 'failed');
           continue;
         }
+        if (storedMessage(next.request_json) === null) {
+          finish(next.id, 'failed', { reason: 'MULTIUSER_RUN_REQUEST_INVALID' });
+          continue;
+        }
         const actorDir = createHash('sha256').update(next.owner_account_id).digest('hex');
         const runHome = path.join(dataRoot, 'multiuser-runtime', actorDir, next.id);
         const temp = path.join(runHome, 'tmp');
@@ -328,16 +357,22 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           continue;
         }
         if (admission.status !== 'started') break;
-        db.prepare(`UPDATE ${table} SET status = 'active', updated_at = ? WHERE id = ?`).run(now(), next.id);
-        db.prepare(`INSERT INTO multiuser_pool_turns (account_id, last_seq)
-          VALUES (?, (SELECT COALESCE(MAX(last_seq), 0) + 1 FROM multiuser_pool_turns))
-          ON CONFLICT(account_id) DO UPDATE SET last_seq = excluded.last_seq`).run(next.owner_account_id);
-        emit(next.id, 'start', { runId: next.id });
-        const child = spawn(process.execPath, [mockAgentScript], {
-          cwd: realCwd, env: { HOME: runHome, TMPDIR: temp, TMP: temp, TEMP: temp, OD_DATA_DIR: dataRoot },
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
-        children.set(next.id, child);
+        let child: ChildProcessWithoutNullStreams;
+        try {
+          startRun(next);
+          child = spawn(process.execPath, [mockAgentScript], {
+            cwd: realCwd, env: { HOME: runHome, TMPDIR: temp, TMP: temp, TEMP: temp, OD_DATA_DIR: dataRoot },
+            stdio: ['pipe', 'pipe', 'pipe'],
+          });
+          children.set(next.id, child);
+        } catch {
+          // Admission is in a separate database: close it even when the run's start rolled back.
+          if (!children.has(next.id)) {
+            ledger.finish(next.owner_account_id, next.id);
+            finish(next.id, 'failed', { reason: 'MULTIUSER_RUN_START_FAILED' });
+          }
+          continue;
+        }
         let stdout = '';
         child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
         child.stderr.on('data', () => {});
@@ -354,7 +389,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             finish(next.id, 'succeeded', output);
           } catch { finish(next.id, 'failed'); }
         });
-        child.stdin.end(next.request_json ?? '{}');
+        child.stdin.end(next.request_json!);
       }
     } finally {
       dispatching = false;
@@ -422,11 +457,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         for (const dir of [path.dirname(runHome), runHome, temp]) fs.chmodSync(dir, 0o700);
         const runId = next.id;
         try {
-          db.prepare(`UPDATE ${table} SET status = 'active', started_at = ?, updated_at = ? WHERE id = ?`).run(now(), now(), next.id);
-          db.prepare(`INSERT INTO multiuser_personal_turns (account_id, last_seq)
-            VALUES (?, (SELECT COALESCE(MAX(last_seq), 0) + 1 FROM multiuser_personal_turns))
-            ON CONFLICT(account_id) DO UPDATE SET last_seq = excluded.last_seq`).run(next.owner_account_id);
-          emit(next.id, 'start', { runId: next.id });
+          startRun(next);
           const owner = next.owner_account_id;
           const accountId = account.id;
           const turn = runPersonalCodexTurn({
@@ -449,7 +480,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           });
           children.set(runId, turn.child);
         } catch {
-          // Never leave a row holding the owner's slot and a host slot with no child; dispatch moves on.
+          // A rolled-back start stays queued; a committed start keeps its turn and worker timestamps.
           if (!children.has(runId)) finish(runId, 'failed', { reason: 'MULTIUSER_PERSONAL_RUN_FAILED' });
         }
       }
