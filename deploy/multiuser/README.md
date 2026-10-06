@@ -76,6 +76,7 @@ Before inviting anyone beyond the deployment owner, complete the #48/#8 gate wit
 
 - `docker compose build` builds `deploy/Dockerfile --target multiuser`. Without a build, Compose pulls `${OPEN_DESIGN_MULTIUSER_IMAGE:-neil0628/open-design:multiuser-latest}`.
 - The image pins the official Codex release (`CODEX_VERSION`, verified by `CODEX_SHA256`) at `/opt/codex/bin/codex`, plus `bubblewrap` and CA certificates.
+- The per-run bubblewrap filesystem is the personal run's command boundary. Inside it, OpenDesign disables Codex's redundant nested Linux sandbox so file tools work on unprivileged container hosts. The child can still write only its own `CODEX_HOME`, run home/temp, and project; the daemon data and every other account remain outside its filesystem.
 - A local build can use an already-installed standalone release instead of downloading: `--build-context codex-release=<dir containing bin/codex>`.
 
 ## Backups, restore and revocation
