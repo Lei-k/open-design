@@ -81,6 +81,9 @@ export interface Dict {
   'multiuser.dismissNotice': string;
   'multiuser.checking': string;
   'multiuser.connectionError': string;
+  'multiuser.studioPilot': string;
+  'multiuser.enableStudioPilot': string;
+  'multiuser.disableStudioPilot': string;
   'multiuser.retry': string;
   'multiuser.username': string;
   'multiuser.password': string;

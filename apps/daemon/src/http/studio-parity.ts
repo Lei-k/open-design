@@ -78,15 +78,15 @@ export function studioRouteParityInventory(): StudioRouteParity[] {
   });
 }
 
-/** Advertise a lane only after its entire acceptance closes. Partial API work
- * must not accidentally switch ClientApp to the full Studio product tree.
- * This is process readiness only; actor/role/source policy is checked separately.
+/** Advertise a lane only after its entire acceptance closes. The public
+ * version call uses the default legacy shell; only a cookie-authorized session
+ * read may opt its actor into the pilot. Pilot selection does not complete lanes.
  */
-export function multiUserStudioCapabilities(): StudioRuntimeCapabilities {
+export function multiUserStudioCapabilities(studioPilot = false): StudioRuntimeCapabilities {
   const features = Object.fromEntries(STUDIO_PARITY_LANES.map((lane): [StudioParityLaneId, StudioAvailability] => [lane.id,
     lane.id === 'baseline' ? { status: 'supported' } : {
       status: 'unavailable', reason: `Studio integration #${lane.issue} has not passed its complete parity gate; the legacy fallback remains active.`,
     },
   ])) as StudioRuntimeCapabilities['features'];
-  return { schemaVersion: 1, shell: 'legacy-multiuser', features };
+  return { schemaVersion: 1, shell: studioPilot ? 'studio' : 'legacy-multiuser', features };
 }

@@ -24,13 +24,15 @@
 //
 // Schema history: v1 (#2) accounts/sessions/meta; v2 (#10) adds
 // `auth_accounts.password_state` (existing rows default to `set`),
-// `auth_setup_credentials` and `auth_audit`. Upgrades run in one immediate
+// `auth_setup_credentials` and `auth_audit`; v3 adds `auth_studio_pilots`
+// (missing rows mean disabled at revision zero). Upgrades run in one immediate
 // transaction; a newer schema fails closed.
 
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import type {
+  StudioPilotState,
   AuthAuditAction,
   AuthAuditEvent,
   AuthPasswordState,
@@ -41,7 +43,7 @@ import type {
 export type { AuthAuditAction, AuthPasswordState, AuthRole, AuthSetupCredentialPurpose } from '@open-design/contracts';
 
 export const AUTH_STORE_RELATIVE_PATH = path.join('auth', 'auth.sqlite');
-const AUTH_SCHEMA_VERSION = 2;
+const AUTH_SCHEMA_VERSION = 3;
 const BOOTSTRAP_META_KEY = 'bootstrap_completed_at';
 /** Stored in `password_hash` while no password is usable; never parses as a hash. */
 export const NO_PASSWORD_HASH = '';
@@ -425,6 +427,18 @@ export class AuthStore {
     return this.db.prepare('DELETE FROM auth_setup_credentials WHERE account_id = ?').run(accountId).changes;
   }
 
+  getStudioPilot(accountId: string): StudioPilotState {
+    const row = this.db.prepare('SELECT enabled, revision FROM auth_studio_pilots WHERE account_id = ?').get(accountId) as { enabled: number; revision: number } | undefined;
+    return { studioPilot: row?.enabled === 1, revision: row?.revision ?? 0 };
+  }
+
+  /** Caller holds the immediate transaction after checking the expected revision. */
+  setStudioPilot(accountId: string, state: StudioPilotState): void {
+    this.db.prepare(`INSERT INTO auth_studio_pilots (account_id, enabled, revision) VALUES (?, ?, ?)
+      ON CONFLICT(account_id) DO UPDATE SET enabled = excluded.enabled, revision = excluded.revision`)
+      .run(accountId, state.studioPilot ? 1 : 0, state.revision);
+  }
+
   // ---- audit -------------------------------------------------------------
 
   appendAudit(event: AuthAuditInput): void {
@@ -564,6 +578,11 @@ function migrate(db: Database.Database): void {
     if (version === AUTH_SCHEMA_VERSION) return;
     if (version < 1) db.exec(V1_SCHEMA);
     if (version < 2) db.exec(V2_UPGRADE);
+    if (version < 3) db.exec(`CREATE TABLE auth_studio_pilots (
+      account_id TEXT PRIMARY KEY REFERENCES auth_accounts(id) ON DELETE CASCADE,
+      enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+      revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0)
+    )`);
     db.pragma(`user_version = ${AUTH_SCHEMA_VERSION}`);
   }).immediate();
 }

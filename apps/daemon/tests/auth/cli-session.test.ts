@@ -1,14 +1,15 @@
+import { STUDIO_PARITY_LANES } from '@open-design/contracts';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cliSessionFetch, createCliSessionFile, extractCliSessionFile, pinCliServerOrigin, readCliSession, type CliSessionCredential } from '../../src/http/cli-session.js';
+import { runSessionCli, cliSessionFetch, createCliSessionFile, extractCliSessionFile, pinCliServerOrigin, readCliSession, type CliSessionCredential } from '../../src/http/cli-session.js';
 
 let root: string;
 const credential = (): CliSessionCredential => ({ schemaVersion: 1, origin: 'https://studio.test.invalid',
   cookie: `__Host-od_session=${'a'.repeat(43)}`, expiresAt: Date.now() + 60_000 });
 beforeEach(() => { root = mkdtempSync(path.join(tmpdir(), 'od-cli-session-')); });
-afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); rmSync(root, { recursive: true, force: true }); });
 
 describe('remote CLI credential boundary (#68)', () => {
   it.each(['http://remote.test.invalid', 'file:///tmp/session', 'https://user:secret@studio.test.invalid',
@@ -68,4 +69,21 @@ describe('remote CLI credential boundary (#68)', () => {
     expect(() => extractCliSessionFile(['--session-file', 'a', '--session-file=b'])).toThrow();
     expect(() => extractCliSessionFile(['--session-file', '--json'])).toThrow();
   });
+});
+
+it('prints only validated public capability fields from session me', async () => {
+  const file = path.join(root, 'me-session'); createCliSessionFile(file, credential());
+  const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  const account = { id: 'a', username: 'alice', role: 'user', active: true, passwordState: 'set', createdAt: 1, updatedAt: 1 };
+  const features = Object.fromEntries(STUDIO_PARITY_LANES.map(({ id }) => [id, { status: 'supported', undeclared: 'private-marker' }]));
+  let fields: object = { studio: { schemaVersion: 1, shell: 'studio', features, undeclared: 'private-marker' }, studioRevision: 1 };
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ account, ...fields }))));
+  await runSessionCli(['me', '--json'], file);
+  expect(output).toHaveBeenCalledOnce();
+  const printed = String(output.mock.calls[0]![0]);
+  expect(JSON.parse(printed).studio.shell).toBe('studio');
+  expect(printed).not.toContain('private-marker');
+  output.mockClear(); fields = { studioRevision: 1 };
+  await expect(runSessionCli(['me', '--json'], file)).rejects.toThrow('Invalid capability response');
+  expect(output).not.toHaveBeenCalled();
 });

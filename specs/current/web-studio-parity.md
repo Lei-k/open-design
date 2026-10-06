@@ -102,7 +102,7 @@ Preview 延續既有獨立 HTTPS hostname、opaque-origin sandbox、短效 owner
 
 切換前保持 `ClientApp` 的 no-store runtime probe 和 legacy fallback。未完成 lane 保留明確 reason；新 registry／能力欄位不自行開 route、不自行切 App。逐 lane 完成後先跑 ownership positive 與 A↔B/admin negative，再測 shared provider 和 presentation；同一 build 對照單人與多人，不以不同版本截圖作 parity。
 
-正式 rollout 以 daemon 的 capability contract 為唯一判定，不使用 client storage 開關或 query-string 改 authority。所有 mandatory lane、Web 等價／產品決策、local checks 與 #70 驗收閉合後才可回應 `shell: studio`；管理員的 server policy 可以停用特定 capability，但 UI 必須顯示原因。未來 pilot/rollback 的操作者入口及 audit contract 必須在切換實作一起交付。
+正式 rollout 以 daemon 的 capability contract 為唯一判定，不使用 client storage 開關或 query-string 改 authority。部署級 `/api/version` 只有在所有 mandatory lane、Web 等價／產品決策、local checks 與 #70 驗收閉合後才可回應 `shell: studio`；管理員的 server policy 可以停用特定 capability，但 UI 必須顯示原因。部署級 rollout 與 per-account pilot 分開；pilot 不得把任何未完成 lane 改成 supported。
 
 Telemetry 只記錄 schema/build、lane、shell transition、固定 denial code 及 aggregate failure count；不記錄帳號、prompt、message、路徑、cookie、credential、preview URL 或檔案內容。Identity withdrawal 的事件只報原因類別。Telemetry 走 actor-aware／admin-owned endpoint，禁止重新開放現有 host-global analytics 以取得報表。
 
@@ -125,7 +125,7 @@ Remote origin 只接受 HTTPS，HTTP 只准 numeric loopback 的本地測試／�
 | 範圍 | 本地實作與證據 | 尚未通過的需求 | 判定 |
 | --- | --- | --- | --- |
 | #52 | 三份權威 registry、runtime contract、本架構文件；daemon parity tests、host mapped-type 及 native action coverage | 後續新能力必須繼續補 matrix | 基線交付，非 Studio 完成 |
-| #53 | 共用 `StudioSessionProvider`、generation transport、synchronous resource cleanup；entry/session tests | 完整 App/providers、cache/draft/tab/frame 全量註冊、deep links/mobile/Settings | 未完成 |
+| #53 | 共用 `StudioSessionProvider`、generation transport、pilot authority/admin UI/CLI、canonical static allowlist；HTTP/session/migration/route tests | 完整 App/capability providers、cache/draft/tab/frame 全量註冊、App deep links/mobile/Settings 與 browser acceptance | 未完成 |
 | #54 | 標準 conversations/messages/tabs/events 授權、session-scoped active context、bounded body、immutable message bindings、刪除等待 workers；HTTP/SSE、migration/reopen/rollback 與 scoped CLI tests | 全量 artifact/upload/background lineage、完整 App provider closure | 未完成 |
 | #55 | run admission/terminal state 與標準 transcript 同 transaction、durable cursor replay，既有 personal source/account pin 保留；run HTTP regressions | normalized rich events、steer/restart acceptance、標準 chat pipeline 全量整合 | 未完成 |
 | #68 | pinned-origin password session、private files、JSON/prompt-file、run cursor；CLI transport 與 real-daemon A/B tests | rich headless chat 與其餘 domain lanes、TLS MITM integration acceptance | 未完成 |
@@ -142,3 +142,29 @@ pnpm --filter @open-design/daemon exec vitest run -c vitest.config.ts tests/auth
 pnpm --filter @open-design/web exec vitest run -c vitest.config.ts tests/multiuser/entry.test.tsx tests/multiuser/session.test.ts tests/multiuser/conversations.test.tsx tests/multiuser/runs.test.tsx
 pnpm --filter @open-design/daemon exec vitest run -c vitest.config.ts tests/auth/cli-session.test.ts tests/auth/studio-cli-http.test.ts tests/auth/studio-messages-migration.test.ts
 ```
+
+
+### S2 pilot authority checkpoint（尚未完成 #53）
+
+- `GET/PUT /api/admin/users/:id/studio-pilot` 是 `admin-only`；PUT 接受且只接受
+  `{ studioPilot: boolean, revision: nonnegative integer }`。預設 false / revision 0，
+  真正切換在 immediate transaction 中遞增 revision 並寫入 `studio_pilot_update` audit；
+  舊 revision 回 409，不重試或覆蓋。不變更 active、role、password 或 session。
+- Auth schema v3 additive table `auth_studio_pilots`，使用原本 resolved data-root store；
+  v1 升級、失敗 rollback 及多次 reopen 都有測試。
+- `/api/auth/me` 回傳 actor 的 `studio` 與 `studioRevision`；public `/api/version`
+  仍為 `legacy-multiuser`。所有 lane 的完整驗收狀態不因 pilot 改變。
+  `od session me --session-file … --json` 顯示 effective shell；
+  `od admin studio-pilot get <id>` 及 `set <id> --enabled true|false --revision <n>`
+  使用相同 cookie transport、endpoint 與 `--json`。管理員帳號列可讀取並切換 pilot，
+  衝突後必須重新讀取，不自動重送 mutation。
+- CookieSession 在 shell、capability 或 revision 變更時先同步釋放既有 resource
+  registrations，再發佈下一個 generation；open project streams 的 server-side authority
+  witness 也包含 revision。這只涵蓋已註冊資源，不代表完整 App cache withdrawal 已完成。
+- Public static allowlist 覆蓋 router 的 canonical App paths。動態 segment 必須符合
+  `encodeURIComponent` 的唯一拼字；分隔符、dot segments、double encoding、source maps
+  與任意 static paths 仍拒絕。跨 runtime router → static contract 位於 e2e 測試。
+- **尚未完成**：pilot `StudioCapabilitiesProvider → App` mounting、全量 boot/route
+  capability gates、App module cache/draft/tab/frame withdrawal registry、shared project/chat
+  partial UI、actor-safe Settings、zero-blocked-request / A→B no-frame-leak App oracle，
+  以及 S2-A10 完整瀏覽器流程。#53、Phase 0 和 S2 不得標記完成或宣告 rollout。

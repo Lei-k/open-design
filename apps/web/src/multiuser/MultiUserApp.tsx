@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Button } from '@open-design/components';
 import { Folder, LogOut, Users, ClipboardList } from 'lucide-react';
-import type { AuthAccount, AuthAccountListResponse, AuthAuditListResponse, AuthCreateAccountResponse, AuthIssueSetupCredentialResponse, AuthSetupCredential } from '@open-design/contracts';
+import type { StudioPilotState, AuthAccount, AuthAccountListResponse, AuthAuditListResponse, AuthCreateAccountResponse, AuthIssueSetupCredentialResponse, AuthSetupCredential } from '@open-design/contracts';
 import { useI18n, useT } from '../i18n';
 import { CookieSession, RequestFailure } from './session';
 import { StudioSessionProvider, useStudioSession } from '../runtime/studio-session';
@@ -190,12 +190,51 @@ function AdminUsers(props: OwnedProps) {
         <Button disabled={busy || !account.active || account.id === props.account.id} onClick={() => setConfirm({ account, action: 'reset' })}>{t('multiuser.resetLink')}</Button>
         <Button disabled={busy || account.id === props.account.id} onClick={() => setConfirm({ account, action: 'active' })}>{t(account.active ? 'multiuser.disable' : 'multiuser.enable')}</Button>
         <Button disabled={busy || account.id === props.account.id} onClick={() => setConfirm({ account, action: 'role' })}>{t(account.role === 'admin' ? 'multiuser.makeUser' : 'multiuser.makeAdmin')}</Button>
+        <StudioPilotControl {...props} targetId={account.id} />
         <Button disabled={busy} onClick={() => setConfirm({ account, action: 'revoke' })}>{t('multiuser.revoke')}</Button>
       </div></li>)}</ul>
       <div className={styles.actions}><Button disabled={offset === 0} onClick={() => { setOffset(Math.max(0, offset - 20)); setSetup(null); }}>{t('multiuser.previous')}</Button><span>{t('multiuser.total', { count: data.page.total })}</span><Button disabled={offset + 20 >= data.page.total || offset >= 10000} onClick={() => { setOffset(offset + 20); setSetup(null); }}>{t('multiuser.next')}</Button></div>
     </>}
   </>;
 }
+function StudioPilotControl(props: OwnedProps & { targetId: string }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState<StudioPilotState | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const path = `/api/admin/users/${encodeURIComponent(props.targetId)}/studio-pilot`;
+  async function read() {
+    setOpen(true); setBusy(true); setError(null); setState(null);
+    try {
+      const result = await props.session.request<StudioPilotState>(path, undefined, props.generation);
+      if (mounted.current) setState(result);
+    } catch (e) { if (mounted.current && !isAborted(e)) setError(t(failureKey(e))); }
+    finally { if (mounted.current) setBusy(false); }
+  }
+  async function toggle() {
+    if (!state || busy) return;
+    setBusy(true); setError(null);
+    try {
+      const result = await props.session.request<StudioPilotState>(path, { method: 'PUT',
+        body: JSON.stringify({ studioPilot: !state.studioPilot, revision: state.revision }) }, props.generation);
+      if (mounted.current) setState(result);
+      if (props.targetId === props.account.id) await props.session.verify();
+    } catch (e) {
+      if (mounted.current && !isAborted(e)) { setState(null); setError(t(failureKey(e))); }
+    } finally { if (mounted.current) setBusy(false); }
+  }
+  return <div>
+    {!open ? <Button onClick={() => void read()}>{t('multiuser.studioPilot')}</Button> : <>
+      {state && <Button disabled={busy} onClick={() => void toggle()}>{t(state.studioPilot ? 'multiuser.disableStudioPilot' : 'multiuser.enableStudioPilot')}</Button>}
+      {busy && <span role="status">{t('multiuser.loading')}</span>}
+      {error && <><Alert>{error}</Alert><Button onClick={() => void read()}>{t('multiuser.retry')}</Button></>}
+    </>}
+  </div>;
+}
+
 function Audit(props: OwnedProps) {
   const { t, locale } = useI18n(); const [before, setBefore] = useState<number | null>(null); const [revision, setRevision] = useState(0);
   const { data, error } = useOwnedLoad<AuthAuditListResponse>(props, `/api/auth/audit?limit=20${before === null ? '' : `&before=${before}`}`, revision);

@@ -1,6 +1,6 @@
 import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { AuthAccount } from '@open-design/contracts';
+import { parseStudioRuntimeCapabilities, type AuthAccount, type AuthSessionResponse, type StudioPilotState } from '@open-design/contracts';
 
 export interface CliSessionCredential {
   schemaVersion: 1;
@@ -185,7 +185,10 @@ export async function runSessionCli(args: string[], sessionFile: string | null):
   if (command === 'me') {
     const response = await cliSessionFetch(credential)(`${credential.origin}/api/auth/me`);
     if (!response.ok) throw new Error(`Session refused (${response.status})`);
-    process.stdout.write(`${JSON.stringify({ account: publicAccount(await response.json()), origin: credential.origin })}\n`);
+    const body = await response.json() as AuthSessionResponse;
+    const studio = body.studio === undefined ? undefined : parseStudioRuntimeCapabilities(body.studio);
+    if ((body.studio !== undefined || body.studioRevision !== undefined) && (!studio || !Number.isSafeInteger(body.studioRevision) || body.studioRevision < 0)) throw new Error('Invalid capability response');
+    process.stdout.write(`${JSON.stringify({ account: publicAccount(body), origin: credential.origin, studio, studioRevision: body.studioRevision })}\n`);
     return;
   }
   // Expired sessions can still be logged out; server revocation is authoritative.
@@ -197,4 +200,37 @@ export async function runSessionCli(args: string[], sessionFile: string | null):
   if (readCliSession(sessionFile, true).cookie !== credential.cookie) throw new Error('Credential file changed during logout');
   unlinkSync(sessionPath(sessionFile));
   process.stdout.write(`${JSON.stringify({ ok: true, sessionRemoved: true })}\n`);
+}
+
+/** Explicit optimistic write; never silently read/retry a conflicting mutation. */
+export async function runStudioPilotCli(args: string[], sessionFile: string | null): Promise<void> {
+  if (args.includes('--help')) {
+    process.stdout.write('Usage: od admin studio-pilot get <account-id> --session-file <path> [--json]\n       od admin studio-pilot set <account-id> --enabled true|false --revision <integer> --session-file <path> [--json]\n');
+    return;
+  }
+  const [domain, command, accountId, ...rest] = args;
+  if (domain !== 'studio-pilot' || !['get', 'set'].includes(command ?? '') || !accountId || !/^[A-Za-z0-9_-]+$/.test(accountId) || !sessionFile) {
+    throw new Error('Invalid pilot command; use admin --help');
+  }
+  const flags: Record<string, string> = {};
+  for (let i = 0; i < rest.length; i++) {
+    const key = rest[i]!;
+    if (key === '--json') continue;
+    if (command !== 'set' || !['--enabled', '--revision'].includes(key) || flags[key] !== undefined || rest[i + 1] === undefined) throw new Error('Invalid pilot options');
+    flags[key] = rest[++i]!;
+  }
+  let body: StudioPilotState | undefined;
+  if (command === 'set') {
+    if (!['true', 'false'].includes(flags['--enabled'] ?? '') || !/^(0|[1-9][0-9]*)$/.test(flags['--revision'] ?? '') || !Number.isSafeInteger(Number(flags['--revision']))) throw new Error('Invalid pilot state');
+    body = { studioPilot: flags['--enabled'] === 'true', revision: Number(flags['--revision']) };
+  }
+  if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') throw new Error('TLS verification must not be disabled');
+  const credential = readCliSession(sessionFile);
+  const response = await cliSessionFetch(credential)(`${credential.origin}/api/admin/users/${encodeURIComponent(accountId)}/studio-pilot`, body ? {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  } : undefined);
+  if (!response.ok) throw new Error(`Pilot request refused (${response.status})`);
+  const result = await response.json() as StudioPilotState;
+  if (typeof result.studioPilot !== 'boolean' || !Number.isSafeInteger(result.revision) || result.revision < 0) throw new Error('Invalid pilot response');
+  process.stdout.write(`${JSON.stringify({ studioPilot: result.studioPilot, revision: result.revision })}\n`);
 }

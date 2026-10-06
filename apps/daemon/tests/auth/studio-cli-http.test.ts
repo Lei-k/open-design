@@ -58,6 +58,20 @@ describe('same Studio APIs through remote od sessions', () => {
     }
   });
 
+  it('reads and toggles the pilot through the pinned admin session and exposes the effective shell', async () => {
+    const file = path.join(root, 'cli-admin-session');
+    success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', admin.username,
+      '--password-file', '-', '--session-file', file, '--json'], admin.password + '\n'));
+    const get = ['admin', 'studio-pilot', 'get', alice.id, '--session-file', file, '--json'];
+    expect(success(await cli(get))).toEqual({ studioPilot: false, revision: 0 });
+    const set = ['admin', 'studio-pilot', 'set', alice.id, '--enabled', 'true', '--revision', '0', '--session-file', file, '--json'];
+    expect(success(await cli(set))).toEqual({ studioPilot: true, revision: 1 });
+    expect((await cli(set)).code).not.toBe(0);
+    expect(success(await cli(['session', 'me', '--session-file', aFile, '--json'])).studio.shell).toBe('studio');
+    expect(success(await cli(['session', 'me', '--session-file', bFile, '--json'])).studio.shell).toBe('legacy-multiuser');
+    expect((await cli(['admin', 'studio-pilot', 'get', alice.id, '--session-file', bFile, '--json'])).code).not.toBe(0);
+  }, 40_000);
+
   it('creates projects, manages standard conversations and tabs, and hides A from B', async () => {
     const made = success(await cli(['project', 'create', '--name', 'CLI Studio', '--session-file', aFile, '--json']));
     const pid = made.project.id;

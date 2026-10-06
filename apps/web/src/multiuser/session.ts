@@ -1,6 +1,6 @@
-import type { AuthAccount } from '@open-design/contracts';
+import { parseStudioRuntimeCapabilities, type AuthAccount, type AuthSessionResponse, type StudioRuntimeCapabilities } from '@open-design/contracts';
 
-export type SessionState = { generation: number; status: 'checking' | 'anonymous' | 'ready' | 'error'; account: AuthAccount | null; outcomeUnknown: boolean };
+export type SessionState = { generation: number; status: 'checking' | 'anonymous' | 'ready' | 'error'; account: AuthAccount | null; outcomeUnknown: boolean; studio?: StudioRuntimeCapabilities; studioRevision?: number };
 export class RequestFailure extends Error {
   constructor(readonly status: number, readonly code: string | null = null) { super('Request failed'); }
 }
@@ -142,16 +142,26 @@ export class CookieSession {
     const revision = this.verificationRevision;
     const duringWrite = this.hasPendingMutation();
     try {
-      const result = await this.request<{ account: AuthAccount }>('/api/auth/me');
+      const result = await this.request<Partial<AuthSessionResponse>>('/api/auth/me');
       if (generation !== this.state.generation || revision !== this.verificationRevision || this.abort.signal.aborted) return;
       const a = result?.account;
       if (!a || typeof a.id !== 'string' || typeof a.username !== 'string' || typeof a.active !== 'boolean' || !['admin', 'user'].includes(a.role)) {
         this.withdraw(); this.publish('error'); return;
       }
       if (!a.active) { this.withdraw(); this.publish('anonymous'); return; }
+      // Older daemons without the authenticated capability contract stay in the
+      // legacy shell. A malformed advertised contract never enables Studio.
+      const studio = result.studio === undefined ? undefined : parseStudioRuntimeCapabilities(result.studio);
+      if ((result.studio !== undefined || result.studioRevision !== undefined) && (!studio
+        || !Number.isSafeInteger(result.studioRevision) || result.studioRevision! < 0)) {
+        this.withdraw(); this.publish('error'); return;
+      }
       const previous = this.state.account;
-      const changed = previous !== null && (previous.id !== a.id || previous.role !== a.role || previous.active !== a.active);
+      const changed = previous !== null && (previous.id !== a.id || previous.role !== a.role || previous.active !== a.active
+        || this.state.studioRevision !== result.studioRevision
+        || JSON.stringify(this.state.studio) !== JSON.stringify(studio));
       if (changed) this.withdraw();
+      this.state = { ...this.state, studio: studio ?? undefined, studioRevision: result.studioRevision };
       this.publish('ready', a);
       // An overlapping write may take effect after this read; confirm once it settles.
       if (duringWrite && !changed) this.recheckRequested = true;

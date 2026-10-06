@@ -49,6 +49,7 @@ import {
   type ScryptParams,
 } from './auth-passwords.js';
 import type {
+  StudioPilotState,
   AuthAccount,
   AuthAccountListResponse,
   AuthAuditEvent,
@@ -97,9 +98,11 @@ export type AuthErrorCode =
   | 'FORBIDDEN'
   | 'NOT_FOUND'
   | 'LAST_ADMIN'
-  | 'SETUP_INVALID';
+  | 'SETUP_INVALID'
+  | 'CONFLICT';
 
 const AUTH_ERROR_MESSAGES: Record<AuthErrorCode, string> = {
+  CONFLICT: 'pilot revision changed; read the current state and retry',
   VALIDATION: 'invalid request',
   USERNAME_TAKEN: 'username is already taken',
   BOOTSTRAP_CLOSED: 'bootstrap has already completed',
@@ -133,6 +136,7 @@ export interface AuthActor {
   role: AuthRole;
   sessionId: string;
   sessionExpiresAt: number;
+  studioRevision?: number;
 }
 
 /** A freshly issued session. `token` is the only copy of the secret. */
@@ -386,12 +390,14 @@ export class AuthService {
       role: account.role,
       sessionId: session.id,
       sessionExpiresAt: session.expiresAt,
+      studioRevision: this.store.getStudioPilot(account.id).revision,
     };
   }
 
   /** Validate an open stream without extending the session's idle lifetime. */
   isActorCurrent(actor: AuthActor): boolean {
-    try { return this.requireLiveAccount(actor).role === actor.role; }
+    try { return this.requireLiveAccount(actor).role === actor.role
+      && (actor.studioRevision === undefined || this.store.getStudioPilot(actor.accountId).revision === actor.studioRevision); }
     catch { return false; }
   }
 
@@ -415,6 +421,33 @@ export class AuthService {
   /** The caller's own account, re-read from persistence. */
   getOwnAccount(actor: AuthActor): AccountView {
     return toView(this.requireLiveAccount(actor));
+  }
+
+  getOwnStudioPilot(actor: AuthActor): StudioPilotState {
+    this.requireLiveAccount(actor);
+    return this.store.getStudioPilot(actor.accountId);
+  }
+
+  getStudioPilot(actor: AuthActor, accountId: string): StudioPilotState {
+    this.requireAdmin(actor);
+    if (!this.store.getAccountById(accountId)) throw new AuthError('NOT_FOUND');
+    return this.store.getStudioPilot(accountId);
+  }
+
+  updateStudioPilot(actor: AuthActor, accountId: string, input: StudioPilotState): StudioPilotState {
+    return this.store.transaction(() => {
+      const issuer = this.requireAdmin(actor);
+      if (!input || typeof input.studioPilot !== 'boolean' || !Number.isSafeInteger(input.revision) || input.revision < 0
+        || Object.keys(input).some((key) => !['studioPilot', 'revision'].includes(key))) throw new AuthError('VALIDATION');
+      if (!this.store.getAccountById(accountId)) throw new AuthError('NOT_FOUND');
+      const previous = this.store.getStudioPilot(accountId);
+      if (previous.revision !== input.revision) throw new AuthError('CONFLICT');
+      if (previous.studioPilot === input.studioPilot) return previous;
+      const next = { studioPilot: input.studioPilot, revision: previous.revision + 1 };
+      this.store.setStudioPilot(accountId, next);
+      this.audit(issuer.id, accountId, 'studio_pilot_update', { ...next }, this.now());
+      return next;
+    });
   }
 
   async changeOwnPassword(

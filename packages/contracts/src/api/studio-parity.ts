@@ -56,3 +56,20 @@ export interface StudioMessageWriteRequest {
   createdAt?: number;
   createOnly?: boolean;
 }
+
+/** Validate and project the public capability fields; never forward unknown payload fields. */
+export function parseStudioRuntimeCapabilities(value: unknown): StudioRuntimeCapabilities | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const studio = value as Partial<StudioRuntimeCapabilities>;
+  if (studio.schemaVersion !== 1 || !['studio', 'legacy-multiuser'].includes(studio.shell ?? '')
+    || !studio.features || typeof studio.features !== 'object' || Array.isArray(studio.features)) return null;
+  const features = {} as StudioRuntimeCapabilities['features'];
+  for (const { id } of STUDIO_PARITY_LANES) {
+    const feature = studio.features[id];
+    if (feature?.status === 'supported') features[id] = { status: 'supported' };
+    else if ((feature?.status === 'unavailable' || feature?.status === 'admin-disabled') && typeof feature.reason === 'string' && feature.reason.length > 0) {
+      features[id] = { status: feature.status, reason: feature.reason };
+    } else return null;
+  }
+  return { schemaVersion: 1, shell: studio.shell!, features };
+}

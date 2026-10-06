@@ -1,4 +1,4 @@
-// Issue #10 — auth store schema v1 → v2 upgrade (repository-required).
+// Issues #10/#53 — auth store schema v1 → v3 upgrade (repository-required).
 //
 // The fixture is a real v1 database: the exact v1 DDL shipped by #2, a real
 // scrypt hash, a live session digest and the one-shot bootstrap marker. The
@@ -99,7 +99,7 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
-describe('U09 — auth store v1 → v2 migration', () => {
+describe('U09 — auth store v1 → v3 migration', () => {
   it('upgrades a populated v1 store without disturbing accounts, passwords, sessions or bootstrap', async () => {
     const fixture = await writeV1Fixture();
     const v1Accounts = inspect((db) => db.prepare('SELECT * FROM auth_accounts ORDER BY id').all());
@@ -107,9 +107,9 @@ describe('U09 — auth store v1 → v2 migration', () => {
 
     const { store, service } = openTestAuth(dataRoot, clock);
     try {
-      expect(userVersion()).toBe(2);
+      expect(userVersion()).toBe(3);
       expect(accountColumns()).toContain('password_state');
-      expect(tableNames()).toEqual(['auth_accounts', 'auth_audit', 'auth_meta', 'auth_sessions', 'auth_setup_credentials']);
+      expect(tableNames()).toEqual(['auth_accounts', 'auth_audit', 'auth_meta', 'auth_sessions', 'auth_setup_credentials', 'auth_studio_pilots']);
       // Existing rows are unchanged except for the defaulted password state.
       const after = inspect((db) => db.prepare('SELECT * FROM auth_accounts ORDER BY id').all() as Array<Record<string, unknown>>);
       expect(after.map(({ password_state: state, ...rest }) => { expect(state).toBe('set'); return rest; })).toEqual(v1Accounts);
@@ -145,7 +145,7 @@ describe('U09 — auth store v1 → v2 migration', () => {
     for (let i = 0; i < 3; i += 1) {
       const { store, service } = openTestAuth(dataRoot, clock);
       try {
-        expect(userVersion()).toBe(2);
+        expect(userVersion()).toBe(3);
         expect(service.resolveSession(fixture.sessionToken)).toMatchObject({ username: 'v1-user' });
         expect(service.isBootstrapRequired()).toBe(false);
       } finally { store.close(); }
@@ -169,7 +169,7 @@ describe('U09 — auth store v1 → v2 migration', () => {
     db.close();
     const { store, service } = openTestAuth(dataRoot, clock);
     try {
-      expect(userVersion()).toBe(2);
+      expect(userVersion()).toBe(3);
       expect(service.resolveSession(fixture.sessionToken)).toMatchObject({ username: 'v1-user' });
     } finally { store.close(); }
   });
@@ -177,10 +177,10 @@ describe('U09 — auth store v1 → v2 migration', () => {
   it('refuses a future schema without touching it', async () => {
     await writeV1Fixture();
     const db = new Database(file);
-    db.pragma('user_version = 3');
+    db.pragma('user_version = 4');
     db.close();
     expect(() => AuthStore.open({ dataRoot })).toThrow(/newer than this daemon/);
-    expect(userVersion()).toBe(3);
+    expect(userVersion()).toBe(4);
     expect(accountColumns()).not.toContain('password_state');
   });
 
@@ -199,10 +199,10 @@ describe('U09 — auth store v1 → v2 migration', () => {
     } finally { reopened.store.close(); }
   });
 
-  it('creates a fresh store directly at v2', () => {
+  it('creates a fresh store directly at v3', () => {
     const store = AuthStore.open({ dataRoot });
     store.close();
-    expect(userVersion()).toBe(2);
-    expect(tableNames()).toEqual(['auth_accounts', 'auth_audit', 'auth_meta', 'auth_sessions', 'auth_setup_credentials']);
+    expect(userVersion()).toBe(3);
+    expect(tableNames()).toEqual(['auth_accounts', 'auth_audit', 'auth_meta', 'auth_sessions', 'auth_setup_credentials', 'auth_studio_pilots']);
   });
 });

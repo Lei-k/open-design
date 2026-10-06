@@ -341,6 +341,10 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
   ...group('preview-capability', 'cookie-free preview origin; handler validates the owner/session-bound short-lived scope', [
     'GET /api/multiuser/projects/:id/preview/:scope/*path',
   ]),
+  ...group('admin-only', 'per-account Studio pilot metadata; handler validates revision and closed body', [
+    'GET /api/admin/users/:id/studio-pilot',
+    'PUT /api/admin/users/:id/studio-pilot',
+  ]),
   ...group('admin-only', 'aggregate pool operations; no project or run content', [
     'GET /api/admin/pool',
     'PUT /api/admin/pool/providers/:providerId',

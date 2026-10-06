@@ -1,3 +1,4 @@
+import { STUDIO_PARITY_LANES } from '@open-design/contracts';
 import { afterEach, expect, it, vi } from 'vitest';
 import { CookieSession, EXTERNAL_MUTATION_MS } from '../../src/multiuser/session';
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((r) => { resolve = r; }); return { promise, resolve }; }
@@ -98,4 +99,32 @@ it('verifies once when a completion marker follows, and disposal cancels a pendi
   session.dispose();
   await vi.advanceTimersByTimeAsync(30_000);
   expect(fetcher).toHaveBeenCalledTimes(1);
+});
+
+it.each([['studio', 2], ['legacy-multiuser', 2]] as const)('withdraws resources before publishing a changed pilot %s revision', async (shell, revision) => {
+  const account = { id: 'a', username: 'alice', active: true, role: 'user' };
+  let studio = { schemaVersion: 1, shell: 'studio', features: Object.fromEntries(STUDIO_PARITY_LANES.map(({ id }) => [id, { status: 'unavailable', reason: 'Pilot test' }])) };
+  let studioRevision = 1;
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ account, studio, studioRevision }))));
+  const session = new CookieSession();
+  await session.verify();
+  const generation = session.snapshot().generation;
+  const release = vi.fn();
+  session.bindResource(release, generation);
+  const seen: unknown[] = [];
+  session.subscribe(() => { seen.push(session.snapshot().account?.id ?? null); expect(release).toHaveBeenCalledOnce(); });
+  studio = { ...studio, shell }; studioRevision = revision;
+  await session.verify();
+  expect(release).toHaveBeenCalledOnce();
+  expect(seen).toEqual([null, 'a']);
+  expect(session.snapshot().generation).toBe(generation + 1);
+  session.dispose();
+});
+
+it.each([{ studioRevision: 1 }, { studio: null, studioRevision: 0 }, { studioRevision: '1' }])('withdraws on a malformed capability pair', async (fields) => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ account: { id: 'a', username: 'alice', active: true, role: 'user' }, ...fields }))));
+  const session = new CookieSession();
+  await session.verify();
+  expect(session.snapshot()).toMatchObject({ account: null, status: 'error' });
+  session.dispose();
 });

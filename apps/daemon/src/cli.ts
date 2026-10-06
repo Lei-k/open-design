@@ -30,7 +30,7 @@ import {
   removeJsonInstall,
 } from './mcp-agent-install.js';
 import { resolveMcpWorkspaceContext } from './mcp-workspace-context.js';
-import { cliSessionFetch, extractCliSessionFile, pinCliServerOrigin, readCliSession, runSessionCli } from './http/cli-session.js';
+import { cliSessionFetch, extractCliSessionFile, pinCliServerOrigin, readCliSession, runSessionCli, runStudioPilotCli } from './http/cli-session.js';
 
 let argv;
 let remoteSessionFile = null;
@@ -411,6 +411,7 @@ const PLUGIN_LIST_BOOLEAN_FLAGS = new Set([
 ]);
 
 const SUBCOMMAND_MAP = {
+  admin: (args) => runStudioPilotCli(args, remoteSessionFile),
   session: async (args) => {
     try { await runSessionCli(args, remoteSessionFile); }
     catch {

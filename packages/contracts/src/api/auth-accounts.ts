@@ -1,3 +1,5 @@
+import type { StudioRuntimeCapabilities } from './studio-parity.js';
+
 /**
  * Multi-user account lifecycle (test-only multi-user mode, #2/#10).
  *
@@ -77,6 +79,7 @@ export interface AuthAccountListResponse {
 }
 
 export type AuthAuditAction =
+  | 'studio_pilot_update'
   | 'bootstrap'
   | 'account_create'
   | 'account_update'
@@ -100,4 +103,18 @@ export interface AuthAuditEvent {
 export interface AuthAuditListResponse {
   events: AuthAuditEvent[];
   nextBefore: number | null;
+}
+
+/** Admin-only GET/PUT /api/admin/users/:id/studio-pilot. PUT requires the last read revision. */
+export interface StudioPilotState {
+  studioPilot: boolean;
+  revision: number;
+}
+
+/** Cookie-authorized effective shell. Public version discovery never enables a pilot. */
+export interface AuthSessionResponse {
+  account: AuthAccount;
+  session: { expiresAt: number };
+  studio: StudioRuntimeCapabilities;
+  studioRevision: number;
 }
