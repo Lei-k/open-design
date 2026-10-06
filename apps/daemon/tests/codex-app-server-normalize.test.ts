@@ -645,7 +645,61 @@ describe('codex app-server -> OpenDesign event normalization', () => {
           },
         },
       ]);
-      expect(events).toEqual([{ type: 'error', message: 'upstream exploded' }]);
+      expect(events).toEqual([
+        { type: 'error', message: 'upstream exploded', codexErrorInfo: { reason: 'serverOverloaded' } },
+      ]);
+    });
+
+    it('keeps the reason and upstream HTTP status of an object-shaped codexErrorInfo', () => {
+      const { events } = drive([
+        {
+          method: 'error',
+          params: {
+            ...THREAD,
+            willRetry: false,
+            error: {
+              message: 'stream dropped',
+              codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 502 } },
+              additionalDetails: 'private upstream detail',
+            },
+          },
+        },
+      ]);
+      expect(events).toEqual([
+        {
+          type: 'error',
+          message: 'stream dropped',
+          codexErrorInfo: { reason: 'responseStreamDisconnected', httpStatusCode: 502 },
+        },
+      ]);
+    });
+
+    it('drops an unrecognisable codexErrorInfo instead of forwarding it', () => {
+      const { events } = drive([
+        {
+          method: 'error',
+          params: {
+            ...THREAD,
+            willRetry: false,
+            error: { message: 'odd', codexErrorInfo: { a: {}, b: {} } },
+          },
+        },
+      ]);
+      expect(events).toEqual([{ type: 'error', message: 'odd' }]);
+    });
+
+    it('keeps a retrying error a status pill even when it carries structured info', () => {
+      const { events } = drive([
+        {
+          method: 'error',
+          params: {
+            ...THREAD,
+            willRetry: true,
+            error: { message: 'reconnecting', codexErrorInfo: { httpConnectionFailed: { httpStatusCode: null } } },
+          },
+        },
+      ]);
+      expect(events).toEqual([{ type: 'status', label: 'reconnecting' }]);
     });
 
     it('treats a retrying error as a status, not a run failure', () => {
@@ -669,6 +723,24 @@ describe('codex app-server -> OpenDesign event normalization', () => {
         },
       ]);
       expect(events).toEqual([{ type: 'error', message: 'turn died' }]);
+    });
+
+    it.each([
+      ['usageLimitExceeded', { reason: 'usageLimitExceeded' }],
+      ['unauthorized', { reason: 'unauthorized' }],
+      [{ responseTooManyFailedAttempts: { httpStatusCode: 429 } }, { reason: 'responseTooManyFailedAttempts', httpStatusCode: 429 }],
+      [{ httpConnectionFailed: { httpStatusCode: 70000 } }, { reason: 'httpConnectionFailed' }],
+    ] as const)('surfaces a failed turn with codexErrorInfo %j as %j', (info, detail) => {
+      const { events } = drive([
+        {
+          method: 'turn/completed',
+          params: {
+            ...THREAD,
+            turn: { id: 'turn1', items: [], status: 'failed', error: { message: 'turn died', codexErrorInfo: info } },
+          },
+        },
+      ]);
+      expect(events).toEqual([{ type: 'error', message: 'turn died', codexErrorInfo: detail }]);
     });
 
     it('emits nothing extra for a completed turn', () => {

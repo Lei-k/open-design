@@ -8,6 +8,7 @@ Status: local, test-only slice on top of #2/#13/#15/#16. **The real provider sta
 - There is no environment variable, admin API or UI that enables personal subscriptions or a real provider.
 - Off: `GET /api/agent-accounts` answers `personalSubscriptionsEnabled: false`. Login start, verify and personal runs answer `403 MULTIUSER_PERSONAL_DISABLED`. Company-pool runs are unchanged.
 - Single-user mode registers none of these routes.
+- An invalid `testPersonalCodexAppServer` is refused by `resolveMultiUserMode`, the first statement of `startServer`, before any side effect. The account service is built right after the database opens, before any timer or service. If its schema migration or retained-state recovery throws, startup closes the auth store and the database, ends the health session and rethrows (#22). A later start in the same process then succeeds.
 
 ### Enablement gates (not satisfied)
 
@@ -17,6 +18,24 @@ Real enablement needs all of the following. None is met by this slice.
 2. **Per-user OS-level isolation.** Daemon and agent children run under the same OS uid. Filesystem modes (0700/0600) cannot stop a task shell in one user's run from reading another user's CODEX_HOME. Real enablement needs a per-user uid or sandbox boundary (#5/#7).
 3. **Secret custody and backup policy** for provider auth stores: encryption at rest, backup exclusion/retention, and restore/revocation handling (#7).
 4. **Two real accounts end-to-end** on staging, plus a browser regression (#8).
+
+### Local real-provider acceptance (2026-10-06, codex 0.154.0)
+
+`apps/daemon/tests/real-provider/personal-codex-real.acceptance.test.ts` drives the account service, not the daemon, against a real `codex app-server`. It is skipped unless `OD_REAL_CODEX_ACCEPTANCE_BIN` names a binary. `startServer` never passes the service's `acceptanceAppServerCommand`, so gate 1–4 above and the mock-only startup rule are unchanged.
+
+One run on a single Pro account passed all five steps:
+
+1. A pending device login was canceled.
+2. A device-code login approved by the owner linked a private isolated home (0700/0600). Its credential was not a copy of the operator's own CODEX_HOME.
+3. Verification was refused without consent and succeeded with one minimal turn.
+4. A turn and a follow-up resumed the same native thread and recalled the earlier turn.
+5. Unlink removed every copy.
+
+Findings:
+
+- The real app-server announces `account/login/completed { success: true }` before that process's `account/read` carries the account. The first acceptance attempt therefore failed with `identity_unavailable`. When the live read has no e-mail, the service now reads the identity once more from a fresh app-server on the persisted login home, which also proves the credential landed in that home. The mock reproduces this with the `approve-stale-read` outcome.
+- An isolated home has no `config.toml`, so the CLI may choose an OS keyring, which every home of the same OS user shares. Any real-provider command must pin `-c cli_auth_credentials_store="file"`; the acceptance command does.
+- The generated 0.154.0 schema contains every method and field listed below. The 0.160.0 pin still awaits a real run on that version.
 
 ## Provider protocol (pinned: codex 0.160.0)
 
@@ -42,6 +61,7 @@ The daemon uses exactly these app-server methods, with names and fields taken fr
     - The commit updates the same account row as a switch does: credential version bumped, `verifiedAt` and `lastProblem` cleared, status `connected`. It resets the owner's native thread pins in the same transaction, even when the identity is unchanged, and deletes the record. Only after that commit are both old copies deleted. Native-session continuity is not guaranteed for this state, so a pinned conversation's next follow-up starts a fresh thread on the new subscription. It never falls back to the company pool.
     - Anything short of that commit is not deletion authority: pending, expiry, denial, cancel, a provider failure, a file-system or database failure, or a crash. Every byte and mode of both old copies is kept, together with the `ambiguous` record and the fence. An interrupted replacement is undone on the next start or attempt.
     - A successful owner unlink also removes every copy. Another platform user's home, even with the same identity, is never touched.
+  - Legacy code could leave these copies, or the active credential beside them, with the provider's own umask (0644). Every start re-applies 0700/0600 to the active home and any retained home copy of every linked or retained owner (#20). Hardening only changes modes: it never moves or deletes a copy, and a record and its fence stay as they were. If a mode cannot be applied the account becomes `requires_reauth`, and the next start tries again.
   - Ordinary (non-ambiguous) same-identity re-authorization still keeps native sessions, and an ordinary switch keeps its rollback semantics.
   - Owners without an account row unlinked earlier. Their leftovers are removed when the owner links again, after that link commits.
 
@@ -80,6 +100,8 @@ Classes come from a failed turn's `codexErrorInfo`:
 - `usageLimitExceeded` → status unchanged with `lastProblem: usage_limit_reached` (`MULTIUSER_PERSONAL_USAGE_LIMIT`, 429).
 
 None of these ever switches the execution source.
+
+Normalized run events keep the safe part of `codexErrorInfo` (#21). A fatal `error` notification and a failed turn both become an `error` event with an optional `codexErrorInfo: { reason, httpStatusCode? }`. `reason` is the protocol's reason name: a bare value such as `usageLimitExceeded`, or the single key of an object variant such as `responseStreamDisconnected`. `httpStatusCode` appears only when the provider forwarded an integer HTTP status (100–599). Free text, additional details and unrecognisable shapes are dropped, and `exec --json` frames, which carry none, keep the historical `{ type, message }` shape. A retrying error (`willRetry: true`) stays a status pill. Only the first error of a turn becomes an event, so account classification keeps reading the failed turn itself.
 
 ## API (multi-user mode only)
 

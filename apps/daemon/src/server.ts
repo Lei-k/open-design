@@ -844,6 +844,7 @@ import {
   normalizeConversationSessionMode,
   deleteRoutine as dbDeleteRoutine,
   openDatabase,
+  closeDatabase,
   reorderPreviewComment,
   repairTeamProjectCommentAnchorConversations,
   setTabs,
@@ -3150,6 +3151,24 @@ export interface StartServerResult {
   pathlessRouteInventory?: import('./route-registration-guard.js').RouteRegistration[];
 }
 
+/**
+ * Build the personal-account service, or release what startup has opened so
+ * far and rethrow. Holds while nothing but the stores `release` closes exists.
+ */
+function openPersonalCodexAccountsOrRelease(
+  open: () => PersonalCodexAccounts | null,
+  release: () => void,
+): PersonalCodexAccounts | null {
+  try {
+    return open();
+  } catch (error) {
+    try { release(); } catch (releaseError) {
+      console.warn('[multiuser] releasing startup resources after a personal-account refusal failed', releaseError);
+    }
+    throw error;
+  }
+}
+
 export async function startServer({
   port = 7456,
   host = normalizeDaemonBindHost(process.env.OD_BIND_HOST),
@@ -3525,6 +3544,22 @@ export async function startServer({
   });
   const db = openDatabase(PROJECT_ROOT, { dataDir: RUNTIME_DATA_DIR });
   multiUserFront?.attachProjectOwnership(db);
+  // Personal subscription accounts (#18): always mounted in multi-user mode,
+  // enabled only when the test harness injected the repository mock app-server.
+  // Built right after the database opens, before any timer, watcher or service:
+  // its schema migration and retained-state recovery are the remaining ways
+  // personal setup can refuse a start, and then only what is open so far needs
+  // releasing (the startup-failure cleanup further down covers listen only).
+  const personalCodex = openPersonalCodexAccountsOrRelease(() => (multiUserMode ? new PersonalCodexAccounts({
+    db, dataRoot: RUNTIME_DATA_DIR,
+    ...(multiUserMode.personalCodexAppServer ? { appServerScript: multiUserMode.personalCodexAppServer } : {}),
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
+  }) : null), () => {
+    multiUserFront?.close();
+    closeDatabase();
+    daemonHealth?.markCleanShutdown();
+    daemonHealth?.stop();
+  });
   daemonHealth?.setStorageProbe(() => readSqlitePageStats({ db, file: db.name }));
   const amrTerminalReportOutbox = createAmrTerminalReportOutboxStore(db);
   const amrTerminalReportDelivery = createAmrTerminalReportDeliveryService({
@@ -17514,13 +17549,6 @@ export async function startServer({
     };
   });
 
-  // Personal subscription accounts (#18): always mounted in multi-user mode,
-  // enabled only when the test harness injected the repository mock app-server.
-  const personalCodex = multiUserMode ? new PersonalCodexAccounts({
-    db, dataRoot: RUNTIME_DATA_DIR,
-    ...(multiUserMode.personalCodexAppServer ? { appServerScript: multiUserMode.personalCodexAppServer } : {}),
-    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
-  }) : null;
   const multiUserRuns = multiUserMode ? registerMultiUserRunRoutes(app, {
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
     ...(multiUserMode.testMockAgentScript ? { mockAgentScript: multiUserMode.testMockAgentScript } : {}),
