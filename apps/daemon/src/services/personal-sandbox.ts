@@ -13,7 +13,10 @@
 // /tmp do not exist inside. The network stays shared: the provider is remote.
 //
 // User decision 2026-10-06 (#18, option A): a per-run sandbox, not per-user uids.
-// Codex's own command sandbox still runs nested inside this one.
+// This outer boundary is also the command sandbox for personal runs. The
+// app-server receives `danger-full-access` inside it so Codex does not try to
+// create a second, commonly unsupported Linux sandbox; "full access" reaches
+// only the four writable mounts above, never the daemon or another user.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
