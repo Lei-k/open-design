@@ -98,6 +98,21 @@ export class CookieSession {
     return response;
   }
   /** A mount owns its resources; session withdrawal aborts them synchronously. */
+  bindResource(release: () => void, generation: number): () => void {
+    const signal = this.abort.signal;
+    let released = false;
+    const cleanup = () => {
+      if (released) return;
+      released = true;
+      signal.removeEventListener('abort', cleanup);
+      release();
+    };
+    if (signal.aborted || generation !== this.state.generation) cleanup();
+    else signal.addEventListener('abort', cleanup, { once: true });
+    return cleanup;
+  }
+
+  /** A mount owns its resources; session withdrawal aborts them synchronously. */
   bindMount(controller: AbortController, generation: number): () => void {
     const signal = this.abort.signal;
     const abort = () => controller.abort();

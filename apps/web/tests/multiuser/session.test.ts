@@ -2,6 +2,20 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { CookieSession, EXTERNAL_MUTATION_MS } from '../../src/multiuser/session';
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((r) => { resolve = r; }); return { promise, resolve }; }
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+it('releases private resources synchronously on withdrawal before publishing the next identity', () => {
+  const session = new CookieSession();
+  const release = vi.fn();
+  const dispose = session.bindResource(release, session.snapshot().generation);
+  const listener = vi.fn(() => expect(release).toHaveBeenCalledOnce());
+  session.subscribe(listener);
+  session.withdraw();
+  expect(listener).toHaveBeenCalledOnce();
+  dispose();
+  expect(release).toHaveBeenCalledOnce();
+  const stale = vi.fn();
+  session.bindResource(stale, 0);
+  expect(stale).toHaveBeenCalledOnce();
+});
 it.each([200, 401])('fences a stale parsed response (%s) even when abort is ignored', async (status) => {
   const body = deferred<unknown>();
   vi.stubGlobal('fetch', vi.fn(async () => ({ status, ok: status === 200, json: () => body.promise })));

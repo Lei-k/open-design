@@ -30,6 +30,7 @@
 import type Database from 'better-sqlite3';
 import type { Express, Request, RequestHandler, Response } from 'express';
 import { sendApiError } from './api-errors.js';
+import { setMultiUserStreamAuthority } from './multiuser-stream.js';
 import { clearedSessionCookie, readSessionCookie, registerAuthRoutes } from '../routes/auth.js';
 import { AuthService, type AuthActor } from '../services/auth-service.js';
 import type { ResolvedMultiUserMode } from '../services/multiuser-mode.js';
@@ -154,7 +155,7 @@ export function multiUserActorOf(res: Response): AuthActor | null {
 // ---- gate -------------------------------------------------------------------
 
 export interface MultiUserGateDeps {
-  auth: Pick<AuthService, 'resolveSession'>;
+  auth: Pick<AuthService, 'resolveSession' | 'isActorCurrent'>;
   allowedOrigins: readonly string[];
   previewOrigin?: string;
   isProjectOwner: (projectId: string, accountId: string) => boolean;
@@ -224,6 +225,10 @@ export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
       case 'allow':
         res.locals[ACTOR_LOCAL] = actor;
         res.locals[ROUTE_LOCAL] = matches;
+        setMultiUserStreamAuthority(res, () => actor !== null && deps.auth.isActorCurrent(actor)
+          && decideMultiUserAccess({ matches, actor, isProjectOwner: deps.isProjectOwner,
+            ...(deps.isRunOwner ? { isRunOwner: deps.isRunOwner } : {}),
+            ...(deps.isAgentAccountOwner ? { isAgentAccountOwner: deps.isAgentAccountOwner } : {}) }).kind === 'allow');
         next();
         return;
     }
@@ -280,6 +285,34 @@ function metadataAllowed(value: unknown, allowNull: boolean): boolean {
 
 export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown): boolean {
   if (!isPlainObject(body)) return false;
+  const only = (fields: readonly string[]) => Object.keys(body).every((key) => fields.includes(key));
+  const optionalText = (value: unknown, max: number) => value === undefined || value === null || (typeof value === 'string' && value.length <= max);
+  const sessionMode = body.sessionMode === undefined || (typeof body.sessionMode === 'string' && ['design', 'chat', 'plan'].includes(body.sessionMode));
+  if (policy === 'active-context') {
+    if (body.active === false) return only(['active']);
+    return only(['projectId', 'fileName']) && typeof body.projectId === 'string'
+      && body.projectId.length > 0 && body.projectId.length <= 128 && optionalText(body.fileName, 1024);
+  }
+  if (policy === 'conversation-create' || policy === 'conversation-patch') {
+    const fields = policy === 'conversation-create'
+      ? ['title', 'sessionMode', 'seedFromConversationId', 'forkAfterMessageId']
+      : ['title', 'sessionMode'];
+    return only(fields) && optionalText(body.title, 512) && sessionMode
+      && optionalText(body.seedFromConversationId, 128) && optionalText(body.forkAfterMessageId, 128);
+  }
+  if (policy === 'message-write') {
+    return only(['id', 'role', 'content', 'createdAt', 'createOnly'])
+      && optionalText(body.id, 128) && (body.role === 'user' || body.role === 'assistant')
+      && typeof body.content === 'string' && body.content.length <= 1_000_000
+      && (body.createdAt === undefined || (typeof body.createdAt === 'number' && Number.isFinite(body.createdAt) && body.createdAt >= 0))
+      && (body.createOnly === undefined || typeof body.createOnly === 'boolean');
+  }
+  if (policy === 'project-tabs') {
+    return only(['tabs', 'active', 'browserTabs']) && Array.isArray(body.tabs) && body.tabs.length <= 100
+      && body.tabs.every((tab) => typeof tab === 'string' && tab.length > 0 && tab.length <= 1024)
+      && optionalText(body.active, 1024)
+      && (body.browserTabs === undefined || (Array.isArray(body.browserTabs) && body.browserTabs.length === 0));
+  }
   const fields = policy === 'project-create' ? PROJECT_CREATE_FIELDS : PROJECT_PATCH_FIELDS;
   for (const key of Object.keys(body)) {
     if (!fields.has(key)) return false;
@@ -316,6 +349,8 @@ export interface ProjectOwnershipRouteHooks {
    * throws (rolling the create back) when there is no actor or store.
    */
   bindCreatedProject(res: Response, projectId: string, createdAt: number): void;
+  /** Await workers; call the returned release in finally AFTER deleting parent/files. */
+  cancelOwnedRuns(res: Response, projectId: string, conversationId?: string): Promise<() => void>;
 }
 
 // ---- installer ----------------------------------------------------------------
@@ -326,6 +361,7 @@ export interface MultiUserFront {
   attachProjectOwnership: (db: Database.Database) => void;
   setCancelAccountRuns: (cancel: (accountId: string) => void) => void;
   setIsRunOwner: (check: (runId: string, accountId: string) => boolean) => void;
+  setCancelProjectRuns: (cancel: (accountId: string, projectId: string, conversationId?: string) => Promise<() => void>) => void;
   setIsAgentAccountOwner: (check: (param: 'attemptId' | 'accountId', id: string, accountId: string) => boolean) => void;
   /** Install the post-parse body policy; call right after the global JSON parser. */
   installBodyPolicy: (app: Express) => void;
@@ -350,6 +386,7 @@ export function installMultiUserFront(
   let ownership: ProjectOwnershipStore | null = null;
   let cancelAccountRuns: ((accountId: string) => void) | null = null;
   let isRunOwner: ((runId: string, accountId: string) => boolean) | null = null;
+  let cancelProjectRuns: ((accountId: string, projectId: string, conversationId?: string) => Promise<() => void>) | null = null;
   let isAgentAccountOwner: ((param: 'attemptId' | 'accountId', id: string, accountId: string) => boolean) | null = null;
   let bodyPolicyInstalled = false;
 
@@ -382,6 +419,13 @@ export function installMultiUserFront(
       if (!actor || !ownership) throw new Error('multi-user project creation requires a resolved actor');
       ownership.bindOwner(projectId, actor.accountId, createdAt);
     },
+    async cancelOwnedRuns(res, projectId, conversationId) {
+      const actor = multiUserActorOf(res);
+      if (!actor || !ownership?.isOwnedBy(projectId, actor.accountId) || !cancelProjectRuns) {
+        throw new Error('multi-user deletion requires an owned project and isolated run service');
+      }
+      return cancelProjectRuns(actor.accountId, projectId, conversationId);
+    },
   };
 
   return {
@@ -391,6 +435,7 @@ export function installMultiUserFront(
     },
     setCancelAccountRuns(cancel) { cancelAccountRuns = cancel; },
     setIsRunOwner(check) { isRunOwner = check; },
+    setCancelProjectRuns(cancel) { cancelProjectRuns = cancel; },
     setIsAgentAccountOwner(check) { isAgentAccountOwner = check; },
     installBodyPolicy(target) {
       target.use(acknowledgePathlessUse(createMultiUserBodyPolicy(), 'body-policy'));
@@ -409,6 +454,7 @@ export function installMultiUserFront(
       if (!ownership) throw new Error('multi-user mode refused: project ownership store was not attached');
       if (!cancelAccountRuns) throw new Error('multi-user mode refused: isolated run service was not attached');
       if (!isRunOwner) throw new Error('multi-user mode refused: run ownership lookup was not attached');
+      if (!cancelProjectRuns) throw new Error('multi-user mode refused: project run cancellation was not attached');
       if (!isAgentAccountOwner) throw new Error('multi-user mode refused: personal account ownership lookup was not attached');
     },
     close() {

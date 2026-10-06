@@ -5524,9 +5524,12 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       // Stop any live agent run in this project before its row and directory
       // are removed, otherwise the CLI subprocess is orphaned — it keeps
       // billing and writes into a directory that no longer exists (#5468).
-      await cancelRunsOwnedBy(design.runs, { projectId: req.params.id });
-      dbDeleteProject(db, req.params.id);
-      await removeProjectDir(PROJECTS_DIR, req.params.id).catch(() => {});
+      const release = await ctx.projectOwnership?.cancelOwnedRuns(res, req.params.id);
+      try {
+        await cancelRunsOwnedBy(design.runs, { projectId: req.params.id });
+        dbDeleteProject(db, req.params.id);
+        await removeProjectDir(PROJECTS_DIR, req.params.id).catch(() => {});
+      } finally { release?.(); }
       /** @type {import('@open-design/contracts').OkResponse} */
       const body = { ok: true };
       res.json(body);

@@ -43,7 +43,7 @@ export type MultiUserRouteClass =
   | 'blocked-in-multiuser'
   | 'middleware';
 
-export type MultiUserBodyPolicy = 'project-create' | 'project-patch';
+export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context';
 
 export interface MultiUserRouteClassification {
   /** `METHOD path`, identical to the registration inventory key. */
@@ -160,6 +160,10 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
   ...group('middleware', 'root static middleware is disabled for requests in multi-user mode', ['USE <pathless:root-static:1>']),
 
   // Projects: the minimum allowed set -------------------------------------------
+  ...group('actor-scoped', 'transient focus keyed by authenticated session; project ownership rechecked before any content lookup',
+    ['GET /api/active']),
+  ...group('actor-scoped', 'transient session focus; bounded body and project ownership checked by handler; no global MCP context',
+    ['POST /api/active'], { bodyPolicy: 'active-context' }),
   ...group('actor-scoped', 'lists only projects the actor owns (ProjectOwnershipRouteHooks.filterVisibleProjects)', [
     'GET /api/projects',
   ]),
@@ -173,16 +177,26 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'GET /api/projects/:id',
     'DELETE /api/projects/:id',
     'GET /api/projects/:id/conversations',
-    'POST /api/projects/:id/conversations',
     'GET /api/projects/:id/conversations/:cid/messages',
     'GET /api/projects/:id/files',
     'GET /api/projects/:id/file-content/*path',
+    'GET /api/projects/:id/tabs',
+    'GET /api/projects/:id/events',
+    'DELETE /api/projects/:id/conversations/:cid',
     'GET /api/multiuser/projects/:id/preview-url',
     'POST /api/multiuser/projects/:id/preview/:scope/renew',
     'POST /api/multiuser/projects/:id/conversations',
     'GET /api/multiuser/projects/:id/conversations/:cid/design',
     'GET /api/multiuser/projects/:id/design-selections',
   ], { projectParam: 'id' }),
+  ...group('owner-scoped-project', 'project owner checked before standard Studio mutation; bounded body cannot change resource or run ownership',
+    ['POST /api/projects/:id/conversations'], { projectParam: 'id', bodyPolicy: 'conversation-create' }),
+  ...group('owner-scoped-project', 'project owner checked before conversation title or mode update; immutable parent binding',
+    ['PATCH /api/projects/:id/conversations/:cid'], { projectParam: 'id', bodyPolicy: 'conversation-patch' }),
+  ...group('owner-scoped-project', 'project and conversation scoped message lookup; client cannot write daemon run identity or foreign message rows',
+    ['PUT /api/projects/:id/conversations/:cid/messages/:mid'], { projectParam: 'id', bodyPolicy: 'message-write' }),
+  ...group('owner-scoped-project', 'project owner checked before tabs write; remote actors cannot create host browser sessions',
+    ['PUT /api/projects/:id/tabs'], { projectParam: 'id', bodyPolicy: 'project-tabs' }),
   ...group(
     'owner-scoped-project',
     'project id must be owned by the actor (gate check before the handler); body limited by the project-patch policy',
@@ -213,19 +227,13 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'POST /api/projects/:id/duplicate',
     'POST /api/projects/:id/design-system-copy',
   ]),
-  ...blocked(R_SSE, ['GET /api/projects/:id/events']),
   ...blocked(R_NOT_MINIMUM, [
-    'PATCH /api/projects/:id/conversations/:cid',
-    'DELETE /api/projects/:id/conversations/:cid',
-    'PUT /api/projects/:id/conversations/:cid/messages/:mid',
     'GET /api/projects/:id/conversations/:cid/comments',
     'POST /api/projects/:id/conversations/:cid/comments',
     'PATCH /api/projects/:id/conversations/:cid/comments/:commentId',
     'PATCH /api/projects/:id/conversations/:cid/comments/:commentId/anchor',
     'PATCH /api/projects/:id/conversations/:cid/comments/:commentId/reorder',
     'DELETE /api/projects/:id/conversations/:cid/comments/:commentId',
-    'GET /api/projects/:id/tabs',
-    'PUT /api/projects/:id/tabs',
   ]),
   ...blocked('interactive host shell; never available to Web accounts without run isolation (#5)', [
     'GET /api/projects/:id/terminals',
@@ -539,8 +547,6 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'GET /api/strategies/od-next/rollout',
   ]),
   ...blocked(R_GLOBAL_STATE, [
-    'POST /api/active',
-    'GET /api/active',
     'GET /api/analytics/config',
     'POST /api/analytics/mcp/context',
     'POST /api/analytics/mcp/event',

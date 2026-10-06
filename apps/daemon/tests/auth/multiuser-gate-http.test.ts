@@ -95,16 +95,18 @@ describe('route classification covers the real inventory', () => {
     expect(findStaleClassifications(registrations)).toEqual([]);
   });
 
-  it('allows exactly the reviewed minimum set; everything else is blocked or middleware', () => {
+  it('allows exactly the reviewed actor-safe set; everything else is blocked or middleware', () => {
     const allowed = MULTIUSER_ROUTE_CLASSIFICATION
       .filter((entry) => entry.routeClass !== 'blocked-in-multiuser' && entry.routeClass !== 'middleware')
       .map((entry) => `${entry.routeClass} ${entry.key}`)
       .sort();
     expect(allowed).toEqual([
+      'actor-scoped GET /api/active',
       'actor-scoped GET /api/agent-accounts',
       'actor-scoped GET /api/multiuser/design-catalog',
       'actor-scoped GET /api/projects',
       'actor-scoped GET /api/runs',
+      'actor-scoped POST /api/active',
       'actor-scoped POST /api/agent-accounts/codex/logins',
       'actor-scoped POST /api/projects',
       'actor-scoped POST /api/runs',
@@ -131,18 +133,24 @@ describe('route classification covers the real inventory', () => {
       'owner-scoped-agent-account POST /api/agent-accounts/codex/accounts/:accountId/verify',
       'owner-scoped-agent-account POST /api/agent-accounts/codex/logins/:attemptId/cancel',
       'owner-scoped-project DELETE /api/projects/:id',
+      'owner-scoped-project DELETE /api/projects/:id/conversations/:cid',
       'owner-scoped-project GET /api/multiuser/projects/:id/conversations/:cid/design',
       'owner-scoped-project GET /api/multiuser/projects/:id/design-selections',
       'owner-scoped-project GET /api/multiuser/projects/:id/preview-url',
       'owner-scoped-project GET /api/projects/:id',
       'owner-scoped-project GET /api/projects/:id/conversations',
       'owner-scoped-project GET /api/projects/:id/conversations/:cid/messages',
+      'owner-scoped-project GET /api/projects/:id/events',
       'owner-scoped-project GET /api/projects/:id/file-content/*path',
       'owner-scoped-project GET /api/projects/:id/files',
+      'owner-scoped-project GET /api/projects/:id/tabs',
       'owner-scoped-project PATCH /api/projects/:id',
+      'owner-scoped-project PATCH /api/projects/:id/conversations/:cid',
       'owner-scoped-project POST /api/multiuser/projects/:id/conversations',
       'owner-scoped-project POST /api/multiuser/projects/:id/preview/:scope/renew',
       'owner-scoped-project POST /api/projects/:id/conversations',
+      'owner-scoped-project PUT /api/projects/:id/conversations/:cid/messages/:mid',
+      'owner-scoped-project PUT /api/projects/:id/tabs',
       'owner-scoped-run GET /api/runs/:id',
       'owner-scoped-run GET /api/runs/:id/events',
       'owner-scoped-run POST /api/runs/:id/cancel',
@@ -167,14 +175,13 @@ describe('route classification covers the real inventory', () => {
     ]);
   });
 
-  it('keeps static mounts, the SPA fallback, SSE streams and regex preview routes blocked', () => {
+  it('keeps static mounts, the SPA fallback, global SSE streams and regex preview routes blocked', () => {
     const byKey = new Map(MULTIUSER_ROUTE_CLASSIFICATION.map((entry) => [entry.key, entry]));
     for (const key of [
       'USE /artifacts',
       'USE /frames',
       'USE /api/plugin-previews',
       'GET /*splat',
-      'GET /api/projects/:id/events',
       'GET /api/library/events',
       'GET /api/memory/events',
       'GET /api/workspace/events',
@@ -514,7 +521,6 @@ describe('fail-closed classification', () => {
       { method: 'POST', path: '/api/chat', body: {} },
       { method: 'GET', path: '/api/daemon/status' },
       { method: 'GET', path: '/api/daemon/db' },
-      { method: 'GET', path: `/api/projects/${a.id}/events` },
       { method: 'GET', path: `/api/projects/${a.id}/workspace-scope` },
       { method: 'POST', path: `/api/projects/${a.id}/terminals`, body: {} },
       { method: 'POST', path: `/api/projects/${a.id}/duplicate`, body: {} },

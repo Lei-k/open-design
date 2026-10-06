@@ -233,6 +233,19 @@ describe('auth service — login and sessions', () => {
     expect(service.resolveSession(token)).toBeNull();
   });
 
+  it('revalidates open streams without renewing idle expiry or trusting a stale role', async () => {
+    await seedAdminAndUsers();
+    const { actor } = await loginActor('alice', ALICE_PW);
+    expect(service.isActorCurrent(actor)).toBe(true);
+    expect(service.isActorCurrent({ ...actor, role: 'admin' })).toBe(false);
+    for (let minute = 0; minute < 119; minute++) {
+      clock.advance(60_000);
+      expect(service.isActorCurrent(actor)).toBe(true);
+    }
+    clock.advance(60_000);
+    expect(service.isActorCurrent(actor)).toBe(false);
+  });
+
   it('revokes on logout and on login with a previous token (fixation defense)', async () => {
     await seedAdminAndUsers();
     const first = await loginActor('alice', ALICE_PW);

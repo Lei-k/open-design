@@ -8,7 +8,9 @@ import type { MultiUserRun, MultiUserRunEvent, MultiUserRunStatus, MultiUserRuns
 import { getConversation, getProject } from '../db.js';
 import { sendApiError } from '../http/api-errors.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
+import { bindMultiUserStream, multiUserStreamAllowed } from '../http/multiuser-stream.js';
 import { PROJECT_OWNERS_TABLE, ProjectOwnershipStore } from '../storage/project-ownership.js';
+import { MultiUserStudioMessages } from '../storage/multiuser-studio-messages.js';
 import { WorkerQuotaLedger } from '../storage/worker-quota-ledger.js';
 import { AuthStore } from '../storage/auth-store.js';
 import { isSafeId } from '../projects.js';
@@ -112,6 +114,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   personal?: PersonalCodexAccounts;
   design?: MultiUserDesignRoutes;
 }): { cancelAccountRuns(accountId: string): void; isRunOwner(runId: string, accountId: string): boolean;
+  cancelProjectRuns(accountId: string, projectId: string, conversationId?: string): Promise<() => void>;
   cancelPersonalRuns(accountId: string): Promise<void>; forgetNativeSessions(accountId: string): void; personalLane: PersonalRunLaneControls; listAccountIds(): string[];
   beginShutdown(): void; shutdown(): Promise<void>; companyPoolAvailable: boolean } {
   const { db, dataRoot, projectsRoot } = input;
@@ -240,6 +243,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     }
   }
   const children = new Map<string, ChildProcessWithoutNullStreams>();
+  const studioMessages = new MultiUserStudioMessages(db);
   const cancelPending = new Set<string>();
   const failurePending = new Set<string>();
   let shuttingDown = false;
@@ -271,6 +275,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
     })(),
     message: storedMessage(run.request_json),
+    ...studioMessages.ids(run.id),
     ...(isPersonal(run) ? { executionSource: 'personal_subscription' as const } : {}),
   });
   /** Persist before publishing; start events participate in the row/turn transaction. */
@@ -281,7 +286,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     return `id: ${seq}\nevent: ${event}\ndata: ${payload}\n\n`;
   };
   const publishEvent = (id: string, frame: string) => {
-    for (const res of listeners.get(id) ?? []) res.write(frame);
+    for (const res of listeners.get(id) ?? []) if (multiUserStreamAllowed(res)) res.write(frame);
   };
   const emit = <E extends MultiUserRunEvent['event']>(id: string, event: E, data: RunEventData<E>) => {
     publishEvent(id, persistEvent<E>(id, event, data));
@@ -306,12 +311,19 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       db.prepare(`INSERT INTO ${turnsTable} (account_id, last_seq)
         VALUES (?, (SELECT COALESCE(MAX(last_seq), 0) + 1 FROM ${turnsTable}))
         ON CONFLICT(account_id) DO UPDATE SET last_seq = excluded.last_seq`).run(run.owner_account_id);
+      studioMessages.reconcile(row(run.id)!);
       return persistEvent(run.id, 'start', { runId: run.id });
     })();
     publishEvent(run.id, frame);
   };
   let dispatching = false;
   let suspendDispatch = false;
+  // Held through parent deletion, not just subprocess termination. Refcounts
+  // allow overlapping project/conversation deletes without reopening admission.
+  const deletingTargets = new Map<string, number>();
+  const targetKey = (owner: string, projectId: string, conversationId?: string) => JSON.stringify([owner, projectId, conversationId ?? null]);
+  const targetDeleting = (owner: string, projectId: string, conversationId: string) =>
+    deletingTargets.has(targetKey(owner, projectId)) || deletingTargets.has(targetKey(owner, projectId, conversationId));
   let retryTimer: NodeJS.Timeout | null = null;
   let dispatch = () => {};
   let dispatchPersonal = () => {};
@@ -325,8 +337,11 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     }
     // Personal worker time is recorded for visibility only; it has no budget.
     if (existing.status === 'active' && isPersonal(existing)) db.prepare(`UPDATE ${table} SET ended_at = ? WHERE id = ?`).run(now(), id);
-    db.prepare(`UPDATE ${table} SET status = ?, output = ?, updated_at = ? WHERE id = ?`)
-      .run(status, output === undefined ? null : JSON.stringify(output), now(), id);
+    db.transaction(() => {
+      db.prepare(`UPDATE ${table} SET status = ?, output = ?, updated_at = ? WHERE id = ?`)
+        .run(status, output === undefined ? null : JSON.stringify(output), now(), id);
+      studioMessages.reconcile(row(id)!);
+    })();
     emit(id, 'end', { status, ...(output === undefined ? {} : { output }) });
     for (const res of listeners.get(id) ?? []) res.end();
     listeners.delete(id);
@@ -682,7 +697,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         !owners.isOwnedBy(projectId, actor(res))) return fail(404, 'NOT_FOUND', 'not found');
     const project = getProject(db, projectId);
     const conversation = getConversation(db, conversationId);
-    if (!project || !conversation || conversation.projectId !== projectId) return fail(404, 'NOT_FOUND', 'not found');
+    if (!project || !conversation || conversation.projectId !== projectId || targetDeleting(actor(res), projectId, conversationId)) return fail(404, 'NOT_FOUND', 'not found');
     const metadata = project.metadata as Record<string, unknown> | null | undefined;
     if (metadata?.baseDir || metadata?.linkedDirs || metadata?.imported) return fail(403, 'MULTIUSER_IMPORTED_PROJECT_FORBIDDEN', 'managed projects only');
     if (!isSafeId(projectId)) return fail(404, 'NOT_FOUND', 'not found');
@@ -719,6 +734,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const request = JSON.stringify({ message: inputBody.message,
       ...(composed ? { skillId: composed.selection.skillId, designSystemId: composed.selection.designSystemId,
         stablePrompt: composed.prompt, stablePromptHash: composed.hash } : {}) });
+    // Prompt/catalog I/O yields: deletion or session revocation may have won
+    // while it was in flight. Recheck before persisting or spawning anything.
+    if (!multiUserStreamAllowed(res) || !managedTarget(inputBody, res)) return;
     // Never fall back: an unusable personal account is an error, not a company run.
     const account = personal.usableAccount(owner);
     if (!account) {
@@ -744,11 +762,12 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       // The first personal run pins the conversation to this account and its native session.
       db.prepare(`INSERT OR IGNORE INTO multiuser_personal_sessions (conversation_id, owner_account_id, personal_account_id, updated_at)
         VALUES (?, ?, ?, ?)`).run(target.conversationId, owner, account.id, createdAt);
+      studioMessages.reconcile(row(id)!);
     })();
     personal.audit(owner, owner, 'run_routed', 'personal_subscription', id);
     emit(id, 'queued', { runId: id });
     dispatchPersonal();
-    res.status(202).json({ run: body(row(id)!) });
+    res.status(202).json({ runId: id, run: body(row(id)!) });
   };
   app.post('/api/runs', async (req, res) => {
     const inputBody = req.body as Record<string, unknown> | null;
@@ -786,12 +805,15 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (queuedCount >= 3) return sendApiError(res, 409, 'MULTIUSER_QUEUE_LIMIT', 'queue limit reached');
     const id = randomUUID();
     const createdAt = now();
-    db.prepare(`INSERT INTO ${table} (id, owner_account_id, project_id, conversation_id, status, created_at, updated_at, request_json, queue_seq)
-      VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM ${table}))`)
-      .run(id, actor(res), projectId, conversationId, createdAt, createdAt, mockRequest);
+    db.transaction(() => {
+      db.prepare(`INSERT INTO ${table} (id, owner_account_id, project_id, conversation_id, status, created_at, updated_at, request_json, queue_seq)
+        VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM ${table}))`)
+        .run(id, actor(res), projectId, conversationId, createdAt, createdAt, mockRequest);
+      studioMessages.reconcile(row(id)!);
+    })();
     emit(id, 'queued', { runId: id });
     dispatch();
-    res.status(202).json({ run: body(row(id)!) });
+    res.status(202).json({ runId: id, run: body(row(id)!) });
   });
   /**
    * Owner-only: the conversation is pinned to a personal account that is no
@@ -834,10 +856,23 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   app.get('/api/runs/:id/events', (req, res) => {
     const run = owned(req, res);
     if (!run) return;
+    const cursor = req.get('Last-Event-ID');
+    if (cursor !== undefined && (!/^\d{1,15}$/.test(cursor) || !Number.isSafeInteger(Number(cursor)))) {
+      sendApiError(res, 400, 'BAD_REQUEST', 'invalid event cursor');
+      return;
+    }
+    const since = Number(cursor ?? 0);
+    const last = (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM multiuser_run_events WHERE run_id = ?').get(run.id) as { seq: number }).seq;
+    if (since > last) { sendApiError(res, 400, 'BAD_REQUEST', 'invalid event cursor'); return; }
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-store');
-    const events = db.prepare('SELECT seq, event, data FROM multiuser_run_events WHERE run_id = ? ORDER BY seq').all(run.id) as Array<{ seq: number; event: string; data: string }>;
-    for (const event of events) res.write(`id: ${event.seq}\nevent: ${event.event}\ndata: ${event.data}\n\n`);
+    res.setHeader('X-Accel-Buffering', 'no');
+    bindMultiUserStream(res);
+    const events = db.prepare('SELECT seq, event, data FROM multiuser_run_events WHERE run_id = ? AND seq > ? ORDER BY seq').all(run.id, since) as Array<{ seq: number; event: string; data: string }>;
+    for (const event of events) {
+      if (!multiUserStreamAllowed(res)) return;
+      res.write(`id: ${event.seq}\nevent: ${event.event}\ndata: ${event.data}\n\n`);
+    }
     if (run.status !== 'active' && run.status !== 'queued') { res.end(); return; }
     const set = listeners.get(run.id) ?? new Set<Response>();
     set.add(res);
@@ -910,6 +945,45 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       dispatchPersonal();
     },
     cancelPersonalRuns,
+    async cancelProjectRuns(accountId, projectId, conversationId) {
+      const key = targetKey(accountId, projectId, conversationId);
+      deletingTargets.set(key, (deletingTargets.get(key) ?? 0) + 1);
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        const remaining = (deletingTargets.get(key) ?? 1) - 1;
+        if (remaining > 0) deletingTargets.set(key, remaining);
+        else deletingTargets.delete(key);
+      };
+      let keepFence = false;
+      try {
+        const rows = db.prepare(`SELECT id FROM ${table}
+          WHERE owner_account_id = ? AND project_id = ? AND status IN ('active','queued')
+          ${conversationId === undefined ? '' : 'AND conversation_id = ?'}`)
+          .all(...(conversationId === undefined ? [accountId, projectId] : [accountId, projectId, conversationId])) as Array<{ id: string }>;
+        const exits: Promise<void>[] = [];
+        suspendDispatch = true;
+        try {
+          for (const run of rows) {
+            const child = children.get(run.id);
+            if (!child) { finish(run.id, 'canceled'); continue; }
+            cancelPending.add(run.id);
+            exits.push(new Promise<void>((resolve) => {
+              const deadline = setTimeout(() => { child.kill('SIGKILL'); }, 2_000);
+              deadline.unref();
+              child.once('close', () => { clearTimeout(deadline); resolve(); });
+            }));
+            child.kill('SIGTERM');
+          }
+        } finally { suspendDispatch = false; }
+        await Promise.all(exits);
+        dispatch();
+        dispatchPersonal();
+        keepFence = true;
+        return release;
+      } finally { if (!keepFence) release(); }
+    },
     // A subscription switch: pinned conversations keep their account but start a fresh native thread.
     forgetNativeSessions(accountId) {
       db.prepare('UPDATE multiuser_personal_sessions SET thread_id = NULL, updated_at = ? WHERE owner_account_id = ?').run(now(), accountId);

@@ -14,6 +14,9 @@ export interface MultiUserRun {
   updatedAt: number;
   /** Owner-only persisted prompt; legacy rows may have no request. */
   message: string | null;
+  /** Daemon-issued ids for the standard Studio transcript; older daemons omit them. */
+  userMessageId?: string;
+  assistantMessageId?: string;
   output: MultiUserRunOutput | Record<string, unknown> | null;
   /** Omitted on existing company-pool responses. */
   executionSource?: RunExecutionSource;
@@ -29,6 +32,8 @@ export interface MultiUserRunRequest {
   designSystemId?: string;
 }
 export interface MultiUserRunResponse { run: MultiUserRun }
+/** Standard run admission identity, additive to the legacy response. */
+export interface MultiUserRunCreateResponse extends MultiUserRunResponse { runId: string }
 /**
  * `GET /api/runs`: the owner's runs, newest first, `limit` (1-100, default 50)
  * per page. Pass `nextCursor` back as `cursor` for the next older page; it is

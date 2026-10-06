@@ -8,6 +8,9 @@
  * file contains no logic.
  */
 
+export { STUDIO_HOST_PARITY } from './studio-parity.js';
+export type { StudioHostAction, StudioHostParityDecision } from './studio-parity.js';
+
 // --- protocol: constant registries + wire types ---
 export {
   OPEN_DESIGN_HOST_GLOBAL,

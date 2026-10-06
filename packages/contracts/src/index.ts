@@ -58,6 +58,7 @@ export * from './api/reasoningExecution.js';
 export * from './api/social-share.js';
 export * from './api/terminals.js';
 export * from './api/version.js';
+export * from './api/studio-parity.js';
 export * from './api/whats-new.js';
 export * from './api/workspaces.js';
 export * from './api/workspace-invites.js';

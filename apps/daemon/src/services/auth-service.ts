@@ -389,6 +389,12 @@ export class AuthService {
     };
   }
 
+  /** Validate an open stream without extending the session's idle lifetime. */
+  isActorCurrent(actor: AuthActor): boolean {
+    try { return this.requireLiveAccount(actor).role === actor.role; }
+    catch { return false; }
+  }
+
   /** Replace a live session with a new token; the absolute expiry is kept. */
   rotateSession(token: unknown): IssuedSession | null {
     const actor = this.resolveSession(token);

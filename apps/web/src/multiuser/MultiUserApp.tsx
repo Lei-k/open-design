@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
-import { flushSync } from 'react-dom';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Button } from '@open-design/components';
 import { Folder, LogOut, Users, ClipboardList } from 'lucide-react';
 import type { AuthAccount, AuthAccountListResponse, AuthAuditListResponse, AuthCreateAccountResponse, AuthIssueSetupCredentialResponse, AuthSetupCredential } from '@open-design/contracts';
 import { useI18n, useT } from '../i18n';
-import { AUTH_CHANGE_KEY, CookieSession, RequestFailure, SESSION_CHECK_MS } from './session';
+import { CookieSession, RequestFailure } from './session';
+import { StudioSessionProvider, useStudioSession } from '../runtime/studio-session';
 import { AgentAccountsPage } from './AgentAccountsPage';
 import { ProjectConversations } from './ProjectConversations';
 import { ConversationRuns } from './ConversationRuns';
@@ -70,25 +70,15 @@ function Setup({ token, clear }: { token: string | null; clear: () => void }) {
 function Brand() { return <div className={styles.brand}><img src="/app-icon.png" alt="" width="32" height="32" />OpenDesign</div>; }
 
 export function MultiUserApp({ setupToken, clearSetupToken = () => {} }: { setupToken: string | null; clearSetupToken?: () => void }) {
+  const setup = window.location.pathname.replace(/\/$/, '') === '/setup';
+  return <StudioSessionProvider paused={setup}><MultiUserEntry setupToken={setupToken} clearSetupToken={clearSetupToken} /></StudioSessionProvider>;
+}
+
+function MultiUserEntry({ setupToken, clearSetupToken }: { setupToken: string | null; clearSetupToken: () => void }) {
   const t = useT();
-  const [session] = useState(() => new CookieSession());
-  const state = useSyncExternalStore(session.subscribe, session.snapshot, session.snapshot);
+  const { session, state } = useStudioSession();
   const [loginError, setLoginError] = useState(false);
   const setup = window.location.pathname.replace(/\/$/, '') === '/setup';
-  useEffect(() => {
-    if (setup) return;
-    void session.verify();
-    const verify = () => { if (document.visibilityState !== 'hidden') void session.verify(); };
-    const storage = (event: StorageEvent) => { if (event.key === AUTH_CHANGE_KEY) session.receiveAuthChange(event.newValue); };
-    window.addEventListener('focus', verify);
-    document.addEventListener('visibilitychange', verify);
-    window.addEventListener('storage', storage);
-    const hide = () => flushSync(() => session.withdraw());
-    window.addEventListener('pagehide', hide);
-    window.addEventListener('pageshow', verify);
-    const timer = window.setInterval(verify, SESSION_CHECK_MS);
-    return () => { session.dispose(); clearInterval(timer); window.removeEventListener('pagehide', hide); window.removeEventListener('pageshow', verify); window.removeEventListener('focus', verify); document.removeEventListener('visibilitychange', verify); window.removeEventListener('storage', storage); };
-  }, [session, setup]);
   const outcome = state.outcomeUnknown && <div className={styles.operationNotice} role="alert"><p>{t('multiuser.outcomeUnknown')}</p><Button onClick={session.clearOutcomeUnknown}>{t('multiuser.dismissNotice')}</Button></div>;
   if (setup) return <Setup token={setupToken} clear={clearSetupToken} />;
   if (state.status === 'checking' || state.status === 'error') return <>{outcome}<main className={styles.auth}><Brand /><p role="status">{t(state.status === 'error' ? 'multiuser.connectionError' : 'multiuser.checking')}</p>

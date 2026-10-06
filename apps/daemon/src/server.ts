@@ -919,6 +919,7 @@ import { registerDeployRoutes, registerDeploymentCheckRoutes } from './routes/de
 import { registerMediaRoutes } from './routes/media.js';
 import { registerProjectRoutes, registerProjectArtifactRoutes, registerProjectFileRoutes, registerProjectUploadRoutes, createEnforceWorkspaceProjectMutation } from './routes/project/index.js';
 import { registerProjectChatArtifactRoutes } from './routes/project/chat-artifacts.js';
+import { bindMultiUserStream, multiUserStreamAllowed } from './http/multiuser-stream.js';
 import { createChatArtifactBlobStore } from './chat-artifacts/blob-store.js';
 import { resolveChatArtifactQuota } from './chat-artifacts/quota.js';
 import {
@@ -1166,6 +1167,7 @@ import {
   installRouteRegistrationGuard,
 } from './route-registration-guard.js';
 import { installMultiUserFront } from './http/multiuser-gate.js';
+import { multiUserStudioCapabilities } from './http/studio-parity.js';
 import { resolveMultiUserMode, type MultiUserModeOptions } from './services/multiuser-mode.js';
 import { assertServerContextSatisfiesRoutes } from './route-context-contract.js';
 import { configureConnectorCredentialStore, connectorService, FileConnectorCredentialStore } from './connectors/service.js';
@@ -3038,8 +3040,9 @@ export function createSseResponse(
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
+  bindMultiUserStream(res);
 
-  const canWrite = () => !res.destroyed && !res.writableEnded;
+  const canWrite = () => !res.destroyed && !res.writableEnded && multiUserStreamAllowed(res);
   const writeKeepAlive = () => {
     if (canWrite()) {
       res.write(': keepalive\n\n');
@@ -8333,7 +8336,7 @@ export async function startServer({
         ...version,
         capabilities: {
           slideRenderer: typeof desktopSlideRenderer === 'function',
-          ...(multiUserMode ? { multiUser: true as const } : {}),
+          ...(multiUserMode ? { multiUser: true as const, studio: multiUserStudioCapabilities() } : {}),
         },
       },
     });
@@ -8714,6 +8717,7 @@ export async function startServer({
     db,
     http: httpDeps,
     projectStore: projectStoreDeps,
+    projectOwnership: multiUserFront?.projectOwnershipHooks ?? null,
   });
   registerHostToolsRoutes(app, {
     db,
@@ -17579,6 +17583,7 @@ export async function startServer({
     personalCodex?.cancelPendingFor(accountId).catch(() => {});
   });
   if (multiUserRuns) multiUserFront?.setIsRunOwner(multiUserRuns.isRunOwner);
+  if (multiUserRuns) multiUserFront?.setCancelProjectRuns(multiUserRuns.cancelProjectRuns);
   if (multiUserRuns && personalCodex) {
     personalCodex.setRunHooks({ cancelPersonalRuns: multiUserRuns.cancelPersonalRuns,
       forgetNativeSessions: multiUserRuns.forgetNativeSessions,

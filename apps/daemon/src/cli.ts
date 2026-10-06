@@ -30,8 +30,29 @@ import {
   removeJsonInstall,
 } from './mcp-agent-install.js';
 import { resolveMcpWorkspaceContext } from './mcp-workspace-context.js';
+import { cliSessionFetch, extractCliSessionFile, pinCliServerOrigin, readCliSession, runSessionCli } from './http/cli-session.js';
 
-const argv = process.argv.slice(2);
+let argv;
+let remoteSessionFile = null;
+try {
+  const selected = extractCliSessionFile(process.argv.slice(2));
+  argv = selected.args;
+  remoteSessionFile = selected.sessionFile;
+  if (remoteSessionFile && argv[0] !== 'session') {
+    if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') throw new Error('TLS verification must not be disabled');
+    const credential = readCliSession(remoteSessionFile);
+    const originIndex = argv.indexOf('--daemon-url');
+    const explicitOrigin = originIndex >= 0 ? argv[originIndex + 1] : argv.find((arg) => arg.startsWith('--daemon-url='))?.slice('--daemon-url='.length);
+    if (explicitOrigin && pinCliServerOrigin(explicitOrigin) !== credential.origin) throw new Error('Session server origin mismatch');
+    // Process-local only: discovery and imported command helpers must use the
+    // same pinned server. No credential is passed in environment or argv.
+    process.env.OD_DAEMON_URL = credential.origin;
+    globalThis.fetch = cliSessionFetch(credential, globalThis.fetch.bind(globalThis));
+  }
+} catch {
+  process.stderr.write(`${JSON.stringify({ ok: false, error: { code: 'CLI_SESSION_INVALID', message: 'Invalid private session file, server origin or TLS policy' } })}\n`);
+  process.exit(2);
+}
 
 const RESUME_CONTINUE_PROMPT =
   'The previous turn was interrupted by a transient failure. ' +
@@ -251,13 +272,16 @@ const PROJECT_STRING_FLAGS = new Set([
   'agent', 'model', 'service-tier', 'snapshot-id', 'inputs', 'grant-caps', 'editor',
   'title', 'label', 'against', 'seed-from', 'fork-after', 'mode',
   'source', 'out',
+  'execution-source',
+  'tabs-json', 'active-file',
+  'last-event-id',
 ]);
 const PROJECT_RESOURCE_STRING_FLAGS = new Set([
   ...PROJECT_STRING_FLAGS,
   'workspace',
   'workspace-member',
 ]);
-const PROJECT_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'follow', 'thumbnail']);
+const PROJECT_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'follow', 'thumbnail', 'clear']);
 const WORKSPACE_STRING_FLAGS = new Set([
   'model',
   'daemon-url', 'workspace', 'view', 'visibility', 'owner', 'project',
@@ -387,6 +411,13 @@ const PLUGIN_LIST_BOOLEAN_FLAGS = new Set([
 ]);
 
 const SUBCOMMAND_MAP = {
+  session: async (args) => {
+    try { await runSessionCli(args, remoteSessionFile); }
+    catch {
+      process.stderr.write(`${JSON.stringify({ ok: false, error: { code: 'CLI_SESSION_FAILED', message: 'Session operation failed; check origin, credentials, file permissions and session status' } })}\n`);
+      process.exitCode = 1;
+    }
+  },
   agent: runAgent,
   artifacts: runArtifacts,
   media: runMedia,
@@ -834,10 +865,19 @@ if (argv[0] === 'mcp' && argv[1] === 'live-artifacts') {
 }
 
 const first = argv.find((a) => !a.startsWith('-'));
+if (remoteSessionFile && (!first || !SUBCOMMAND_MAP[first] || ['daemon', 'doctor', 'mcp', 'resource', 'amr', 'agent', 'diagnostics', 'figma', 'brand', 'brands', 'collab', 'workspace'].includes(first))) {
+  process.stderr.write(`${JSON.stringify({ ok: false, error: { code: 'CLI_SESSION_CAPABILITY_PENDING', message: 'This local/host command has no reviewed remote session adapter; use the Studio capability contract' } })}\n`);
+  process.exit(2);
+}
 if (first && SUBCOMMAND_MAP[first]) {
   const idx = argv.indexOf(first);
   const rest = [...argv.slice(0, idx), ...argv.slice(idx + 1)];
-  await SUBCOMMAND_MAP[first](rest);
+  try { await SUBCOMMAND_MAP[first](rest); }
+  catch (error) {
+    if (!remoteSessionFile) throw error;
+    process.stderr.write(`${JSON.stringify({ ok: false, error: { code: 'CLI_SESSION_REQUEST_FAILED', message: 'Authenticated request failed or ended before its terminal event; verify the session and resume without replaying mutations' } })}\n`);
+    process.exitCode = 1;
+  }
   // Respect a non-zero exit code a handler set via process.exitCode (e.g. a
   // failed `od resource get`); default to 0 when it left it unset.
   process.exit(process.exitCode ?? 0);
@@ -7009,6 +7049,10 @@ async function runProject(args) {
                     [--design-system <id>] [--json]
   od project list                         List projects.
   od project info <id>                    Print one project.
+  od project tabs <id> [--tabs-json <json-array> --active-file <path>] [--json]
+  od project events <id>                  Stream owned file events as ND-JSON.
+  od project active [<id> --active-file <path> | --clear] [--json]
+                                          Read/set this session's UI focus.
   od project restore-automatic-scenario <id> [--json]
                                           Restore the daemon-selected default
                                           scenario with a snapshot CAS guard.
@@ -7063,6 +7107,19 @@ Common options:
   const explicitWorkspaceHeaders = workspaceHeadersFromExplicitFlags(flags);
   const workspaceHeaders = explicitWorkspaceHeaders ?? {};
   switch (sub) {
+    case 'active': {
+      const id = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
+      if ((id && flags.clear) || (!id && flags['active-file'])) {
+        console.error('Usage: od project active [<id> --active-file <path> | --clear] [--json]'); process.exit(2);
+      }
+      const body = flags.clear ? { active: false } : id ? { projectId: id, fileName: flags['active-file'] ?? null } : null;
+      const response = await fetch(`${base}/api/active`, body ? {
+        method: 'POST', headers: { 'content-type': 'application/json', ...workspaceHeaders }, body: JSON.stringify(body),
+      } : { headers: workspaceHeaders });
+      if (!response.ok) return structuredHttpFailure(response);
+      process.stdout.write(JSON.stringify(await response.json()) + '\n');
+      return;
+    }
     case 'list': {
       // After 0.18.0's workspace isolation, GET /api/projects is the NO-SCOPE
       // catalog: it only returns projects that were never adopted into a
@@ -7087,7 +7144,7 @@ Common options:
           `${base}/api/workspaces/${encodeURIComponent(workspaceId)}/projects`,
           { headers: scopeHeaders },
         );
-      } else {
+      } else if (!remoteSessionFile) {
         const ctx = await resolveMcpWorkspaceContext(base);
         if (ctx) {
           scopeHeaders = ctx.headers;
@@ -7109,6 +7166,30 @@ Common options:
         return;
       }
       for (const p of projects) console.log(`${p.id}\t${p.name}\t${p.skillId ?? '-'}`);
+      return;
+    }
+    case 'tabs': {
+      const id = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
+      if (!id) { console.error('Usage: od project tabs <id> [--tabs-json <json-array> --active-file <path>] [--json]'); process.exit(2); }
+      let init = { headers: workspaceHeaders };
+      if (flags['tabs-json'] !== undefined) {
+        let tabs;
+        try { tabs = JSON.parse(flags['tabs-json']); } catch { console.error('--tabs-json must be a JSON array'); process.exit(2); }
+        if (!Array.isArray(tabs) || !tabs.every((tab) => typeof tab === 'string')) { console.error('--tabs-json must contain strings'); process.exit(2); }
+        init = { method: 'PUT', headers: { 'content-type': 'application/json', ...workspaceHeaders },
+          body: JSON.stringify({ tabs, active: flags['active-file'] ?? null }) };
+      }
+      const response = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/tabs`, init);
+      if (!response.ok) return structuredHttpFailure(response, 'project-not-found');
+      process.stdout.write(JSON.stringify(await response.json()) + '\n');
+      return;
+    }
+    case 'events': {
+      const id = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
+      if (!id) { console.error('Usage: od project events <id> [--json]'); process.exit(2); }
+      const response = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/events`, { headers: { accept: 'text/event-stream', ...workspaceHeaders } });
+      if (!response.ok) return structuredHttpFailure(response, 'project-not-found');
+      await writeCliEventStream(response);
       return;
     }
     case 'info': {
@@ -7193,8 +7274,9 @@ Common options:
       const body = {
         id,
         name,
-        skillId:        flags.skill ?? null,
-        designSystemId: flags['design-system'] ?? null,
+        ...(!remoteSessionFile ? { skillId: flags.skill ?? null, designSystemId: flags['design-system'] ?? null } : {
+          ...(flags.skill ? { skillId: flags.skill } : {}), ...(flags['design-system'] ? { designSystemId: flags['design-system'] } : {}),
+        }),
       };
       const conversationMode = normalizeChatSessionModeFlag(flags.mode);
       if (conversationMode) body.conversationMode = conversationMode;
@@ -7793,6 +7875,7 @@ async function runRun(args) {
                [--client-request-id <id>]
                [--skill <id>[,<id>]] [--plugin <id>] [--inputs <json>] [--grant-caps a,b]
                [--agent claude|codex|opencode] [--model <id>] [--service-tier <id>]
+               [--execution-source personal_subscription|company_pool] [--session-file <path>]
                [--workspace <id> --workspace-member <id>] [--follow] [--json]
   od run redesign [--path <folder>] [--message "<text>" | --prompt-file <path|->]
                [--agent claude] [--model <id>] [--service-tier <id>] [--follow] [--json]
@@ -8000,7 +8083,7 @@ Common options:
         console.error('Usage: od run watch <runId>');
         process.exit(2);
       }
-      await streamRunEvents(base, id, workspaceHeaders);
+      await streamRunEvents(base, id, workspaceHeaders, flags['last-event-id']);
       return;
     }
     case 'redesign': {
@@ -8057,7 +8140,8 @@ Common options:
           conversationId: conversationId ?? null,
         }, null, 2) + '\n');
       }
-      console.log(`[run] started ${data.runId}`);
+      if (flags.json) process.stderr.write(`[run] started ${data.runId}\n`);
+      else console.log(`[run] started ${data.runId}`);
       if (flags.follow) await streamRunEvents(base, data.runId, workspaceHeaders);
       return;
     }
@@ -8067,6 +8151,10 @@ Common options:
         process.exit(2);
       }
       const body = { projectId: flags.project };
+      if (flags['execution-source']) {
+        body.executionSource = flags['execution-source'];
+        if (flags['execution-source'] === 'personal_subscription' && !flags.agent) body.agentId = 'codex';
+      }
       if (flags.conversation) body.conversationId = flags.conversation;
       const message = await readRunMessageFromFlags(flags);
       if (message) body.message = message;
@@ -8122,7 +8210,8 @@ Common options:
       if (flags.json && !flags.follow) {
         return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
       }
-      console.log(`[run] started ${data.runId}`);
+      if (flags.json) process.stderr.write(`[run] started ${data.runId}\n`);
+      else console.log(`[run] started ${data.runId}`);
       if (flags.follow) await streamRunEvents(base, data.runId, workspaceHeaders);
       return;
     }
@@ -8135,7 +8224,7 @@ Common options:
 // Stream the SSE events at /api/runs/:id/events as ND-JSON on stdout.
 // Each line is one event: { event, data } so a code agent can parse it
 // without needing an SSE library.
-async function streamRunEvents(base, initialRunId, workspaceHeaders = {}) {
+async function streamRunEvents(base, initialRunId, workspaceHeaders = {}, lastEventId = undefined) {
   let runId = initialRunId;
   const visited = new Set();
   while (true) {
@@ -8145,7 +8234,7 @@ async function streamRunEvents(base, initialRunId, workspaceHeaders = {}) {
     }
     visited.add(runId);
     const resp = await fetch(`${base}/api/runs/${encodeURIComponent(runId)}/events`, {
-      headers: { accept: 'text/event-stream', ...workspaceHeaders },
+      headers: { accept: 'text/event-stream', ...workspaceHeaders, ...(lastEventId === undefined ? {} : { 'Last-Event-ID': String(lastEventId) }) },
     });
     if (!resp.ok || !resp.body) {
       console.error(`run watch failed: ${resp.status}`);
@@ -8165,6 +8254,7 @@ async function streamRunEvents(base, initialRunId, workspaceHeaders = {}) {
       for (const block of blocks) {
         const lines = block.split('\n');
         const eventLine = lines.find((l) => l.startsWith('event: '));
+        const idLine = lines.find((l) => l.startsWith('id: '));
         const dataLines = lines
           .filter((line) => line.startsWith('data: '))
           .map((line) => line.slice('data: '.length));
@@ -8172,7 +8262,7 @@ async function streamRunEvents(base, initialRunId, workspaceHeaders = {}) {
         const dataRaw = dataLines.join('\n');
         let parsed;
         try { parsed = JSON.parse(dataRaw); } catch { parsed = dataRaw; }
-        process.stdout.write(JSON.stringify({ event, data: parsed }) + '\n');
+        process.stdout.write(JSON.stringify({ event, data: parsed, ...(idLine ? { id: idLine.slice(4) } : {}) }) + '\n');
         if (event !== 'end') continue;
         const task = parsed?.strategyTask;
         if (task && task.terminal !== true) {
@@ -8187,9 +8277,44 @@ async function streamRunEvents(base, initialRunId, workspaceHeaders = {}) {
         break;
       }
     }
+    if (!ended && remoteSessionFile) {
+      // A cursor may already include the durable terminal event. Confirm from
+      // fresh actor authority rather than treating any EOF as successful.
+      const status = await fetch(`${base}/api/runs/${encodeURIComponent(runId)}`);
+      if (!status.ok || !['succeeded', 'failed', 'canceled'].includes((await status.json()).status)) {
+        throw new Error('Run stream ended before terminal event');
+      }
+    }
     if (!nextRunId) return;
+    lastEventId = undefined;
     runId = nextRunId;
   }
+}
+
+async function writeCliEventStream(response) {
+  if (!response.body) throw new Error('Event stream has no body');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+      const blocks = buffer.split('\n\n');
+      buffer = blocks.pop() ?? '';
+      for (const block of blocks) {
+        const lines = block.split('\n');
+        const data = lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).replace(/^ /, '')).join('\n');
+        if (!data) continue;
+        const event = lines.find((line) => line.startsWith('event:'))?.slice(6).trim() || 'message';
+        const id = lines.find((line) => line.startsWith('id:'))?.slice(3).trim();
+        let parsed;
+        try { parsed = JSON.parse(data); } catch { parsed = data; }
+        process.stdout.write(JSON.stringify({ event, data: parsed, ...(id === undefined ? {} : { id }) }) + '\n');
+      }
+    }
+  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
 // `od shell --project <id>` opens an interactive PTY rooted at the project's
@@ -8907,6 +9032,10 @@ async function runConversation(args) {
                                            source message.
   od conversation list <projectId>           List conversations in a project.
   od conversation info <conversationId>      Print one conversation.
+  od conversation update <conversationId> --project <id> [--title <title>] [--mode design|chat|plan] [--json]
+  od conversation delete <conversationId> --project <id> [--json]
+  od conversation messages <conversationId> --project <id> [--json]
+  od conversation message-update <conversationId> <messageId> --project <id> --prompt-file <path|-> [--json]
 
 Common options:
   --daemon-url <url>         OpenDesign daemon HTTP base.
@@ -8918,7 +9047,7 @@ Common options:
   const sub = args[0];
   const rest = args.slice(1);
   const conversationStringFlags =
-    sub === 'new' || sub === 'list'
+    sub !== 'info'
       ? PROJECT_RESOURCE_STRING_FLAGS
       : PROJECT_STRING_FLAGS;
   const flags = parseFlags(rest, {
@@ -8927,10 +9056,32 @@ Common options:
   });
   const base = (await projectDaemonUrl(flags)).replace(/\/$/, '');
   const workspaceHeaders =
-    sub === 'new' || sub === 'list'
+    sub !== 'info'
       ? workspaceHeadersFromExplicitFlags(flags) ?? {}
       : {};
   switch (sub) {
+    case 'update':
+    case 'delete':
+    case 'messages':
+    case 'message-update': {
+      const [cid, mid] = positionalArgs(rest, conversationStringFlags);
+      if (!cid || !flags.project || (sub === 'message-update' && !mid)) {
+        console.error(`Usage: od conversation ${sub} <conversationId>${sub === 'message-update' ? ' <messageId>' : ''} --project <id> [--json]`);
+        process.exit(2);
+      }
+      const root = `/api/projects/${encodeURIComponent(flags.project)}/conversations/${encodeURIComponent(cid)}`;
+      const suffix = sub === 'messages' ? '/messages' : sub === 'message-update' ? `/messages/${encodeURIComponent(mid)}` : '';
+      const body = sub === 'update'
+        ? { ...(typeof flags.title === 'string' ? { title: flags.title } : {}), ...(flags.mode ? { sessionMode: normalizeChatSessionModeFlag(flags.mode) } : {}) }
+        : sub === 'message-update' ? { role: 'user', content: await readRunMessageFromFlags(flags) } : null;
+      const method = sub === 'messages' ? 'GET' : sub === 'delete' ? 'DELETE' : sub === 'update' ? 'PATCH' : 'PUT';
+      const response = await fetch(`${base}${root}${suffix}`, { method,
+        headers: { ...workspaceHeaders, ...(body ? { 'content-type': 'application/json' } : {}) },
+        ...(body ? { body: JSON.stringify(body) } : {}) });
+      if (!response.ok) return structuredHttpFailure(response, 'project-not-found');
+      process.stdout.write(JSON.stringify(await response.json()) + '\n');
+      return;
+    }
     case 'new': {
       const [id] = positionalArgs(rest, conversationStringFlags);
       if (!id) {

@@ -24,6 +24,7 @@ import {
   fidelityToTracking,
 } from '@open-design/contracts/analytics';
 import type {
+  ActiveContextWriteRequest,
   AmrModelsResponse,
   ChatSessionMode,
   CreateProjectExampleReference,
@@ -1938,7 +1939,7 @@ function AppInner() {
     config.privacyDecisionAt == null &&
     config.onboardingCompleted === true;
   useEffect(() => {
-    const body = activeProjectId
+    const body: ActiveContextWriteRequest = activeProjectId
       ? { projectId: activeProjectId, fileName: activeFileName }
       : { active: false };
     fetch('/api/active', {
