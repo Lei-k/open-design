@@ -17,6 +17,11 @@ ENV https_proxy=${https_proxy}
 ENV no_proxy=${no_proxy}
 ENV NO_PROXY=${NO_PROXY}
 ENV CI=true
+# onnxruntime-node (via hyperframes) otherwise downloads its CUDA provider
+# libraries (hundreds of MB) during postinstall. The alpine runtime has no GPU,
+# so they are dead weight in the image, and on slow links the download stalls
+# the whole build.
+ENV ONNXRUNTIME_NODE_INSTALL_CUDA=skip
 
 RUN apk add --no-cache python3 make g++
 
@@ -33,7 +38,10 @@ RUN corepack enable && \
     pnpm install --frozen-lockfile
 
 COPY apps ./apps
-RUN pnpm --filter @open-design/daemon build && \
+# The daemon and web TypeScript builds exceed Node's default heap; the limit is
+# scoped to this step (the runtime stage sets its own NODE_OPTIONS).
+RUN export NODE_OPTIONS=--max-old-space-size=6144 && \
+    pnpm --filter @open-design/daemon build && \
     pnpm --filter @open-design/web build && \
     pnpm --filter @open-design/daemon deploy --legacy --prod /app/deploy/daemon && \
     pnpm store prune && \
@@ -83,7 +91,7 @@ COPY assets ./assets
 COPY data ./data
 COPY plugins/_official ./plugins/_official
 
-FROM ${RUNTIME_IMAGE}
+FROM ${RUNTIME_IMAGE} AS runtime
 
 RUN apk add --no-cache tini poppler-utils bash git && \
     addgroup -S -g 1001 open-design && \
@@ -119,3 +127,44 @@ EXPOSE 7456
 USER open-design
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["node", "apps/daemon/dist/cli.js", "--no-open"]
+
+# ---------------------------------------------------------------------------
+# Multi-user staging target (#7/#18): `docker build --target multiuser`.
+# Starts `multiuser-serve` behind the HTTPS proxy in deploy/multiuser/, with a
+# pinned real Codex CLI for personal subscriptions; every personal Codex child
+# runs in a per-run bubblewrap sandbox. The default target stays single-user.
+#
+# The CLI comes from the official release, verified by sha256. A local build
+# can supply an already-verified standalone release directory instead:
+#   --build-context codex-release=<dir containing bin/codex>
+FROM ${NODE_IMAGE} AS codex-download
+ARG CODEX_VERSION=0.154.0
+ARG CODEX_SHA256=d7e18b2597ae8f242f5f31ee9e90deef48dbc9edd634d9868fb6435d08c07f02
+RUN set -eu; \
+    [ "$(uname -m)" = "x86_64" ] || { echo "the multiuser target pins the x86_64 Codex release" >&2; exit 1; }; \
+    mkdir -p /out/bin; \
+    wget -qO /tmp/codex.tgz "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-x86_64-unknown-linux-musl.tar.gz"; \
+    echo "${CODEX_SHA256}  /tmp/codex.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/codex.tgz -C /tmp; \
+    mv /tmp/codex-x86_64-unknown-linux-musl /out/bin/codex; \
+    chmod 0755 /out/bin/codex
+
+FROM scratch AS codex-release
+COPY --from=codex-download /out/ /
+
+FROM runtime AS multiuser
+USER root
+RUN apk add --no-cache bubblewrap ca-certificates
+COPY --from=codex-release / /opt/codex/
+RUN chmod -R a+rX /opt/codex && /opt/codex/bin/codex --version
+# The daemon binds loopback only; the proxy shares this network namespace.
+ENV OD_BIND_HOST=127.0.0.1
+ENV NODE_OPTIONS=--max-old-space-size=1024
+# Daemon data root: root AGENTS.md "Daemon data directory contract". The
+# launcher requires it explicitly; this image keeps the single-user mount point.
+ENV OD_DATA_DIR=/app/.od
+USER open-design
+CMD ["node", "apps/daemon/dist/multiuser-serve.js", "--config", "/etc/open-design/multiuser.json"]
+
+# The default target: the single-user daemon, unchanged.
+FROM runtime AS single-user

@@ -1,0 +1,10 @@
+{
+  "acknowledge": "I am deploying OpenDesign multi-user mode for staging behind an HTTPS proxy; the daemon stays on loopback and the #8 launch gate is not done",
+  "publicOrigin": "https://od.example.com",
+  "port": 7456,
+  "bootstrapSecretFile": "/run/secrets/od_bootstrap",
+  "personalCodex": {
+    "binary": "/opt/codex/bin/codex",
+    "bwrap": "/usr/bin/bwrap"
+  }
+}

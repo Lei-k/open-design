@@ -104,11 +104,15 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   personal?: PersonalCodexAccounts;
 }): { cancelAccountRuns(accountId: string): void; isRunOwner(runId: string, accountId: string): boolean;
   cancelPersonalRuns(accountId: string): Promise<void>; forgetNativeSessions(accountId: string): void; personalLane: PersonalRunLaneControls; listAccountIds(): string[];
-  beginShutdown(): void; shutdown(): Promise<void> } {
+  beginShutdown(): void; shutdown(): Promise<void>; companyPoolAvailable: boolean } {
   const { db, dataRoot, projectsRoot } = input;
-  const expected = fs.realpathSync(path.join(input.repositoryRoot, 'mocks/run-isolation-agent.ts'));
+  // The company pool has no real provider yet (#14): it runs only the repository test mock,
+  // and without one it is unavailable. A deployed image ships no mocks, so the mock is
+  // resolved only when one is injected.
   const mockAgentScript = input.mockAgentScript ? fs.realpathSync(input.mockAgentScript) : null;
-  if (mockAgentScript && mockAgentScript !== expected) throw new Error('multi-user mode refused: only the repository test mock may run');
+  if (mockAgentScript && mockAgentScript !== fs.realpathSync(path.join(input.repositoryRoot, 'mocks/run-isolation-agent.ts'))) {
+    throw new Error('multi-user mode refused: only the repository test mock may run');
+  }
   const owners = new ProjectOwnershipStore(db);
   const ledger = new WorkerQuotaLedger({ dataRoot, ...(input.clock ? { clock: input.clock } : {}) });
   const accounts = AuthStore.open({ dataRoot });
@@ -803,5 +807,6 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     listAccountIds: () => accounts.listAccounts().map((account) => account.id),
     beginShutdown,
     shutdown,
+    companyPoolAvailable: mockAgentScript !== null,
   };
 }

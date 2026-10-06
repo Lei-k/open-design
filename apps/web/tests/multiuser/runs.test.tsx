@@ -95,13 +95,13 @@ it('requires an explicit source and never retries personal failure on company ca
   expect((send as HTMLButtonElement).disabled).toBe(true);
   fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'hello' } });
   const sources = screen.getByRole('group', { name: 'Execution source' });
-  fireEvent.click(within(sources).getByRole('radio', { name: 'My Codex subscription (test mock)' }));
+  fireEvent.click(within(sources).getByRole('radio', { name: 'My Codex subscription' }));
   await act(async () => fireEvent.click(send));
   expect(screen.getByRole('alert').textContent).toContain('subscription usage limit');
   const posts = requests.filter(({ url, init }) => url === '/api/runs' && init?.method === 'POST');
   expect(posts).toHaveLength(1);
   expect(JSON.parse(String(posts[0]!.init?.body))).toMatchObject({ executionSource: 'personal_subscription', agentId: 'codex' });
-  expect((screen.getByRole('radio', { name: 'My Codex subscription (test mock)' }) as HTMLInputElement).checked).toBe(true);
+  expect((screen.getByRole('radio', { name: 'My Codex subscription' }) as HTMLInputElement).checked).toBe(true);
 });
 it.each(['company_pool', 'personal_subscription'])('derives the pinned %s source from history on reload', async (source) => {
   runResponse = async () => json({ runs: [{ ...run, status: 'succeeded', ...(source === 'personal_subscription' ? { executionSource: source } : {}), output: { text: 'Saved result' } }] });
@@ -110,7 +110,7 @@ it.each(['company_pool', 'personal_subscription'])('derives the pinned %s source
   // A pinned source reads as locked, not as two unavailable choices.
   const sources = screen.getByRole('group', { name: 'Execution source' });
   expect(within(sources).queryByRole('radio')).toBeNull();
-  expect(within(sources).getByText(`Locked to ${source === 'company_pool' ? 'Company pool (test mock)' : 'My Codex subscription (test mock)'}`)).toBeTruthy();
+  expect(within(sources).getByText(`Locked to ${source === 'company_pool' ? 'Company pool (test mock)' : 'My Codex subscription'}`)).toBeTruthy();
   expect(screen.getByText(/pinned to its first/)).toBeTruthy();
   expect(streamSignal).toBeNull();
 });
@@ -125,7 +125,7 @@ it('shows a terminal personal failure without offering a company retry', async (
   mount();
   expect((await screen.findByRole('alert')).textContent).toContain('subscription usage limit');
   expect(screen.queryByRole('radio', { name: 'Company pool (test mock)' })).toBeNull();
-  expect(screen.getByText('Locked to My Codex subscription (test mock)')).toBeTruthy();
+  expect(screen.getByText('Locked to My Codex subscription')).toBeTruthy();
   expect(requests.some(({ init }) => init?.method === 'POST')).toBe(false);
 });
 it('does not revive a terminal stream when an earlier cancel response arrives late', async () => {
@@ -180,7 +180,7 @@ it('loads older runs by cursor and keeps the pin named by the newest page', asyn
   mount();
   await screen.findByText('Newest output');
   // Only the newest page is loaded, yet the source is locked to the conversation's pin.
-  expect(screen.getByText('Locked to My Codex subscription (test mock)')).toBeTruthy();
+  expect(screen.getByText('Locked to My Codex subscription')).toBeTruthy();
   expect(screen.queryByRole('radio', { name: 'Company pool (test mock)' })).toBeNull();
   expect(screen.queryByText('Oldest prompt')).toBeNull();
   expect(cursorOf(requests.find(({ url }) => url.startsWith('/api/runs?'))!.url)).toBeNull();
@@ -188,7 +188,7 @@ it('loads older runs by cursor and keeps the pin named by the newest page', asyn
   const older = await screen.findByText('Oldest output');
   expect(older.compareDocumentPosition(screen.getByText('Newest output')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Load older runs' })).toBeNull();
-  expect(screen.getByText('Locked to My Codex subscription (test mock)')).toBeTruthy();
+  expect(screen.getByText('Locked to My Codex subscription')).toBeTruthy();
   expect(streamSignal).toBeNull();
 });
 it.each([true, false])('warns before send when the personal pin is stale=%s', async (stale) => {

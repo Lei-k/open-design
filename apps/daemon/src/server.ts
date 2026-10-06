@@ -17567,6 +17567,7 @@ export async function startServer({
     multiUserFront?.setIsAgentAccountOwner((param, id, accountId) => personalCodex.isOwner(param, id, accountId));
     registerMultiUserAgentAccountRoutes(app, {
       personal: personalCodex, runs: multiUserRuns.personalLane, listAccountIds: multiUserRuns.listAccountIds,
+      companyPoolAvailable: multiUserRuns.companyPoolAvailable,
     });
   }
   registerRunRoutes(app, {

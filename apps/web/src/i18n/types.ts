@@ -39,6 +39,7 @@ export interface Dict {
   'multiuserRuns.noRuns': string;
   'multiuserRuns.source': string;
   'multiuserRuns.company': string;
+  'multiuserRuns.companyUnavailable': string;
   'multiuserRuns.personal': string;
   'multiuserRuns.pinned': string;
   'multiuserRuns.message': string;

@@ -70,9 +70,12 @@ describe('multi-user mode is not a production switch', () => {
     expect(server).not.toMatch(/OD_MULTIUSER|OD_MULTI_USER|OD_AUTH_MODE/);
   });
 
-  it('no production module supplies the multiUser option or the acknowledgement', () => {
+  it('only the staging launcher supplies the multiUser option or the acknowledgement', () => {
     // daemon-startup.ts names the option only to reject it before importing startServer.
-    const allowed = new Set(['server.ts', 'services/multiuser-mode.ts', 'http/multiuser-gate.ts', 'daemon-startup.ts']);
+    // multiuser-serve.ts is the one production entry (user decision 2026-10-06, #7): a
+    // separate program gated by its config-file acknowledgement, never an env switch.
+    const allowed = new Set(['server.ts', 'services/multiuser-mode.ts', 'http/multiuser-gate.ts', 'daemon-startup.ts',
+      'multiuser-serve.ts']);
     const offenders = sources
       .filter((s) => !allowed.has(s.file))
       .filter((s) => /\bmultiUser\b|MULTIUSER_NOT_LAUNCH_READY_ACK|not launch-ready/.test(s.text))

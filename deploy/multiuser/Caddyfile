@@ -1,0 +1,10 @@
+# HTTPS entry for the multi-user daemon. Caddy obtains and renews the
+# certificate for OD_DOMAIN automatically (ports 80 and 443 must reach it).
+{$OD_DOMAIN} {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000"
+	reverse_proxy 127.0.0.1:7456 {
+		# Run progress streams over SSE; do not buffer it.
+		flush_interval -1
+	}
+}
