@@ -135,8 +135,11 @@ export class MultiUserStudioMessages {
     const text = events.filter((event) => event.kind === 'text').map((event) => event.text).join('');
     const terminal = run.status !== 'active' && run.status !== 'queued';
     if (!getMessage(this.db, ids.userMessageId, run.conversation_id)) {
+      const attachments = Array.isArray(request.attachments) ? request.attachments.filter((value): value is string => typeof value === 'string') : [];
       upsertMessage(this.db, run.conversation_id, {
         id: ids.userMessageId, role: 'user', content: typeof request.message === 'string' ? request.message : '', createdAt: run.created_at,
+        ...(attachments.length ? { attachments: attachments.map((file, order) => ({ path: file, name: file.split('/').at(-1) ?? file,
+          kind: /\.(?:png|jpe?g|gif|webp|svg|avif|bmp)$/i.test(file) ? 'image' as const : 'file' as const, order })) } : {}),
       });
     }
     upsertMessage(this.db, run.conversation_id, {

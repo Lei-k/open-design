@@ -1,5 +1,5 @@
 import { registerStudioReset } from '../runtime/studio-resources';
-import { studioUsesLocalServices, studioFetch as fetch } from '../runtime/studio-transport';
+import { studioUsesLocalServices, studioFetch as fetch, studioLaneUsable } from '../runtime/studio-transport';
 import {
   PUBLIC_FILE_MANUAL_REVOKE_REQUIRED,
   workspaceContextHasTeamIdentity,
@@ -2149,7 +2149,7 @@ export async function fetchProjectFiles(
     requireAuthoritative?: boolean;
   },
 ): Promise<ProjectFile[]> {
-  if (!studioUsesLocalServices()) return [];
+  if (!studioLaneUsable('files')) return [];
   // Every reader of the same project's file list shares one request
   // (Batch A §4.3). Cancellable callers (project-card cover scans aborted
   // when Home unmounts) detach individually; the shared request is aborted

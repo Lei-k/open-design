@@ -3652,7 +3652,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
               }}
               connectors={connectors}
-              onPickConnector={(connector) => {
+              onPickConnector={!studio.available('settings') ? undefined : (connector) => {
                 trackComposerBar({
                   element: 'plus_pick',
                   resource_kind: 'connector',
@@ -3660,12 +3660,12 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 insertConnectorMention(connector);
               }}
-              onAddConnector={onOpenConnectors ? () => {
+              onAddConnector={studio.available('settings') && onOpenConnectors ? () => {
                 trackComposerBar({ element: 'plus_add', resource_kind: 'connector' });
                 onOpenConnectors();
               } : undefined}
               plugins={pluginsForComposer}
-              onPickPlugin={(record) => {
+              onPickPlugin={!studio.available('catalogs') ? undefined : (record) => {
                 trackComposerBar({
                   element: 'plus_pick',
                   resource_kind: 'plugin',
@@ -3673,12 +3673,12 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 void insertPluginMention(record);
               }}
-              onAddPlugin={onBrowsePlugins ? () => {
+              onAddPlugin={studio.available('catalogs') && onBrowsePlugins ? () => {
                 trackComposerBar({ element: 'plus_add', resource_kind: 'plugin' });
                 onBrowsePlugins();
               } : undefined}
               skills={skills}
-              onPickSkill={(skill) => {
+              onPickSkill={!studio.available('catalogs') ? undefined : (skill) => {
                 trackComposerBar({
                   element: 'plus_pick',
                   resource_kind: 'skill',
@@ -3687,7 +3687,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 void insertSkillMention(skill);
               }}
               mcpServers={enabledMcpServers}
-              onPickMcp={(server) => {
+              onPickMcp={!studio.available('settings') ? undefined : (server) => {
                 trackComposerBar({
                   element: 'plus_pick',
                   resource_kind: 'mcp',
@@ -3695,7 +3695,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 insertMcpMention(server);
               }}
-              onAddMcp={onOpenMcpSettings ? () => {
+              onAddMcp={studio.available('settings') && onOpenMcpSettings ? () => {
                 trackComposerBar({ element: 'plus_add', resource_kind: 'mcp' });
                 onOpenMcpSettings();
               } : undefined}
@@ -3707,7 +3707,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 fileInputRef.current?.click();
               }}
-              onReferenceProject={() => {
+              onReferenceProject={!studio.available('web-host') ? undefined : () => {
                 trackComposerBar({ element: 'plus_pick', resource_kind: 'workspace', resource_id: 'reference-project' });
                 trackProjectReferenceModalSurfaceView(analytics.track, {
                   page_name: 'chat_panel',
@@ -3716,12 +3716,12 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 setProjectReferenceOpen(true);
               }}
-              onLinkLocalCode={() => {
+              onLinkLocalCode={!studio.available('web-host') ? undefined : () => {
                 trackComposerBar({ element: 'plus_pick', resource_kind: 'workspace', resource_id: 'local-code' });
                 void handleLinkLocalCodeContext();
               }}
               attachLoading={uploading}
-              onSelectFromLibrary={() => {
+              onSelectFromLibrary={!studio.available('settings') ? undefined : () => {
                 trackChatPanelClick(analytics.track, {
                   page_name: 'chat_panel',
                   area: 'chat_panel',
@@ -3729,7 +3729,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 setLibraryPickerOpen(true);
               }}
-              onImportFigma={projectId ? () => {
+              onImportFigma={studio.available('web-host') && projectId ? () => {
                 trackChatPanelClick(analytics.track, {
                   page_name: 'chat_panel',
                   area: 'chat_panel',
@@ -3750,7 +3750,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 setFigmaHelpOpen(true);
               }}
-              onOpenDesignSystems={projectId && designSystemPicker ? () => {
+              onOpenDesignSystems={studio.available('catalogs') && projectId && designSystemPicker ? () => {
                 trackComposerBar({ element: 'design_system_open' });
                 openDesignSystemPicker();
               } : undefined}

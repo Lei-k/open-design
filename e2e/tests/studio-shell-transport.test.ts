@@ -74,3 +74,24 @@ it('opens run endpoints only with a usable execution lane, and only where the da
     expect(studioRequestAvailable(method!, path!, () => true), `${method} ${path}`).toBe(false);
   }
 });
+
+it('opens owner file endpoints only with a usable files lane, and only where the daemon classifies them', () => {
+  const files = [['GET', '/api/projects/p/files'], ['POST', '/api/projects/p/files'], ['POST', '/api/projects/p/files/rename'],
+    ['DELETE', '/api/projects/p/files/a.txt'], ['GET', '/api/projects/p/files/dir/a.txt'], ['GET', '/api/projects/p/files/a.html/versions'],
+    ['POST', '/api/projects/p/files/a.html/versions'], ['GET', '/api/projects/p/files/a.html/versions/v1'],
+    ['POST', '/api/projects/p/files/a.html/versions/v1/restore'], ['GET', '/api/projects/p/folders'], ['POST', '/api/projects/p/folders'],
+    ['DELETE', '/api/projects/p/folders'], ['GET', '/api/projects/p/search'], ['POST', '/api/projects/p/upload'],
+    ['GET', '/api/projects/p/raw/a/b.png'], ['DELETE', '/api/projects/p/raw/a.txt'], ['GET', '/api/projects/p/text-preview/a.md'],
+    ['GET', '/api/projects/p/file-content/a.md']] as const;
+  for (const [method, path] of files) {
+    expect(studioRequestAvailable(method, path, (lane) => lane === 'files'), `${method} ${path}`).toBe(true);
+    expect(studioRequestAvailable(method, path, () => false), `${method} ${path} without files`).toBe(false);
+    const matches = matchMultiUserRoute(method, path);
+    expect(matches.length, `${method} ${path}`).toBeGreaterThan(0);
+    expect(matches.every(({ entry }) => entry.routeClass === 'owner-scoped-project'), `${method} ${path}`).toBe(true);
+  }
+  for (const [method, path] of [['GET', '/api/projects/p/archive'], ['POST', '/api/projects/p/files/a.html/publish-public'],
+    ['OPTIONS', '/api/projects/p/raw/a.txt'], ['GET', '/api/projects/p/powered/a.js'], ['PUT', '/api/projects/p/files']]) {
+    expect(studioRequestAvailable(method!, path!, () => true), `${method} ${path}`).toBe(false);
+  }
+});

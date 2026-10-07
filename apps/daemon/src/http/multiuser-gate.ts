@@ -153,6 +153,25 @@ export function multiUserActorOf(res: Response): AuthActor | null {
   return (res.locals[ACTOR_LOCAL] as AuthActor | undefined) ?? null;
 }
 
+/**
+ * Owner file bytes are untrusted generated content served on the app origin.
+ * A sandboxed CSP gives any navigated document an opaque origin without
+ * scripts, so it can never act with the session; embedding contexts that read
+ * bytes (img/media/fetch) are unaffected. Handler attempts to widen CORS for
+ * `null` origins are dropped.
+ */
+export function applyUntrustedContentPolicy(res: Response): void {
+  res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'unsafe-inline'; font-src 'self' data:");
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  // Same-origin framing stays possible for viewers; the frame is still sandboxed.
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  const setHeader = res.setHeader.bind(res);
+  res.setHeader = ((name: string, value: unknown) => /^access-control-/i.test(name) || /^content-security-policy$/i.test(name) && value !== res.getHeader(name)
+    ? res
+    : setHeader(name, value as string)) as typeof res.setHeader;
+}
+
 // ---- gate -------------------------------------------------------------------
 
 export interface MultiUserGateDeps {
@@ -223,7 +242,17 @@ export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
       case 'agent-account-not-found':
         sendApiError(res, 404, 'NOT_FOUND', 'not found');
         return;
-      case 'allow':
+      case 'allow': {
+        const limit = Math.min(...matches.map((match) => match.entry.maxBodyBytes ?? Infinity));
+        if (Number.isFinite(limit)) {
+          const length = Number(req.get('content-length'));
+          // A bounded route needs a declared length within its ceiling (no chunked bodies).
+          if (!req.get('content-length') || !Number.isSafeInteger(length) || length > limit) {
+            sendApiError(res, 413, 'PAYLOAD_TOO_LARGE', 'request body is too large for multi-user mode');
+            return;
+          }
+        }
+        if (matches.some((match) => match.entry.untrustedContent)) applyUntrustedContentPolicy(res);
         res.locals[ACTOR_LOCAL] = actor;
         res.locals[ROUTE_LOCAL] = matches;
         setMultiUserStreamAuthority(res, () => actor !== null && deps.auth.isActorCurrent(actor)
@@ -232,6 +261,7 @@ export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
             ...(deps.isAgentAccountOwner ? { isAgentAccountOwner: deps.isAgentAccountOwner } : {}) }).kind === 'allow');
         next();
         return;
+      }
     }
   };
 }
@@ -285,7 +315,16 @@ function metadataAllowed(value: unknown, allowNull: boolean): boolean {
   return value.kind === undefined || (typeof value.kind === 'string' && PROJECT_KINDS.has(value.kind));
 }
 
-export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown): boolean {
+const FILE_NAME_MAX = 1024;
+const projectPathText = (value: unknown) => typeof value === 'string' && value.length > 0 && value.length <= FILE_NAME_MAX && !value.includes('\0');
+
+export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown, contentType = ''): boolean {
+  const multipart = /^multipart\/form-data(?:;|$)/i.test(contentType);
+  // Multipart parts are parsed by the route's own bounded parser, after this
+  // policy; nothing JSON-shaped may ride along with them.
+  if (policy === 'multipart') return multipart && (body === undefined || (isPlainObject(body) && Object.keys(body).length === 0));
+  if (policy === 'empty') return body === undefined || (isPlainObject(body) && Object.keys(body).length === 0);
+  if (policy === 'file-write' && multipart) return body === undefined || (isPlainObject(body) && Object.keys(body).length === 0);
   if (!isPlainObject(body)) return false;
   const only = (fields: readonly string[]) => Object.keys(body).every((key) => fields.includes(key));
   const optionalText = (value: unknown, max: number) => value === undefined || value === null || (typeof value === 'string' && value.length <= max);
@@ -310,8 +349,25 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown)
       && (body.createdAt === undefined || (typeof body.createdAt === 'number' && Number.isFinite(body.createdAt) && body.createdAt >= 0))
       && (body.createOnly === undefined || typeof body.createOnly === 'boolean');
   }
+  if (policy === 'folder-create') return only(['name']) && projectPathText(body.name);
+  if (policy === 'folder-delete') return only(['path']) && projectPathText(body.path);
+  if (policy === 'file-rename') return only(['from', 'to']) && projectPathText(body.from) && projectPathText(body.to);
+  if (policy === 'file-version') {
+    return only(['prompt', 'source', 'label']) && optionalText(body.prompt, 64_000) && optionalText(body.source, 32) && optionalText(body.label, 256);
+  }
+  if (policy === 'file-write') {
+    // Artifact manifests and artifact creation belong to the preview/artifact lane (#59).
+    return only(['name', 'content', 'encoding', 'overwrite', 'versionLabel', 'versionPrompt', 'versionSource', 'parentVersionId'])
+      && projectPathText(body.name) && typeof body.content === 'string'
+      && (body.encoding === undefined || body.encoding === 'utf8' || body.encoding === 'base64')
+      && (body.overwrite === undefined || typeof body.overwrite === 'boolean')
+      && optionalText(body.versionLabel, 256) && optionalText(body.versionPrompt, 64_000)
+      && optionalText(body.versionSource, 32) && optionalText(body.parentVersionId, 128);
+  }
   if (policy === 'project-tabs') {
-    return only(['tabs', 'active', 'browserTabs']) && Array.isArray(body.tabs) && body.tabs.length <= 100
+    return only(['tabs', 'active', 'browserTabs', 'updatedAt', 'hasSavedState']) && Array.isArray(body.tabs) && body.tabs.length <= 100
+      && (body.updatedAt === undefined || (typeof body.updatedAt === 'number' && Number.isFinite(body.updatedAt)))
+      && (body.hasSavedState === undefined || typeof body.hasSavedState === 'boolean')
       && body.tabs.every((tab) => typeof tab === 'string' && tab.length > 0 && tab.length <= 1024)
       && optionalText(body.active, 1024)
       && (body.browserTabs === undefined || (Array.isArray(body.browserTabs) && body.browserTabs.length === 0));
@@ -333,7 +389,7 @@ export function createMultiUserBodyPolicy(): RequestHandler {
     }
     for (const match of matches) {
       const policy = match.entry.bodyPolicy;
-      if (policy && !multiUserBodyAllowed(policy, req.body)) {
+      if (policy && !multiUserBodyAllowed(policy, req.body, req.get('content-type') ?? '')) {
         sendApiError(res, 400, 'BAD_REQUEST', 'request contains fields that are not available in multi-user mode');
         return;
       }

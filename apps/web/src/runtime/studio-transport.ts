@@ -52,6 +52,24 @@ export function studioRequestAvailable(method: string, path: string,
   if (/^\/api\/projects\/[^/]+\/conversations\/[^/]+\/messages\/[^/]+$/.test(path)) return method === 'PUT';
   if (/^\/api\/projects\/[^/]+\/tabs$/.test(path)) return ['GET', 'PUT'].includes(method);
   if (/^\/api\/projects\/[^/]+\/events$/.test(path)) return method === 'GET';
+  if (usable('files')) {
+    const file = /^\/api\/projects\/[^/]+\/(files|folders|search|upload|raw|text-preview|file-content)(?:\/(.+))?$/.exec(path);
+    if (file) {
+      const [, area, rest] = file;
+      if (area === 'files' && rest === undefined) return method === 'GET' || method === 'POST';
+      if (area === 'files' && rest === 'rename') return method === 'POST';
+      if (area === 'files' && /\/versions\/[^/]+\/restore$/.test(rest!)) return method === 'POST';
+      if (area === 'files' && /\/versions$/.test(rest!)) return method === 'GET' || method === 'POST';
+      // `files/<name>/preview` is the preview endpoint (#59), not a nested file.
+      if (area === 'files') return /^[^/]+\/preview$/.test(rest!) ? false : method === 'GET' || method === 'DELETE';
+      if (area === 'folders' && rest === undefined) return ['GET', 'POST', 'DELETE'].includes(method);
+      if (area === 'search' && rest === undefined) return method === 'GET';
+      if (area === 'upload' && rest === undefined) return method === 'POST';
+      if (area === 'raw' && rest) return method === 'GET' || method === 'DELETE';
+      if ((area === 'text-preview' || area === 'file-content') && rest) return method === 'GET';
+      return false;
+    }
+  }
   if (usable('execution')) {
     if (path === '/api/runs') return method === 'GET' || method === 'POST';
     if (RUN.test(path)) return method === 'GET';
@@ -62,6 +80,11 @@ export function studioRequestAvailable(method: string, path: string,
 }
 
 export function studioUsesLocalServices(): boolean { return scope === undefined; }
+
+/** Local mode has every service; a Studio actor only the lanes its session made usable. */
+export function studioLaneUsable(lane: StudioParityLaneId): boolean {
+  return scope === undefined || (scope !== null && scope.usable(lane));
+}
 
 /**
  * The daemon closes this actor's streams within a second of an identity, role

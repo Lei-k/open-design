@@ -1852,7 +1852,8 @@ export const FileViewer = memo(function FileViewer({
       : projectCollabContext.workspaceContext
         ? 'workspace'
         : 'local');
-  const projectResourceReadAllowed = projectResourceAuthority === 'local'
+  // `session`: a Studio actor; the daemon authorizes each read against its cookie session.
+  const projectResourceReadAllowed = projectResourceAuthority === 'local' || projectResourceAuthority === 'session'
     || (
       projectResourceAuthority === 'workspace'
       && projectCollabContext.workspaceContext !== null

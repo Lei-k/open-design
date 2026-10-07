@@ -30,6 +30,10 @@ describe('classification registry is well formed', () => {
       expect(entry.reason.trim().length, entry.key).toBeGreaterThan(10);
       if (entry.nonStringPath) {
         expect(entry.routeClass, entry.key).toBe('blocked-in-multiuser');
+      } else if (entry.pattern) {
+        // A reviewed regex: exact registered pattern, one named capture per group.
+        expect(String(entry.pattern), entry.key).toBe(entry.path);
+        expect(entry.captures?.length, entry.key).toBe(new RegExp(`${entry.pattern.source}|`).exec('')!.length - 1);
       } else if (entry.routeClass !== 'middleware') {
         expect(compileRoutePattern(entry.path), entry.key).not.toBeNull();
       }
@@ -41,7 +45,8 @@ describe('classification registry is well formed', () => {
     expect(owned.length).toBeGreaterThan(0);
     for (const entry of owned) {
       expect(entry.projectParam, entry.key).toBeTruthy();
-      expect(entry.path.split('/')).toContain(`:${entry.projectParam}`);
+      if (entry.pattern) expect(entry.captures?.[0], entry.key).toBe(entry.projectParam);
+      else expect(entry.path.split('/')).toContain(`:${entry.projectParam}`);
     }
   });
 
@@ -96,8 +101,16 @@ describe('matcher mirrors Express routing permissively enough to fail closed', (
     expect(keysFor('GET', '/artifactsX/y')).toEqual([]);
   });
 
-  it('does not match regex-registered preview routes (they stay unclassified => denied)', () => {
-    expect(keysFor('GET', '/api/projects/p1/raw/index.html')).toEqual([]);
+  it('matches only reviewed regex routes; preview and powered regex routes stay unclassified => denied', () => {
+    expect(keysFor('GET', '/api/projects/p1/preview/scope/index.html')).toEqual([]);
+    expect(keysFor('GET', '/api/projects/p1/powered/a.js')).toEqual([]);
+    expect(keysFor('OPTIONS', '/api/projects/p1/raw/index.html')).toEqual([]);
+    expect(keysFor('GET', '/api/projects/p1/raw/index.html')).toEqual(['GET /^\\/api\\/projects\\/([^/]+)\\/raw\\/(.+)$/u']);
+    // Regex routes are case-sensitive in Express, so the reviewed match is too.
+    expect(keysFor('GET', '/API/projects/p1/raw/index.html')).toEqual([]);
+    const [match] = matchMultiUserRoute('GET', '/api/projects/p%2D1/raw/a%20b/c.txt');
+    expect(match?.params).toEqual({ id: 'p-1', path: 'a b/c.txt' });
+    expect(matchMultiUserRoute('GET', '/api/projects/p1/raw/%E0%A4%A')).toEqual([]);
   });
 
   it('rejects unsupported pattern syntax at compile time', () => {

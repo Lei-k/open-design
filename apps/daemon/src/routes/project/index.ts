@@ -1,3 +1,4 @@
+import { multiUserActorOf } from '../../http/multiuser-gate.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -5050,7 +5051,9 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
             ? binding.workspaceId.trim()
             : null,
       },
-      resolvedDir,
+      // A Web actor never learns daemon filesystem paths (#60); its files are
+      // addressed by project-relative path through the owner file APIs.
+      resolvedDir: ctx.projectOwnership ? null : resolvedDir,
     };
     res.json(body);
   });
@@ -6545,7 +6548,8 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       // this dynamic inventory.
       res.setHeader('Cache-Control', 'no-store');
       /** @type {import('@open-design/contracts').ProjectFilesResponse} */
-      const body = { files };
+      // A Web actor gets project-relative names only, never the host path (#60).
+      const body = { files: multiUserActorOf(res) ? files.map(({ localPath: _host, ...file }: { localPath?: string }) => file) : files };
       res.json(body);
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err));

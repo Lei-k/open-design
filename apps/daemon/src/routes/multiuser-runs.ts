@@ -6,6 +6,8 @@ import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
 import { API_ERROR_CODES, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
 import { PersonalRunEvents } from '../runtimes/personal-run-events.js';
+import { formatProjectAttachmentHint, resolveSafeProjectAttachments } from '../runtimes/chat-prompt-inputs.js';
+import { renderRunContextPrompt } from '../runtimes/chat-run-context.js';
 import { classifyRunSteering } from '../runtimes/run-steering.js';
 import { RESTART_ERROR_CODE } from '../runtimes/run-restart-recovery.js';
 import type { MultiUserRun, MultiUserRunEvent, MultiUserRunStatus, MultiUserRunsResponse } from '@open-design/contracts';
@@ -75,8 +77,15 @@ type PersonalRunFields = {
   designSystemId: string | null;
   /** Set only for `entryFrom: 'question_answer'`. */
   questionSourceRunId: string | null;
+  /** Project-relative paths; resolved against the real project root at dispatch. */
+  attachments: string[];
+  /** The focused project files/folders (`context.workspaceItems`), already narrowed. */
+  workspaceItems: Array<{ id: string; kind: 'design-files' | 'file' | 'folder'; label: string; path?: string }>;
 };
 type FieldRefusal = { status: number; code: ApiErrorCode; message: string };
+/** A project-relative path: no root, drive, backslash, NUL, empty, `.` or `..` segment. */
+const safeProjectRelative = (value: string) => value.length > 0 && value.length <= 512 && !value.includes('\0') && !value.startsWith('/')
+  && !value.includes('\\') && !/^[A-Za-z]:/.test(value) && value.split('/').every((part) => part !== '..' && part !== '.' && part !== '');
 const REQUEST_KEY = /^[A-Za-z0-9._:-]{1,128}$/;
 const POLICY_FIELDS = new Set<string>([...MULTIUSER_PERSONAL_RUN_FIELD_POLICY.honored,
   ...MULTIUSER_PERSONAL_RUN_FIELD_POLICY.defaultOnly, ...MULTIUSER_PERSONAL_RUN_FIELD_POLICY.notApplied]);
@@ -117,6 +126,35 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
   if (!optionalKey(body.clientRequestId) || !['skillId', 'designSystemId'].every((key) => body[key] === undefined || body[key] === null || typeof body[key] === 'string')) {
     return refuse(400, 'BAD_REQUEST', 'invalid run request');
   }
+  const attachments = body.attachments ?? [];
+  if (!Array.isArray(attachments) || attachments.length > 20 || attachments.some((value) => typeof value !== 'string' || !safeProjectRelative(value))) {
+    return refuse(400, 'BAD_REQUEST', 'attachments must be project-relative paths');
+  }
+  const workspaceItems: PersonalRunFields['workspaceItems'] = [];
+  const context = body.context;
+  if (context !== undefined && context !== null) {
+    if (typeof context !== 'object' || Array.isArray(context)) return refuse(400, 'BAD_REQUEST', 'invalid run context');
+    const record = context as Record<string, unknown>;
+    const selections = ['skillIds', 'pluginIds', 'mcpServerIds', 'connectorIds'];
+    if (Object.keys(record).some((key) => ![...selections, 'workspaceItems'].includes(key))
+      || selections.some((key) => record[key] !== undefined && !(Array.isArray(record[key]) && (record[key] as unknown[]).length === 0))) {
+      return refuse(403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'not available for personal Studio runs: context selections');
+    }
+    const items = record.workspaceItems ?? [];
+    if (!Array.isArray(items) || items.length > 20) return refuse(400, 'BAD_REQUEST', 'invalid run context');
+    for (const item of items) {
+      const value = item as Record<string, unknown> | null;
+      if (!value || typeof value !== 'object' || typeof value.id !== 'string' || typeof value.label !== 'string'
+        || value.id.length > 256 || value.label.length > 256) return refuse(400, 'BAD_REQUEST', 'invalid run context');
+      // Host-side contexts (local code, browser, terminal, …) and absolute paths have no Web owner yet.
+      if (!['design-files', 'file', 'folder'].includes(String(value.kind)) || value.absolutePath !== undefined || value.url !== undefined) {
+        return refuse(403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', `not available for personal Studio runs: ${String(value.kind)} context`);
+      }
+      if (value.path !== undefined && (typeof value.path !== 'string' || !safeProjectRelative(value.path))) return refuse(400, 'BAD_REQUEST', 'invalid run context');
+      workspaceItems.push({ id: value.id, kind: value.kind as 'design-files' | 'file' | 'folder', label: value.label,
+        ...(typeof value.path === 'string' ? { path: value.path } : {}) });
+    }
+  }
   const hints = body.analyticsHints;
   if (hints !== undefined && (!hints || typeof hints !== 'object' || Array.isArray(hints) || JSON.stringify(hints).length > 4096)) {
     return refuse(400, 'BAD_REQUEST', 'invalid question answer');
@@ -129,6 +167,8 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
     turnIds: userMessageId === null ? null : { userMessageId: userMessageId as string, assistantMessageId: assistantMessageId as string },
     skillId: (body.skillId as string | null | undefined) ?? null, designSystemId: (body.designSystemId as string | null | undefined) ?? null,
     questionSourceRunId: answer ? sourceRunId as string : null,
+    attachments: [...new Set(attachments as string[])],
+    workspaceItems,
   };
 }
 
@@ -639,7 +679,14 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           const owner = next.owner_account_id;
           const accountId = account.id;
           const includeStable = Boolean(stablePrompt) && (!session.thread_id || session.stable_prompt_hash !== stablePromptHash);
-          const prompt = includeStable ? `${stablePrompt}\n\n---\n\n# User request\n\n${userPrompt}` : userPrompt;
+          // Attachments were owner-checked at admission; re-resolve against the
+          // real project root now, since files may have moved since.
+          const attached = formatProjectAttachmentHint(resolveSafeProjectAttachments(realCwd,
+            Array.isArray(request?.attachments) ? request.attachments.filter((value): value is string => typeof value === 'string') : []));
+          // Narrowed at admission to project files/folders; rendered exactly like a standard run's context.
+          const focused = Array.isArray(request?.workspaceItems) && request.workspaceItems.length
+            ? `\n\n${renderRunContextPrompt({ workspaceItems: request.workspaceItems }, null)}` : '';
+          const prompt = `${includeStable ? `${stablePrompt}\n\n---\n\n# User request\n\n${userPrompt}` : userPrompt}${attached}${focused}`;
           const projection = new PersonalRunEvents(realCwd, [dataRoot, account.codexHome, runHome, realCwd], (event) => emit(runId, event.event, event.data));
           projections.set(runId, projection);
           const turn = runPersonalCodexTurn({
@@ -876,7 +923,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       ? await input.design?.composeStablePrompt({ conversationId: target.conversationId, ownerId: owner, projectId: target.projectId })
       : null;
     if (fixedDesign && !composed) return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
-    const request = JSON.stringify({ message: fields.text, ...(question ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId: question.id } } : {}),
+    const request = JSON.stringify({ message: fields.text, ...(fields.attachments.length ? { attachments: fields.attachments } : {}),
+      ...(fields.workspaceItems.length ? { workspaceItems: fields.workspaceItems } : {}),
+      ...(question ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId: question.id } } : {}),
       ...(composed ? { skillId: composed.selection.skillId, designSystemId: composed.selection.designSystemId,
         stablePrompt: composed.prompt, stablePromptHash: composed.hash } : {}) });
     // Prompt/catalog I/O yields: deletion or session revocation may have won

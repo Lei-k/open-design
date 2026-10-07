@@ -43,7 +43,12 @@ export type MultiUserRouteClass =
   | 'blocked-in-multiuser'
   | 'middleware';
 
-export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context';
+export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'empty' | 'multipart';
+
+/** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
+export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
+export const MULTIUSER_FILE_WRITE_MAX_BYTES = 24 * 1024 * 1024;
 
 export interface MultiUserRouteClassification {
   /** `METHOD path`, identical to the registration inventory key. */
@@ -68,13 +73,24 @@ export interface MultiUserRouteClassification {
   nonStringPath?: boolean;
   /** Catch-all fallback: never used to classify a request. */
   catchAll?: boolean;
+  /**
+   * A reviewed RegExp route the gate does match: the same pattern Express
+   * routes on (case-sensitive, undecoded path), with each capture group named
+   * so the owner check reads its param exactly as for a string route.
+   */
+  pattern?: RegExp;
+  captures?: readonly string[];
+  /** Serves owner file bytes on the app origin: the gate applies the untrusted-content response policy. */
+  untrustedContent?: boolean;
+  /** Declared request-body ceiling; the gate requires a Content-Length within it. */
+  maxBodyBytes?: number;
 }
 
 export function routeKey(method: string, path: string): string {
   return `${method.toUpperCase()} ${path}`;
 }
 
-type EntryExtras = Pick<MultiUserRouteClassification, 'projectParam' | 'runParam' | 'agentAccountParam' | 'bodyPolicy' | 'nonStringPath' | 'catchAll'>;
+type EntryExtras = Pick<MultiUserRouteClassification, 'projectParam' | 'runParam' | 'agentAccountParam' | 'bodyPolicy' | 'nonStringPath' | 'catchAll' | 'untrustedContent' | 'maxBodyBytes'>;
 
 function group(
   routeClass: MultiUserRouteClass,
@@ -98,6 +114,21 @@ function nonStringBlocked(
 ): MultiUserRouteClassification[] {
   return routes.map(([method, path]) =>
     group('blocked-in-multiuser', reason, [`${method} ${String(path)}`], { nonStringPath: true })[0]!);
+}
+
+/** Reviewed RegExp routes the gate matches with named captures (see `pattern`). */
+function regexGroup(
+  routeClass: MultiUserRouteClass,
+  reason: string,
+  routes: ReadonlyArray<readonly [string, RegExp, readonly string[]]>,
+  extras: EntryExtras = {},
+): MultiUserRouteClassification[] {
+  return routes.map(([method, pattern, captures]) => {
+    if (pattern.flags.replace('u', '') !== '' || !pattern.source.startsWith('^') || !pattern.source.endsWith('$')) {
+      throw new Error(`regex route must be anchored and case-sensitive: ${String(pattern)}`);
+    }
+    return { ...group(routeClass, reason, [`${method} ${String(pattern)}`], extras)[0]!, pattern, captures };
+  });
 }
 
 // ---- reasons ----------------------------------------------------------------
@@ -256,6 +287,42 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'POST /api/projects/:id/handoff',
     'POST /api/projects/:id/deployments/:deploymentId/check-link',
   ]),
+  // S5 (#58): the owner's managed project files. Paths resolve inside the
+  // project root with symlink-aware checks in the handlers; bytes served on
+  // the app origin carry the untrusted-content policy; writes are bounded.
+  ...group('owner-scoped-project', 'owner project file reads; handlers resolve paths inside the managed project root', [
+    'GET /api/projects/:id/search',
+    'GET /api/projects/:id/folders',
+  ], { projectParam: 'id' }),
+  ...group('owner-scoped-project', 'owner folder create in the managed project root', ['POST /api/projects/:id/folders'],
+    { projectParam: 'id', bodyPolicy: 'folder-create' }),
+  ...group('owner-scoped-project', 'owner folder delete in the managed project root', ['DELETE /api/projects/:id/folders'],
+    { projectParam: 'id', bodyPolicy: 'folder-delete' }),
+  ...group('owner-scoped-project', 'owner file write (JSON text/base64 or one multipart file); no artifact manifests', ['POST /api/projects/:id/files'],
+    { projectParam: 'id', bodyPolicy: 'file-write', maxBodyBytes: MULTIUSER_FILE_WRITE_MAX_BYTES }),
+  ...group('owner-scoped-project', 'owner file rename inside the managed project root', ['POST /api/projects/:id/files/rename'],
+    { projectParam: 'id', bodyPolicy: 'file-rename' }),
+  ...group('owner-scoped-project', 'owner file delete inside the managed project root', ['DELETE /api/projects/:id/files/:name'], { projectParam: 'id' }),
+  ...group('owner-scoped-project', 'owner multipart upload into the managed project root; bounded request', ['POST /api/projects/:id/upload'],
+    { projectParam: 'id', bodyPolicy: 'multipart', maxBodyBytes: MULTIUSER_UPLOAD_MAX_BYTES }),
+  ...regexGroup('owner-scoped-project', 'owner file bytes on the app origin; served under the untrusted-content policy', [
+    ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)$/u, ['id', 'path']],
+    ['GET', /^\/api\/projects\/([^/]+)\/raw\/(.+)$/u, ['id', 'path']],
+    ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)\/versions\/([^/]+)$/u, ['id', 'path', 'versionId']],
+  ], { projectParam: 'id', untrustedContent: true }),
+  ...regexGroup('owner-scoped-project', 'owner file metadata, versions and text extraction', [
+    ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)\/versions$/u, ['id', 'path']],
+    ['GET', /^\/api\/projects\/([^/]+)\/text-preview\/(.+)$/u, ['id', 'path']],
+  ], { projectParam: 'id' }),
+  ...regexGroup('owner-scoped-project', 'owner file delete by path', [
+    ['DELETE', /^\/api\/projects\/([^/]+)\/raw\/(.+)$/u, ['id', 'path']],
+  ], { projectParam: 'id' }),
+  ...regexGroup('owner-scoped-project', 'owner manual version capture', [
+    ['POST', /^\/api\/projects\/([^/]+)\/files\/(.+)\/versions$/u, ['id', 'path']],
+  ], { projectParam: 'id', bodyPolicy: 'file-version' }),
+  ...regexGroup('owner-scoped-project', 'owner version restore', [
+    ['POST', /^\/api\/projects\/([^/]+)\/files\/(.+)\/versions\/([^/]+)\/restore$/u, ['id', 'path', 'versionId']],
+  ], { projectParam: 'id', bodyPolicy: 'empty' }),
   ...blocked(R_PROJECT_FILES, [
     'GET /api/projects/:id/archive',
     'POST /api/projects/:id/archive/batch',
@@ -267,24 +334,16 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'POST /api/projects/:id/export/html',
     'POST /api/projects/:id/export',
     'GET /api/projects/:id/export/*splat',
-    'GET /api/projects/:id/search',
     'GET /api/projects/:id/design-token-suggestions',
-    'GET /api/projects/:id/folders',
-    'POST /api/projects/:id/folders',
-    'DELETE /api/projects/:id/folders',
     'GET /api/projects/:id/design-system-package-audit',
     'GET /api/projects/:id/preview-url',
     'POST /api/projects/:id/preview/:scope/renew',
     'GET /api/projects/:id/files/:name/preview',
-    'POST /api/projects/:id/files',
-    'POST /api/projects/:id/files/rename',
-    'DELETE /api/projects/:id/files/:name',
     'GET /api/projects/:id/conversations/:cid/messages/:mid/artifacts',
     'GET /api/projects/:id/chat-artifact-snapshots/:sid',
     'GET /api/projects/:id/chat-artifact-snapshots/:sid/content',
     'GET /api/projects/:id/chat-artifact-snapshots/:sid/thumbnail',
     'GET /api/projects/:id/workspace-artifacts/:aid',
-    'POST /api/projects/:id/upload',
   ]),
   ...blocked(R_RUNS, [
     'POST /api/projects/:id/media/hyperframes/scaffold',
@@ -308,21 +367,13 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'POST /api/projects/:id/plugins/share-tasks',
   ]),
   ...nonStringBlocked(R_PROJECT_FILES, [
-    ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)$/u],
-    ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)\/versions$/u],
-    ['POST', /^\/api\/projects\/([^/]+)\/files\/(.+)\/versions$/u],
-    ['POST', /^\/api\/projects\/([^/]+)\/files\/(.+)\/versions\/([^/]+)\/restore$/u],
-    ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)\/versions\/([^/]+)$/u],
     ['POST', /^\/api\/projects\/([^/]+)\/files\/(.+)\/publish-public$/u],
     ['DELETE', /^\/api\/projects\/([^/]+)\/files\/(.+)\/publish-public$/u],
     ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)\/publish-public$/u],
-    ['GET', /^\/api\/projects\/([^/]+)\/text-preview\/(.+)$/u],
     ['GET', /^\/api\/projects\/([^/]+)\/preview\/([^/]+)\/(.+)$/u],
     ['OPTIONS', /^\/api\/projects\/([^/]+)\/raw\/(.+)$/u],
-    ['GET', /^\/api\/projects\/([^/]+)\/raw\/(.+)$/u],
     ['OPTIONS', /^\/api\/projects\/([^/]+)\/powered\/(.+)$/u],
     ['GET', /^\/api\/projects\/([^/]+)\/powered\/(.+)$/u],
-    ['DELETE', /^\/api\/projects\/([^/]+)\/raw\/(.+)$/u],
   ]),
 
   // Static mounts and the SPA shell -----------------------------------------------
@@ -872,7 +923,20 @@ const COMPILED: readonly CompiledEntry[] = MULTIUSER_ROUTE_CLASSIFICATION
   .filter((entry) => !entry.nonStringPath && !entry.catchAll && entry.routeClass !== 'middleware')
   .map((entry) => (entry.method === 'USE'
     ? { entry, segments: null, mountPrefix: entry.path.toLowerCase() }
-    : { entry, segments: compileRoutePattern(entry.path), mountPrefix: null }));
+    : { entry, segments: entry.pattern ? null : compileRoutePattern(entry.path), mountPrefix: null }));
+
+/** Express decodes each capture; an undecodable one never matches. */
+function matchPattern(entry: MultiUserRouteClassification, rawPath: string): Record<string, string> | null {
+  const found = entry.pattern!.exec(rawPath);
+  if (!found) return null;
+  const params: Record<string, string> = {};
+  for (const [index, name] of (entry.captures ?? []).entries()) {
+    const decoded = decodeSegment(found[index + 1] ?? '');
+    if (decoded === null || decoded.length === 0) return null;
+    params[name] = decoded;
+  }
+  return params;
+}
 
 export interface MultiUserRouteMatch {
   entry: MultiUserRouteClassification;
@@ -881,9 +945,10 @@ export interface MultiUserRouteMatch {
 
 /**
  * Every classified route that could answer `method rawPath`. `rawPath` is the
- * undecoded request pathname (Express `req.path` at the app root). Regex
- * routes, the SPA catch-all and middleware never match, so requests only they
- * would answer are unclassified and fail closed.
+ * undecoded request pathname (Express `req.path` at the app root). Only
+ * reviewed regex entries (`pattern`) match; other regex routes, the SPA
+ * catch-all and middleware never do, so requests only they would answer are
+ * unclassified and fail closed.
  */
 export function matchMultiUserRoute(method: string, rawPath: string): MultiUserRouteMatch[] {
   const verb = String(method || '').toUpperCase() === 'HEAD' ? 'GET' : String(method || '').toUpperCase();
@@ -896,6 +961,12 @@ export function matchMultiUserRoute(method: string, rawPath: string): MultiUserR
       if (lowerPath === compiled.mountPrefix || lowerPath.startsWith(`${compiled.mountPrefix}/`)) {
         matches.push({ entry: compiled.entry, params: {} });
       }
+      continue;
+    }
+    if (compiled.entry.pattern) {
+      if (compiled.entry.method !== 'ALL' && compiled.entry.method !== verb) continue;
+      const params = matchPattern(compiled.entry, rawPath);
+      if (params) matches.push({ entry: compiled.entry, params });
       continue;
     }
     if (compiled.segments === null) continue;

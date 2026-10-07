@@ -87,6 +87,26 @@ afterAll(async () => {
   }
 });
 
+/** S5 (#58): the reviewed owner file routes, including the matched regex routes. */
+const S5_OWNER_FILE_ROUTES = [
+  'owner-scoped-project DELETE /^\\/api\\/projects\\/([^/]+)\\/raw\\/(.+)$/u',
+  'owner-scoped-project DELETE /api/projects/:id/files/:name',
+  'owner-scoped-project DELETE /api/projects/:id/folders',
+  'owner-scoped-project GET /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)$/u',
+  'owner-scoped-project GET /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)\\/versions$/u',
+  'owner-scoped-project GET /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)\\/versions\\/([^/]+)$/u',
+  'owner-scoped-project GET /^\\/api\\/projects\\/([^/]+)\\/raw\\/(.+)$/u',
+  'owner-scoped-project GET /^\\/api\\/projects\\/([^/]+)\\/text-preview\\/(.+)$/u',
+  'owner-scoped-project GET /api/projects/:id/folders',
+  'owner-scoped-project GET /api/projects/:id/search',
+  'owner-scoped-project POST /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)\\/versions$/u',
+  'owner-scoped-project POST /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)\\/versions\\/([^/]+)\\/restore$/u',
+  'owner-scoped-project POST /api/projects/:id/files',
+  'owner-scoped-project POST /api/projects/:id/files/rename',
+  'owner-scoped-project POST /api/projects/:id/folders',
+  'owner-scoped-project POST /api/projects/:id/upload',
+];
+
 describe('route classification covers the real inventory', () => {
   it('classifies every registered route and has no stale entries', () => {
     const registrations = [...daemon.routeInventory, ...daemon.patternRouteInventory, ...daemon.pathlessRouteInventory];
@@ -100,7 +120,7 @@ describe('route classification covers the real inventory', () => {
       .filter((entry) => entry.routeClass !== 'blocked-in-multiuser' && entry.routeClass !== 'middleware')
       .map((entry) => `${entry.routeClass} ${entry.key}`)
       .sort();
-    expect(allowed).toEqual([
+    expect(allowed).toEqual([...S5_OWNER_FILE_ROUTES, ...[
       'actor-scoped GET /api/active',
       'actor-scoped GET /api/agent-accounts',
       'actor-scoped GET /api/multiuser/design-catalog',
@@ -200,7 +220,7 @@ describe('route classification covers the real inventory', () => {
       'public-web GET /settings',
       'public-web GET /setup',
       'public-web GET /workspace-settings',
-    ]);
+    ]].sort());
   });
 
   it('keeps static mounts, the SPA fallback, global SSE streams and regex preview routes blocked', () => {
@@ -217,8 +237,17 @@ describe('route classification covers the real inventory', () => {
     ]) {
       expect(byKey.get(key)?.routeClass, key).toBe('blocked-in-multiuser');
     }
+    // Every regex route is blocked unless it is a reviewed owner-scoped entry with its exact pattern.
     for (const pattern of daemon.patternRouteInventory) {
-      expect(byKey.get(routeKey(pattern.method, pattern.path))?.routeClass).toBe('blocked-in-multiuser');
+      const entry = byKey.get(routeKey(pattern.method, pattern.path));
+      if (entry?.pattern) {
+        expect([entry.key, entry.routeClass]).toEqual([entry.key, 'owner-scoped-project']);
+        expect(String(entry.pattern)).toBe(pattern.path);
+      } else expect(entry?.routeClass, pattern.path).toBe('blocked-in-multiuser');
+    }
+    for (const blockedPattern of ['GET /^\\/api\\/projects\\/([^/]+)\\/preview\\/([^/]+)\\/(.+)$/u', 'GET /^\\/api\\/projects\\/([^/]+)\\/powered\\/(.+)$/u',
+      'OPTIONS /^\\/api\\/projects\\/([^/]+)\\/raw\\/(.+)$/u', 'POST /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)\\/publish-public$/u']) {
+      expect(byKey.get(blockedPattern)?.routeClass, blockedPattern).toBe('blocked-in-multiuser');
     }
     expect(daemon.patternRouteInventory.length).toBeGreaterThan(0);
   });
