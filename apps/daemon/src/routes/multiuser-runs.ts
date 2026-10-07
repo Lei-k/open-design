@@ -37,6 +37,8 @@ import { composeSystemPrompt } from '../prompts/system.js';
 import { readStudioSkillPackages, stageStudioSkillPackages, type StudioSkillPackage } from '../services/studio-skill-packages.js';
 import { createStudioSkillScriptRunner } from '../services/studio-skill-scripts.js';
 import type { PersonalSandbox } from '../services/personal-sandbox.js';
+import { internalMultiUserResponse, type InternalMultiUserResult } from '../http/multiuser-internal.js';
+import type { AuthActor } from '../services/auth-service.js';
 
 type RunRow = {
   id: string; owner_account_id: string; project_id: string; conversation_id: string;
@@ -68,6 +70,11 @@ function storedJson(text: string | null): unknown {
  * (missing, not JSON, or not an object with a string message). Both lanes'
  * dispatch refuses a null before it changes any state, never running an empty prompt.
  */
+/** A daemon-authored turn instruction (routines) precedes the user's text for the agent only. */
+function withInstruction<T extends string | null>(requestJson: string | null, text: T): T {
+  const instruction = storedRequest(requestJson)?.instruction;
+  return (typeof instruction === 'string' && instruction && text !== null ? `${instruction}\n\n${text}` : text) as T;
+}
 function storedMessage(requestJson: string | null): string | null {
   const request = storedJson(requestJson);
   const message = request && typeof request === 'object' ? (request as { message?: unknown }).message : null;
@@ -286,6 +293,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
 }): { cancelAccountRuns(accountId: string): void; isRunOwner(runId: string, accountId: string): boolean;
   cancelProjectRuns(accountId: string, projectId: string, conversationId?: string): Promise<() => void>;
   cancelPersonalRuns(accountId: string): Promise<void>; forgetNativeSessions(accountId: string): void; personalLane: PersonalRunLaneControls; listAccountIds(): string[];
+  /** Admit a run for a background actor through the same policy as POST /api/runs. */
+  admitInternal(actor: AuthActor, request: Record<string, unknown>, allowed: () => boolean, instruction?: string): Promise<InternalMultiUserResult>;
+  runState(runId: string, accountId: string): { status: string; text: string | null; reason: string | null } | null;
   beginShutdown(): void; shutdown(): Promise<void>; companyPoolAvailable: boolean; openaiPoolAvailable: boolean } {
   const { db, dataRoot, projectsRoot } = input;
   type DesignSnapshot = { id: string; hash: string; prompt: Pick<Parameters<typeof composeSystemPrompt>[0],
@@ -715,7 +725,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           try {
             const history = JSON.parse(session.history_json) as Record<string, unknown>[];
             if (!Array.isArray(history)) throw new Error('invalid company history');
-            const userPrompt = storedMessage(next.request_json)!;
+            const userPrompt = withInstruction(next.request_json, storedMessage(next.request_json)!);
             const stablePrompt = typeof request.stablePrompt === 'string' ? request.stablePrompt : '';
             const attached = formatProjectAttachmentHint(resolveSafeProjectAttachments(realCwd,
               Array.isArray(request.attachments) ? request.attachments.filter((item): item is string => typeof item === 'string') : []));
@@ -851,7 +861,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         }
         // A damaged request never starts: no runtime home, active mark, personal turn or start event.
         const request = storedRequest(next.request_json);
-        const userPrompt = storedMessage(next.request_json);
+        const userPrompt = withInstruction(next.request_json, storedMessage(next.request_json));
         const stablePrompt = typeof request?.stablePrompt === 'string' ? request.stablePrompt : '';
         const stablePromptHash = typeof request?.stablePromptHash === 'string' ? request.stablePromptHash : '';
         if (userPrompt === null) {
@@ -1123,7 +1133,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       .get(conversationId) as { id: string; status: RunRow['status'] } | undefined;
     return retried !== null && newest?.id === retried && (newest.status === 'failed' || newest.status === 'canceled');
   };
-  const createPersonalRun = async (inputBody: Record<string, unknown>, res: Response) => {
+  /** `instruction` is daemon-authored (routines): sent to the agent with the turn, never shown as the user's message. */
+  const createPersonalRun = async (inputBody: Record<string, unknown>, res: Response, instruction?: string) => {
     const target = managedTarget(inputBody, res);
     if (!target) return;
     const owner = actor(res);
@@ -1202,7 +1213,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         selection: composed?.selection ?? { conversationId: target.conversationId, skillId: '', designSystemId: '', locale: 'en' } };
     }
     const skillSnapshots = inheritsSkills ? questionRequest?.skillSnapshots ?? [] : withFixedSkill(fixedCapture?.skill, selectedSkills);
-    const request = JSON.stringify({ message: fields.text, ...(fields.attachments.length ? { attachments: fields.attachments } : {}),
+    const request = JSON.stringify({ message: fields.text, ...(instruction ? { instruction } : {}), ...(fields.attachments.length ? { attachments: fields.attachments } : {}),
       ...(inheritsSkills || withFixedSkill(fixedCapture?.skill, selectedSkills).length ? { skillIds: inheritsSkills ? inheritedSkillIds : fields.skillIds, skillSnapshots } : {}),
       ...(fields.workspaceItems.length ? { workspaceItems: fields.workspaceItems } : {}),
       ...(fields.model ? { model: fields.model } : {}), ...(fields.reasoning ? { reasoning: fields.reasoning } : {}),
@@ -1263,7 +1274,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     dispatchPersonal();
     res.status(202).json({ runId: id, run: body(row(id)!) });
   };
-  const createOpenAIRun = async (inputBody: Record<string, unknown>, res: Response) => {
+  const createOpenAIRun = async (inputBody: Record<string, unknown>, res: Response, instruction?: string) => {
     const target = managedTarget(inputBody, res); if (!target) return;
     const owner = actor(res);
     const hints = inputBody.analyticsHints;
@@ -1335,7 +1346,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const queued = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE owner_account_id = ? AND status = 'queued' AND ${company}`).get(owner) as { n: number }).n;
     if (queued >= 3) return sendApiError(res, 409, 'MULTIUSER_QUEUE_LIMIT', 'queue limit reached');
     const id = randomUUID(); const createdAt = now();
-    const request = JSON.stringify({ message: fields.text, companyProvider: 'openai', companyModel: config.model,
+    const request = JSON.stringify({ message: fields.text, ...(instruction ? { instruction } : {}), companyProvider: 'openai', companyModel: config.model,
       companyCredentialRevision: config.credentialRevision, stablePrompt: prompt, stablePromptHash: createHash('sha256').update(prompt).digest('hex'),
       skillIds: question ? capturedSkillIds : fields.skillIds,
       skillSnapshots: question ? previousRequest?.skillSnapshots ?? [] : withFixedSkill(fixedCapture?.skill, selected),
@@ -1566,6 +1577,20 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     return shutdownPromise;
   };
   return {
+    async admitInternal(actorRecord, request, allowed, instruction) {
+      const { res, result } = internalMultiUserResponse(actorRecord, allowed);
+      if (request.executionSource === 'company_pool') await createOpenAIRun({ ...request, agentId: 'openai' }, res, instruction);
+      else await createPersonalRun({ ...request, agentId: 'codex', executionSource: 'personal_subscription' }, res, instruction);
+      return result() ?? { status: 499, body: null };
+    },
+    runState(runId, accountId) {
+      const found = row(runId);
+      if (!found || found.owner_account_id !== accountId) return null;
+      const run = body(found);
+      const output = run.output as { text?: unknown; reason?: unknown } | null;
+      return { status: run.status, text: typeof output?.text === 'string' ? output.text : null,
+        reason: typeof output?.reason === 'string' ? output.reason : null };
+    },
     isRunOwner(runId, accountId) {
       const found = row(runId);
       return !!found && found.owner_account_id === accountId && owners.isOwnedBy(found.project_id, accountId);

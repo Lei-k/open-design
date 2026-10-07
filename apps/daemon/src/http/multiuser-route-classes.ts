@@ -44,7 +44,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'archive-batch' | 'export-html' | 'project-duplicate' | 'template-save' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'archive-batch' | 'export-html' | 'studio-routine' | 'project-duplicate' | 'template-save' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -390,6 +390,16 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'POST /api/projects/:id/preview/:scope/renew',
     'GET /api/projects/:id/files/:name/preview',
   ]),
+  ...['GET /api/routines', 'POST /api/routines', 'GET /api/routines/:id', 'PATCH /api/routines/:id', 'DELETE /api/routines/:id',
+    'POST /api/routines/:id/run', 'GET /api/routines/:id/runs'].flatMap((key) => {
+    const alias = key.replace('/api/routines', '/api/multiuser/routines');
+    const bodyPolicy = key.startsWith('POST /api/routines/:id/run') || key.startsWith('DELETE ') ? 'empty' as const
+      : key.startsWith('POST ') || key.startsWith('PATCH ') ? 'studio-routine' as const : undefined;
+    const extras = bodyPolicy === 'studio-routine' ? { bodyPolicy, maxBodyBytes: 64 * 1024 } : bodyPolicy ? { bodyPolicy } : {};
+    return [...group('actor-scoped', 'account-owned Automations; every dispatch revalidates the owner, pilot, project and execution source', [key],
+      { ...extras, rewriteTo: alias.slice(alias.indexOf(' ') + 1) }),
+      ...group('actor-scoped', 'account Automations alias; same cookie authority and closed fields', [alias], extras)];
+  }),
   ...blocked(R_RUNS, [
     'POST /api/projects/:id/media/hyperframes/scaffold',
     'POST /api/projects/:id/media/generate',
@@ -496,13 +506,6 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'POST /api/automation-proposals/:id/reject',
     'GET /api/automation-templates',
     'GET /api/automation-templates/:id',
-    'GET /api/routines',
-    'POST /api/routines',
-    'GET /api/routines/:id',
-    'PATCH /api/routines/:id',
-    'DELETE /api/routines/:id',
-    'POST /api/routines/:id/run',
-    'GET /api/routines/:id/runs',
     'POST /api/routines/:id/runs/:runId/crystallize',
     'GET /api/orbit/status',
     'POST /api/orbit/run',

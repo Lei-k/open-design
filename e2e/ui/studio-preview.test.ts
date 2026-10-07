@@ -498,3 +498,37 @@ test('[P1] Studio account control lives in the shared rail, workspace chrome and
   await expect(page.getByRole('menuitem', { name: 'Audit' })).toBeVisible();
   await page.screenshot({ path: info.outputPath('studio-account-admin.png'), animations: 'disabled' });
 });
+
+test('[P1] Studio account automations create, run as the owner and stay private', async ({ page, studio }, info) => {
+  await studio.linkCodex(studio.a);
+  await studio.configureTurn(studio.a, { reply: 'Routine finished the brief.' });
+  await page.goto(`${studio.origin}/automations`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.getByTestId('automations-new').click({ timeout: T.long });
+  const modal = page.getByTestId('automation-modal');
+  await modal.getByTestId('automation-modal-title').fill('Browser routine');
+  await modal.getByTestId('automation-modal-prompt').fill('Summarize the design board for the team.');
+  const created = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/routines');
+  await modal.locator('button[type="submit"]').click();
+  const made = await created;
+  expect(made.status(), await made.text()).toBe(201);
+  const routineId = (await made.json()).routine.id as string;
+  const row = page.getByTestId('tasks-view').getByText('Browser routine');
+  await expect(row).toBeVisible({ timeout: T.long });
+  await page.screenshot({ path: info.outputPath('studio-automations-entry.png'), animations: 'disabled' });
+  const ran = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `/api/routines/${routineId}/run`);
+  await page.getByTestId('tasks-view').getByRole('button', { name: 'Run', exact: true }).click();
+  const started = await ran;
+  expect(started.status()).toBe(202);
+  const { projectId } = await started.json() as { projectId: string };
+  // Run opens the owner's fresh routine conversation in the shared workspace.
+  await expect(page).toHaveURL(new RegExp(`/projects/${projectId}`), { timeout: T.long });
+  await expect.poll(async () => (await studio.request('GET', `/api/routines/${routineId}/runs`, studio.a.cookie)).json.runs[0]?.status,
+    { timeout: T.long }).toBe('succeeded');
+  await expect(page.locator('body')).toContainText('Routine finished the brief.', { timeout: T.long });
+  await page.screenshot({ path: info.outputPath('studio-automation-run.png'), animations: 'disabled' });
+  expect((await studio.request('GET', '/api/routines', studio.b.cookie)).json.routines).toEqual([]);
+  expect((await studio.request('GET', `/api/routines/${routineId}`, studio.b.cookie)).status).toBe(404);
+});

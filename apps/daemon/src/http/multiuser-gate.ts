@@ -149,6 +149,12 @@ function isCrossOriginMutation(req: Request, allowedOrigins: ReadonlySet<string>
   return fetchSite === 'cross-site' || fetchSite === 'same-site';
 }
 
+/** Background work (routines) admitting through a request handler as a
+ * server-resolved owner. Callers own the authority check for that actor. */
+export function bindMultiUserActor(res: Response, actor: AuthActor): void {
+  res.locals[ACTOR_LOCAL] = actor;
+}
+
 export function multiUserActorOf(res: Response): AuthActor | null {
   return (res.locals[ACTOR_LOCAL] as AuthActor | undefined) ?? null;
 }
@@ -360,6 +366,8 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   if (policy === 'archive-batch') return only(['files']) && Array.isArray(body.files) && body.files.length > 0
     && body.files.length <= 500 && body.files.every(projectPathText);
   // Current-version export only: a historical versionId would bundle today's dependencies.
+  // Field-level routine validation needs ownership checks and lives in the route.
+  if (policy === 'studio-routine') return only(['name', 'prompt', 'schedule', 'target', 'skillId', 'agentId', 'context', 'enabled']);
   if (policy === 'export-html') return only(['fileName', 'title']) && projectPathText(body.fileName) && optionalText(body.title, 200);
   if (policy === 'project-duplicate') return only(['name']) && (body.name === undefined
     || typeof body.name === 'string' && body.name.trim().length > 0 && body.name.length <= 100 && !body.name.includes('\0'));

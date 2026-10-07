@@ -1,0 +1,292 @@
+import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import type Database from 'better-sqlite3';
+import type { Express, Request, Response } from 'express';
+import type { CreateRoutineRequest, Routine, RoutineRun, RoutineSchedule, RoutineProjectTarget, UpdateRoutineRequest } from '@open-design/contracts';
+import { getProject, insertConversation, insertProject } from '../db.js';
+import { multiUserActorOf } from '../http/multiuser-gate.js';
+import { multiUserStreamAllowed } from '../http/multiuser-stream.js';
+import { sendApiError } from '../http/api-errors.js';
+import type { InternalMultiUserResult } from '../http/multiuser-internal.js';
+import { RoutineService, nextRunAtForSchedule, validateSchedule, validateTarget, type RoutineRunCompletion } from '../routines.js';
+import { AuthStore } from '../storage/auth-store.js';
+import { ProjectOwnershipStore } from '../storage/project-ownership.js';
+import { isSafeId, projectDir } from '../projects.js';
+import type { AuthActor } from '../services/auth-service.js';
+
+const ROUTINE_LIMIT = 20;
+const POLL_MS = 1_000;
+type Source = 'personal_subscription' | 'company_pool';
+interface RoutineRow {
+  id: string; owner_account_id: string; name: string; prompt: string; schedule_json: string; target_json: string;
+  skill_ids_json: string; execution_source: Source; enabled: number; created_at: number; updated_at: number;
+}
+interface RunRow {
+  id: string; routine_id: string; trigger: RoutineRun['trigger']; status: RoutineRun['status']; project_id: string;
+  conversation_id: string; agent_run_id: string; started_at: number; completed_at: number | null;
+  summary: string | null; error: string | null; error_code: string | null;
+}
+export interface StudioRoutineRuns {
+  admitInternal(actor: AuthActor, request: Record<string, unknown>, allowed: () => boolean, instruction?: string): Promise<InternalMultiUserResult>;
+  runState(runId: string, accountId: string): { status: string; text: string | null; reason: string | null } | null;
+}
+
+class RoutineRefusal extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
+
+/**
+ * Account-owned Automations. Every routine, run and claim row carries the
+ * owner; a dispatch re-resolves the owner's account, pilot state, project
+ * ownership and execution source before admitting a standard run through the
+ * same policy as POST /api/runs. There is no host agent, config or credential
+ * fallback, and nothing here reads the host-global routine tables.
+ */
+export function registerStudioRoutineRoutes(app: Express, input: {
+  db: Database.Database; dataRoot: string; projectsRoot: string; runs: StudioRoutineRuns; clock?: () => number;
+}): { stop(): void } {
+  const { db } = input;
+  const now = input.clock ?? Date.now;
+  const auth = AuthStore.open({ dataRoot: input.dataRoot });
+  const ownership = new ProjectOwnershipStore(db);
+  db.exec(`CREATE TABLE IF NOT EXISTS studio_routines (
+      id TEXT PRIMARY KEY, owner_account_id TEXT NOT NULL, name TEXT NOT NULL, prompt TEXT NOT NULL,
+      schedule_json TEXT NOT NULL, target_json TEXT NOT NULL, skill_ids_json TEXT NOT NULL DEFAULT '[]',
+      execution_source TEXT NOT NULL CHECK(execution_source IN ('personal_subscription','company_pool')),
+      enabled INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS studio_routines_owner ON studio_routines(owner_account_id);
+    CREATE TABLE IF NOT EXISTS studio_routine_runs (
+      id TEXT PRIMARY KEY, routine_id TEXT NOT NULL REFERENCES studio_routines(id) ON DELETE CASCADE,
+      owner_account_id TEXT NOT NULL, trigger TEXT NOT NULL, status TEXT NOT NULL, project_id TEXT NOT NULL,
+      conversation_id TEXT NOT NULL, agent_run_id TEXT NOT NULL, started_at INTEGER NOT NULL, completed_at INTEGER,
+      summary TEXT, error TEXT, error_code TEXT
+    );
+    CREATE INDEX IF NOT EXISTS studio_routine_runs_routine ON studio_routine_runs(routine_id, started_at);
+    CREATE TABLE IF NOT EXISTS studio_routine_claims (
+      routine_id TEXT NOT NULL REFERENCES studio_routines(id) ON DELETE CASCADE, slot_at INTEGER NOT NULL,
+      PRIMARY KEY (routine_id, slot_at)
+    );`);
+
+  /** The owner may still run work: active, password set and in the Studio pilot. */
+  const ownerUsable = (owner: string): AuthActor | null => {
+    const account = auth.getAccountById(owner);
+    if (!account?.active || account.passwordState !== 'set' || !auth.getStudioPilot(owner).studioPilot) return null;
+    return { accountId: account.id, username: account.username, role: account.role, sessionId: `routine:${owner}`, sessionExpiresAt: now() + 3_600_000 };
+  };
+  const routineRow = (id: string) => db.prepare('SELECT * FROM studio_routines WHERE id = ?').get(id) as RoutineRow | undefined;
+  const ownedRow = (owner: string, id: string) => {
+    const found = routineRow(id);
+    return found?.owner_account_id === owner ? found : undefined;
+  };
+  const runDto = (run: RunRow): RoutineRun => ({ id: run.id, routineId: run.routine_id, trigger: run.trigger, status: run.status,
+    projectId: run.project_id, conversationId: run.conversation_id, agentRunId: run.agent_run_id, startedAt: run.started_at,
+    completedAt: run.completed_at, summary: run.summary, error: run.error, errorCode: run.error_code });
+  const latestRun = (routineId: string) => db.prepare('SELECT * FROM studio_routine_runs WHERE routine_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1')
+    .get(routineId) as RunRow | undefined;
+  let service: RoutineService;
+  const dto = (found: RoutineRow): Routine => {
+    const schedule = JSON.parse(found.schedule_json) as RoutineSchedule;
+    const last = latestRun(found.id);
+    const next = found.enabled ? service.nextRunAt(found.id) ?? nextRunAtForSchedule(schedule) : null;
+    return { id: found.id, name: found.name, prompt: found.prompt, schedule, target: JSON.parse(found.target_json) as RoutineProjectTarget,
+      skillId: (JSON.parse(found.skill_ids_json) as string[])[0] ?? null, agentId: found.execution_source === 'company_pool' ? 'openai' : 'codex',
+      context: { skillIds: JSON.parse(found.skill_ids_json) as string[] }, enabled: found.enabled === 1,
+      nextRunAt: next ? next.getTime() : null,
+      lastRun: last ? { runId: last.id, status: last.status, trigger: last.trigger, startedAt: last.started_at,
+        ...(last.completed_at ? { completedAt: last.completed_at } : {}), projectId: last.project_id, conversationId: last.conversation_id,
+        agentRunId: last.agent_run_id, ...(last.summary ? { summary: last.summary } : {}), ...(last.error ? { error: last.error } : {}),
+        ...(last.error_code ? { errorCode: last.error_code } : {}) } : null,
+      createdAt: found.created_at, updatedAt: found.updated_at };
+  };
+
+  service = new RoutineService({
+    // Only routines whose owner can still run are scheduled at all.
+    list: () => (db.prepare('SELECT * FROM studio_routines ORDER BY created_at').all() as RoutineRow[])
+      .filter((found) => ownerUsable(found.owner_account_id)).map((found) => ({ ...dto(found), context: { skillIds: JSON.parse(found.skill_ids_json) } }) as never),
+    insertRun(run, options) {
+      const owner = routineRow(run.routineId)?.owner_account_id;
+      if (!owner) return false;
+      return db.transaction(() => {
+        if (options?.scheduledSlotAt !== undefined && db.prepare('INSERT OR IGNORE INTO studio_routine_claims (routine_id, slot_at) VALUES (?, ?)')
+          .run(run.routineId, options.scheduledSlotAt).changes === 0) return false;
+        db.prepare(`INSERT INTO studio_routine_runs (id, routine_id, owner_account_id, trigger, status, project_id, conversation_id, agent_run_id, started_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(run.id, run.routineId, owner, run.trigger, run.status, run.projectId, run.conversationId, run.agentRunId, run.startedAt);
+        return true;
+      }).immediate();
+    },
+    updateRun(id, patch) {
+      const columns: Record<string, string> = { status: 'status', projectId: 'project_id', conversationId: 'conversation_id', agentRunId: 'agent_run_id',
+        completedAt: 'completed_at', summary: 'summary', error: 'error', errorCode: 'error_code' };
+      const entries = Object.entries(patch).filter(([key]) => columns[key]);
+      if (!entries.length) return;
+      db.prepare(`UPDATE studio_routine_runs SET ${entries.map(([key]) => `${columns[key]} = ?`).join(', ')} WHERE id = ?`)
+        .run(...entries.map(([, value]) => value ?? null), id);
+    },
+    getLatestRun: (routineId) => { const found = latestRun(routineId); return found ? runDto(found) as never : null; },
+  });
+
+  /** A fresh managed project/conversation per run (or a new conversation in an
+   * owned project): a routine never continues a user's interactive thread. */
+  const prepareTarget = (owner: string, routine: RoutineRow, startedAt: number): { projectId: string; conversationId: string; created: boolean } => {
+    const target = JSON.parse(routine.target_json) as RoutineProjectTarget;
+    const conversationId = randomUUID();
+    if (target.mode === 'reuse') {
+      if (!ownership.isOwnedBy(target.projectId, owner) || !getProject(db, target.projectId)) throw new Error('routine target project unavailable');
+      db.transaction(() => insertConversation(db, { id: conversationId, projectId: target.projectId, title: routine.name,
+        sessionMode: 'design', createdAt: startedAt, updatedAt: startedAt }))();
+      return { projectId: target.projectId, conversationId, created: false };
+    }
+    const projectId = randomUUID();
+    fs.mkdirSync(input.projectsRoot, { recursive: true });
+    fs.mkdirSync(projectDir(input.projectsRoot, projectId), { mode: 0o700 });
+    db.transaction(() => {
+      insertProject(db, { id: projectId, name: `${routine.name} · ${new Date(startedAt).toISOString().slice(0, 16).replace('T', ' ')}`,
+        skillId: null, designSystemId: null, customInstructions: null, pendingPrompt: null, metadata: { kind: 'prototype' },
+        createdAt: startedAt, updatedAt: startedAt });
+      insertConversation(db, { id: conversationId, projectId, title: routine.name, sessionMode: 'design', createdAt: startedAt, updatedAt: startedAt });
+      ownership.bindOwner(projectId, owner, startedAt);
+    }).immediate();
+    return { projectId, conversationId, created: true };
+  };
+  const removeTarget = (prepared: { projectId: string; conversationId: string; created: boolean }) => {
+    if (prepared.created) {
+      db.prepare('DELETE FROM projects WHERE id = ?').run(prepared.projectId);
+      fs.rmSync(projectDir(input.projectsRoot, prepared.projectId), { recursive: true, force: true });
+    } else db.prepare('DELETE FROM conversations WHERE id = ?').run(prepared.conversationId);
+  };
+
+  service.setRunHandler(async ({ routine, startedAt, runId }) => {
+    const found = routineRow(routine.id);
+    const owner = found?.owner_account_id;
+    if (!found || !owner || !ownerUsable(owner)) throw new Error('routine owner cannot run work');
+    const prepared = prepareTarget(owner, found, startedAt);
+    let settle!: (completion: RoutineRunCompletion) => void;
+    const completion = new Promise<RoutineRunCompletion>((resolve) => { settle = resolve; });
+    const allowed = () => Boolean(routineRow(found.id) && ownerUsable(owner) && ownership.isOwnedBy(prepared.projectId, owner));
+    return {
+      projectId: prepared.projectId, conversationId: prepared.conversationId, agentRunId: '', completion,
+      discardUnstarted: () => removeTarget(prepared),
+      discard: () => settle({ status: 'canceled', error: 'routine run was not started' }),
+      start: () => { void (async () => {
+        const actor = ownerUsable(owner);
+        if (!actor || !allowed()) return settle({ status: 'failed', error: 'routine owner cannot run work', errorCode: 'MULTIUSER_PERSONAL_UNAVAILABLE' });
+        const admitted = await input.runs.admitInternal(actor, { projectId: prepared.projectId, conversationId: prepared.conversationId,
+          executionSource: found.execution_source, clientRequestId: `routine-${runId}`,
+          skillIds: JSON.parse(found.skill_ids_json) as string[], message: found.prompt }, allowed,
+          [`You are running an unattended scheduled routine named "${found.name}".`,
+            'Do not ask follow-up questions, do not emit <question-form>, and do not wait for user input. Pick reasonable defaults and finish the task.'].join('\n'));
+        const agentRunId = (admitted.body as { runId?: unknown } | null)?.runId;
+        if (admitted.status >= 300 || typeof agentRunId !== 'string') {
+          const code = (admitted.body as { error?: { code?: unknown } } | null)?.error?.code;
+          return settle({ status: 'failed', error: 'routine run was refused', errorCode: typeof code === 'string' ? code : null });
+        }
+        db.prepare('UPDATE studio_routine_runs SET agent_run_id = ? WHERE id = ?').run(agentRunId, runId);
+        const poll = setInterval(() => {
+          const state = input.runs.runState(agentRunId, owner);
+          if (!state) { clearInterval(poll); return settle({ status: 'failed', error: 'routine run disappeared' }); }
+          if (!['succeeded', 'failed', 'canceled'].includes(state.status)) return;
+          clearInterval(poll);
+          settle({ status: state.status as RoutineRunCompletion['status'], ...(state.text ? { summary: state.text.slice(0, 2000) } : {}),
+            ...(state.status === 'failed' ? { error: 'run failed', errorCode: state.reason } : {}) });
+        }, POLL_MS);
+        poll.unref();
+      })().catch(() => settle({ status: 'failed', error: 'routine run failed to start' })); },
+    };
+  });
+
+  const parse = (owner: string, body: Partial<CreateRoutineRequest & UpdateRoutineRequest>, existing?: RoutineRow) => {
+    const record = body as Record<string, unknown>;
+    if (Object.keys(record).some((key) => !['name', 'prompt', 'schedule', 'target', 'skillId', 'agentId', 'context', 'enabled'].includes(key)))
+      throw new RoutineRefusal(400, 'unsupported routine field');
+    const text = (value: unknown, max: number) => typeof value === 'string' && value.trim().length > 0 && value.length <= max && !value.includes('\0');
+    if ((!existing || body.name !== undefined) && !text(body.name, 100)) throw new RoutineRefusal(400, 'name is required');
+    if ((!existing || body.prompt !== undefined) && !text(body.prompt, 32_000)) throw new RoutineRefusal(400, 'prompt is required');
+    const schedule = body.schedule ?? (existing ? JSON.parse(existing.schedule_json) : undefined);
+    const target = body.target ?? (existing ? JSON.parse(existing.target_json) : { mode: 'create_each_run' });
+    try { validateSchedule(schedule); validateTarget(target); } catch (error) { throw new RoutineRefusal(400, error instanceof Error ? error.message : 'invalid schedule'); }
+    if (Object.keys(target).some((key) => !['mode', 'projectId'].includes(key))
+      || target.mode === 'reuse' && (!isSafeId(target.projectId) || !ownership.isOwnedBy(target.projectId, owner))) throw new RoutineRefusal(404, 'resource not found');
+    if (body.agentId !== undefined && body.agentId !== null && body.agentId !== 'codex' && body.agentId !== 'openai') throw new RoutineRefusal(403, 'routines run on the personal Codex subscription or the company pool');
+    const context = (body.context ?? {}) as Record<string, unknown>;
+    const empty = (value: unknown) => value === undefined || value === null || Array.isArray(value) && value.length === 0;
+    if (Object.keys(context).some((key) => !['skillIds', 'pluginIds', 'mcpServerIds', 'connectorIds', 'workspaceScope'].includes(key))
+      || !empty(context.pluginIds) || !empty(context.mcpServerIds) || !empty(context.connectorIds) || !empty(context.workspaceScope))
+      throw new RoutineRefusal(403, 'plugins, MCP servers, connectors and workspace scopes are not available for routines');
+    // The standard form sends the primary skill both as skillId and inside context.skillIds.
+    const listed = body.context || body.skillId !== undefined ? context.skillIds ?? [] : existing ? JSON.parse(existing.skill_ids_json) : [];
+    if (body.skillId !== undefined && body.skillId !== null && typeof body.skillId !== 'string') throw new RoutineRefusal(400, 'invalid skills');
+    const skillIds = Array.isArray(listed) ? [...new Set([...(body.skillId ? [body.skillId] : []), ...listed])] : listed;
+    if (!Array.isArray(skillIds) || skillIds.length > 12 || skillIds.some((id) => typeof id !== 'string' || !id || id.length > 256)) throw new RoutineRefusal(400, 'invalid skills');
+    if (body.enabled !== undefined && typeof body.enabled !== 'boolean') throw new RoutineRefusal(400, 'invalid enabled flag');
+    const source: Source = body.agentId === 'openai' ? 'company_pool' : body.agentId === 'codex' ? 'personal_subscription' : existing?.execution_source ?? 'personal_subscription';
+    return { name: body.name?.trim() ?? existing!.name, prompt: body.prompt ?? existing!.prompt, schedule, target, skillIds, source,
+      enabled: body.enabled ?? (existing ? existing.enabled === 1 : true) };
+  };
+  const handle = (operation: (req: Request, res: Response, owner: string) => unknown) => async (req: Request, res: Response) => {
+    const owner = multiUserActorOf(res)?.accountId;
+    if (!owner) return sendApiError(res, 401, 'UNAUTHORIZED', 'authentication required');
+    try { await operation(req, res, owner); }
+    catch (error) {
+      if (res.headersSent) return;
+      if (error instanceof RoutineRefusal) return sendApiError(res, error.status, error.status === 404 ? 'NOT_FOUND'
+        : error.status === 403 ? 'MULTIUSER_CAPABILITY_UNAVAILABLE' : error.status === 409 ? 'CONFLICT' : 'BAD_REQUEST', error.message);
+      sendApiError(res, 400, 'BAD_REQUEST', 'routine request refused');
+    }
+  };
+  const owned = (owner: string, id: unknown) => {
+    const found = typeof id === 'string' ? ownedRow(owner, id) : undefined;
+    if (!found) throw new RoutineRefusal(404, 'routine not found');
+    return found;
+  };
+  const prefix = '/api/multiuser/routines';
+  app.get(prefix, handle((_req, res, owner) => {
+    res.json({ routines: (db.prepare('SELECT * FROM studio_routines WHERE owner_account_id = ? ORDER BY created_at').all(owner) as RoutineRow[]).map(dto) });
+  }));
+  app.post(prefix, handle((req, res, owner) => {
+    const fields = parse(owner, req.body ?? {});
+    const count = (db.prepare('SELECT COUNT(*) AS n FROM studio_routines WHERE owner_account_id = ?').get(owner) as { n: number }).n;
+    if (count >= ROUTINE_LIMIT) throw new RoutineRefusal(409, 'routine limit reached');
+    const id = `studio-routine-${randomUUID()}`; const at = now();
+    db.prepare(`INSERT INTO studio_routines (id, owner_account_id, name, prompt, schedule_json, target_json, skill_ids_json, execution_source, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, owner, fields.name, fields.prompt, JSON.stringify(fields.schedule), JSON.stringify(fields.target),
+      JSON.stringify(fields.skillIds), fields.source, fields.enabled ? 1 : 0, at, at);
+    service.rescheduleOne(id);
+    res.status(201).json({ routine: dto(routineRow(id)!) });
+  }));
+  app.get(`${prefix}/:id`, handle((req, res, owner) => { res.json({ routine: dto(owned(owner, req.params.id)) }); }));
+  app.patch(`${prefix}/:id`, handle((req, res, owner) => {
+    const existing = owned(owner, req.params.id);
+    const fields = parse(owner, req.body ?? {}, existing);
+    db.prepare(`UPDATE studio_routines SET name = ?, prompt = ?, schedule_json = ?, target_json = ?, skill_ids_json = ?, execution_source = ?, enabled = ?, updated_at = ?
+      WHERE id = ? AND owner_account_id = ?`).run(fields.name, fields.prompt, JSON.stringify(fields.schedule), JSON.stringify(fields.target),
+      JSON.stringify(fields.skillIds), fields.source, fields.enabled ? 1 : 0, now(), existing.id, owner);
+    service.rescheduleOne(existing.id);
+    res.json({ routine: dto(routineRow(existing.id)!) });
+  }));
+  app.delete(`${prefix}/:id`, handle((req, res, owner) => {
+    const existing = owned(owner, req.params.id);
+    service.unschedule(existing.id);
+    db.prepare('DELETE FROM studio_routines WHERE id = ? AND owner_account_id = ?').run(existing.id, owner);
+    res.json({ ok: true });
+  }));
+  app.post(`${prefix}/:id/run`, handle(async (req, res, owner) => {
+    const existing = owned(owner, req.params.id);
+    const started = await service.runNow(existing.id);
+    if (!multiUserStreamAllowed(res)) return;
+    const run = db.prepare('SELECT * FROM studio_routine_runs WHERE routine_id = ? AND project_id = ? ORDER BY started_at DESC LIMIT 1')
+      .get(existing.id, started.projectId) as RunRow | undefined;
+    if (!run) throw new RoutineRefusal(409, 'routine run was not recorded');
+    // Same additive fields as the host route, so Run opens the new conversation.
+    res.status(202).json({ routine: dto(routineRow(existing.id)!), run: runDto(run),
+      projectId: run.project_id, conversationId: run.conversation_id, agentRunId: run.agent_run_id });
+  }));
+  app.get(`${prefix}/:id/runs`, handle((req, res, owner) => {
+    const existing = owned(owner, req.params.id);
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
+    res.json({ runs: (db.prepare('SELECT * FROM studio_routine_runs WHERE routine_id = ? AND owner_account_id = ? ORDER BY started_at DESC LIMIT ?')
+      .all(existing.id, owner, limit) as RunRow[]).map(runDto) });
+  }));
+  service.start();
+  return { stop() { service.stop(); auth.close(); } };
+}

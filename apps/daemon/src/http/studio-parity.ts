@@ -42,7 +42,8 @@ export function studioLaneForRoute(entry: Pick<MultiUserRouteClassification, 'me
     if (parts[2] === 'settings') return 'settings';
     if (parts[2] === 'catalog') return 'catalogs';
     if (parts[2] === 'design-catalog') return 'catalogs';
-    if (path.includes('/archive')) return 'delivery';
+    if (parts[2] === 'routines') return 'automations';
+    if (path.includes('/archive') || path.includes('/export/')) return 'delivery';
     if (path.includes('/preview')) return 'preview';
     return parts[2] === 'projects' ? 'projects' : null;
   }
@@ -95,6 +96,7 @@ export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
   composer: 'Pilot composer: text, attachments, private and bundled skills, design systems, queue, stop, question answers and personal Codex model/effort; rich media inputs, plugins and comment attachments are pending (#57).',
   preview: 'Pilot preview: opaque HTML/deck/media previews, manual edit, inspect and owner-only immutable artifact snapshots/thumbnails; comments, renderer covers and complete browser acceptance are pending (#59).',
   files: 'Pilot files: owner file list, read, write, upload, rename, delete, folders, search and versions; public publish and resumable large uploads are pending (#58).',
+  automations: 'Pilot automations: account-owned routines with schedules, manual runs, history and per-dispatch authority on personal Codex or the company pool; templates, proposals, ingestion, crystallize and plugin/connector context are pending (#64).',
   delivery: 'Pilot delivery: owned project/folder/batch ZIP downloads and one-file HTML exports from captured bytes with design handoff; PDF, PPTX, image, historical-version export, public publish and cloud delivery are pending (#66).',
   home: 'Pilot Home: Prototype, Deck, Other, immutable saved templates, project copies and browser ZIP/directory imports; live artifacts, media and Figma import are pending (#60).',
   settings: 'Pilot settings: account appearance/notification preferences, instructions, manual memory and profile injection; full navigation, providers, automatic extraction, verification, connectors, MCP and library are pending (#62).',

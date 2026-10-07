@@ -81,6 +81,13 @@ export function studioRequestAvailable(method: string, path: string,
     if (/^\/api\/skills\/[^/]+$/.test(skillPath)) return ['GET', 'PUT', 'DELETE'].includes(method);
     if (/^\/api\/skills\/[^/]+\/files$/.test(skillPath)) return method === 'GET';
   }
+  if (usable('automations')) {
+    const routinePath = path.replace(/^\/api\/multiuser\/routines(?=\/|$)/, '/api/routines');
+    if (routinePath === '/api/routines') return method === 'GET' || method === 'POST';
+    if (/^\/api\/routines\/[^/]+$/.test(routinePath)) return ['GET', 'PATCH', 'DELETE'].includes(method);
+    if (/^\/api\/routines\/[^/]+\/run$/.test(routinePath)) return method === 'POST';
+    if (/^\/api\/routines\/[^/]+\/runs$/.test(routinePath)) return method === 'GET';
+  }
   if (usable('settings')) {
     const settingsPath = path.replace(/^\/api\/multiuser\/settings\/config$/, '/api/app-config')
       .replace(/^\/api\/multiuser\/settings\/memory(?=\/|$)/, '/api/memory');

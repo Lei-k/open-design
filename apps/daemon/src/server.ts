@@ -947,6 +947,7 @@ import { registerStudioSettingsRoutes } from './routes/studio-settings.js';
 import { registerStudioDesignCatalogRoutes } from './routes/studio-design-catalog.js';
 import { registerStudioCatalogRoutes } from './routes/studio-catalog.js';
 import { registerStudioArchiveRoutes } from './routes/studio-archives.js';
+import { registerStudioRoutineRoutes } from './routes/studio-routines.js';
 import { registerStudioProjectCreationRoutes } from './routes/studio-project-creation.js';
 import { registerMultiUserAgentAccountRoutes } from './routes/multiuser-agent-accounts.js';
 import { PersonalCodexAccounts } from './services/personal-codex-accounts.js';
@@ -17603,6 +17604,11 @@ export async function startServer({
     ...(studioSettings ? { settings: studioSettings } : {}),
     ...(studioDesignCatalog ? { designCatalog: studioDesignCatalog } : {}),
   }) : null;
+  // Account-owned Automations dispatch through the same run admission policy.
+  const studioRoutines = multiUserRuns ? registerStudioRoutineRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, runs: multiUserRuns,
+    ...(multiUserMode?.poolClock ? { clock: multiUserMode.poolClock } : {}),
+  }) : null;
   if (multiUserRuns) multiUserFront?.setCancelAccountRuns((accountId) => {
     multiUserRuns.cancelAccountRuns(accountId);
     personalCodex?.cancelPendingFor(accountId).catch(() => {});
@@ -18237,6 +18243,7 @@ export async function startServer({
       proactiveContentPull.dispose();
       collabPublishWatcher.dispose();
       collabCloud?.dispose();
+      studioRoutines?.stop();
       multiUserDesign?.close();
       multiUserFront?.close();
       void personalCodex?.shutdown();
@@ -18247,6 +18254,7 @@ export async function startServer({
       daemonShutdownStarted = true;
       daemonShuttingDown = true;
       if (multiUserRuns) {
+        studioRoutines?.stop();
         multiUserRuns.beginShutdown();
         await personalCodex?.shutdown();
         await multiUserRuns.shutdown();

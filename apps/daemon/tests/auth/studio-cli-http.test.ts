@@ -255,6 +255,25 @@ describe('same Studio APIs through remote od sessions', () => {
     success(await cli(['skill', 'uninstall', id, '--session-file', aFile, '--json']));
   }, 40_000);
 
+  it('creates, runs and lists account automations through the same routine APIs', async () => {
+    const made = success(await cli(['automation', 'create', '--name', 'CLI routine', '--prompt-file', '-', '--schedule', 'daily:09:00',
+      '--session-file', aFile, '--json'], 'CLI_ROUTINE_PROMPT'));
+    const id = made.routine.id;
+    expect(made.routine).toMatchObject({ name: 'CLI routine', agentId: 'codex', enabled: true });
+    expect(success(await cli(['automation', 'list', '--session-file', aFile, '--json'])).routines.map((item: { id: string }) => item.id)).toContain(id);
+    expect(success(await cli(['automation', 'list', '--session-file', bFile, '--json'])).routines).toEqual([]);
+    expect((await cli(['automation', 'run', id, '--session-file', bFile, '--json'])).code).not.toBe(0);
+    const started = success(await cli(['automation', 'run', id, '--session-file', aFile, '--json']));
+    expect(started.projectId).toEqual(expect.any(String));
+    let history: { runs: Array<{ status: string }> } = { runs: [] };
+    for (let attempt = 0; attempt < 200 && history.runs[0]?.status !== 'succeeded'; attempt++) {
+      history = success(await cli(['automation', 'runs', id, '--session-file', aFile, '--json']));
+      if (history.runs[0]?.status !== 'succeeded') await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(history.runs[0]).toMatchObject({ status: 'succeeded', trigger: 'manual' });
+    success(await cli(['automation', 'delete', id, '--session-file', aFile, '--json']));
+  }, 40_000);
+
   it('honors server revocation and logs B out without printing or retaining credentials', async () => {
     const revoked = await daemon.request({ method: 'POST', path: `/api/auth/users/${alice.id}/sessions/revoke`, cookie: admin.cookie, body: {} });
     expect(revoked.status).toBe(200);
