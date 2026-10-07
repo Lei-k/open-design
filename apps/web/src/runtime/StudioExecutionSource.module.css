@@ -3,7 +3,7 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
-  max-width: 220px;
+  max-width: 100%;
   padding: 0 8px;
   height: 32px;
   border-radius: 8px;
@@ -16,7 +16,24 @@
 }
 
 .label {
+  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Compact per-turn model/effort pickers; global form controls default to full width. */
+.source .picker {
+  flex: none;
+  width: auto;
+  min-width: 0;
+  max-width: 120px;
+  height: 28px;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.source .label {
+  flex: 0 1 auto;
 }

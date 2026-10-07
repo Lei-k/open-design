@@ -11,6 +11,7 @@ import { SettingsAppearanceField } from '../components/SettingsAppearanceField';
 import { SettingsFrame, SettingsNavItem, SettingsSectionHeader } from '../components/SettingsFrame';
 import type { SettingsSection } from '../components/SettingsDialog';
 import { studioFetch, studioRequestAvailable } from './studio-transport';
+import { withStudioAccountConfig } from './studio-account-preferences';
 import type { AppConfig } from '../types';
 import { useStudioCapabilities, StudioUnavailable } from './studio-capabilities';
 
@@ -48,7 +49,7 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
       const response = await studioFetch('/api/app-config');
       if (!response.ok) throw new Error('unavailable');
       const data = await response.json() as StudioSettingsResponse;
-      setSettings(data); setInstructions(data.config.customInstructions); setConfig((current) => ({ ...current, ...data.config })); setStatus(null);
+      setSettings(data); setInstructions(data.config.customInstructions); setConfig((current) => withStudioAccountConfig(current, data.config)); setStatus(null);
     } catch (error) { if (!(error instanceof DOMException && error.name === 'AbortError')) setStatus('error'); }
     finally { setBusy(false); }
   };
@@ -62,8 +63,8 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
           notifications: config.notifications, revision: settings.revision }) });
       if (!response.ok) { setStatus(response.status === 409 ? 'conflict' : 'error'); return; }
       const saved = await response.json() as StudioSettingsResponse;
-      setSettings(saved); setConfig((current) => ({ ...current, ...saved.config }));
-      await onPersist({ ...config, ...saved.config }); setStatus('saved');
+      setSettings(saved); setConfig((current) => withStudioAccountConfig(current, saved.config));
+      await onPersist(withStudioAccountConfig(config, saved.config)); setStatus('saved');
     } catch (error) { if (!(error instanceof DOMException && error.name === 'AbortError')) setStatus('error'); }
     finally { setBusy(false); }
   };

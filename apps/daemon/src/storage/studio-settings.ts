@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { STUDIO_DEFAULT_ACCENT_COLOR, STUDIO_DEFAULT_NOTIFICATIONS,
+import { STUDIO_DEFAULT_ACCENT_COLOR, STUDIO_DEFAULT_CODEX_MODEL, STUDIO_DEFAULT_NOTIFICATIONS, isStudioCodexModel, isStudioCodexReasoning,
   type StudioSettingsResponse, type StudioSettingsWrite } from '@open-design/contracts';
 import { composeMemoryBody, type MemoryChangeEvent } from '../memory.js';
 
@@ -32,7 +32,11 @@ export class StudioSettings {
     const preferences = JSON.parse(row?.preferences_json ?? '{}') as Partial<StudioSettingsResponse['config']>;
     return { config: { customInstructions: row?.custom_instructions ?? '',
       accentColor: preferences.accentColor ?? STUDIO_DEFAULT_ACCENT_COLOR,
-      notifications: { ...STUDIO_DEFAULT_NOTIFICATIONS, ...preferences.notifications } }, revision: row?.revision ?? 0 };
+      notifications: { ...STUDIO_DEFAULT_NOTIFICATIONS, ...preferences.notifications },
+      // A stored choice outside the current list (a retired model) reads as the default.
+      codexModel: isStudioCodexModel(preferences.codexModel?.model) && isStudioCodexReasoning(preferences.codexModel?.reasoning)
+        ? { model: preferences.codexModel.model, reasoning: preferences.codexModel.reasoning } : { ...STUDIO_DEFAULT_CODEX_MODEL } },
+    revision: row?.revision ?? 0 };
   }
 
   update(owner: string, input: StudioSettingsWrite): StudioSettingsResponse | null {
@@ -41,11 +45,12 @@ export class StudioSettings {
       if (current.revision !== input.revision) return null;
       const config = { customInstructions: input.customInstructions === undefined ? current.config.customInstructions : input.customInstructions ?? '',
         accentColor: input.accentColor === undefined ? current.config.accentColor : input.accentColor?.toLowerCase() ?? STUDIO_DEFAULT_ACCENT_COLOR,
-        notifications: input.notifications === undefined ? current.config.notifications : input.notifications ?? STUDIO_DEFAULT_NOTIFICATIONS };
+        notifications: input.notifications === undefined ? current.config.notifications : input.notifications ?? STUDIO_DEFAULT_NOTIFICATIONS,
+        codexModel: input.codexModel === undefined ? current.config.codexModel : input.codexModel ?? STUDIO_DEFAULT_CODEX_MODEL };
       this.db.prepare(`INSERT INTO multiuser_settings (owner_account_id, custom_instructions, revision, preferences_json) VALUES (?, ?, ?, ?)
         ON CONFLICT(owner_account_id) DO UPDATE SET custom_instructions = excluded.custom_instructions, revision = excluded.revision,
         preferences_json = excluded.preferences_json`)
-        .run(owner, config.customInstructions, input.revision + 1, JSON.stringify({ accentColor: config.accentColor, notifications: config.notifications }));
+        .run(owner, config.customInstructions, input.revision + 1, JSON.stringify({ accentColor: config.accentColor, notifications: config.notifications, codexModel: config.codexModel }));
       return this.read(owner);
     }).immediate();
   }

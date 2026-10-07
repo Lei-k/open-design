@@ -181,7 +181,8 @@ async function turn(id: number, params: Json): Promise<void> {
   }
   const normalReply = JSON.stringify({ codexHome: home, home: process.env.HOME ?? null, cwd: process.cwd(), threadId,
     turnsInThread: record.turns, message: text, envKeys: Object.keys(process.env).sort(),
-    ...(Object.keys(reads).length > 0 ? { reads } : {}), ...(writes.length > 0 ? { writes } : {}) });
+    ...(Object.keys(reads).length > 0 ? { reads } : {}), ...(writes.length > 0 ? { writes } : {}),
+    ...(typeof params.model === 'string' ? { model: params.model } : {}), ...(typeof params.effort === 'string' ? { effort: params.effort } : {}) });
   fs.writeFileSync(path.join(home, 'mock-turn-evidence.json'), normalReply);
   // Deliberately exceeds the daemon's bounded final-text budget with
   // multi-byte characters, so integration tests cover UTF-8 truncation.

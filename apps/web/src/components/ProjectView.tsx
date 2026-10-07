@@ -13583,7 +13583,8 @@ export function ProjectView({
   // not in the top-right header.
   // Choosing an agent needs the host agent catalog (settings lane); without it
   // the server-fixed execution source is shown instead.
-  const executionControls = !studio.hostServices ? <StudioExecutionSource agentId={executionAgentId} onChange={studioPinnedAgentId ? undefined : onAgentChange} /> : (
+  const executionControls = !studio.hostServices ? <StudioExecutionSource agentId={executionAgentId} onChange={studioPinnedAgentId ? undefined : onAgentChange}
+    modelChoice={config.agentModels?.codex} onModelChange={(choice) => onAgentModelChange('codex', choice)} /> : (
     <>
       <AvatarMenu
         config={config}

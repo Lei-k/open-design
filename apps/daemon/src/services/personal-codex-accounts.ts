@@ -149,6 +149,8 @@ export interface PersonalTurnResult {
  */
 export function runPersonalCodexTurn(input: AppServerEnvironment & {
   prompt: string; resumeThreadId: string | null; sandboxMode: CodexSandboxMode; onThread?: (threadId: string) => void;
+  /** This turn's admitted model/effort; absent means the account's own default. */
+  model?: string; reasoning?: string;
   /** Normalized progress tap. Callers must persist only a redacted projection. */
   onAgentEvent?: (event: Json) => void;
   /** Called synchronously from the child's close event, before `done` settles. */
@@ -175,6 +177,7 @@ export function runPersonalCodexTurn(input: AppServerEnvironment & {
   });
   const session = attachCodexAppServerSession({
     child, prompt: input.prompt, cwd: input.cwd, sandboxMode: input.sandboxMode,
+    model: input.model ?? null, reasoning: input.reasoning ?? null,
     resumeSessionId: input.resumeThreadId, resumeSessionOwned: input.resumeThreadId !== null,
     onAgentEvent: (event) => {
       input.onAgentEvent?.(event);

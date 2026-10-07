@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
-import { API_ERROR_CODES, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
+import { API_ERROR_CODES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
 import { PersonalRunEvents } from '../runtimes/personal-run-events.js';
 import { formatProjectAttachmentHint, resolveSafeProjectAttachments } from '../runtimes/chat-prompt-inputs.js';
 import { renderRunContextPrompt } from '../runtimes/chat-run-context.js';
@@ -93,6 +93,9 @@ type PersonalRunFields = {
   attachments: string[];
   /** The focused project files/folders (`context.workspaceItems`), already narrowed. */
   workspaceItems: Array<{ id: string; kind: 'design-files' | 'file' | 'folder'; label: string; path?: string }>;
+  /** This turn's Codex model/effort; null leaves the choice to the user's Codex account. */
+  model: string | null;
+  reasoning: string | null;
 };
 type FieldRefusal = { status: number; code: ApiErrorCode; message: string };
 /** A project-relative path: no root, drive, backslash, NUL, empty, `.` or `..` segment. */
@@ -174,6 +177,14 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
   }
   const selectedSkillIds = [...new Set([...skillIds, ...((context as { skillIds?: string[] } | null)?.skillIds ?? [])])];
   if (selectedSkillIds.length > 12) return refuse(400, 'BAD_REQUEST', 'too many skill selections');
+  const choice = (key: 'model' | 'reasoning', valid: (value: unknown) => boolean): string | null | false => {
+    const value = body[key];
+    if (value === undefined || value === null || value === 'default') return null;
+    return valid(value) ? value as string : false;
+  };
+  const model = choice('model', isStudioCodexModel);
+  const reasoning = choice('reasoning', isStudioCodexReasoning);
+  if (model === false || reasoning === false) return refuse(400, 'BAD_REQUEST', 'unsupported model or reasoning choice');
   const hints = body.analyticsHints;
   if (hints !== undefined && (!hints || typeof hints !== 'object' || Array.isArray(hints) || JSON.stringify(hints).length > 4096)) {
     return refuse(400, 'BAD_REQUEST', 'invalid question answer');
@@ -188,7 +199,7 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
     skillIds: selectedSkillIds,
     questionSourceRunId: answer ? sourceRunId as string : null,
     attachments: [...new Set(attachments as string[])],
-    workspaceItems,
+    workspaceItems, model, reasoning,
   };
 }
 
@@ -876,6 +887,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
             ...(skillRoot ? { skillPackages: skillRoot } : {}),
             prompt, resumeThreadId: session.thread_id,
+            ...(isStudioCodexModel(request?.model) ? { model: request.model } : {}),
+            ...(isStudioCodexReasoning(request?.reasoning) ? { reasoning: request.reasoning } : {}),
             // A real personal provider always runs inside the per-run bubblewrap
             // boundary. Its filesystem already contains only this account's
             // CODEX_HOME, run HOME/TMPDIR and project cwd, with system paths
@@ -1192,6 +1205,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const request = JSON.stringify({ message: fields.text, ...(fields.attachments.length ? { attachments: fields.attachments } : {}),
       ...(inheritsSkills || withFixedSkill(fixedCapture?.skill, selectedSkills).length ? { skillIds: inheritsSkills ? inheritedSkillIds : fields.skillIds, skillSnapshots } : {}),
       ...(fields.workspaceItems.length ? { workspaceItems: fields.workspaceItems } : {}),
+      ...(fields.model ? { model: fields.model } : {}), ...(fields.reasoning ? { reasoning: fields.reasoning } : {}),
       ...(question ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId: question.id } } : {}),
       ...(designSnapshot ? { designSnapshot } : {}),
       ...(composed ? { skillId: composed.selection.skillId, designSystemId: designSnapshot?.id ?? composed.selection.designSystemId,
@@ -1260,6 +1274,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     }
     const fields = parsePersonalRunFields({ ...inputBody, agentId: 'codex', executionSource: 'personal_subscription' }, studioMessageIdPrefix(owner));
     if ('code' in fields) return sendApiError(res, fields.status, fields.code, fields.message);
+    // The company model is admin-owned; a per-turn choice applies only to personal Codex.
+    if (fields.model || fields.reasoning) return sendApiError(res, 403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'not available for company pool runs: model, reasoning');
     const replay = requestedRun(owner, target.conversationId, fields.clientRequestId);
     if (replay) { res.status(200).json({ runId: replay.id, run: body(replay) }); return; }
     if (personalSession(target.conversationId)) return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation uses a personal subscription');

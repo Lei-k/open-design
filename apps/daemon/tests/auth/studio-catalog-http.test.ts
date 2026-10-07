@@ -221,3 +221,37 @@ it('refuses skill folders without SKILL.md, with hidden or traversal paths, or w
   expect((await folder([['kit/SKILL.md', '---\nname: Empty\n---\n']])).status).toBe(400);
   expect((await folder([['kit/SKILL.md', 'body']], null)).status).toBe(401);
 });
+
+it('applies an allowed per-turn Codex model and effort, and refuses unknown choices and company overrides', async () => {
+  const target = await project();
+  const chosen = await run(target, 'use a chosen model', { model: 'gpt-5.4', reasoning: 'high' });
+  expect(chosen.status, chosen.text).toBe(202);
+  await finish(chosen.json.runId);
+  const evidence = JSON.parse(readFileSync(path.join(codexHome(root, a.id), 'mock-turn-evidence.json'), 'utf8'));
+  expect(evidence).toMatchObject({ model: 'gpt-5.4', effort: 'high' });
+  const defaulted = await run(target, 'account default', { model: 'default', reasoning: null });
+  expect(defaulted.status, defaulted.text).toBe(202);
+  await finish(defaulted.json.runId);
+  const second = JSON.parse(readFileSync(path.join(codexHome(root, a.id), 'mock-turn-evidence.json'), 'utf8'));
+  expect(second.model).toBeUndefined();
+  expect(second.effort).toBeUndefined();
+  for (const extra of [{ model: 'gpt-unknown' }, { reasoning: 'max' }, { model: 42 }]) {
+    expect((await run(target, 'refused choice', extra)).status).toBe(400);
+  }
+  expect((await run(target, 'tier stays default only', { serviceTier: 'fast' })).status).toBe(403);
+});
+
+it('persists the account Codex model preference with revision checks and keeps it private', async () => {
+  const current = await daemon.request({ path: '/api/app-config', cookie: a.cookie });
+  expect(current.json.config.codexModel).toEqual({ model: 'default', reasoning: 'default' });
+  const saved = await daemon.request({ method: 'PUT', path: '/api/app-config', cookie: a.cookie,
+    body: { revision: current.json.revision, codexModel: { model: 'gpt-5.5', reasoning: 'medium' } } });
+  expect(saved.status, saved.text).toBe(200);
+  expect(saved.json.config.codexModel).toEqual({ model: 'gpt-5.5', reasoning: 'medium' });
+  expect((await daemon.request({ path: '/api/app-config', cookie: b.cookie })).json.config.codexModel).toEqual({ model: 'default', reasoning: 'default' });
+  for (const codexModel of [{ model: 'gpt-unknown', reasoning: 'low' }, { model: 'gpt-5.5' }, { model: 'gpt-5.5', reasoning: 'low', extra: 1 }]) {
+    expect((await daemon.request({ method: 'PUT', path: '/api/app-config', cookie: a.cookie, body: { revision: saved.json.revision, codexModel } })).status).toBe(400);
+  }
+  const reset = await daemon.request({ method: 'PUT', path: '/api/app-config', cookie: a.cookie, body: { revision: saved.json.revision, codexModel: null } });
+  expect(reset.json.config.codexModel).toEqual({ model: 'default', reasoning: 'default' });
+});

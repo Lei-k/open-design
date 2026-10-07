@@ -32,14 +32,27 @@ test('[P1] Studio run renders its immutable image immediately and retains histor
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   const composer = page.getByTestId('chat-composer-input');
   await expect(composer).toBeVisible({ timeout: T.long });
+  // Personal Codex model/effort: an account preference sent with the standard request.
+  const preferenceSaved = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === '/api/app-config');
+  await page.getByTestId('studio-codex-model').selectOption('gpt-5.4');
+  expect((await preferenceSaved).status()).toBe(200);
+  const effortSaved = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === '/api/app-config');
+  await page.getByTestId('studio-codex-reasoning').selectOption('high');
+  expect((await effortSaved).status()).toBe(200);
+  await page.screenshot({ path: info.outputPath('studio-codex-model-entry.png'), animations: 'disabled' });
   await composer.fill('[mock-write=hero.png]');
   const admitted = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/runs');
   await page.getByTestId('chat-send').click();
-  expect((await admitted).status()).toBe(202);
+  const admission = await admitted;
+  expect(admission.status()).toBe(202);
+  expect(admission.request().postDataJSON()).toMatchObject({ model: 'gpt-5.4', reasoning: 'high' });
   const image = page.getByTestId('artifact-card-hero.png').locator('img');
   await expect(image).toBeVisible({ timeout: T.long });
   await expect(image).toHaveAttribute('src', /\/chat-artifact-snapshots\/[^/]+\/content$/);
   await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(1);
+  expect(await studio.turnEvidence(studio.a)).toMatchObject({ model: 'gpt-5.4', effort: 'high' });
+  expect((await studio.request('GET', '/api/app-config', studio.a.cookie)).json.config.codexModel).toEqual({ model: 'gpt-5.4', reasoning: 'high' });
+  expect((await studio.request('GET', '/api/app-config', studio.b.cookie)).json.config.codexModel).toEqual({ model: 'default', reasoning: 'default' });
   const snapshotUrl = await image.getAttribute('src');
   expect(snapshotUrl).toBeTruthy();
   const original = await studio.request('GET', snapshotUrl!, studio.a.cookie);

@@ -108,7 +108,9 @@ it('accepts ids only in the actor\'s own namespace and refuses reused ids', asyn
 
 it('refuses capabilities the personal lane does not apply instead of dropping them', async () => {
   const target = await project();
-  for (const extra of [{ model: 'gpt-5' }, { reasoning: 'high' },
+  // Model/effort are honored per turn (validated in studio-catalog-http); an unlisted model is a bad request.
+  expect((await send(studioRequest(target, 'x', a, { model: 'gpt-unlisted' }))).status).toBe(400);
+  for (const extra of [{ serviceTier: 'fast' },
     { sessionMode: 'plan' }, { research: { enabled: true } }, { context: { files: [] } }, { taskExecutionId: randomUUID() },
     { byokProvider: { kind: 'openai' } }, { commentAttachments: [{ id: 'c' }] }, { appliedPluginSnapshotId: 'snap' }]) {
     const refused = await send(studioRequest(target, 'x', a, extra));

@@ -92,7 +92,7 @@ export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
   projects: 'Pilot projects: artifact, upload and background-job lineage are pending (#54).',
   execution: 'Pilot execution: personal Codex and the OpenAI company pool; real-provider acceptance, feedback telemetry and replay are pending (#55).',
   chat: 'Pilot chat: real-provider recordings and the full state-matrix acceptance are pending (#56).',
-  composer: 'Pilot composer: text, attachments, private text skills, queue, stop and question answers; bundled skill attachments, design systems and model choice are pending (#57).',
+  composer: 'Pilot composer: text, attachments, private and bundled skills, design systems, queue, stop, question answers and personal Codex model/effort; rich media inputs, plugins and comment attachments are pending (#57).',
   preview: 'Pilot preview: opaque HTML/deck/media previews, manual edit, inspect and owner-only immutable artifact snapshots/thumbnails; comments, renderer covers and complete browser acceptance are pending (#59).',
   files: 'Pilot files: owner file list, read, write, upload, rename, delete, folders, search and versions; public publish and resumable large uploads are pending (#58).',
   delivery: 'Pilot delivery: owned project/folder/batch ZIP downloads with captured bytes and design handoff; PDF, PPTX, image, public publish and cloud delivery are pending (#66).',

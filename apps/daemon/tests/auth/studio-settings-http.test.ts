@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { STUDIO_DEFAULT_ACCENT_COLOR, STUDIO_DEFAULT_NOTIFICATIONS } from '@open-design/contracts';
+import { STUDIO_DEFAULT_ACCENT_COLOR, STUDIO_DEFAULT_NOTIFICATIONS, STUDIO_DEFAULT_CODEX_MODEL } from '@open-design/contracts';
 import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts,
   startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
 import { PERSONAL_CODEX_MOCK, codexHome, linkCodex, setTurnMode, until } from './personal-codex-helpers.js';
@@ -54,7 +54,7 @@ async function finish(id: string) {
 it('isolates config, rejects host fields and stale revisions, and persists only actor preferences', async () => {
   for (const user of [a, b, admin]) {
     const response = await daemon.request({ path: '/api/app-config', cookie: user.cookie });
-    expect(response.json).toEqual({ config: { customInstructions: '', accentColor: STUDIO_DEFAULT_ACCENT_COLOR, notifications: STUDIO_DEFAULT_NOTIFICATIONS }, revision: 0 });
+    expect(response.json).toEqual({ config: { customInstructions: '', accentColor: STUDIO_DEFAULT_ACCENT_COLOR, notifications: STUDIO_DEFAULT_NOTIFICATIONS, codexModel: STUDIO_DEFAULT_CODEX_MODEL }, revision: 0 });
     expect(response.text).not.toContain('HOST_');
   }
   const saved = await instructions('A_INSTRUCTION_MARKER');

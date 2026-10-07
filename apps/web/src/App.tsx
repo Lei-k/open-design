@@ -1,4 +1,5 @@
 import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioFetch as fetch, studioWindowSessionStorage } from './runtime/studio-transport';
+import { saveStudioCodexModel, studioCodexModelChoice, withStudioAccountConfig } from './runtime/studio-account-preferences';
 import { AdminUsers, Audit } from './multiuser/MultiUserApp';
 import { useStudioCapabilities, useStudioRequestAvailable, StudioUnavailable } from './runtime/studio-capabilities';
 import { StudioAccountChrome } from './runtime/StudioAccountChrome';
@@ -2134,7 +2135,7 @@ function AppInner() {
           if (!response.ok) return;
           const saved = await response.json() as import('@open-design/contracts').StudioSettingsResponse;
           if (cancelled || studioSettingsVersionRef.current !== version) return;
-          setConfig((current) => ({ ...current, ...saved.config }));
+          setConfig((current) => withStudioAccountConfig(current, saved.config));
         }).catch(() => {});
       }
       const request = beginProjectListRequest(workspaceProjectViewRef.current);
@@ -2930,8 +2931,13 @@ function AppInner() {
       saveConfig(next);
       void syncConfigToDaemon(next);
       setConfig(next);
+      // Studio: the personal Codex choice is an account preference, not host config.
+      if (!studio.hostServices && agentId === 'codex') {
+        studioSettingsVersionRef.current += 1;
+        void saveStudioCodexModel(studioCodexModelChoice(merged));
+      }
     },
-    [],
+    [studio.hostServices],
   );
 
   // BYOK protocol switch — also flips `mode` to 'api' so the user does

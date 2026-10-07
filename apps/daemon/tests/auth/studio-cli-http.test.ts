@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts, startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
-import { PERSONAL_CODEX_MOCK, linkCodex, setTurnMode } from './personal-codex-helpers.js';
+import { PERSONAL_CODEX_MOCK, codexHome, linkCodex, setTurnMode } from './personal-codex-helpers.js';
 
 let daemon: StartedMultiUserDaemon;
 let alice: Principal;
@@ -223,8 +223,10 @@ describe('same Studio APIs through remote od sessions', () => {
       '--prompt-file', '-', '--session-file', aFile, '--json'], 'CLI initial project brief'));
     expect(target.project).toMatchObject({ skillId: id, pendingPrompt: 'CLI initial project brief' });
     const started = success(await cli(['run', 'start', '--project', target.project.id, '--conversation', target.conversationId,
-      '--execution-source', 'personal_subscription', '--skill', id, '--prompt-file', '-', '--session-file', aFile, '--json'], 'use my skill'));
+      '--execution-source', 'personal_subscription', '--skill', id, '--model', 'gpt-5.4-mini', '--reasoning', 'low',
+      '--prompt-file', '-', '--session-file', aFile, '--json'], 'use my skill'));
     expect((await cli(['run', 'watch', started.runId, '--session-file', aFile, '--json'])).code).toBe(0);
+    expect(JSON.parse(readFileSync(path.join(codexHome(root, alice.id), 'mock-turn-evidence.json'), 'utf8'))).toMatchObject({ model: 'gpt-5.4-mini', effort: 'low' });
     const messages = success(await cli(['conversation', 'messages', target.conversationId, '--project', target.project.id, '--session-file', aFile, '--json']));
     expect(messages.messages.find((message: { role: string }) => message.role === 'assistant').content).toContain('CLI_SKILL_UPDATED');
     expect((await cli(['skill', 'uninstall', id, '--session-file', bFile, '--json'])).code).not.toBe(0);

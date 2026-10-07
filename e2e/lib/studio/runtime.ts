@@ -20,6 +20,8 @@ export interface StudioRuntime {
   request: (method: string, route: string, cookie?: string, body?: unknown) => Promise<StudioResponse>;
   linkCodex: (actor: StudioPrincipal) => Promise<void>;
   configureTurn: (actor: StudioPrincipal, control: { reply?: string; promptReplyMarkers?: string[]; artifactBytes?: Record<string, string> }) => Promise<void>;
+  /** What the mock app-server received on the actor's last personal turn. */
+  turnEvidence: (actor: StudioPrincipal) => Promise<Record<string, unknown>>;
   close: (preserve?: boolean) => Promise<void>;
 }
 
@@ -133,7 +135,11 @@ export async function createStudioRuntime(): Promise<StudioRuntime> {
       const home = path.join(root, 'data/multiuser-runtime', createHash('sha256').update(actor.id).digest('hex'), 'codex-home');
       await writeFile(path.join(home, 'mock-control.json'), JSON.stringify(control), { mode: 0o600 });
     };
-    return { root, origin, previewOrigin, admin, a: actors[0]!, b: actors[1]!, request, linkCodex, configureTurn, close };
+    const turnEvidence: StudioRuntime['turnEvidence'] = async (actor) => {
+      const home = path.join(root, 'data/multiuser-runtime', createHash('sha256').update(actor.id).digest('hex'), 'codex-home');
+      return JSON.parse(await import('node:fs/promises').then(({ readFile }) => readFile(path.join(home, 'mock-turn-evidence.json'), 'utf8')));
+    };
+    return { root, origin, previewOrigin, admin, a: actors[0]!, b: actors[1]!, request, linkCodex, configureTurn, turnEvidence, close };
   } catch (error) { await close(true); throw error; }
 }
 

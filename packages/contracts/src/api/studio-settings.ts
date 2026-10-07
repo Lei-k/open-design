@@ -5,6 +5,25 @@ export interface StudioSettingsConfig {
   customInstructions: string;
   accentColor: string;
   notifications: StudioNotificationPreferences;
+  /** Model for runs on the account's personal Codex subscription. */
+  codexModel: StudioCodexModelChoice;
+}
+
+/** Choices a personal Codex subscription run may request per turn. `default`
+ * leaves the choice to the user's own Codex account. The company pool's model
+ * is admin-owned and is not an account preference. */
+export const STUDIO_CODEX_MODELS = ['default', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.1-codex-mini', 'gpt-5-codex'] as const;
+export const STUDIO_CODEX_REASONING = ['default', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+export interface StudioCodexModelChoice {
+  model: (typeof STUDIO_CODEX_MODELS)[number];
+  reasoning: (typeof STUDIO_CODEX_REASONING)[number];
+}
+export const STUDIO_DEFAULT_CODEX_MODEL: Readonly<StudioCodexModelChoice> = { model: 'default', reasoning: 'default' };
+export function isStudioCodexModel(value: unknown): value is StudioCodexModelChoice['model'] {
+  return typeof value === 'string' && (STUDIO_CODEX_MODELS as readonly string[]).includes(value);
+}
+export function isStudioCodexReasoning(value: unknown): value is StudioCodexModelChoice['reasoning'] {
+  return typeof value === 'string' && (STUDIO_CODEX_REASONING as readonly string[]).includes(value);
 }
 
 export interface StudioNotificationPreferences {
@@ -21,7 +40,7 @@ export const STUDIO_DEFAULT_ACCENT_COLOR = '#353535';
 export const STUDIO_DEFAULT_NOTIFICATIONS: Readonly<StudioNotificationPreferences> = {
   soundEnabled: false, successSoundId: 'ding', failureSoundId: 'buzz', desktopEnabled: false,
 };
-export const STUDIO_SETTINGS_FIELDS = ['customInstructions', 'accentColor', 'notifications'] as const;
+export const STUDIO_SETTINGS_FIELDS = ['customInstructions', 'accentColor', 'notifications', 'codexModel'] as const;
 
 export interface StudioSettingsResponse {
   config: StudioSettingsConfig;
@@ -52,6 +71,11 @@ export function parseStudioSettingsWrite(value: unknown): StudioSettingsWrite | 
         || typeof notification.soundEnabled !== 'boolean' || typeof notification.desktopEnabled !== 'boolean'
         || typeof notification.successSoundId !== 'string' || !['ding', 'chime', 'two-tone-up', 'pluck'].includes(notification.successSoundId)
         || typeof notification.failureSoundId !== 'string' || !['buzz', 'two-tone-down', 'thud'].includes(notification.failureSoundId)) return null;
+  }
+  if (body.codexModel !== undefined && body.codexModel !== null) {
+    const choice = body.codexModel as Record<string, unknown>;
+    if (typeof choice !== 'object' || Array.isArray(choice) || Object.keys(choice).length !== 2
+        || !isStudioCodexModel(choice.model) || !isStudioCodexReasoning(choice.reasoning)) return null;
   }
   return body as StudioSettingsWrite;
 }
