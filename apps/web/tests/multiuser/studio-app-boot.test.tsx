@@ -65,10 +65,11 @@ it('renders the existing App without attempting unavailable service requests, in
   // The shared Settings frame titles the active section above the page's own heading.
   await waitFor(() => expect(screen.getAllByRole('heading', { name: 'Agent accounts' }).length).toBeGreaterThan(0));
   reportExperienceEvent('project_create_result', { result: 'failed', error_code: 'TEST_OPERATION_FAILURE' });
-  await waitFor(() => expect(screen.getByText('pilot-A')).toBeVisible());
   expect(raw.mock.calls.some(([input]) => String(input).includes('/observability/'))).toBe(false);
   await act(async () => navigate({ kind: 'project', projectId: project.id, conversationId: 'conv', fileName: null }));
   await screen.findByTestId('chat-composer');
+  // The account control rides the workspace chrome's account slot on a project.
+  await waitFor(() => expect(screen.getByTestId('studio-account-trigger')).toHaveTextContent('pilot-A'));
   fireEvent.click(screen.getByTestId('workspace-tabs-dropdown-trigger'));
   fireEvent.click((await screen.findAllByTestId('workspace-tabs-dropdown-row-more'))[0]!);
   fireEvent.click(screen.getByRole('menuitem', { name: /^Rename$/ }));
@@ -108,7 +109,9 @@ it('renders the existing App without attempting unavailable service requests, in
     currentAccount = { ...currentAccount, role: 'admin' };
     await act(async () => { window.dispatchEvent(new Event('focus')); });
     await waitFor(() => expect(bShell.isConnected).toBe(false));
-    await screen.findByRole('link', { name: 'Users' }); capture();
+    // Admin entries live in the shell's account menu.
+    fireEvent.click(await screen.findByTestId('studio-account-trigger'));
+    await screen.findByRole('menuitem', { name: 'Users' }); capture();
     const adminShell = document.querySelector('[data-studio-pilot]')!;
     // Revision alone must also replace the private tree, even with unchanged capabilities.
     revision++;

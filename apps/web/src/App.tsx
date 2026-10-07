@@ -2,7 +2,8 @@ import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSet
 import { saveStudioCodexModel, studioCodexModelChoice, withStudioAccountConfig } from './runtime/studio-account-preferences';
 import { AdminUsers, Audit } from './multiuser/MultiUserApp';
 import { useStudioCapabilities, useStudioRequestAvailable, StudioUnavailable } from './runtime/studio-capabilities';
-import { StudioAccountChrome } from './runtime/StudioAccountChrome';
+import { StudioAccountMenu } from './runtime/StudioAccountMenu';
+import { StudioAdminFrame } from './runtime/StudioAdminFrame';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { AnimatePresence, motion, MotionConfig } from 'motion/react';
@@ -5353,7 +5354,8 @@ function AppInner() {
     config.onboardingCompleted !== true &&
     !daemonConfigLoaded;
   if (studio.actor && studio.session && window.location.pathname.startsWith('/admin/')) {
-    appMain = studio.actor.role !== 'admin' ? <p role="alert">{t('multiuser.denied')}</p> : window.location.pathname === '/admin/audit' ? <Audit session={studio.session} account={studio.actor} generation={studio.generation} /> : <AdminUsers session={studio.session} account={studio.actor} generation={studio.generation} />;
+    const adminPage = studio.actor.role !== 'admin' ? <p role="alert">{t('multiuser.denied')}</p> : window.location.pathname === '/admin/audit' ? <Audit session={studio.session} account={studio.actor} generation={studio.generation} /> : <AdminUsers session={studio.session} account={studio.actor} generation={studio.generation} />;
+    appMain = <StudioAdminFrame>{adminPage}</StudioAdminFrame>;
   } else if (!studio.hostServices && route.kind !== 'home' && route.kind !== 'project'
     && !(['design-system-create', 'design-system-detail'].includes(route.kind) && studioRequest('GET', '/api/design-systems'))) {
     appMain = <StudioUnavailable lane="catalogs" />;
@@ -5792,7 +5794,7 @@ function AppInner() {
   }
   return (
     <>
-      <StudioAccountChrome />
+      {!studio.hostServices && route.kind === 'project' ? <StudioAccountMenu placement="chrome" /> : null}
       <div
         className={`workspace-shell workspace-shell--${clientType}`}
         data-studio-pilot={!studio.hostServices || undefined}

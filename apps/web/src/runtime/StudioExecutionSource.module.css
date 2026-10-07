@@ -37,3 +37,21 @@
 .source .label {
   flex: 0 1 auto;
 }
+
+/* Phone widths: the composer footer keeps only a compact model picker. */
+@media (max-width: 600px) {
+  .source {
+    gap: 4px;
+    padding: 0 4px;
+  }
+
+  .source > .label,
+  .source .picker + .picker {
+    display: none;
+  }
+
+  .source .picker {
+    max-width: 64px;
+    padding: 0 2px;
+  }
+}

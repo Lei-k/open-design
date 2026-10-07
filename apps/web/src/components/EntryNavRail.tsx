@@ -1,5 +1,6 @@
 import { registerStudioReset } from '../runtime/studio-resources';
 import { useStudioCapabilities } from '../runtime/studio-capabilities';
+import { StudioAccountMenu } from '../runtime/StudioAccountMenu';
 import { studioWindowSetTimeout, studioFetch as fetch, studioWindowLocalStorage } from '../runtime/studio-transport';
 import { CodingPlanUsage } from './CodingPlanUsage';
 import planCardStyles from './PersonalPlanCard.module.css';
@@ -2116,6 +2117,7 @@ export function EntryNavRail({
   // but renders down here. State, not a ref: the cluster has to re-render once
   // the node exists or the portal would have nowhere to land on first paint.
   const [accountHost, setAccountHost] = useState<HTMLDivElement | null>(null);
+  const railStudio = useStudioCapabilities();
   const communityLabel = t('pluginsHome.title');
   // #5517 renamed the rail's first item from 最近 (Recents) to 首页 (Home) —
   // the key keeps its historical name, the VALUE now reads Home in every
@@ -2728,7 +2730,8 @@ export function EntryNavRail({
             the account module into. `display: contents` keeps the account
             dock itself a flex child of this group, so its own `order: 99` +
             `margin-top: auto` still push it below the nav items. */}
-        {context ? <div ref={setAccountHost} className="entry-nav-rail__account-host" /> : null}
+        {context ? <div ref={setAccountHost} className="entry-nav-rail__account-host" />
+          : railStudio.hostServices ? null : <StudioAccountMenu placement="rail" />}
       </div>
       {/* Signed in, the social links ride the account dock above the identity
           row (see `EntryTopRightCluster`), so the footer only renders when it

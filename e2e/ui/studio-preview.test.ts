@@ -416,8 +416,9 @@ test('[P1] admin configures the company pool and Studio runs and reloads on its 
   await page.locator('input[name="password"]').fill(studio.a.password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   const source = page.getByTestId('studio-execution-source');
-  await expect(source.locator('select')).toBeVisible({ timeout: T.long });
-  await source.locator('select').selectOption('openai');
+  const sourcePicker = source.getByRole('combobox', { name: 'Execution source', exact: true });
+  await expect(sourcePicker).toBeVisible({ timeout: T.long });
+  await sourcePicker.selectOption('openai');
   const composer = page.getByTestId('chat-composer-input');
   await composer.fill('Create a company design.');
   const admitted = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/runs');
@@ -441,4 +442,47 @@ test('[P1] admin configures the company pool and Studio runs and reloads on its 
   expect(continuation.request().postDataJSON().agentId).toBe('openai');
   await expect(page.getByTestId('assistant-role').last()).toContainText('OpenAI');
   await page.screenshot({ path: info.outputPath('studio-company-run.png') });
+});
+
+test('[P1] Studio account control lives in the shared rail, workspace chrome and admin pages at desktop and phone widths', async ({ page, studio }, info) => {
+  const projectId = studioProjectId();
+  expect((await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Account chrome' })).status).toBe(200);
+  await page.goto(studio.origin);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  // Same as the desktop entry: the account module rides the foot of the (collapsible) rail.
+  const expand = page.getByTestId('entry-rail-collapse');
+  await expect(expand).toBeVisible({ timeout: T.long });
+  if (await expand.getAttribute('aria-expanded') === 'false') await expand.click();
+  const trigger = page.locator('.entry-nav-rail').getByTestId('studio-account-trigger');
+  await expect(trigger).toBeVisible({ timeout: T.long });
+  await expect(trigger).toHaveText(/studio-a/);
+  await expect(page.locator('.studio-account-chrome')).toHaveCount(0);
+  await trigger.click();
+  await expect(page.getByRole('menuitem', { name: 'Users' })).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath('studio-account-rail.png'), animations: 'disabled' });
+  await page.getByRole('menuitem', { name: 'Settings' }).click();
+  await expect(page.getByTestId('studio-settings-nav-agentAccounts')).toBeVisible({ timeout: T.long });
+  await page.goto(`${studio.origin}/projects/${projectId}`);
+  await expect(page.getByTestId('workspace-chrome-account-actions').getByTestId('studio-account-trigger')).toHaveText(/studio-a/, { timeout: T.long });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByTestId('studio-account-trigger')).toBeVisible();
+  await page.screenshot({ path: info.outputPath('studio-account-phone-project.png'), animations: 'disabled' });
+  await page.getByTestId('studio-account-trigger').click();
+  await page.getByRole('menuitem', { name: 'Sign out' }).click();
+  await expect(page.locator('input[name="username"]')).toBeVisible({ timeout: T.long });
+
+  await page.setViewportSize({ width: 1280, height: 720 });
+  // A pilot administrator sees the admin pages inside the shared App with the same account control.
+  const pilot = await studio.request('PUT', `/api/admin/users/${studio.admin.id}/studio-pilot`, studio.admin.cookie, { studioPilot: true, revision: 0 });
+  expect(pilot.status, pilot.text).toBe(200);
+  await page.goto(`${studio.origin}/admin/users`);
+  await page.locator('input[name="username"]').fill(studio.admin.username);
+  await page.locator('input[name="password"]').fill(studio.admin.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(page.getByTestId('company-openai-settings')).toBeVisible({ timeout: T.long });
+  await page.getByTestId('studio-account-trigger').click();
+  await expect(page.getByRole('menuitem', { name: 'Audit' })).toBeVisible();
+  await page.screenshot({ path: info.outputPath('studio-account-admin.png'), animations: 'disabled' });
 });
