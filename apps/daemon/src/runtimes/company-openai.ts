@@ -1,11 +1,15 @@
 import { EventEmitter } from 'node:events';
 import { listCompanyProjectFiles, readCompanyProjectFile, writeCompanyProjectFile } from '../services/company-project-files.js';
+import type { StudioSkillPackage } from '../services/studio-skill-packages.js';
 
 type Json = Record<string, unknown>;
 const RESPONSE_BYTES_LIMIT = 4 * 1024 * 1024;
 const FILE_BYTES_LIMIT = 1024 * 1024;
 const MAX_REQUESTS = 12;
 const tools = [
+  { name: 'list_skill_files', description: 'List immutable resources of the skills selected for this conversation. Each result identifies the skill and its relative resource paths.', properties: {}, required: [] },
+  { name: 'read_skill_file', description: 'Read a UTF-8 resource from a selected skill’s captured revision. Resolve relative skill references here.',
+    properties: { skillId: { type: 'string' }, path: { type: 'string' } }, required: ['skillId', 'path'] },
   { name: 'list_project_files', description: 'List files in the current project.', properties: {}, required: [] },
   { name: 'read_project_file', description: 'Read a UTF-8 text file in the current project.', properties: { path: { type: 'string' } }, required: ['path'] },
   { name: 'write_project_file', description: 'Create or replace a UTF-8 text file in the current project. Use HTML with inline assets for browser designs.',
@@ -43,6 +47,7 @@ export class CompanyOpenAIWorker extends EventEmitter {
 export async function runCompanyOpenAITurn(input: {
   apiKey: string; model: string; prompt: string; systemPrompt?: string; history: Json[];
   projectsRoot: string; projectId: string; worker: CompanyOpenAIWorker;
+  skillPackages?: readonly StudioSkillPackage[];
   authorized: () => boolean; onAgentEvent: (event: Json) => void;
   fetch?: typeof fetch;
 }): Promise<CompanyOpenAITurnResult> {
@@ -105,7 +110,15 @@ export async function runCompanyOpenAITurn(input: {
         if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('invalid tool arguments');
         emit({ type: 'tool_use', id: call.call_id, name: call.name,
           input: { ...(typeof args.path === 'string' ? { file_path: args.path } : {}) } });
-        if (call.name === 'list_project_files' && Object.keys(args).length === 0) {
+        if (call.name === 'list_skill_files' && Object.keys(args).length === 0) {
+          result = (input.skillPackages ?? []).map((resource) => ({ skillId: resource.id,
+            files: resource.files.map((file) => ({ path: file.path, bytes: Buffer.byteLength(file.data, 'base64'), sha256: file.sha256 })) }));
+        } else if (call.name === 'read_skill_file' && typeof args.skillId === 'string' && safePath(args.path)
+          && Object.keys(args).every((key) => ['skillId', 'path'].includes(key))) {
+          const file = input.skillPackages?.find((resource) => resource.id === args.skillId)?.files.find((entry) => entry.path === args.path);
+          if (!file || Buffer.byteLength(file.data, 'base64') > FILE_BYTES_LIMIT) throw new Error('skill resource refused');
+          result = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(file.data, 'base64'));
+        } else if (call.name === 'list_project_files' && Object.keys(args).length === 0) {
           result = listCompanyProjectFiles(input.projectsRoot, input.projectId);
         } else if (call.name === 'read_project_file' && safePath(args.path) && Object.keys(args).every((key) => key === 'path')) {
           check(); result = readCompanyProjectFile(input.projectsRoot, input.projectId, args.path);

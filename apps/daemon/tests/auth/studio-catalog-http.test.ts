@@ -58,7 +58,7 @@ it('serves bundled inspection and only the actor’s private skills without host
     expect(privateIds).toEqual(user === a ? [id] : user === b ? [other] : []);
     const builtins = result.json.skills.filter((item: { source: string }) => item.source === 'built-in');
     expect(builtins.length).toBeGreaterThan(0);
-    expect(builtins.every((item: { selectable: boolean }) => item.selectable === false)).toBe(true);
+    expect(builtins.every((item: { selectable: boolean }) => item.selectable === true)).toBe(true);
   }
   expect((await daemon.request({ path: `/api/skills/${encodeURIComponent(id)}`, cookie: a.cookie })).json.body).toBe('A_PRIVATE_MARKER');
   expect((await daemon.request({ path: `/api/skills/${encodeURIComponent(id)}/files`, cookie: a.cookie })).json.files)
@@ -72,6 +72,31 @@ it('serves bundled inspection and only the actor’s private skills without host
     expect(foreign.status).toBe(404);
     expect(foreign.json).toEqual(missing.json);
   }
+});
+
+it('captures bundled references for the selected conversation and stages the same immutable bytes on later turns', async () => {
+  const id = 'writing-guidelines';
+  const detail = await daemon.request({ path: `/api/skills/${id}`, cookie: a.cookie });
+  expect(detail.status, detail.text).toBe(200);
+  expect(detail.text).not.toContain('Skill root (absolute fallback)');
+  expect(detail.text).not.toContain(path.resolve('../..', 'skills'));
+  expect(detail.json).not.toHaveProperty('package');
+  const target = await project();
+  const admitted = await run(target, 'Use the captured writing rules', { skillIds: [id] });
+  expect(admitted.status, admitted.text).toBe(202); await finish(admitted.json.runId);
+  const db = new Database(path.join(root, 'app.sqlite'));
+  try {
+    const capture = (runId: string) => JSON.parse((db.prepare('SELECT request_json FROM multiuser_runs WHERE id = ?').get(runId) as { request_json: string }).request_json).skillSnapshots[0];
+    const original = capture(admitted.json.runId);
+    expect(original.package.files.some((file: { path: string }) => file.path === 'references/guidelines.md')).toBe(true);
+    const staged = path.join(root, 'multiuser-runtime', (await import('node:crypto')).createHash('sha256').update(a.id).digest('hex'), admitted.json.runId, 'skill-packages', original.package.key, 'references/guidelines.md');
+    const captured = original.package.files.find((file: { path: string }) => file.path === 'references/guidelines.md');
+    expect(readFileSync(staged).toString('base64')).toBe(captured.data);
+    const continued = await run(target, 'Continue using the same revision', { skillIds: [id] });
+    expect(continued.status).toBe(202); await finish(continued.json.runId);
+    expect(capture(continued.json.runId)).toEqual(original);
+    expect((await daemon.request({ path: `/api/runs/${admitted.json.runId}`, cookie: b.cookie })).status).toBe(404);
+  } finally { db.close(); }
 });
 
 it('rejects body authority and host-install fields, and does not permit bundled mutation', async () => {

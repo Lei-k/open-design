@@ -5,11 +5,15 @@ import { useT } from '../i18n';
 import { SkillsSection } from '../components/SkillsSection';
 import { MemorySection } from '../components/MemorySection';
 import { CustomInstructionsSection } from '../components/CustomInstructionsSection';
+import { NotificationsSection } from '../components/NotificationsSection';
+import { SettingsLanguageField } from '../components/SettingsLanguageField';
+import { SettingsAppearanceField } from '../components/SettingsAppearanceField';
 import { studioFetch, studioRequestAvailable } from './studio-transport';
 import type { AppConfig } from '../types';
 import { useStudioCapabilities, StudioUnavailable } from './studio-capabilities';
 
-export function StudioAccountSettings({ initial, onSkillsChanged }: { initial: AppConfig; onSkillsChanged?: (id?: string) => void }) {
+export function StudioAccountSettings({ initial, onSkillsChanged, onPersist }: { initial: AppConfig; onSkillsChanged?: (id?: string) => void;
+  onPersist: (config: AppConfig) => Promise<void> | void }) {
   const studio = useStudioCapabilities();
   const t = useT();
   const [config, setConfig] = useState(initial);
@@ -24,7 +28,7 @@ export function StudioAccountSettings({ initial, onSkillsChanged }: { initial: A
       const response = await studioFetch('/api/app-config');
       if (!response.ok) throw new Error('unavailable');
       const data = await response.json() as StudioSettingsResponse;
-      setSettings(data); setInstructions(data.config.customInstructions); setStatus(null);
+      setSettings(data); setInstructions(data.config.customInstructions); setConfig((current) => ({ ...current, ...data.config })); setStatus(null);
     } catch (error) { if (!(error instanceof DOMException && error.name === 'AbortError')) setStatus('error'); }
     finally { setBusy(false); }
   };
@@ -34,9 +38,12 @@ export function StudioAccountSettings({ initial, onSkillsChanged }: { initial: A
     setBusy(true);
     try {
       const response = await studioFetch('/api/app-config', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ customInstructions: instructions, revision: settings.revision }) });
+        body: JSON.stringify({ customInstructions: instructions, accentColor: config.accentColor,
+          notifications: config.notifications, revision: settings.revision }) });
       if (!response.ok) { setStatus(response.status === 409 ? 'conflict' : 'error'); return; }
-      setSettings(await response.json() as StudioSettingsResponse); setStatus('saved');
+      const saved = await response.json() as StudioSettingsResponse;
+      setSettings(saved); setConfig((current) => ({ ...current, ...saved.config }));
+      await onPersist({ ...config, ...saved.config }); setStatus('saved');
     } catch (error) { if (!(error instanceof DOMException && error.name === 'AbortError')) setStatus('error'); }
     finally { setBusy(false); }
   };
@@ -45,6 +52,17 @@ export function StudioAccountSettings({ initial, onSkillsChanged }: { initial: A
     <AgentAccountsPage session={studio.session} generation={studio.generation} />
     {studio.available('catalogs') && <SkillsSection cfg={config} setCfg={setConfig} onSkillsChanged={onSkillsChanged} />}
     {usable && <>
+      <section className="settings-section settings-general-section">
+        <SettingsLanguageField />
+        <SettingsAppearanceField cfg={config} setCfg={setConfig} />
+        <div className="settings-general-block">
+          <div className="settings-general-block-head">
+            <h3>{t('settings.systemPrefsTitle')}</h3>
+            <p className="hint">{t('settings.systemPrefsHint')}</p>
+          </div>
+          <NotificationsSection cfg={config} setCfg={setConfig} />
+        </div>
+      </section>
       <CustomInstructionsSection value={instructions} onChange={setInstructions} />
       <div className="settings-section">
         <button type="button" data-testid="studio-instructions-save" className="primary" disabled={busy || !settings} onClick={() => void save()}>{t('common.save')}</button>

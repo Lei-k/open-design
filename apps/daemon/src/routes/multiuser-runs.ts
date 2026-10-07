@@ -34,6 +34,7 @@ import type { StudioDesignCatalog } from './studio-design-catalog.js';
 import type { StudioSettings } from '../storage/studio-settings.js';
 import type { StudioCatalog } from './studio-catalog.js';
 import { composeSystemPrompt } from '../prompts/system.js';
+import { readStudioSkillPackages, stageStudioSkillPackages, type StudioSkillPackage } from '../services/studio-skill-packages.js';
 
 type RunRow = {
   id: string; owner_account_id: string; project_id: string; conversation_id: string;
@@ -296,7 +297,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     return { id: system.id, hash: createHash('sha256').update(JSON.stringify(prompt)).digest('hex'), prompt };
   };
 
-  type SkillSnapshot = { id: string; name: string; body: string; mode?: Parameters<typeof composeSystemPrompt>[0]['skillMode']; hash: string };
+  type SkillSnapshot = { id: string; name: string; body: string; mode?: Parameters<typeof composeSystemPrompt>[0]['skillMode']; hash: string; package?: StudioSkillPackage };
   const captureSkills = async (owner: string, conversationId: string, ids: readonly string[]): Promise<SkillSnapshot[] | null> => {
     if (ids.length > 12) return null;
     const snapshots: SkillSnapshot[] = [];
@@ -314,9 +315,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       const skills = await input.catalog?.readSkills(owner, [id]);
       if (!skills?.[0]) return null;
       const skill = skills[0];
-      const text = { id: skill.id, name: skill.name, body: skill.body, mode: skill.mode };
+      const text = { id: skill.id, name: skill.name, body: skill.body, mode: skill.mode, ...(skill.package ? { package: skill.package } : {}) };
       snapshots.push({ ...text, hash: createHash('sha256').update(JSON.stringify(text)).digest('hex') });
     }
+    try { readStudioSkillPackages(snapshots); } catch { return null; }
     return snapshots;
   };
   const selectSkills = (fields: PersonalRunFields, projectId: string, fixed: boolean, question: boolean): string[] => {
@@ -701,7 +703,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             };
             void runCompanyOpenAITurn({ apiKey: execution.apiKey, model: execution.config.model,
               systemPrompt: stablePrompt, prompt: `${userPrompt}${attached}${focused}`,
-              history, projectsRoot, projectId: next.project_id, worker, authorized,
+              history, skillPackages: readStudioSkillPackages(request.skillSnapshots), projectsRoot, projectId: next.project_id, worker, authorized,
               onAgentEvent: (event) => projection.accept(event), ...(input.companyFetch ? { fetch: input.companyFetch } : {}),
             }).then(async (result) => {
               if (!authorized()) { finish(next.id, 'canceled'); return; }
@@ -829,6 +831,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         for (const dir of [path.dirname(runHome), runHome, temp]) fs.chmodSync(dir, 0o700);
         const runId = next.id;
         try {
+          const skillPackages = readStudioSkillPackages(request?.skillSnapshots);
+          const skillRoot = stageStudioSkillPackages(runHome, skillPackages);
           artifactBaselines.set(runId, { cwd: realCwd, before: snapshotProjectArtifacts(realCwd) });
           startRun(next);
           const owner = next.owner_account_id;
@@ -841,11 +845,14 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           // Narrowed at admission to project files/folders; rendered exactly like a standard run's context.
           const focused = Array.isArray(request?.workspaceItems) && request.workspaceItems.length
             ? `\n\n${renderRunContextPrompt({ workspaceItems: request.workspaceItems }, null)}` : '';
-          const prompt = `${includeStable ? `${stablePrompt}\n\n---\n\n# User request\n\n${userPrompt}` : userPrompt}${attached}${focused}`;
+          const resources = skillRoot ? '\n\n# Captured skill resources\n\nThese directories are read-only, fixed to this conversation’s selected revision. Resolve each skill’s relative references and scripts from its own directory:\n'
+            + skillPackages.map((resource) => `- ${resource.id}: ${path.join(skillRoot, resource.key)}`).join('\n') : '';
+          const prompt = `${includeStable ? `${stablePrompt}\n\n---\n\n# User request\n\n${userPrompt}` : userPrompt}${attached}${focused}${resources}`;
           const projection = new PersonalRunEvents(realCwd, [dataRoot, account.codexHome, runHome, realCwd], (event) => emit(runId, event.event, event.data));
           projections.set(runId, projection);
           const turn = runPersonalCodexTurn({
             command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
+            ...(skillRoot ? { skillPackages: skillRoot } : {}),
             prompt, resumeThreadId: session.thread_id,
             // A real personal provider always runs inside the per-run bubblewrap
             // boundary. Its filesystem already contains only this account's

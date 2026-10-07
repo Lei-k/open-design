@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { afterAll, beforeAll, expect, it } from 'vitest';
+import { STUDIO_DEFAULT_ACCENT_COLOR, STUDIO_DEFAULT_NOTIFICATIONS } from '@open-design/contracts';
 import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts,
   startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
 import { PERSONAL_CODEX_MOCK, codexHome, linkCodex, setTurnMode, until } from './personal-codex-helpers.js';
@@ -53,7 +54,7 @@ async function finish(id: string) {
 it('isolates config, rejects host fields and stale revisions, and persists only actor preferences', async () => {
   for (const user of [a, b, admin]) {
     const response = await daemon.request({ path: '/api/app-config', cookie: user.cookie });
-    expect(response.json).toEqual({ config: { customInstructions: '' }, revision: 0 });
+    expect(response.json).toEqual({ config: { customInstructions: '', accentColor: STUDIO_DEFAULT_ACCENT_COLOR, notifications: STUDIO_DEFAULT_NOTIFICATIONS }, revision: 0 });
     expect(response.text).not.toContain('HOST_');
   }
   const saved = await instructions('A_INSTRUCTION_MARKER');
@@ -66,6 +67,28 @@ it('isolates config, rejects host fields and stale revisions, and persists only 
   }
   expect((await daemon.request({ path: '/api/app-config', cookie: b.cookie })).json.config.customInstructions).toBe('');
   expect((await daemon.request({ path: '/api/multiuser/settings/config', cookie: a.cookie })).json).toEqual(saved);
+});
+
+it('persists portable notification intent, preserves omitted fields and rejects device/host settings', async () => {
+  const current = (await daemon.request({ path: '/api/app-config', cookie: a.cookie })).json;
+  const notifications = { soundEnabled: true, successSoundId: 'chime', failureSoundId: 'thud', desktopEnabled: true };
+  const saved = await daemon.request({ method: 'PUT', path: '/api/app-config', cookie: a.cookie,
+    body: { revision: current.revision, accentColor: '#1A74FF', notifications } });
+  expect(saved.status, saved.text).toBe(200);
+  expect(saved.json.config).toEqual({ ...current.config, accentColor: '#1a74ff', notifications });
+  expect((await daemon.request({ path: '/api/app-config', cookie: b.cookie })).json.config.notifications).toEqual(STUDIO_DEFAULT_NOTIFICATIONS);
+  for (const extra of [{ locale: 'zh-TW' }, { theme: 'dark' }, { notificationPermission: 'granted' }, { accentColor: 'url(secret)' },
+    { notifications: { ...notifications, apiKey: 'hidden' } }, { notifications: { ...notifications, successSoundId: 'private-file' } },
+    { notifications: { soundEnabled: true } }, { notifications: [] }]) {
+    expect((await daemon.request({ method: 'PUT', path: '/api/app-config', cookie: a.cookie,
+      body: { revision: saved.json.revision, ...extra } })).status).toBe(400);
+  }
+  expect((await daemon.request({ method: 'PUT', path: '/api/app-config', cookie: a.cookie,
+    body: { revision: current.revision, notifications: null } })).status).toBe(409);
+  const reset = await daemon.request({ method: 'PUT', path: '/api/app-config', cookie: a.cookie,
+    body: { revision: saved.json.revision, notifications: null, accentColor: null } });
+  expect(reset.status).toBe(200);
+  expect(reset.json.config).toEqual({ ...current.config, accentColor: STUDIO_DEFAULT_ACCENT_COLOR, notifications: STUDIO_DEFAULT_NOTIFICATIONS });
 });
 
 it('isolates manual entries, tree, index and profile; foreign equals missing including for admin', async () => {

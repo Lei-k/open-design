@@ -19,7 +19,7 @@ import { splitResearchSubcommand } from './research/cli-args.js';
 import { resolveDaemonUrl } from './daemon-url.js';
 import { SidecarFactory } from '@open-design/sidecar';
 import { APP_KEYS, SIDECAR_MESSAGES } from '@open-design/sidecar-proto';
-import { STUDIO_ARCHIVE_SHA256_HEADER, EXPORT_FORMATS, EXPORT_IMAGE_FORMATS, mediaFailureNextStep } from '@open-design/contracts';
+import { STUDIO_SETTINGS_FIELDS, STUDIO_ARCHIVE_SHA256_HEADER, EXPORT_FORMATS, EXPORT_IMAGE_FORMATS, mediaFailureNextStep } from '@open-design/contracts';
 import type { StudioArchiveDownload, StudioArchiveBatchRequest, ArtifactLintFinding, LintArtifactCliResultEnvelope, LintArtifactResponse, LintFailOn } from '@open-design/contracts';
 import { buildExportCliRequestBody, buildExportCliResultEnvelope, resolveExportCliDeckMode } from './export-cli-request.js';
 import { exportRoutePath } from './export-cli-routing.js';
@@ -10649,7 +10649,7 @@ Common options:
     const resp = await fetch(`${base}/api/app-config`, {
       method:  'PUT',
       headers: { 'content-type': 'application/json' },
-      body:    JSON.stringify(settingsRevision === undefined ? next : { customInstructions: next.customInstructions ?? '', revision: settingsRevision }),
+      body:    JSON.stringify(settingsRevision === undefined ? next : { ...next, revision: settingsRevision }),
     });
     if (!resp.ok) return structuredHttpFailure(resp);
     return (await resp.json())?.config ?? next;
@@ -10702,7 +10702,7 @@ Common options:
         process.exit(2);
       }
       const cfg = await fetchConfig();
-      if (settingsRevision !== undefined && key !== 'customInstructions') { console.error('Studio config supports customInstructions only'); process.exit(2); }
+      if (settingsRevision !== undefined && !STUDIO_SETTINGS_FIELDS.includes(key)) { console.error('Unsupported Studio account preference'); process.exit(2); }
       const next = { ...cfg, [key]: parsed };
       const written = await writeConfig(next);
       if (flags.json) {
@@ -10719,9 +10719,10 @@ Common options:
         process.exit(2);
       }
       const cfg = await fetchConfig();
-      if (settingsRevision !== undefined && key !== 'customInstructions') { console.error('Studio config supports customInstructions only'); process.exit(2); }
+      if (settingsRevision !== undefined && !STUDIO_SETTINGS_FIELDS.includes(key)) { console.error('Unsupported Studio account preference'); process.exit(2); }
       const next = { ...cfg };
-      delete next[key];
+      if (settingsRevision === undefined) delete next[key];
+      else next[key] = null;
       const written = await writeConfig(next);
       if (flags.json) {
         process.stdout.write(JSON.stringify(written, null, 2) + '\n');

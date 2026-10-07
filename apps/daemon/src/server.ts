@@ -17567,7 +17567,7 @@ export async function startServer({
 
   const studioSettings = multiUserMode ? registerStudioSettingsRoutes(app, { db, dataRoot: RUNTIME_DATA_DIR }) : null;
   const studioCatalog = multiUserMode ? registerStudioCatalogRoutes(app, {
-    db, listBuiltInSkills: async () => (await listSkills(SKILLS_DIR)).map((skill) => ({ ...skill, source: 'built-in' as const })),
+    db, skillsRoot: SKILLS_DIR, listBuiltInSkills: async () => (await listSkills(SKILLS_DIR)).map((skill) => ({ ...skill, source: 'built-in' as const })),
   }) : null;
   const studioDesignCatalog = multiUserMode ? registerStudioDesignCatalogRoutes(app, {
     db, designSystemsRoot: DESIGN_SYSTEMS_DIR, promptTemplatesRoot: PROMPT_TEMPLATES_DIR, craftRoot: CRAFT_DIR,

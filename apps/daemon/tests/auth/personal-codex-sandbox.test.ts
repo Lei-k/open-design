@@ -87,6 +87,14 @@ describe.skipIf(!usable)('personal app-server children run in a per-run sandbox'
 });
 
 describe('sandbox arguments', () => {
+  it('mounts captured skills read-only after the writable HOME mount', () => {
+    const home = '/data/rt/a/run'; const skills = `${home}/skill-packages`;
+    const args = personalSandboxArgs({ bwrap: BWRAP, readOnlyPaths: [] },
+      { codexHome: home, home, temp: `${home}/tmp`, cwd: '/data/projects/p', skillPackages: skills });
+    expect(args.slice(-5)).toEqual(['--ro-bind', skills, skills, '--chdir', '/data/projects/p']);
+    expect(args.slice(0, -5)).toEqual(expect.arrayContaining(['--bind', home, home]));
+    expect(args.flatMap((arg, i) => arg === '--bind' ? [args[i + 1]] : [])).not.toContain(skills);
+  });
   it('binds only the child\'s own writable paths, parents first, and no data root', () => {
     const args = personalSandboxArgs({ bwrap: BWRAP, readOnlyPaths: ['/opt/codex'] },
       { codexHome: '/data/rt/a/codex-home', home: '/data/rt/a/run', temp: '/data/rt/a/run/tmp', cwd: '/data/projects/p' });

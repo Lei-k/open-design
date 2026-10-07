@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import type { StudioSettingsResponse, UpdateStudioSettingsRequest } from '@open-design/contracts';
+import { STUDIO_DEFAULT_ACCENT_COLOR, STUDIO_DEFAULT_NOTIFICATIONS,
+  type StudioSettingsResponse, type StudioSettingsWrite } from '@open-design/contracts';
 import { composeMemoryBody, type MemoryChangeEvent } from '../memory.js';
 
 /** Private preferences and manual memory. Every operation is serialized per
@@ -16,23 +17,35 @@ export class StudioSettings {
   constructor(private readonly db: Database.Database, private readonly dataRoot: string) {
     db.exec(`CREATE TABLE IF NOT EXISTS multiuser_settings (
       owner_account_id TEXT PRIMARY KEY, custom_instructions TEXT NOT NULL,
-      revision INTEGER NOT NULL CHECK(revision >= 0)
+      revision INTEGER NOT NULL CHECK(revision >= 0), preferences_json TEXT NOT NULL DEFAULT '{}'
     )`);
+    const columns = db.prepare('PRAGMA table_info(multiuser_settings)').all() as { name: string }[];
+    if (!columns.some((column) => column.name === 'preferences_json')) {
+      db.exec("ALTER TABLE multiuser_settings ADD COLUMN preferences_json TEXT NOT NULL DEFAULT '{}'");
+    }
     this.events.setMaxListeners(0);
   }
 
   read(owner: string): StudioSettingsResponse {
-    const row = this.db.prepare('SELECT custom_instructions, revision FROM multiuser_settings WHERE owner_account_id = ?')
-      .get(owner) as { custom_instructions: string; revision: number } | undefined;
-    return { config: { customInstructions: row?.custom_instructions ?? '' }, revision: row?.revision ?? 0 };
+    const row = this.db.prepare('SELECT custom_instructions, revision, preferences_json FROM multiuser_settings WHERE owner_account_id = ?')
+      .get(owner) as { custom_instructions: string; revision: number; preferences_json: string } | undefined;
+    const preferences = JSON.parse(row?.preferences_json ?? '{}') as Partial<StudioSettingsResponse['config']>;
+    return { config: { customInstructions: row?.custom_instructions ?? '',
+      accentColor: preferences.accentColor ?? STUDIO_DEFAULT_ACCENT_COLOR,
+      notifications: { ...STUDIO_DEFAULT_NOTIFICATIONS, ...preferences.notifications } }, revision: row?.revision ?? 0 };
   }
 
-  update(owner: string, input: UpdateStudioSettingsRequest): StudioSettingsResponse | null {
+  update(owner: string, input: StudioSettingsWrite): StudioSettingsResponse | null {
     return this.db.transaction(() => {
-      if (this.read(owner).revision !== input.revision) return null;
-      this.db.prepare(`INSERT INTO multiuser_settings (owner_account_id, custom_instructions, revision) VALUES (?, ?, ?)
-        ON CONFLICT(owner_account_id) DO UPDATE SET custom_instructions = excluded.custom_instructions, revision = excluded.revision`)
-        .run(owner, input.customInstructions, input.revision + 1);
+      const current = this.read(owner);
+      if (current.revision !== input.revision) return null;
+      const config = { customInstructions: input.customInstructions === undefined ? current.config.customInstructions : input.customInstructions ?? '',
+        accentColor: input.accentColor === undefined ? current.config.accentColor : input.accentColor?.toLowerCase() ?? STUDIO_DEFAULT_ACCENT_COLOR,
+        notifications: input.notifications === undefined ? current.config.notifications : input.notifications ?? STUDIO_DEFAULT_NOTIFICATIONS };
+      this.db.prepare(`INSERT INTO multiuser_settings (owner_account_id, custom_instructions, revision, preferences_json) VALUES (?, ?, ?, ?)
+        ON CONFLICT(owner_account_id) DO UPDATE SET custom_instructions = excluded.custom_instructions, revision = excluded.revision,
+        preferences_json = excluded.preferences_json`)
+        .run(owner, config.customInstructions, input.revision + 1, JSON.stringify({ accentColor: config.accentColor, notifications: config.notifications }));
       return this.read(owner);
     }).immediate();
   }

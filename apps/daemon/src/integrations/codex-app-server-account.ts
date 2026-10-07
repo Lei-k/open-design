@@ -28,6 +28,7 @@ export interface AppServerEnvironment {
   temp: string;
   cwd: string;
   dataRoot: string;
+  skillPackages?: string;
   /**
    * When set, the child starts inside this bubblewrap sandbox: only CODEX_HOME,
    * HOME, TMPDIR and the working directory are writable, and nothing else of the
@@ -41,12 +42,13 @@ const SANDBOX_PATH = '/usr/local/bin:/usr/bin:/bin';
 
 export function appServerEnv(env: AppServerEnvironment): NodeJS.ProcessEnv {
   return { HOME: env.home, TMPDIR: env.temp, TMP: env.temp, TEMP: env.temp, OD_DATA_DIR: env.dataRoot, CODEX_HOME: env.codexHome,
-    ...(env.sandbox ? { PATH: SANDBOX_PATH } : {}) };
+    ...(env.sandbox ? { PATH: SANDBOX_PATH } : {}), ...(env.skillPackages ? { OD_SKILLS_DIR: env.skillPackages } : {}) };
 }
 
 export function spawnAppServer(env: AppServerEnvironment): ChildProcessWithoutNullStreams {
   const [bin, ...args] = env.sandbox
-    ? sandboxedCommand(env.sandbox, { codexHome: env.codexHome, home: env.home, temp: env.temp, cwd: env.cwd }, env.command)
+    ? sandboxedCommand(env.sandbox, { codexHome: env.codexHome, home: env.home, temp: env.temp, cwd: env.cwd,
+      ...(env.skillPackages ? { skillPackages: env.skillPackages } : {}) }, env.command)
     : env.command;
   const child = spawn(bin, args, { cwd: env.cwd, env: appServerEnv(env), stdio: ['pipe', 'pipe', 'pipe'] });
   child.stderr.on('data', () => {});

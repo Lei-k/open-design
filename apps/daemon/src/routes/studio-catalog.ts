@@ -4,28 +4,31 @@ import type { SkillDetail, SkillImportRequest, SkillSummary, SkillUpdateRequest 
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { multiUserStreamAllowed } from '../http/multiuser-stream.js';
 import { sendApiError } from '../http/api-errors.js';
-import { listSkillFiles, type SkillInfo } from '../skills.js';
+import type { SkillInfo } from '../skills.js';
 import { StudioSkills } from '../storage/studio-skills.js';
+import { captureStudioSkill, type StudioSkillPackage } from '../services/studio-skill-packages.js';
 
 export interface StudioCatalog {
-  readSkills: (ownerId: string, ids: readonly string[]) => Promise<SkillDetail[] | null>;
+  readSkills: (ownerId: string, ids: readonly string[]) => Promise<Array<SkillDetail & { package?: StudioSkillPackage }> | null>;
 }
 
 /** Standard API aliases terminate here; host-global registrars never handle
  * Studio catalogs. Bundled reads and account-owned writes are separate sources.
  */
 export function registerStudioCatalogRoutes(app: Express, input: {
-  db: Database.Database; listBuiltInSkills: () => Promise<SkillInfo[]>;
+  db: Database.Database; skillsRoot: string; listBuiltInSkills: () => Promise<SkillInfo[]>;
 }): StudioCatalog {
   const store = new StudioSkills(input.db);
   const builtinSummary = ({ dir: _dir, body: _body, ...skill }: SkillInfo): SkillSummary => ({
     ...skill, triggers: skill.triggers.filter((value): value is string => typeof value === 'string'),
-    source: 'built-in', selectable: false, hasBody: typeof _body === 'string' && _body.length > 0,
+    source: 'built-in', selectable: true, hasBody: typeof _body === 'string' && _body.length > 0,
   });
-  const read = async (ownerId: string, id: string): Promise<SkillDetail | null> => {
+  const read = async (ownerId: string, id: string): Promise<(SkillDetail & { package?: StudioSkillPackage }) | null> => {
     if (id.startsWith('studio-skill:')) return store.read(ownerId, id);
     const item = (await input.listBuiltInSkills()).find((skill) => skill.id === id);
-    return item ? { ...builtinSummary(item), body: item.body } : null;
+    if (!item) return null;
+    try { return { ...builtinSummary(item), ...captureStudioSkill(input.skillsRoot, item.dir, item.id) }; }
+    catch { return null; }
   };
   const handle = (operation: (req: Request, res: Response, ownerId: string) => unknown) => async (req: Request, res: Response) => {
     const ownerId = multiUserActorOf(res)?.accountId;
@@ -43,7 +46,8 @@ export function registerStudioCatalogRoutes(app: Express, input: {
     const skill = await read(ownerId, String(req.params.id));
     if (!multiUserStreamAllowed(res)) return;
     if (!skill) return sendApiError(res, 404, 'NOT_FOUND', 'skill not found');
-    res.json(skill);
+    const { package: _package, ...detail } = skill;
+    res.json(detail);
   }));
   app.get(`${prefix}/:id/files`, handle(async (req, res, ownerId) => {
     const id = String(req.params.id);
@@ -53,9 +57,9 @@ export function registerStudioCatalogRoutes(app: Express, input: {
       res.json({ files: [{ path: 'SKILL.md', kind: 'file', size: Buffer.byteLength(skill.body) }] });
       return;
     }
-    const skill = (await input.listBuiltInSkills()).find((item) => item.id === id);
+    const skill = await read(ownerId, id);
     if (!skill) return sendApiError(res, 404, 'NOT_FOUND', 'skill not found');
-    const files = await listSkillFiles(skill.dir);
+    const files = skill.package?.files.map((file) => ({ path: file.path, kind: 'file', size: Buffer.byteLength(file.data, 'base64') })) ?? [];
     if (multiUserStreamAllowed(res)) res.json({ files });
   }));
   app.post(`${prefix}/import`, handle((req, res, ownerId) => {
@@ -74,10 +78,7 @@ export function registerStudioCatalogRoutes(app: Express, input: {
     res.json({ ok: true });
   }));
   return { readSkills: async (ownerId, ids) => {
-    // Executable bundled attachments need their own sandbox staging closure.
-    // Reading the bundled catalog is not permission to execute those assets.
-    if (ids.some((id) => !id.startsWith('studio-skill:'))) return null;
     const skills = await Promise.all(ids.map((id) => read(ownerId, id)));
-    return skills.every((skill): skill is SkillDetail => skill !== null) ? skills : null;
+    return skills.every((skill): skill is SkillDetail & { package?: StudioSkillPackage } => skill !== null) ? skills : null;
   } };
 }

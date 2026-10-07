@@ -285,16 +285,23 @@ it('edits account instructions and manual profile through stdin and isolates B',
       '--password-file', '-', '--session-file', file, '--json'], user.password + '\n'));
   }
   expect(success(await cli(['config', 'set', 'customInstructions', '--prompt-file', '-', '--session-file', first, '--json'], 'CLI_INSTRUCTIONS\nsecond line')))
-    .toEqual({ customInstructions: 'CLI_INSTRUCTIONS\nsecond line' });
+    .toMatchObject({ customInstructions: 'CLI_INSTRUCTIONS\nsecond line' });
   expect(success(await cli(['config', 'get', 'customInstructions', '--session-file', second, '--json']))).toBe('');
   expect((await cli(['config', 'set', 'agentCliEnv', '--value-json', '{}', '--session-file', first, '--json'])).code).not.toBe(0);
+  const notifications = { soundEnabled: true, desktopEnabled: false, successSoundId: 'chime', failureSoundId: 'thud' };
+  expect(success(await cli(['config', 'set', 'notifications', '--value-json', JSON.stringify(notifications), '--session-file', first, '--json'])).notifications).toEqual(notifications);
+  expect(success(await cli(['config', 'get', 'notifications', '--session-file', second, '--json'])).soundEnabled).toBe(false);
+  expect(success(await cli(['config', 'set', 'accentColor', '#1A74FF', '--session-file', first, '--json'])).accentColor).toBe('#1a74ff');
+  expect(success(await cli(['config', 'unset', 'notifications', '--session-file', first, '--json'])).notifications.soundEnabled).toBe(false);
+  expect(success(await cli(['config', 'unset', 'accentColor', '--session-file', first, '--json'])).accentColor).toBe('#353535');
+  expect((await cli(['config', 'set', 'locale', 'zh-TW', '--session-file', first, '--json'])).code).not.toBe(0);
   const profile = success(await cli(['memory', 'profile', 'set', '--prompt-file', '-', '--session-file', first, '--json'], '- Role: CLI_PROFILE_ORIGINAL'));
   expect(profile.body).toContain('CLI_PROFILE_ORIGINAL');
   expect(success(await cli(['memory', 'tree', 'list', '--session-file', first, '--json'])).tree.some((node: { id: string }) => node.id === 'user_profile')).toBe(true);
   const edited = success(await cli(['memory', 'tree', 'edit', 'user_profile', '--prompt-file', '-', '--session-file', first, '--json'], '- Role: CLI_PROFILE_EDITED'));
   expect(edited.entry.body).toContain('CLI_PROFILE_EDITED');
   expect((await cli(['memory', 'tree', 'view', 'user_profile', '--session-file', second, '--json'])).code).not.toBe(0);
-  expect(success(await cli(['config', 'unset', 'customInstructions', '--session-file', first, '--json']))).toEqual({ customInstructions: '' });
+  expect(success(await cli(['config', 'unset', 'customInstructions', '--session-file', first, '--json']))).toMatchObject({ customInstructions: '' });
 }, 40_000);
 
 

@@ -35,6 +35,8 @@ export interface PersonalSandboxMounts {
   home: string;
   temp: string;
   cwd: string;
+  /** Captured resource subtree, mounted after writable parents. */
+  skillPackages?: string;
 }
 
 const SYSTEM_DIRECTORIES = ['/usr', '/etc/ssl', '/etc/ca-certificates', '/etc/pki', '/etc/alternatives'];
@@ -67,6 +69,7 @@ export function personalSandboxArgs(sandbox: PersonalSandbox, mounts: PersonalSa
   const writable = [...new Set([mounts.codexHome, mounts.home, mounts.temp, mounts.cwd])]
     .sort((a, b) => a.length - b.length);
   for (const dir of writable) args.push('--bind', dir, dir);
+  if (mounts.skillPackages) args.push('--ro-bind', mounts.skillPackages, mounts.skillPackages);
   args.push('--chdir', mounts.cwd);
   return args;
 }

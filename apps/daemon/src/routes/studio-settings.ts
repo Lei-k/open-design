@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
 import {
   MEMORY_TYPES, STUDIO_MEMORY_MAX_ENTRIES, STUDIO_MEMORY_MAX_ENTRY_BYTES, STUDIO_MEMORY_MAX_TOTAL_BYTES,
-  type MemoryEntry, type UpdateStudioSettingsRequest, type UpsertMemoryRequest,
+  parseStudioSettingsWrite, type MemoryEntry, type UpsertMemoryRequest,
 } from '@open-design/contracts';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { bindMultiUserStream, multiUserStreamAllowed } from '../http/multiuser-stream.js';
@@ -37,7 +37,9 @@ export function registerStudioSettingsRoutes(app: Express, input: { db: Database
   const prefix = '/api/multiuser/settings';
   app.get(`${prefix}/config`, handle((_req, res, owner) => { res.json(store.read(owner)); }));
   app.put(`${prefix}/config`, handle((req, res, owner) => {
-    const updated = store.update(owner, req.body as UpdateStudioSettingsRequest);
+    const draft = parseStudioSettingsWrite(req.body);
+    if (!draft) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid account preferences');
+    const updated = store.update(owner, draft);
     if (!updated) return sendApiError(res, 409, 'CONFLICT', 'settings changed; reload before saving');
     res.json(updated);
   }));

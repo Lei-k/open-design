@@ -1038,6 +1038,7 @@ function AppInner() {
     mode: 'daemon', agentId: studio.executionAgentId });
   const configRef = useRef(config);
   configRef.current = config;
+  const studioSettingsVersionRef = useRef(0);
   const latestPersistedConfigRef = useRef(config);
   latestPersistedConfigRef.current = config;
   const settingsDraftConfigRef = useRef<AppConfig | null>(null);
@@ -2125,6 +2126,17 @@ function AppInner() {
       if (studioRequest('GET', '/api/templates')) {
         void listTemplates().then((items) => { if (!cancelled) setTemplates(items); });
       }
+      if (studioRequest('GET', '/api/app-config')) {
+        // Studio's closed account DTO is independent of host config hydration.
+        // Never migrate browser defaults back to the account on boot.
+        const version = studioSettingsVersionRef.current;
+        void fetch('/api/app-config').then(async (response) => {
+          if (!response.ok) return;
+          const saved = await response.json() as import('@open-design/contracts').StudioSettingsResponse;
+          if (cancelled || studioSettingsVersionRef.current !== version) return;
+          setConfig((current) => ({ ...current, ...saved.config }));
+        }).catch(() => {});
+      }
       const request = beginProjectListRequest(workspaceProjectViewRef.current);
       void listCurrentWorkspaceProjects().then((list) => {
         if (cancelled) return;
@@ -2774,6 +2786,7 @@ function AppInner() {
     next: AppConfig,
     options?: { forceMediaProviderSync?: boolean },
   ) => {
+    studioSettingsVersionRef.current += 1;
     // Strip the in-flight Composio secret before anything hits disk so
     // a half-typed key can't survive in localStorage. If the dialog is
     // closing, preserve any onboarding completion that the close gesture

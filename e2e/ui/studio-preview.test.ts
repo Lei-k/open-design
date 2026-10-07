@@ -178,10 +178,24 @@ test('[P1] Studio saves private skills, instructions and memory in shared Settin
   expect(response.status()).toBe(201);
   const id = (await response.json()).skill.id;
   await expect(form).toHaveCount(0);
+  await page.getByTestId('settings-accent-color').fill('#1a74ff');
+  const notification = page.getByRole('group', { name: 'Completion sound', exact: true });
+  await notification.getByRole('button', { name: 'active', exact: true }).click();
   await page.locator('.custom-instructions-input').fill('Browser account instructions marker');
   const instructionsSaved = page.waitForResponse((result) => result.request().method() === 'PUT' && new URL(result.url()).pathname === '/api/app-config');
   await page.getByTestId('studio-instructions-save').click();
   expect((await instructionsSaved).status()).toBe(200);
+  const savedPreferences = (await studio.request('GET', '/api/app-config', studio.a.cookie)).json.config;
+  expect(savedPreferences.accentColor).toBe('#1a74ff');
+  expect(savedPreferences.notifications.soundEnabled).toBe(true);
+  expect((await studio.request('GET', '/api/app-config', studio.b.cookie)).json.config.notifications.soundEnabled).toBe(false);
+  await page.reload();
+  await expect(page.getByTestId('settings-accent-color')).toHaveValue('#1a74ff');
+  await expect(page.getByRole('group', { name: 'Completion sound', exact: true }).getByRole('button', { name: 'active', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('html')).toHaveCSS('--accent', '#1a74ff');
+  await page.getByTestId('settings-accent-color').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: info.outputPath('studio-settings-preferences-entry.png'), animations: 'disabled' });
+
   await page.getByRole('button', { name: 'Add or import memories', exact: true }).click();
   const profile = page.getByTestId('memory-profile-panel');
   await profile.getByRole('textbox', { name: 'Role', exact: true }).fill('Browser account memory marker');

@@ -3,15 +3,57 @@
  */
 export interface StudioSettingsConfig {
   customInstructions: string;
+  accentColor: string;
+  notifications: StudioNotificationPreferences;
 }
+
+export interface StudioNotificationPreferences {
+  soundEnabled: boolean;
+  successSoundId: 'ding' | 'chime' | 'two-tone-up' | 'pluck';
+  failureSoundId: 'buzz' | 'two-tone-down' | 'thud';
+  desktopEnabled: boolean;
+}
+
+// Browser permission and locale belong to the device. The shipped theme is
+// light-only; it is not an account setting. Notification intent is portable,
+// but permission is still checked independently on each browser.
+export const STUDIO_DEFAULT_ACCENT_COLOR = '#353535';
+export const STUDIO_DEFAULT_NOTIFICATIONS: Readonly<StudioNotificationPreferences> = {
+  soundEnabled: false, successSoundId: 'ding', failureSoundId: 'buzz', desktopEnabled: false,
+};
+export const STUDIO_SETTINGS_FIELDS = ['customInstructions', 'accentColor', 'notifications'] as const;
 
 export interface StudioSettingsResponse {
   config: StudioSettingsConfig;
   revision: number;
 }
 
-export interface UpdateStudioSettingsRequest extends StudioSettingsConfig {
-  revision: number;
+/** Closed account-owned write shape. Missing fields preserve their current
+ * values; null explicitly restores a default, including CLI unset. */
+export type StudioSettingsWrite = { revision: number } & {
+  [K in keyof StudioSettingsConfig]?: StudioSettingsConfig[K] | null;
+};
+export type UpdateStudioSettingsRequest = StudioSettingsWrite;
+
+export function parseStudioSettingsWrite(value: unknown): StudioSettingsWrite | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const body = value as Record<string, unknown>;
+  if (Object.keys(body).some((key) => key !== 'revision' && !STUDIO_SETTINGS_FIELDS.some((field) => field === key))
+      || !Number.isSafeInteger(body.revision) || Number(body.revision) < 0 || Number(body.revision) >= Number.MAX_SAFE_INTEGER) return null;
+  if (body.customInstructions !== undefined && body.customInstructions !== null
+      && (typeof body.customInstructions !== 'string' || body.customInstructions.length > 5000 || body.customInstructions.includes('\0'))) return null;
+  if (body.accentColor !== undefined && body.accentColor !== null
+      && (typeof body.accentColor !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(body.accentColor))) return null;
+  if (body.notifications !== undefined && body.notifications !== null) {
+    if (typeof body.notifications !== 'object' || Array.isArray(body.notifications)) return null;
+    const notification = body.notifications as Record<string, unknown>;
+    const keys = ['soundEnabled', 'successSoundId', 'failureSoundId', 'desktopEnabled'];
+    if (Object.keys(notification).length !== keys.length || Object.keys(notification).some((key) => !keys.includes(key))
+        || typeof notification.soundEnabled !== 'boolean' || typeof notification.desktopEnabled !== 'boolean'
+        || typeof notification.successSoundId !== 'string' || !['ding', 'chime', 'two-tone-up', 'pluck'].includes(notification.successSoundId)
+        || typeof notification.failureSoundId !== 'string' || !['buzz', 'two-tone-down', 'thud'].includes(notification.failureSoundId)) return null;
+  }
+  return body as StudioSettingsWrite;
 }
 
 export const STUDIO_MEMORY_MAX_ENTRY_BYTES = 64 * 1024;

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { CompanyOpenAIWorker, runCompanyOpenAITurn } from '../../src/runtimes/company-openai.js';
+import { captureStudioSkill } from '../../src/services/studio-skill-packages.js';
 
 let root: string;
 beforeEach(async () => { root = await mkdtemp(path.join(tmpdir(), 'company-tools-')); await mkdir(path.join(root, 'owner')); });
@@ -55,6 +56,30 @@ it('refuses traversal, external symlinks and unknown tools while preserving vali
   expect(result.files).toEqual(['design.html']);
   expect(events.find((event) => event.type === 'text_delta')?.delta).toBe('完成設計 ✓');
 });
+it('reads only selected immutable skill resources without opening a host skill path', async () => {
+  const resources = path.join(root, 'bundled'); const folder = path.join(resources, 'selected');
+  await mkdir(path.join(folder, 'references'), { recursive: true });
+  await writeFile(path.join(folder, 'SKILL.md'), '---\nname: selected\n---\nFollow references/rules.md');
+  await writeFile(path.join(folder, 'references/rules.md'), 'CAPTURED_SKILL_REFERENCE');
+  const captured = captureStudioSkill(resources, folder, 'selected').package;
+  await writeFile(path.join(folder, 'references/rules.md'), 'LIVE_REPLACEMENT');
+  let request = 0; let observed = '';
+  const fetcher: typeof fetch = async (_url, init) => {
+    if (request++ === 0) return completed([
+      call('list_skill_files', {}, 'list-skills'),
+      call('read_skill_file', { skillId: 'selected', path: 'references/rules.md' }, 'selected-reference'),
+      call('read_skill_file', { skillId: 'foreign', path: 'references/rules.md' }, 'foreign-reference'),
+      call('read_skill_file', { skillId: 'selected', path: '../foreign.txt' }, 'traversal'),
+    ]);
+    observed = String(init?.body); return completed([], 'Used the captured reference.');
+  };
+  await turn(fetcher, { skillPackages: [captured] });
+  expect(observed).toContain('CAPTURED_SKILL_REFERENCE');
+  expect(observed).not.toContain('LIVE_REPLACEMENT');
+  expect(observed).not.toContain(folder);
+  expect(observed.match(/PROJECT_TOOL_REFUSED/g)).toHaveLength(2);
+});
+
 it('checks withdrawn authority after provider completion before executing a queued file tool', async () => {
   let allowed = true;
   const fetcher: typeof fetch = async () => { allowed = false; return completed([call('write_project_file', { path: 'late.html', content: 'late' }, 'late')]); };

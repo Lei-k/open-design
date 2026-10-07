@@ -29,7 +29,7 @@
 
 import type Database from 'better-sqlite3';
 import type { Express, Request, RequestHandler, Response } from 'express';
-import { parseStudioMessageFeedback } from '@open-design/contracts';
+import { parseStudioMessageFeedback, parseStudioSettingsWrite } from '@open-design/contracts';
 import { sendApiError } from './api-errors.js';
 import { setMultiUserStreamAuthority } from './multiuser-stream.js';
 import { clearedSessionCookie, readSessionCookie, registerAuthRoutes } from '../routes/auth.js';
@@ -364,9 +364,7 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   if (policy === 'template-save') return only(['name', 'description', 'sourceProjectId'])
     && typeof body.name === 'string' && body.name.trim().length > 0 && body.name.length <= 100 && !body.name.includes('\0')
     && optionalText(body.description, 2000) && typeof body.sourceProjectId === 'string' && body.sourceProjectId.length <= 128;
-  if (policy === 'studio-settings') return only(['revision', 'customInstructions'])
-    && Number.isSafeInteger(body.revision) && Number(body.revision) >= 0
-    && typeof body.customInstructions === 'string' && body.customInstructions.length <= 5000 && !body.customInstructions.includes('\0');
+  if (policy === 'studio-settings') return parseStudioSettingsWrite(body) !== null;
   if (policy === 'studio-memory-entry') return only(['id', 'name', 'description', 'type', 'body']);
   if (policy === 'studio-memory-index') return only(['index']) && typeof body.index === 'string'
     && Buffer.byteLength(body.index) <= 64 * 1024 && !body.index.includes('\0');
