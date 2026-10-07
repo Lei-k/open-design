@@ -62,7 +62,8 @@ it('renders the existing App without attempting unavailable service requests, in
   await act(async () => navigate({ kind: 'project', projectId: project.id, conversationId: 'conv', fileName: null }));
   await screen.findByTestId('chat-composer');
   await act(async () => navigate({ kind: 'home', view: 'settings' }));
-  await screen.findByRole('heading', { name: 'Agent accounts' });
+  // The shared Settings frame titles the active section above the page's own heading.
+  await waitFor(() => expect(screen.getAllByRole('heading', { name: 'Agent accounts' }).length).toBeGreaterThan(0));
   reportExperienceEvent('project_create_result', { result: 'failed', error_code: 'TEST_OPERATION_FAILURE' });
   await waitFor(() => expect(screen.getByText('pilot-A')).toBeVisible());
   expect(raw.mock.calls.some(([input]) => String(input).includes('/observability/'))).toBe(false);

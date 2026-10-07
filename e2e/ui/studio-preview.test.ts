@@ -168,6 +168,14 @@ test('[P1] Studio saves private skills, instructions and memory in shared Settin
   await page.locator('input[name="username"]').fill(studio.a.username);
   await page.locator('input[name="password"]').fill(studio.a.password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  // Shared Settings frame: every desktop section stays in the navigation; open lanes show their reason.
+  await expect(page.getByTestId('studio-settings-nav-agentAccounts')).toHaveClass(/active/, { timeout: T.long });
+  await page.screenshot({ path: info.outputPath('studio-settings-navigation-entry.png'), animations: 'disabled' });
+  for (const pending of ['media', 'integrations', 'privacy']) {
+    await page.getByTestId(`studio-settings-nav-${pending}`).click();
+    await expect(page.locator('.settings-content .studio-unavailable')).toBeVisible();
+  }
+  await page.getByTestId('studio-settings-nav-skills').click();
   await page.getByTestId('skills-new').click();
   const form = page.getByTestId('skills-create-form');
   await form.getByPlaceholder('my-skill').fill('Browser private skill');
@@ -178,9 +186,12 @@ test('[P1] Studio saves private skills, instructions and memory in shared Settin
   expect(response.status()).toBe(201);
   const id = (await response.json()).skill.id;
   await expect(form).toHaveCount(0);
+  await page.getByTestId('studio-settings-nav-general').click();
   await page.getByTestId('settings-accent-color').fill('#1a74ff');
   const notification = page.getByRole('group', { name: 'Completion sound', exact: true });
   await notification.getByRole('button', { name: 'active', exact: true }).click();
+  // Unsaved General edits survive switching sections; one save writes the account revision.
+  await page.getByTestId('studio-settings-nav-instructions').click();
   await page.locator('.custom-instructions-input').fill('Browser account instructions marker');
   const instructionsSaved = page.waitForResponse((result) => result.request().method() === 'PUT' && new URL(result.url()).pathname === '/api/app-config');
   await page.getByTestId('studio-instructions-save').click();
@@ -190,19 +201,21 @@ test('[P1] Studio saves private skills, instructions and memory in shared Settin
   expect(savedPreferences.notifications.soundEnabled).toBe(true);
   expect((await studio.request('GET', '/api/app-config', studio.b.cookie)).json.config.notifications.soundEnabled).toBe(false);
   await page.reload();
+  await page.getByTestId('studio-settings-nav-general').click();
   await expect(page.getByTestId('settings-accent-color')).toHaveValue('#1a74ff');
   await expect(page.getByRole('group', { name: 'Completion sound', exact: true }).getByRole('button', { name: 'active', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('html')).toHaveCSS('--accent', '#1a74ff');
   await page.getByTestId('settings-accent-color').scrollIntoViewIfNeeded();
   await page.screenshot({ path: info.outputPath('studio-settings-preferences-entry.png'), animations: 'disabled' });
 
+  await page.getByTestId('studio-settings-nav-memory').click();
   await page.getByRole('button', { name: 'Add or import memories', exact: true }).click();
   const profile = page.getByTestId('memory-profile-panel');
   await profile.getByRole('textbox', { name: 'Role', exact: true }).fill('Browser account memory marker');
   const memorySaved = page.waitForResponse((result) => result.request().method() === 'PUT' && new URL(result.url()).pathname === '/api/memory/user_profile');
   await profile.getByRole('button', { name: 'Save profile', exact: true }).click();
   expect((await memorySaved).status()).toBe(200);
-  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click();
+  await page.locator('[aria-labelledby="memory-add-modal-title"]').getByRole('button', { name: 'Close', exact: true }).click();
   await page.screenshot({ path: info.outputPath('studio-skills-entry.png') });
   await page.goto(`${studio.origin}/design-systems`);
   await page.getByTestId('design-systems-create').click();
@@ -271,6 +284,7 @@ test('[P1] Studio saves private skills, instructions and memory in shared Settin
   expect((await studio.request('GET', '/api/memory/user_profile', studio.b.cookie)).status).toBe(404);
   expect((await studio.request('GET', '/api/app-config', studio.b.cookie)).text).not.toContain('Browser account instructions marker');
   await page.goto(`${studio.origin}/settings`);
+  await page.getByTestId('studio-settings-nav-instructions').click();
   await expect(page.locator('.custom-instructions-input')).toHaveValue('Browser account instructions marker');
   await page.screenshot({ path: info.outputPath('studio-skill-turn.png') });
 });

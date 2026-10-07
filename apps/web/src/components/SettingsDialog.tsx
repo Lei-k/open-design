@@ -218,6 +218,7 @@ import { isAutosaveDraftOnlyChange } from '../App';
 import { NotificationsSection } from './NotificationsSection';
 import { SettingsLanguageField } from './SettingsLanguageField';
 import { SettingsAppearanceField } from './SettingsAppearanceField';
+import { SettingsFrame, SettingsNavItem, SettingsSectionHeader } from './SettingsFrame';
 
 export type SettingsSection =
   | 'general'
@@ -1500,7 +1501,9 @@ export function switchApiProtocolConfig(
 
 export function SettingsDialog(props: Props) {
   const studio = useStudioCapabilities();
-  return studio.hostServices ? <LocalSettingsDialog {...props} /> : <StudioAccountSettings initial={props.initial} onSkillsChanged={props.onSkillsChanged} onPersist={props.onPersist} />;
+  return studio.hostServices ? <LocalSettingsDialog {...props} /> : <StudioAccountSettings presentation={props.presentation ?? 'modal'}
+    initialSection={normalizeSettingsSection(props.initialSection ?? 'general')} onClose={props.onClose}
+    initial={props.initial} onSkillsChanged={props.onSkillsChanged} onPersist={props.onPersist} />;
 }
 
 function LocalSettingsDialog({
@@ -1674,8 +1677,6 @@ function LocalSettingsDialog({
     workspaceContextLoading
       ? null
       : workspaceUpgradeUrl(workspaceContext, workspaceBilling, { fallbackProfile: profile });
-  const [settingsSidebarCollapsed, setSettingsSidebarCollapsed] = useState(false);
-  const [settingsFullscreen, setSettingsFullscreen] = useState(true);
   // Scroll the right-hand content pane back to the top whenever the user
   // picks a different settings section. Without this, switching from a
   // long section the user had scrolled (e.g. Library) into a short one
@@ -4246,32 +4247,12 @@ function LocalSettingsDialog({
     );
   };
 
-  const settingsSidebarToggleLabel = settingsSidebarCollapsed
-    ? 'Expand settings sidebar'
-    : 'Collapse settings sidebar';
-  const settingsFullscreenLabel = settingsFullscreen
-    ? t('common.exitFullscreen')
-    : t('common.fullscreen');
-
-  const pageMode = presentation === 'page';
-
-  const surface = (
-      <div
-        className={
-          'modal modal-settings' +
-          (pageMode ? ' settings-page-surface' : '') +
-          (settingsSidebarCollapsed ? ' settings-sidebar-collapsed' : '') +
-          (!pageMode && settingsFullscreen ? ' settings-fullscreen' : '')
-        }
-        role={pageMode ? 'region' : 'dialog'}
-        aria-modal={pageMode ? undefined : true}
-        aria-labelledby="settings-dialog-title"
-        onClick={pageMode ? undefined : (e) => e.stopPropagation()}
-      >
-        {/* Autosave feedback is viewport-level rather than part of the
-            top-right dialog chrome: it rides the app's own top chrome row, so
-            a passive status never covers the Local CLI pickers that occupy the
-            panel's upper band (OPEND-2148). */}
+  return (
+    <SettingsFrame
+      presentation={presentation}
+      onClose={onClose}
+      contentRef={settingsContentRef}
+      statusLayer={(
         <div className="settings-autosave-layer">
           <div
             className={`settings-autosave is-${autosaveStatus}`}
@@ -4296,37 +4277,9 @@ function LocalSettingsDialog({
             ) : null}
           </div>
         </div>
-        {/* Top-right chrome strip — anchored to the modal corner so the
-            close and fullscreen controls stay at a stable optical location
-            regardless of the header copy. */}
-        <div className="settings-chrome" aria-hidden={false}>
-          {pageMode ? null : (
-            <button
-              type="button"
-              className="settings-chrome-btn settings-fullscreen-toggle"
-              onClick={() => setSettingsFullscreen((current) => !current)}
-              aria-label={settingsFullscreenLabel}
-              aria-pressed={settingsFullscreen}
-              title={settingsFullscreenLabel}
-            >
-              <Icon
-                name={settingsFullscreen ? 'minimize' : 'maximize'}
-                size={15}
-                strokeWidth={2}
-              />
-            </button>
-          )}
-          <button
-            type="button"
-            className="settings-chrome-btn settings-close"
-            onClick={onClose}
-            aria-label={t('common.close')}
-            title={t('common.close')}
-          >
-            <Icon name="close" size={16} strokeWidth={2} />
-          </button>
-        </div>
-        <header className="modal-head" id="settings-dialog-title">
+      )}
+      header={(
+        <>
           {welcome ? (
             <>
               <span className="kicker">{t('settings.welcomeKicker')}</span>
@@ -4334,166 +4287,37 @@ function LocalSettingsDialog({
               <p className="subtitle">{t('settings.welcomeSubtitle')}</p>
             </>
           ) : (
-            <>
-              <span className="kicker">{t('settings.kicker')}</span>
-              <div className="modal-head-line">
-                <h2>{activeHeader.title}</h2>
-                <p className="subtitle">{activeHeader.subtitle}</p>
-              </div>
-            </>
+            <SettingsSectionHeader title={activeHeader.title} subtitle={activeHeader.subtitle} />
           )}
-        </header>
-
-        <div className="modal-body">
-          <button
-            type="button"
-            className="settings-sidebar-toggle"
-            onClick={() => setSettingsSidebarCollapsed((current) => !current)}
-            aria-label={settingsSidebarToggleLabel}
-            aria-pressed={settingsSidebarCollapsed}
-            aria-controls="settings-sidebar"
-            title={settingsSidebarToggleLabel}
-          >
-            <Icon
-              name={settingsSidebarCollapsed ? 'chevron-right' : 'chevron-left'}
-              size={15}
-              strokeWidth={2}
-            />
-          </button>
-          <aside
-            id="settings-sidebar"
-            className="settings-sidebar"
-            aria-label="Settings sections"
-            aria-hidden={settingsSidebarCollapsed ? true : undefined}
-          >
-            {pageMode ? (
-              <div className="settings-page-nav-head">
-                <button
-                  type="button"
-                  className="settings-page-back"
-                  onClick={onClose}
-                >
-                  <Icon name="arrow-left" size={15} />
-                  <span>{t('settings.pageBackToHome')}</span>
-                </button>
-              </div>
-            ) : null}
-            <button
-              type="button"
-              className={`settings-nav-item${activeSection === 'execution' ? ' active' : ''}`}
-              onClick={() => setActiveSection('execution')}
-              data-testid="settings-nav-execution"
-            >
-              <Icon name="sliders" size={18} />
-              <span>
-                <strong>{t('settings.envConfigure')}</strong>
-                <small>{`${t('settings.localCli')} / ${t('settings.modeApiMeta')}`}</small>
-              </span>
-            </button>
-            {agentAccounts ? (
-              <button
-                type="button"
-                className={`settings-nav-item${activeSection === 'agentAccounts' ? ' active' : ''}`}
-                onClick={() => setActiveSection('agentAccounts')}
-                data-testid="settings-nav-agent-accounts"
-              >
-                <Icon name="key" size={18} />
-                <span>
-                  <strong>{t('agentAccounts.navTitle')}</strong>
-                  <small>{t('agentAccounts.navHint')}</small>
-                </span>
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className={`settings-nav-item${activeSection === 'general' ? ' active' : ''}`}
-              onClick={() => setActiveSection('general')}
-            >
-              <Icon name="settings" size={18} />
-              <span>
-                <strong>{t('settings.general')}</strong>
-                <small>{t('settings.generalHint')}</small>
-              </span>
-            </button>
-            <button
-              type="button"
-              className={`settings-nav-item${activeSection === 'labs' ? ' active' : ''}`}
-              onClick={() => setActiveSection('labs')}
-            >
-              <Icon name="sparkles" size={18} />
-              <span>
-                <strong>{t('labs.title')}</strong>
-                <small>{t('labs.navHint')}</small>
-              </span>
-            </button>
-            <button
-              type="button"
-              className={`settings-nav-item${activeSection === 'instructions' ? ' active' : ''}`}
-              onClick={() => setActiveSection('instructions')}
-            >
-              <Icon name="edit" size={18} />
-              <span>
-                <strong>{t('settings.instructionsTitle')}</strong>
-                <small>{t('settings.instructionsNavSub')}</small>
-              </span>
-            </button>
-            <button
-              type="button"
-              className={`settings-nav-item${activeSection === 'memory' ? ' active' : ''}`}
-              onClick={() => setActiveSection('memory')}
-            >
-              <Icon name="brain" size={18} />
-              <span>
-                <strong>{t('settings.memory')}</strong>
-                <small>{t('settings.memoryHint')}</small>
-              </span>
-            </button>
-            <button
-              type="button"
-              className={`settings-nav-item${activeSection === 'media' ? ' active' : ''}`}
-              onClick={() => setActiveSection('media')}
-            >
-              <Icon name="image" size={18} />
-              <span>
-                <strong>{t('settings.mediaProviders')}</strong>
-                <small>Image / video / audio</small>
-              </span>
-            </button>
-            <button
-              type="button"
-              className={`settings-nav-item${activeSection === 'integrations' ? ' active' : ''}`}
-              onClick={() => setActiveSection('integrations')}
-            >
-              <Icon name="puzzle" size={18} />
-              <span>
-                <strong>{t('settings.mcpServerTitle')}</strong>
-                <small>{t('settings.mcpServerHint')}</small>
-              </span>
-            </button>
-            <button
-              type="button"
-              className={`settings-nav-item${activeSection === 'privacy' ? ' active' : ''}`}
-              onClick={() => setActiveSection('privacy')}
-            >
-              <Icon name="eye" size={18} />
-              <span>
-                <strong>{t('settings.privacy')}</strong>
-                <small>{t('settings.privacyHint')}</small>
-              </span>
-            </button>
-            <button
-              type="button"
-              className={`settings-nav-item${activeSection === 'about' ? ' active' : ''}`}
-              onClick={() => setActiveSection('about')}
-            >
-              <Icon name="settings" size={18} />
-              <span>
-                <strong>{t('settings.about')}</strong>
-                <small>{t('settings.aboutHint')}</small>
-              </span>
-            </button>
-          </aside>
-          <div className="settings-content" ref={settingsContentRef}>
+        </>
+      )}
+      nav={(
+        <>
+          <SettingsNavItem active={activeSection === 'execution'} onClick={() => setActiveSection('execution')} icon="sliders" title={t('settings.envConfigure')} hint={`${t('settings.localCli')} / ${t('settings.modeApiMeta')}`} testId="settings-nav-execution" />
+          {agentAccounts ? (
+            <SettingsNavItem active={activeSection === 'agentAccounts'} onClick={() => setActiveSection('agentAccounts')} icon="key" title={t('agentAccounts.navTitle')} hint={t('agentAccounts.navHint')} testId="settings-nav-agent-accounts" />
+          ) : null}
+          <SettingsNavItem active={activeSection === 'general'} onClick={() => setActiveSection('general')} icon="settings" title={t('settings.general')} hint={t('settings.generalHint')} />
+          <SettingsNavItem active={activeSection === 'labs'} onClick={() => setActiveSection('labs')} icon="sparkles" title={t('labs.title')} hint={t('labs.navHint')} />
+          <SettingsNavItem active={activeSection === 'instructions'} onClick={() => setActiveSection('instructions')} icon="edit" title={t('settings.instructionsTitle')} hint={t('settings.instructionsNavSub')} />
+          <SettingsNavItem active={activeSection === 'memory'} onClick={() => setActiveSection('memory')} icon="brain" title={t('settings.memory')} hint={t('settings.memoryHint')} />
+          <SettingsNavItem active={activeSection === 'media'} onClick={() => setActiveSection('media')} icon="image" title={t('settings.mediaProviders')} hint="Image / video / audio" />
+          <SettingsNavItem active={activeSection === 'integrations'} onClick={() => setActiveSection('integrations')} icon="puzzle" title={t('settings.mcpServerTitle')} hint={t('settings.mcpServerHint')} />
+          <SettingsNavItem active={activeSection === 'privacy'} onClick={() => setActiveSection('privacy')} icon="eye" title={t('settings.privacy')} hint={t('settings.privacyHint')} />
+          <SettingsNavItem active={activeSection === 'about'} onClick={() => setActiveSection('about')} icon="settings" title={t('settings.about')} hint={t('settings.aboutHint')} />
+        </>
+      )}
+      overlay={dshSetup ? (
+        <DeepSeekHarnessSetupDialog
+          busy={dshSetup.busy}
+          error={dshSetup.error}
+          onCancel={() => {
+            if (!dshSetup.busy) setDshSetup(null);
+          }}
+          onConfirm={() => void handleConfirmDshSetup()}
+        />
+      ) : null}
+    >
           {activeSection === 'execution' ? (
             <>
               {/* Sticky shell: the 本机 CLI / API 提供商 switch stays pinned
@@ -6252,43 +6076,7 @@ function LocalSettingsDialog({
               onDismiss={() => setAboutToast(null)}
             />
           ) : null}
-          </div>
-        </div>
-      </div>
-  );
-
-  if (pageMode) {
-    return (
-      <div className="settings-page-shell">
-        {surface}
-        {dshSetup ? (
-          <DeepSeekHarnessSetupDialog
-            busy={dshSetup.busy}
-            error={dshSetup.error}
-            onCancel={() => {
-              if (!dshSetup.busy) setDshSetup(null);
-            }}
-            onConfirm={() => void handleConfirmDshSetup()}
-          />
-        ) : null}
-      </div>
-    );
-  }
-
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      {surface}
-      {dshSetup ? (
-        <DeepSeekHarnessSetupDialog
-          busy={dshSetup.busy}
-          error={dshSetup.error}
-          onCancel={() => {
-            if (!dshSetup.busy) setDshSetup(null);
-          }}
-          onConfirm={() => void handleConfirmDshSetup()}
-        />
-      ) : null}
-    </div>
+    </SettingsFrame>
   );
 }
 
