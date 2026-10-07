@@ -135,11 +135,13 @@ Remote origin 只接受 HTTPS，HTTP 只准 numeric loopback 的本地測試／�
 | #55 | S3: shared Codex normalizer → redacted standard SSE → durable transcript；native interrupt、owner-first steer refusal、question continuation、crash/queue recovery、CLI/legacy consumer、turn-block parity。S4: standard `ChatRequest` admission policy、idempotent `clientRequestId`、actor-namespaced turn ids、retry on the same user turn、`?after=` cursor、owner feedback | S9 server-managed official OpenAI pool, bounded tools/quotas and provider/source pinning are implemented; real-API acceptance（#11/#14）、replay and feedback telemetry egress remain | S9 pilot usable; full lane pending |
 | #59 / S6 | Studio previews: opaque srcDoc frames whose assets resolve against the owner/session-bound preview-origin capability via the standard `preview-url` (reviewed alias); validated `artifactManifest` writes; share/export/comment controls follow their lanes | comments + comment attachments (#65), renderer covers and complete preview/bridge acceptance; S7 immutable artifact/content/thumbnail references and maintained deck/manual-edit browser flow are implemented | `pilot`，非 `supported` |
 | #58 / S5 | Owner file list/read/write/upload/rename/delete/folders/search/versions/restore on the standard routes; reviewed RegExp routes matched by the gate; untrusted-content response policy; bounded writes; attachments and focused-file context in personal runs; shared FileWorkspace/FileViewer for pilots; no host paths in responses | non-ZIP exports (#66), public publish, resumable large uploads and per-project storage quota; S13 browser imports and S15 owned ZIP are implemented | `pilot`，非 `supported` |
-| #56 / #57 / S4 | Pilot actors send through the shared `ProjectView → ChatPane → ChatComposer`；question-form、reload reattach、stop、retry、queue、feedback 與 typed failure copy 由真實 browser harness 驗證 | S5 attachments, S8 private skills and S11 design documents are implemented; model preferences (#62), real-provider recordings and full chat state matrix remain | `pilot`，非 `supported` |
+| #56 / #57 / S4 | Pilot actors send through the shared `ProjectView → ChatPane → ChatComposer`；question-form、reload reattach、stop、retry、queue、feedback 與 typed failure copy 由真實 browser harness 驗證 | S5 attachments, S8 private skills, S11 design documents and S21 per-turn personal Codex model/effort are implemented; real-provider recordings and full chat state matrix remain | `pilot`，非 `supported` |
 | #60 / S13–S14 | shared project setup and Home prompt → exactly one run; actor-owned immutable templates, duplicate and browser ZIP/directory imports; matching CLI commands | Live Artifact/Media/Figma, complete carousel/type parity and remaining Home acceptance | `pilot`，非 `supported` |
-| #61 / S11/S13 | bundled design/prompt templates and craft; actor design documents, revisions, safe previews and captured execution versions; immutable actor template snapshots; shared create/editor/catalog/composer and CLI stdin | design generation, asset packages, plugin/community management and Vela team catalogs | `pilot`，非 `supported` |
-| #62 / S10 | shared instructions editor and MemorySection/ProfilePanel; account-only revision-checked instructions, manual memory/tree/index/config, private SSE and immutable run prompt capture; HTTP A/B/admin negatives, CLI stdin and shared Settings browser workflow | encrypted personal provider/model preferences, automatic extraction/rewrite/verification, connectors, MCP and library | `pilot`，非 `supported` |
-| #66 / S15 | captured owned project/folder/batch ZIP, SHA-256 receipt and standard design handoff metadata; shared viewer/file download and CLI | isolated PDF/PPTX/image renderers, historical-version export binding, public share, cloud deploy/finalize/handoff | `pilot`，非 `supported` |
+| #61 / S11/S13/S17/S18/S20 | bundled design/prompt templates and craft; actor design documents, revisions, safe previews and captured execution versions; immutable actor template snapshots; captured skill packages (bundled and private folder imports) with personal read-only mounts and company copy/offline-script tools; fixed-design conversations capture their packages; shared create/editor/catalog/composer and CLI | design generation, design asset packages, plugin/community management and Vela team catalogs | `pilot`，非 `supported` |
+| #62 / S10/S16/S19/S21/S25 | shared Settings frame and section navigation; instructions, manual memory, appearance/notification and personal Codex model preferences, About/version; HTTP A/B/admin negatives, CLI and shared Settings browser workflow | encrypted personal provider credentials, automatic memory extraction/rewrite/verification, connectors, MCP, privacy and library | `pilot`，非 `supported` |
+| #66 / S15/S23 | captured owned project/folder/batch ZIP, SHA-256 receipt and standard design handoff metadata; one-file HTML export bundled from captured owner bytes; shared viewer/file download and CLI | isolated PDF/PPTX/image renderers, historical-version export binding, public share, cloud deploy/finalize/handoff | `pilot`，非 `supported` |
+| #64 / S24 | account-owned routines on the standard `/api/routines` aliases: CRUD, schedules via the shared `RoutineService`, slot claims, manual runs, history; every dispatch re-resolves owner/pilot/project and admits through the standard run policy; TasksView and `od automation` | templates, proposals, ingestion, crystallize, plugin/MCP/connector context and real-provider scheduled acceptance | `pilot`，非 `supported` |
+| #53 / #69 / S22 | account control (Settings, admin Users/Audit, sign-out) in the shared rail, workspace chrome and in-App admin header; the separate multi-user top bar is removed | full admin presentation inside the Studio shell navigation and #70 mobile/a11y matrix | `pilot`，非 `supported` |
 | #68 | pinned-origin password session、private files、JSON/prompt-file、run cursor；CLI transport 與 real-daemon A/B tests | rich headless chat 與其餘 domain lanes、TLS MITM integration acceptance | 未完成 |
 | Phase 0 | #52 基線及 #53/#54 上述基礎 | #53/#54 的剩餘驗收不可跳過 | 不可標記完成 |
 | Phase 1 至 3 | 後續逐 lane 實作並核對；沒有 staging，最終真實 provider 驗收由使用者在 EC2 執行 | 完整功能、UI/CLI、全矩陣驗收及舊殼下線 | 不可標記完成 |
@@ -334,8 +336,8 @@ pnpm --filter @open-design/daemon exec vitest run -c vitest.config.ts tests/auth
 - Standard skill selection now accepts bundled functional skills as well as account text skills. Bundled documents are read from their trusted root with held descriptors; the raw frontmatter body replaces the single-user scanner's generated absolute-path fallback preamble. Detail responses do not contain the captured binary package or the daemon's resource directory.
 - Admission captures the full visible package with per-file hashes, executable bits and a package digest in the owned run. Each conversation continues using its first captured revision. Existing text-only snapshots remain valid. Resource capture refuses source symlinks/hard links/devices, moved/changed paths and excessive content. Per package: 250 files, 4 MiB/file, 8 MiB total and depth 16; a run accepts at most 12 skills and 16 MiB combined captured resources.
 - Personal runs materialize a fresh private package and mount its subtree read-only after the writable runtime mounts. `OD_SKILLS_DIR` is a daemon-selected child input, not a user-selected filesystem root. All runtime paths follow the [root daemon data-directory contract](../../AGENTS.md#daemon-data-directory-contract). No live host resource path is mounted. Scripts use the existing personal worker sandbox, not a new host execution endpoint.
-- Official OpenAI company runs can list and read UTF-8 files from selected immutable packages through bounded tools; foreign IDs, traversal and unknown files fail without opening a host skill path. **Company script execution and binary-resource copying remain unfinished.** Selected workflows requiring these capabilities must not be described as fully supported.
-- Remaining within this lane: the earlier `/api/multiuser/...` fixed-design conversation path still uses its existing live bundled prompt composition and does not capture its primary skill package. Finish its snapshot migration before claiming complete catalog parity. Actor-private multi-file skill import, preview/asset endpoints, revision UI/CLI, design asset packages, plugins, registry trust and team catalogs also remain open.
+- Official OpenAI company runs can list and read UTF-8 files from selected immutable packages through bounded tools; foreign IDs, traversal and unknown files fail without opening a host skill path. Company script execution and binary-resource copying were closed in S18 (offline sandboxed scripts require the deployment's personal sandbox).
+- Remaining within this lane after S18/S20: preview/asset endpoints, revision UI/CLI, design asset packages, plugins, registry trust and team catalogs. (The fixed-design snapshot migration closed in S18; actor-private multi-file import closed in S20.)
 - Evidence: package/catalog/personal-sandbox-argument/creation/archive run passes 26 cases, skips 3 real namespace-dependent cases; company tools/company HTTP/legacy design run passes 14 and skips 1 real sandbox HTTP case. Final package/parity check passes 9 with the same 3 skips. New tests cover immutable side-file bytes, normal and corrupt persisted snapshots, source links, oversized resources, conversation reuse and company resource negative controls. This host cannot create the required unprivileged user namespace: the real read-only mount/foreign-read controls must run on the deployment host; skips are not passes.
 
 ### S16–S17 phase handoff verification
@@ -345,19 +347,68 @@ pnpm --filter @open-design/daemon exec vitest run -c vitest.config.ts tests/auth
 
 ![Shared Settings preference entry](../../docs/design/studio-parity/settings-preferences.png)
 
-## 目前進度與續作順序 — 2026-10-07
+## S18 — company skill scripts, binary resources and fixed-design capture (#61)
 
-[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S17 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
+- Official OpenAI company runs gain `copy_skill_file` (captured text or binary resource → owned project, bounded by the package limits; text still passes runtime-import normalization) and `run_skill_script`. Scripts run the captured bytes of a selected package inside the existing personal bubblewrap boundary with **no network**, the staged package read-only, only the project cwd and a fresh run home writable, a 60 s timeout and 64 KiB output caps; daemon paths are rewritten before output reaches the provider. The tool is advertised only when the deployment configured the personal sandbox; otherwise it is absent rather than failing at run time.
+- The earlier `/api/multiuser/...` fixed-design conversation path now captures its primary skill package and bundled design system on first admission and reuses them on later turns; the stable prompt no longer reads the live bundled tree or names the daemon skill directory.
+- Evidence: real-bwrap script tests (captured bytes, project write, no daemon file/network/skill-write; network negative control fails when re-enabled), company tool unit tests and personal-run HTTP red-on-base capture test. This host now supports unprivileged user namespaces, so earlier namespace skips run as real tests.
 
-- 分支：`feat/studio-parity-foundation`；以 PR 最新 head 為準。先核對 git status/log 和 GitHub 最新 review，避免重做已交付項目。S13–S17 的實作、測試、限制與入口截圖見上文；本次依使用者要求階段性收尾並交接，並非 Epic 完成。
-- 已確認產品決定：公司池使用 OpenAI 官方 API；Vela 採使用者驗證的本人身份與服務端 Web account/member binding；native window、OS overlay 與 app installer/updater 的 Web 不適用決定，和 in-page pet／service build/reload 的仍需交付項目保持分開。
-- 沒有 staging。使用者會自行部署 EC2；目前沒有真實 OpenAI key 或 EC2 設定。可先完成本地 implementation，真實服務驗收仍需部署資料；provider fixtures 不能代替真實 provider／EC2 acceptance。
-- 下一批按 DAG 推進：#60 的 Live Artifact／Media／Figma 依賴 #63 與 actor credential/background-task adapters；#61 先補公司池的技能 script/binary tools，以及 legacy fixed-design selection 的 immutable package/prompt migration；再完成 actor multi-file skill import、design asset packages/generation、plugin/community/team catalogs。#62 account appearance/notifications 已接上，仍欠完整 Settings navigation、model/provider preferences、connectors/MCP/library 與自動記憶。#64 routines、#65 verified Vela collaboration、#66 isolated rendering/cloud delivery 與 #67 in-page host replacements仍需完整 UI／CLI closure。
-- #53–#59 和 #68/#69 的尚欠驗收，包括完整 chat state matrix、replay/telemetry、background/artifact lineage、provider recording 與 rich headless flows，不因新增 ZIP/template 測試而完成。最後執行 #70 同 build 單人/A/B、desktop/mobile、a11y/visual/performance、revocation/restart/rollback，再決定 rollout。
-- 關鍵邊界：pure contracts；actor authority 只由 server cookie 解析；admin 無 private-content bypass；standard aliases 不落入 host-global handler；async I/O/streams 重驗權限；resolved daemon data-root；新能力同 PR 同時接 HTTP/UI/CLI。新 route 同步 exact gate inventory、frontend allowlist 和跨 runtime negative oracle。
-- 維護入口：daemon `routes/studio-project-creation.ts` / `studio-archives.ts` / `studio-*` catalog/settings 與 `http/multiuser-*`；Web shared App、Home/NewProjectPanel、FileViewer 與 `runtime/studio-*`；CLI `src/cli.ts`。聊天與 prompt 改動前讀現行 chat/prompt 規劃及 module guidance。
-- 本機 Node 24 需加入 PATH，Corepack 選 pnpm 10.33.2；Web/root typecheck 或 build 使用 8 GiB heap。dev lifecycle 只用 `pnpm tools-dev`。既有 issue baselines 位於 ignored `.tmp/studio-parity/`；本輪驗證 logs 位於 ignored scratch/系統暫存，不能提交。判讀最後成功結果，同時保留先前失敗用於 red/green 證據。
-- `e2e/ui/studio-preview.test.ts` 用 production Web export、HTTPS app/preview origins、真實 A/B cookies 與 daemon authority，只 mock providers。維護截圖記錄本輪入口；完整 desktop/mobile comparison 及真實服務驗收仍未完成。
+## S19 — shared Settings frame (#62, #53)
+
+- `SettingsFrame` (dialog/page surface, header, collapsible section rail, close/fullscreen) is extracted from the desktop dialog; both the local dialog and Studio account settings render through it. Studio settings use the same section navigation and deep-link mapping; desktop sections whose lane is still open (media, MCP/integrations, privacy) remain listed with the server reason. The modal presentation now has a close control.
+
+## S20 — private skill folder import (#61, #68)
+
+- `POST /api/skills/import-files` (and its catalog alias) accepts a selected browser/CLI folder: SKILL.md plus side files become one account-private immutable package validated by the same limits as captured bundled packages. Text edits rewrite only the package's SKILL.md and keep side files; revisions store their package. Runs stage it like bundled packages. Studio Settings → Skills has an upload-folder entry; `od skill import-folder` uses the same endpoint over a pinned session.
+
+## S21 — personal Codex model and effort (#57, #62, #68)
+
+- Personal Studio runs honor `ChatRequest.model/reasoning` from the contract lists `STUDIO_CODEX_MODELS` / `STUDIO_CODEX_REASONING` (default = the user's own Codex account default) and pass them to `turn/start` per turn; company runs keep the admin model and refuse overrides. The account preference `codexModel` is revision-checked on the app-config API, mapped to the App's `agentModels.codex`, and edited from compact pickers beside the composer's execution source. `od run start --reasoning` and `od config set codexModel` use the same APIs.
+
+## S22 — account control in the shared shell (#53, #69)
+
+- `StudioAccountMenu` replaces the separate multi-user top bar: the foot of the entry rail, the workspace chrome account slot on projects, and the header of in-App admin pages (with a way home). Admin Users/Audit are menu entries. Phone widths keep a compact composer model picker.
+
+## S23 — owner one-file HTML export (#66, #58, #68)
+
+- `POST /api/projects/:id/export/html` is owner-scoped and rewrites to a Studio route that runs the existing standalone bundler over a bounded no-follow capture of the owned project, so worker-planted links cannot pull daemon data into the bundle. Authority is rechecked before bytes are released; historical `versionId` requests are refused. The FileViewer Export menu shows HTML (and client Markdown) in Studio; renderer formats and sharing stay closed. `od project export-html` refuses to overwrite.
+
+## S24 — account-owned Automations (#64, #68)
+
+- Actor-owned routine, run and slot-claim tables behind the standard `/api/routines` aliases. The existing `RoutineService` schedules them. Each dispatch re-resolves the owner (active, password set, Studio pilot), creates a fresh owned project (or a new conversation in an owned project) and admits a standard run as that owner through the same personal/company policy as `POST /api/runs` via an internal actor response. The unattended instruction is sent to the agent but kept out of the visible transcript. Plugins, MCP, connectors and workspace scopes are refused; templates, proposals, ingestion and crystallize remain closed. TasksView and `od automation` work unchanged against the aliases.
+- Not yet evidenced: a real timer-fired scheduled run (timers use wall clock; the shared scheduler's slot logic is covered by its existing tests) and real-provider scheduled acceptance on EC2.
+
+## S25 — About and deployed version (#67, #62)
+
+- Studio Settings → About shows the deployment version recorded by the boot probe, checks `/api/version` without cache and offers a page reload when a newer deployment is live. Native download/install stays Web-not-applicable; deployment remains an operator action.
+
+### S18–S25 phase handoff verification
+
+- Local evidence: workspace typecheck, guard, production Web export, daemon auth/runtime/service/storage suites, focused Web suites and the full production HTTPS Studio browser suite (provider fixtures only). Entry screenshots: `settings-navigation.png`, `skill-folder-import.png`, `composer-codex-model.png`, `account-rail.png`, `account-phone-project.png`, `account-admin.png`, `export-html.png`, `automations.png`, `automation-run.png`.
+- Fixed while verifying: an outdated assertion in `studio-files-http` (context skills are catalog selections since S8/S17) and an admin-page test that assumed a single alert after S9 added the company-pool panel.
+
+![Shared Settings navigation](../../docs/design/studio-parity/settings-navigation.png)
+
+## 目前進度與續作順序 — 2026-10-07（S25 後）
+
+[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S25 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
+
+- 分支：`feat/studio-parity-foundation`；以 PR 最新 head 為準。先核對 git status/log 和 GitHub 最新 review，避免重做已交付項目。S18–S25 的實作、測試、限制與入口截圖見上文；本次依使用者要求階段性收尾並交接，並非 Epic 完成。
+- 已確認產品決定：公司池使用 OpenAI 官方 API；Vela 採使用者驗證的本人身份與服務端 Web account/member binding；native window、OS overlay 與 app installer/updater 的 Web 不適用決定，和 in-page pet 仍需交付項目保持分開。
+- 沒有 staging。使用者會自行部署 EC2；目前沒有真實 OpenAI key 或 EC2 設定。provider fixtures 不能代替真實 provider／EC2 acceptance。公司池 skill script 需要部署端設定 personal sandbox（bubblewrap）才會出現。
+- 下一批按 DAG 推進：
+  - #64：automation templates/proposals/ingestion/crystallize、connector/MCP context，以及排程觸發的真實驗收。
+  - #65：預覽評論與 comment attachments 需要把現有 workspace/collab 身份解析的 comments handler 換成 owner/actor 版本（S23 評估過，不可直接開放），再處理 verified Vela binding。
+  - #66：isolated PDF/PPTX/image renderer、historical-version export、public share／deploy。
+  - #63：Media、Live Artifacts、GenUI、research/critique（依 actor credential/background adapters）。
+  - #61：design generation、asset packages、plugin/community/team catalogs。
+  - #62：encrypted personal provider credentials、自動記憶、connectors/MCP、privacy、library。
+  - #67：in-page pet、瀏覽器端清除本身份快取。
+- #53–#59 和 #68/#69 的尚欠驗收（完整 chat state matrix、replay/telemetry、background/artifact lineage、provider recording、rich headless flows）不因本批完成。最後執行 #70 同 build 單人/A/B、desktop/mobile、a11y/visual/performance、revocation/restart/rollback，再決定 rollout。
+- 關鍵邊界：pure contracts；actor authority 只由 server cookie 解析（背景工作用 `internalMultiUserResponse` 並由呼叫端提供 server-side authority）；admin 無 private-content bypass；standard aliases 不落入 host-global handler；async I/O/streams 重驗權限；resolved daemon data-root；新能力同 PR 同時接 HTTP/UI/CLI。新 route 同步 exact gate inventory、frontend allowlist 和跨 runtime negative oracle。
+- 維護入口：daemon `routes/studio-routines.ts`、`studio-archives.ts`（ZIP／HTML）、`studio-catalog.ts`（含資料夾匯入）、`studio-project-creation.ts`、`studio-*` settings 與 `http/multiuser-*`；Web shared App、`components/SettingsFrame.tsx`、`runtime/StudioAccountSettings.tsx`、`runtime/StudioAccountMenu.tsx`、`runtime/StudioExecutionSource.tsx`、FileViewer 與 `runtime/studio-*`；CLI `src/cli.ts`。聊天與 prompt 改動前讀現行 chat/prompt 規劃及 module guidance。
+- 本機 Node 24 需加入 PATH，Corepack 選 pnpm 10.33.2；Web/root typecheck 或 build 使用 8 GiB heap。dev lifecycle 只用 `pnpm tools-dev`。驗證 logs 位於 scratch，不能提交。
+- `e2e/ui/studio-preview.test.ts` 用 production Web export、HTTPS app/preview origins、真實 A/B cookies 與 daemon authority，只 mock providers；每次改 Web 後需先 `pnpm --filter @open-design/web build`。
 
 ## Remaining provider and deployment decisions
 
