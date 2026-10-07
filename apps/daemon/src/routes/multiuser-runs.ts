@@ -102,6 +102,26 @@ function parseRunListQuery(query: Request['query']): RunListQuery | null {
   return parsed;
 }
 
+/** Stored reasons that name a run-engine condition, not a contract code. */
+const ENGINE_REASON_CODES: Record<string, ApiErrorCode> = {
+  shutdown_timeout: 'MULTIUSER_RUN_SHUTDOWN_TIMEOUT',
+  ledger_admission_replayed: 'MULTIUSER_RUN_ADMISSION_REPLAYED',
+};
+/**
+ * #79: the public code of a failed run's terminal error. A stored contract
+ * code passes through unless it is personal-lane specific on a company run;
+ * an engine reason maps to its own code; anything else (no reason, free text)
+ * becomes the generic failure of the run's own execution source. Stored
+ * reasons are never echoed otherwise, so no provider prose or secret leaks.
+ */
+export function multiUserTerminalErrorCode(source: 'company_pool' | 'personal_subscription', reason: unknown): ApiErrorCode {
+  const personal = source === 'personal_subscription';
+  if (typeof reason === 'string' && Object.hasOwn(ENGINE_REASON_CODES, reason)) return ENGINE_REASON_CODES[reason]!;
+  if (typeof reason === 'string' && (API_ERROR_CODES as readonly string[]).includes(reason)
+    && (personal || !reason.startsWith('MULTIUSER_PERSONAL_'))) return reason as ApiErrorCode;
+  return personal ? 'MULTIUSER_PERSONAL_RUN_FAILED' : 'MULTIUSER_RUN_FAILED';
+}
+
 /**
  * Separate test-only execution plane. The normal run/agent stack is never reached.
  * Company-pool rows run the repository test mock; personal-subscription rows
@@ -230,6 +250,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     }
   }
   const queuedRecovery = db.prepare(`SELECT * FROM ${table} WHERE status = 'queued'`).all() as RunRow[];
+  // #79: settled through `finish` below, so a replay gets its error/end and transcript like any terminal.
+  const replayed: RunRow[] = [];
   for (const run of queuedRecovery) {
     const entry = ledger.entry(run.id);
     if (!entry) continue;
@@ -237,8 +259,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       ledger.finish(entry.actorId, run.id);
       reconciled.add(run.id);
     }
-    db.prepare(`UPDATE ${table} SET status = 'failed', output = ?, updated_at = ? WHERE id = ?`)
-      .run(JSON.stringify({ reason: 'ledger_admission_replayed' }), now(), run.id);
+    replayed.push(run);
   }
   for (const entry of ledgerActive) {
     if (!reconciled.has(entry.runId)) {
@@ -366,8 +387,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         .run(status, Object.keys(result).length ? JSON.stringify(result) : null, time, time, id);
       const frames: string[] = [];
       if (status === 'failed' || result.reason === 'MULTIUSER_PERSONAL_UNAVAILABLE') {
-        const reason = typeof result.reason === 'string' && (API_ERROR_CODES as readonly string[]).includes(result.reason)
-          ? result.reason as ApiErrorCode : 'MULTIUSER_PERSONAL_RUN_FAILED';
+        const reason = multiUserTerminalErrorCode(existing.execution_source, result.reason);
         frames.push(persistEvent(id, 'error', { message: reason, error: { code: reason, message: reason }, ...(projection?.errorDetail ? { codexErrorInfo: projection.errorDetail } : {}) }));
       }
       const files = Array.isArray(result.files) ? result.files as string[] : [];
@@ -392,6 +412,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (!shuttingDown && !suspendDispatch) { dispatch(); dispatchPersonal(); }
   };
   for (const run of recovery) finish(run.id, 'failed', { reason: RESTART_ERROR_CODE });
+  for (const run of replayed) finish(run.id, 'failed', { reason: 'ledger_admission_replayed' });
   const capacity = () => Number((db.prepare("SELECT value FROM multiuser_pool_config WHERE key = 'test-mock-capacity'").get() as { value: string } | undefined)?.value ?? '2');
   dispatch = () => {
     if (dispatching || shuttingDown || !mockAgentScript) return;

@@ -19,6 +19,13 @@ describe('shared API error codes', () => {
     expect(API_ERROR_CODES).toContain('AGENT_RUNTIME_DEF_INVALID');
   });
 
+  it('exposes source-specific multi-user terminal run codes (#79)', () => {
+    expect(API_ERROR_CODES).toEqual(expect.arrayContaining([
+      'MULTIUSER_RUN_FAILED', 'MULTIUSER_RUN_START_FAILED', 'MULTIUSER_RUN_SHUTDOWN_TIMEOUT',
+      'MULTIUSER_RUN_ADMISSION_REPLAYED', 'MULTIUSER_PERSONAL_RUN_FAILED', 'DAEMON_RESTARTED',
+    ]));
+  });
+
   it('keeps AGENT_RUNTIME_DEF_INVALID assignable to ApiErrorCode', () => {
     const code: ApiErrorCode = 'AGENT_RUNTIME_DEF_INVALID';
     expect(code).toBe('AGENT_RUNTIME_DEF_INVALID');

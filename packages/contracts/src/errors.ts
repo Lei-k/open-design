@@ -194,6 +194,14 @@ export const API_ERROR_CODES = [
   'MULTIUSER_QUEUE_LIMIT',
   'MULTIUSER_QUOTA_EXHAUSTED',
   'MULTIUSER_PROVIDER_DISABLED',
+  // Multi-user terminal run errors that are not personal-lane specific (#79):
+  // a company/test-mock run that failed without a public reason, its launcher
+  // failing before a child owned the run, a worker that outlived the shutdown
+  // TERM/KILL bounds, and a queued row whose ledger admission was replayed.
+  'MULTIUSER_RUN_FAILED',
+  'MULTIUSER_RUN_START_FAILED',
+  'MULTIUSER_RUN_SHUTDOWN_TIMEOUT',
+  'MULTIUSER_RUN_ADMISSION_REPLAYED',
   // Personal subscription lane (#18). DISABLED: the server-side enablement
   // switch is off. UNAVAILABLE: no usable linked account (not linked,
   // requires_reauth or disabled); never falls back to the company pool.
