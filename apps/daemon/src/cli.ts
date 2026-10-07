@@ -19,8 +19,8 @@ import { splitResearchSubcommand } from './research/cli-args.js';
 import { resolveDaemonUrl } from './daemon-url.js';
 import { SidecarFactory } from '@open-design/sidecar';
 import { APP_KEYS, SIDECAR_MESSAGES } from '@open-design/sidecar-proto';
-import { EXPORT_FORMATS, EXPORT_IMAGE_FORMATS, mediaFailureNextStep } from '@open-design/contracts';
-import type { ArtifactLintFinding, LintArtifactCliResultEnvelope, LintArtifactResponse, LintFailOn } from '@open-design/contracts';
+import { STUDIO_ARCHIVE_SHA256_HEADER, EXPORT_FORMATS, EXPORT_IMAGE_FORMATS, mediaFailureNextStep } from '@open-design/contracts';
+import type { StudioArchiveDownload, StudioArchiveBatchRequest, ArtifactLintFinding, LintArtifactCliResultEnvelope, LintArtifactResponse, LintFailOn } from '@open-design/contracts';
 import { buildExportCliRequestBody, buildExportCliResultEnvelope, resolveExportCliDeckMode } from './export-cli-request.js';
 import { exportRoutePath } from './export-cli-routing.js';
 import {
@@ -272,9 +272,9 @@ const PROJECT_STRING_FLAGS = new Set([
   'client-request-id',
   'agent', 'model', 'service-tier', 'snapshot-id', 'inputs', 'grant-caps', 'editor',
   'title', 'label', 'against', 'seed-from', 'fork-after', 'mode',
-  'source', 'out',
+  'source', 'out', 'root',
   'execution-source',
-  'tabs-json', 'active-file',
+  'tabs-json', 'files-json', 'active-file',
   'last-event-id', 'question-answer',
 ]);
 const PROJECT_RESOURCE_STRING_FLAGS = new Set([
@@ -7046,6 +7046,10 @@ async function runProject(args) {
                     the design-system generation prompt.
   od project duplicate <id> [--name "<title>"] [--json]
                     Duplicate a project and copy its Design Files.
+  od project archive <id> --out <path> [--root <relative-dir> | --files-json <path|->] [--json]
+                    Download an owned ZIP and verify its SHA-256 receipt.
+  od project import-zip <path> [--json]
+                    Upload a design ZIP as an owned managed project.
   od project import <baseDir> [--name "<title>"]
   od project import-folder <path> [--name "<title>"] [--skill <id>]
                     [--design-system <id>] [--json]
@@ -7360,6 +7364,56 @@ Common options:
       );
       return;
     }
+    case 'archive': {
+      const id = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
+      if (!id || typeof flags.out !== 'string' || !flags.out) {
+        console.error('Usage: od project archive <id> --out <path> [--root <relative-dir> | --files-json <path|->] [--json]'); process.exit(2);
+      }
+      if (flags.root && flags['files-json']) throw new Error('Choose a folder or a file selection');
+      const files = flags['files-json'] ? safeReadJsonFile(flags['files-json']) : null;
+      if (flags['files-json'] && (!Array.isArray(files) || !files.length || files.length > 500
+        || files.some((file) => typeof file !== 'string' || !file || file.length > 1024))) throw new Error('File selection must be a JSON array of 1–500 paths');
+      const route = `/api/projects/${encodeURIComponent(id)}/archive${files ? '/batch' : flags.root ? `?root=${encodeURIComponent(flags.root)}` : ''}`;
+      const response = await fetch(`${base}${route}`, files ? { method: 'POST',
+        headers: { ...workspaceHeaders, 'content-type': 'application/json' }, body: JSON.stringify({ files } satisfies StudioArchiveBatchRequest)
+      } : { headers: workspaceHeaders });
+      if (!response.ok) return structuredHttpFailure(response);
+      const expected = response.headers.get(STUDIO_ARCHIVE_SHA256_HEADER);
+      if (remoteSessionFile && !/^[a-f0-9]{64}$/.test(expected ?? '')) throw new Error('Archive checksum receipt missing');
+      if (!response.body) throw new Error('Archive download missing');
+      const reader = response.body.getReader(); const chunks = []; let size = 0;
+      try {
+        for (;;) {
+          const chunk = await reader.read(); if (chunk.done) break;
+          size += chunk.value.byteLength;
+          if (size > 80 * 1024 * 1024) throw new Error('Archive download limit exceeded');
+          chunks.push(Buffer.from(chunk.value));
+        }
+      } finally { await reader.cancel().catch(() => {}); }
+      const bytes = Buffer.concat(chunks, size);
+      const { createHash } = await import('node:crypto');
+      const sha256 = createHash('sha256').update(bytes).digest('hex');
+      if (expected && sha256 !== expected) throw new Error('Archive checksum mismatch');
+      writeFileSync(flags.out, bytes, { flag: 'wx', mode: 0o600 });
+      const receipt: StudioArchiveDownload = { projectId: id, path: flags.out, bytes: size, sha256 };
+      if (flags.json) return process.stdout.write(JSON.stringify(receipt) + '\n');
+      console.log(`[project] downloaded ${id} to ${flags.out} (${size} bytes, sha256 ${sha256})`);
+      return;
+    }
+    case 'import-zip': {
+      const archivePath = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
+      if (!archivePath) { console.error('Usage: od project import-zip <path> [--json]'); process.exit(2); }
+      const { statSync } = await import('node:fs');
+      if (!statSync(archivePath).isFile() || statSync(archivePath).size > 64 * 1024 * 1024) throw new Error('ZIP file exceeds the upload limit');
+      const form = new FormData();
+      form.append('file', new Blob([readFileSync(archivePath)]), basename(archivePath));
+      const response = await fetch(`${base}/api/import/claude-design`, { method: 'POST', body: form });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error?.message ?? `Import failed (${response.status})`);
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[project] imported ${data.project?.id ?? '-'} (conversation ${data.conversationId ?? '-'})`);
+      return;
+    }
     case 'duplicate': {
       const sourceProjectId = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
       if (!sourceProjectId) {
@@ -7418,6 +7472,22 @@ Common options:
         process.exit(2);
       }
       const folderPath = await resolveFolderPathForCli(folderArg);
+      if (remoteSessionFile) {
+        if (flags.skill || flags['design-system']) throw new Error('Select project resources after importing the managed folder');
+        const { captureCliFolder } = await import('./http/cli-folder-upload.js');
+        const files = captureCliFolder(folderPath);
+        const form = new FormData();
+        const name = typeof flags.name === 'string' && flags.name.length ? flags.name : await basenameForCli(folderPath);
+        if (!name.trim() || name.length > 100 || name.includes('\0')) throw new Error('Folder import name must contain 1–100 characters');
+        form.append('name', name);
+        for (const file of files) form.append('files', new Blob([file.bytes]), file.name);
+        const response = await fetch(`${base}/api/import/files`, { method: 'POST', body: form });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error?.message ?? `Folder import failed (${response.status})`);
+        if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+        console.log(`[project] imported managed copy ${data.project?.id ?? '-'} (conversation ${data.conversationId ?? '-'})`);
+        return;
+      }
       const body = {
         baseDir:        folderPath,
         name:           typeof flags.name === 'string' && flags.name.length > 0
@@ -8877,6 +8947,7 @@ async function runTemplates(args) {
   if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
     console.log(`Usage:
   od templates list                                  List user-saved templates.
+  od templates show <id>                             Read a captured template.
   od templates save  <projectId> --name <name>      Snapshot a project's current
                                                     files as a new template.
                      [--description <text>]
@@ -8921,6 +8992,15 @@ Common options:
     return out;
   };
   switch (sub) {
+    case 'show': {
+      const id = positionalArgs(rest)[0];
+      if (!id) { console.error('Usage: od templates show <id> [--json]'); process.exit(2); }
+      const response = await fetch(`${base}/api/templates/${encodeURIComponent(id)}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data?.error?.message ?? `Template read failed (${response.status})`);
+      process.stdout.write(JSON.stringify(flags.json ? data : data.template, null, 2) + '\n');
+      return;
+    }
     case 'list': {
       // Wrap every fetch in try/catch so the user sees a clean
       // "failed to reach daemon at <url>: <code>" error from

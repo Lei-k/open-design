@@ -946,6 +946,8 @@ import { registerMultiUserDesignRoutes } from './routes/multiuser-design.js';
 import { registerStudioSettingsRoutes } from './routes/studio-settings.js';
 import { registerStudioDesignCatalogRoutes } from './routes/studio-design-catalog.js';
 import { registerStudioCatalogRoutes } from './routes/studio-catalog.js';
+import { registerStudioArchiveRoutes } from './routes/studio-archives.js';
+import { registerStudioProjectCreationRoutes } from './routes/studio-project-creation.js';
 import { registerMultiUserAgentAccountRoutes } from './routes/multiuser-agent-accounts.js';
 import { PersonalCodexAccounts } from './services/personal-codex-accounts.js';
 import { registerStrategyRolloutRoutes } from './routes/strategy-rollout.js';
@@ -17572,6 +17574,12 @@ export async function startServer({
     listBuiltInSystems: () => listDesignSystems(DESIGN_SYSTEMS_DIR, { source: 'built-in', isEditable: false, defaultStatus: 'published' }),
     listBuiltInTemplates: () => listSkills(DESIGN_TEMPLATES_DIR),
   }) : null;
+  if (multiUserMode) registerStudioArchiveRoutes(app, { db, projectsRoot: PROJECTS_DIR });
+  if (multiUserMode) registerStudioProjectCreationRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR,
+    readSkill: async (owner, id) => Boolean(await studioCatalog?.readSkills(owner, [id])),
+    readDesignSystem: async (owner, id) => Boolean(await studioDesignCatalog?.readSystem(owner, id)),
+  });
   const multiUserDesign = multiUserMode ? registerMultiUserDesignRoutes(app, {
     db,
     dataRoot: RUNTIME_DATA_DIR,

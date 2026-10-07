@@ -1,7 +1,7 @@
 import { useStudioCapabilities, StudioUnavailable } from '../runtime/studio-capabilities';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Dialog, DialogDescription, DialogFooter, DialogTitle } from '@open-design/components';
+import { Button, Dialog, DialogDescription, DialogFooter, DialogTitle } from '@open-design/components';
 import { createTabToTracking } from '@open-design/contracts/analytics';
 import { isOpenDesignHostAvailable, pickHostWorkingDir } from '@open-design/host';
 import type { OpenDesignHostProjectImportSuccess } from '@open-design/host';
@@ -159,6 +159,7 @@ interface Props {
   // Local-server flow: the daemon-owned native folder picker returns the
   // selected baseDir, then the renderer POSTs `/api/import/folder`.
   onImportFolder?: (baseDir: string) => Promise<void> | void;
+  onImportBrowserDirectory?: (files: File[]) => Promise<ImportClaudeDesignOutcome>;
   // Host flow: the desktop main process owns the picker dialog and
   // the import call atomically (`pickAndImport` IPC). The renderer
   // never sees the path or the HMAC token; it only receives the
@@ -284,6 +285,7 @@ export function NewProjectPanel({
   promptTemplates,
   onCreate,
   onImportClaudeDesign,
+  onImportBrowserDirectory,
   onImportFolder,
   onImportFolderResponse,
   mediaProviders,
@@ -298,6 +300,7 @@ export function NewProjectPanel({
   const { locale } = useI18n();
   const analytics = useAnalytics();
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const browserDirectoryInputRef = useRef<HTMLInputElement | null>(null);
   const [importing, setImporting] = useState(false);
   const [importZipError, setImportZipError] = useState<
     { message: string; details?: string } | null
@@ -308,9 +311,9 @@ export function NewProjectPanel({
   const [workingDirError, setWorkingDirError] = useState<
     { message: string; details?: string } | null
   >(null);
-  const [tab, setTab] = useState<CreateTab>(() => studio.hostServices || ['prototype', 'deck', 'other'].includes(initialTab) ? initialTab : 'prototype');
+  const [tab, setTab] = useState<CreateTab>(() => studio.hostServices || ['prototype', 'deck', 'template', 'other'].includes(initialTab) ? initialTab : 'prototype');
   const [studioSkillId, setStudioSkillId] = useState<string | null>(null);
-  const tabAvailable = (value: CreateTab) => studio.hostServices || ['prototype', 'deck', 'other'].includes(value);
+  const tabAvailable = (value: CreateTab) => studio.hostServices || ['prototype', 'deck', 'template', 'other'].includes(value);
   // P0 analytics — fire surface_view once per (panel mount, tab) pair so the
   // funnel sees both initial open and tab switches without double-counting on
   // unrelated re-renders. Ref keys on a tab string because the panel is a
@@ -1152,7 +1155,7 @@ export function NewProjectPanel({
               : t('newproj.create')}
           </span>
         </button>
-        {studio.hostServices && onImportClaudeDesign ? (
+        {onImportClaudeDesign && (studio.hostServices || studio.available('home')) ? (
           <>
             <input
               ref={importInputRef}
@@ -1196,6 +1199,27 @@ export function NewProjectPanel({
         ) : null}
       </div>
       {!studio.hostServices ? <StudioUnavailable lane="home" /> : null}
+      {!studio.hostServices && onImportBrowserDirectory && studio.available('home') ? (
+        <>
+          <input type="file" multiple hidden data-testid="browser-directory-input"
+            ref={(element) => { browserDirectoryInputRef.current = element; element?.setAttribute('webkitdirectory', ''); }}
+            onChange={async (event) => {
+              const files = Array.from(event.target.files ?? []); event.target.value = '';
+              if (!files.length) return;
+              setImporting(true); setImportZipError(null);
+              try {
+                const result = await onImportBrowserDirectory(files);
+                if (!result.ok) setImportZipError({ message: result.message ?? 'Folder import failed', details: result.details });
+              }
+              catch (error) { setImportZipError({ message: error instanceof Error ? error.message : 'Folder import failed' }); }
+              finally { setImporting(false); }
+            }} />
+          <Button variant="ghost" data-testid="import-browser-directory" disabled={loading || importing}
+            onClick={() => browserDirectoryInputRef.current?.click()}>
+            <Icon name="folder" size={14} /> {importing ? t('newproj.openingFolder') : t('newproj.openFolder')}
+          </Button>
+        </>
+      ) : null}
       <div className="newproj-footer">{t('newproj.privacyFooter')}</div>
       {importZipError ? (
         <Toast
@@ -1757,8 +1781,9 @@ function TemplatePicker({
       ) : (
         <div className="template-list">
           {templates.map((tpl) => {
-            const fallbackDesc = `${t('newproj.savedTemplate')} · ${tpl.files.length} ${
-              tpl.files.length === 1
+            const fileCount = tpl.fileCount ?? tpl.files.length;
+            const fallbackDesc = `${t('newproj.savedTemplate')} · ${fileCount} ${
+              fileCount === 1
                 ? t('newproj.fileSingular')
                 : t('newproj.filePlural')
             }`;

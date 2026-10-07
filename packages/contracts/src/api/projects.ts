@@ -378,10 +378,12 @@ export interface Project {
 }
 
 export interface ProjectTemplate {
+  /** Directory summary count when file contents are omitted from a catalog response. */
+  fileCount?: number;
   id: string;
   name: string;
   sourceProjectId?: string;
-  files: Array<{ name: string; content: string }>;
+  files: Array<{ name: string; content: string; encoding?: 'utf8' | 'base64' }>;
   description?: string;
   createdAt: number;
 }

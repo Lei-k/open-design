@@ -228,6 +228,7 @@ import {
   duplicateProject,
   getProject,
   importClaudeDesignZip,
+  importBrowserDirectory,
   importFolderProject,
   invalidatePluginCatalogCache,
   invalidateWorkspaceProjectLists,
@@ -2121,6 +2122,9 @@ function AppInner() {
         void fetchDesignTemplates().then((items) => { if (!cancelled) setDesignTemplates(items); });
         void fetchPromptTemplates().then((items) => { if (!cancelled) setPromptTemplates(items); });
       }
+      if (studioRequest('GET', '/api/templates')) {
+        void listTemplates().then((items) => { if (!cancelled) setTemplates(items); });
+      }
       const request = beginProjectListRequest(workspaceProjectViewRef.current);
       void listCurrentWorkspaceProjects().then((list) => {
         if (cancelled) return;
@@ -2697,7 +2701,7 @@ function AppInner() {
   ]);
 
   const refreshTemplates = useCallback(async () => {
-    if (!studio.hostServices) return;
+    if (!studioRequest('GET', '/api/templates')) return;
     const list = await listTemplates();
     setTemplates(list);
   }, []);
@@ -3783,6 +3787,16 @@ function AppInner() {
       projectId: result.project.id,
       fileName: null,
     });
+  }, [rememberLocalProject]);
+
+  const handleImportBrowserDirectory = useCallback(async (files: File[]): Promise<ImportClaudeDesignOutcome> => {
+    try {
+      const result = await importBrowserDirectory(files);
+      rememberLocalProject(result.project.id);
+      setProjects((current) => [result.project, ...current.filter((project) => project.id !== result.project.id)]);
+      navigate({ kind: 'project', projectId: result.project.id, fileName: result.entryFile });
+      return { ok: true };
+    } catch (error) { return { ok: false, message: error instanceof Error ? error.message : 'Folder import failed' }; }
   }, [rememberLocalProject]);
 
   // PR #974: on desktop, the host bridge owns the picker and import POST
@@ -5699,6 +5713,7 @@ function AppInner() {
         onCreateProject={handleCreateProject}
         onCreatePluginShareProject={handleCreatePluginShareProject}
         onImportClaudeDesign={handleImportClaudeDesign}
+        onImportBrowserDirectory={handleImportBrowserDirectory}
         onImportFolder={handleImportFolder}
         onImportFolderResponse={handleImportFolderResponse}
         onOpenProject={handleOpenProject}

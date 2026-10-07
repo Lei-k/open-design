@@ -49,6 +49,53 @@ function success(result: { code: number | null; stdout: string; stderr: string }
 }
 
 describe('same Studio APIs through remote od sessions', () => {
+  it('duplicates and saves/shows/uses/deletes captured private templates through the same APIs', async () => {
+    const session = path.join(root, 'cli-template-session');
+    success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', alice.username,
+      '--password-file', '-', '--session-file', session, '--json'], alice.password));
+    const source = success(await cli(['project', 'create', '--name', 'CLI template source', '--session-file', session, '--json']));
+    const projectId = source.project.id;
+    expect((await daemon.request({ method: 'POST', path: `/api/projects/${projectId}/files`, cookie: alice.cookie,
+      body: { name: 'index.html', content: '<h1>CLI captured version</h1>' } })).status).toBe(200);
+    const copy = success(await cli(['project', 'duplicate', projectId, '--session-file', session, '--json']));
+    expect(copy.copiedFiles).toEqual(['index.html']);
+    const saved = success(await cli(['templates', 'save', projectId, '--name', 'CLI snapshot', '--session-file', session, '--json']));
+    const id = saved.template.id;
+    const shown = success(await cli(['templates', 'show', id, '--session-file', session, '--json']));
+    expect(shown.template).toEqual(saved.template);
+    const metadata = path.join(root, 'cli-template-metadata.json');
+    await import('node:fs/promises').then(({ writeFile }) => writeFile(metadata, JSON.stringify({ kind: 'template', templateId: id })));
+    const used = success(await cli(['project', 'create', '--name', 'CLI from template', '--metadata-json', metadata,
+      '--prompt-file', '-', '--session-file', session, '--json'], 'Continue editing the captured design.'));
+    expect(used.project.metadata.templateId).toBe(id);
+    expect((await daemon.request({ path: `/api/projects/${used.project.id}/files/index.html`, cookie: alice.cookie })).text).toBe('<h1>CLI captured version</h1>');
+    expect(success(await cli(['templates', 'delete', id, '--session-file', session, '--json']))).toMatchObject({ ok: true });
+    const fs = await import('node:fs/promises');
+    const directory = path.join(root, 'cli-folder'); await fs.mkdir(path.join(directory, 'src'), { recursive: true });
+    await fs.writeFile(path.join(directory, 'src', 'App.tsx'), 'export const App = () => null');
+    const imported = success(await cli(['project', 'import-folder', directory, '--session-file', session, '--json']));
+    expect(imported.project.name).toBe('cli-folder');
+    expect((await daemon.request({ path: `/api/projects/${imported.project.id}/files/src/App.tsx`, cookie: alice.cookie })).text).toBe('export const App = () => null');
+    expect(imported.project.metadata.baseDir).toBeUndefined();
+    const archiveOutput = path.join(root, 'cli-owned-download.zip');
+    const receipt = success(await cli(['project', 'archive', imported.project.id, '--out', archiveOutput,
+      '--session-file', session, '--json']));
+    const { createHash } = await import('node:crypto');
+    expect(receipt).toMatchObject({ projectId: imported.project.id, path: archiveOutput,
+      sha256: createHash('sha256').update(readFileSync(archiveOutput)).digest('hex'), bytes: statSync(archiveOutput).size });
+    const overwrite = await cli(['project', 'archive', imported.project.id, '--out', archiveOutput, '--session-file', session, '--json']);
+    expect(overwrite.code).not.toBe(0);
+
+    const { default: JSZip } = await import('jszip'); const zip = new JSZip(); zip.file('index.html', 'CLI archive original');
+    const downloaded = await JSZip.loadAsync(readFileSync(archiveOutput));
+    expect(await downloaded.file('src/App.tsx')!.async('string')).toBe('export const App = () => null');
+    const batchOutput = path.join(root, 'cli-owned-selection.zip');
+    success(await cli(['project', 'archive', imported.project.id, '--out', batchOutput, '--files-json', '-', '--session-file', session, '--json'], JSON.stringify(['src/App.tsx'])));
+    expect((await JSZip.loadAsync(readFileSync(batchOutput))).file('src/App.tsx')).not.toBeNull();
+    const archive = path.join(root, 'cli-archive.zip'); await fs.writeFile(archive, await zip.generateAsync({ type: 'nodebuffer' }));
+    const zipped = success(await cli(['project', 'import-zip', archive, '--session-file', session, '--json']));
+    expect((await daemon.request({ path: `/api/projects/${zipped.project.id}/files/index.html`, cookie: alice.cookie })).text).toBe('CLI archive original');
+  });
   it('logs A/B in using stdin and displays only public metadata', async () => {
     for (const [user, file] of [[alice, aFile], [bob, bFile]] as const) {
       const result = await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', user.username,

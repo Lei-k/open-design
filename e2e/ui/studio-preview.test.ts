@@ -55,6 +55,112 @@ test('[P1] Studio run renders its immutable image immediately and retains histor
 test.use({ ignoreHTTPSErrors: true });
 test.setTimeout(T.xlong * 3);
 
+for (const taskType of [null, 'prototype', 'deck', 'document'] as const) {
+test(`[P1] Studio Home rich composer creates one ${taskType ?? 'freeform'} project and hands its prompt to one run`, async ({ page, studio }, info) => {
+  page.setDefaultTimeout(T.medium);
+  await studio.linkCodex(studio.a);
+  await studio.configureTurn(studio.a, { reply: 'Home first turn completed.' });
+  await page.goto(studio.origin);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  const input = page.getByTestId('home-hero-input');
+  await expect(input).toBeVisible({ timeout: T.long });
+  if (taskType) {
+    await page.getByTestId('home-hero-template-trigger').getByRole('button').click();
+    const menu = page.getByTestId('home-hero-template-menu');
+    await expect(menu.locator('[data-chip="image"]')).toBeDisabled();
+    await expect(menu.locator('[data-chip="image"]')).toHaveAttribute('title', /pending/);
+    await menu.locator(`[data-chip="${taskType}"]`).click();
+    await expect(page.getByTestId('home-hero-template-picker')).toHaveAttribute('data-type', taskType);
+  }
+  await input.fill('Create a small product landing page from Home.');
+  const send = page.getByTestId('home-hero-submit');
+  await expect(send).toBeEnabled();
+  if (taskType === 'deck') await page.screenshot({ path: info.outputPath('studio-home-composer-entry.png') });
+  const projects = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/projects');
+  const run = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/runs');
+  await send.click();
+  const created = await projects; expect(created.status()).toBe(200);
+  expect((await run).status()).toBe(202);
+  const project = (await created.json()).project;
+  expect(project.metadata.kind).toBe(taskType === 'prototype' || taskType === 'deck' ? taskType : 'other');
+  if (taskType === 'document') expect(project.metadata.intent).toBe('document');
+  await expect(page.getByTestId('chat-composer')).toBeVisible({ timeout: T.long });
+  await expect(page.getByTestId('chat-log')).toContainText('Home first turn completed.', { timeout: T.long });
+  const conversation = (await created.json()).conversationId;
+  const messages = await studio.request('GET', `/api/projects/${project.id}/conversations/${conversation}/messages`, studio.a.cookie);
+  expect(messages.json.messages.filter((message: { role: string }) => message.role === 'user')).toHaveLength(1);
+  await page.reload();
+  await expect(page.getByTestId('chat-log')).toContainText('Home first turn completed.', { timeout: T.long });
+  expect((await studio.request('GET', '/api/projects', studio.a.cookie)).json.projects).toHaveLength(1);
+  expect((await studio.request('GET', '/api/runs', studio.a.cookie)).json.runs).toHaveLength(1);
+  expect((await studio.request('GET', `/api/projects/${project.id}`, studio.b.cookie)).status).toBe(404);
+});
+}
+
+test('[P1] Studio saves a private template in FileViewer and creates its captured files from Home', async ({ page, studio }, info) => {
+  const sourceId = studioProjectId();
+  expect((await studio.request('POST', '/api/projects', studio.a.cookie, { id: sourceId, name: 'Browser template source' })).status).toBe(200);
+  expect((await studio.request('POST', `/api/projects/${sourceId}/files`, studio.a.cookie,
+    { name: 'index.html', content: '<h1>Browser captured original</h1>' })).status).toBe(200);
+  await page.goto(`${studio.origin}/projects/${sourceId}/files/index.html`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(page.getByTestId('save-project-template')).toBeVisible({ timeout: T.long });
+  const downloaded = page.waitForEvent('download');
+  await page.getByTestId('download-project-archive').click();
+  const download = await downloaded;
+  expect(download.suggestedFilename()).toBe('Browser-template-source.zip');
+  const localArchive = info.outputPath('studio-browser-owned.zip');
+  await download.saveAs(localArchive);
+  const { readFile } = await import('node:fs/promises');
+  expect((await readFile(localArchive)).subarray(0, 4)).toEqual(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+  await page.screenshot({ path: info.outputPath('studio-template-save-entry.png') });
+  await page.getByTestId('save-project-template').click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Template name', { exact: true }).fill('Browser private snapshot');
+  const saved = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/templates');
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  const response = await saved; expect(response.status()).toBe(201);
+  const templateId = (await response.json()).template.id as string;
+  expect((await studio.request('POST', `/api/projects/${sourceId}/files`, studio.a.cookie,
+    { name: 'index.html', content: '<h1>Browser changed original</h1>' })).status).toBe(200);
+  await page.goto(studio.origin);
+  await page.getByTestId('home-new-project').click();
+  const panel = page.getByTestId('new-project-panel');
+  await panel.getByTestId('new-project-tab-template').click();
+  await expect(panel.getByTestId('new-project-tab-template')).toHaveAttribute('aria-selected', 'true');
+  await expect(panel.getByRole('button', { name: /Browser private snapshot/ }).first()).toBeVisible();
+  const created = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/projects');
+  await panel.getByTestId('new-project-name').fill('Browser template copy');
+  await panel.getByRole('button', { name: /Browser private snapshot/ }).first().scrollIntoViewIfNeeded();
+  await page.screenshot({ path: info.outputPath('studio-template-home-entry.png'), animations: 'disabled' });
+  await panel.getByTestId('create-project').click();
+  const made = await created; expect(made.status()).toBe(200);
+  const id = (await made.json()).project.id as string;
+  expect(made.request().postDataJSON().metadata).toMatchObject({ kind: 'template', templateId });
+  expect((await studio.request('GET', `/api/projects/${id}/files/index.html`, studio.a.cookie)).text).toBe('<h1>Browser captured original</h1>');
+  expect((await studio.request('GET', `/api/templates/${templateId}`, studio.b.cookie)).status).toBe(404);
+  await page.reload();
+  await expect(page.getByTestId('chat-composer')).toBeVisible({ timeout: T.long });
+  const { mkdir, writeFile } = await import('node:fs/promises');
+  const folder = `${studio.root}/browser-selected-folder`;
+  await mkdir(`${folder}/assets`, { recursive: true });
+  await writeFile(`${folder}/index.html`, '<h1>Browser folder upload</h1>');
+  await writeFile(`${folder}/assets/logo.svg`, '<svg/>');
+  await page.goto(studio.origin);
+  await page.getByTestId('home-new-project').click();
+  await expect(panel.getByTestId('import-browser-directory')).toBeVisible();
+  const imported = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/import/files');
+  await panel.getByTestId('browser-directory-input').setInputFiles(folder);
+  const upload = await imported; expect(upload.status()).toBe(200);
+  const importedId = (await upload.json()).project.id as string;
+  expect((await studio.request('GET', `/api/projects/${importedId}/files/assets/logo.svg`, studio.a.cookie)).text).toBe('<svg/>');
+  expect((await studio.request('GET', `/api/projects/${importedId}`, studio.b.cookie)).status).toBe(404);
+});
+
 test('[P1] Studio saves private skills, instructions and memory in shared Settings and runs their captured text', async ({ page, studio }, info) => {
   await studio.linkCodex(studio.a);
   await studio.configureTurn(studio.a, { promptReplyMarkers: ['Browser private skill marker', 'Browser account instructions marker', 'Browser account memory marker', 'Browser design original marker'] });
@@ -110,7 +216,7 @@ test('[P1] Studio saves private skills, instructions and memory in shared Settin
   await documentOption.click();
   await expect(projectPanel.getByTestId('new-project-tab-media')).toBeDisabled();
   await expect(projectPanel.getByTestId('new-project-tab-live-artifact')).toBeDisabled();
-  await expect(projectPanel.getByTestId('new-project-tab-template')).toBeDisabled();
+  await expect(projectPanel.getByTestId('new-project-tab-template')).toBeEnabled();
   await expect(projectPanel.locator('.newproj-working-dir-row')).toHaveCount(0);
   await page.screenshot({ path: info.outputPath('studio-formal-project-entry.png') });
   const projectCreated = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/projects');

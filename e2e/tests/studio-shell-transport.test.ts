@@ -90,7 +90,7 @@ it('opens owner file endpoints only with a usable files lane, and only where the
     expect(matches.length, `${method} ${path}`).toBeGreaterThan(0);
     expect(matches.every(({ entry }) => entry.routeClass === 'owner-scoped-project'), `${method} ${path}`).toBe(true);
   }
-  for (const [method, path] of [['GET', '/api/projects/p/archive'], ['POST', '/api/projects/p/files/a.html/publish-public'],
+  for (const [method, path] of [['POST', '/api/projects/p/files/a.html/publish-public'],
     ['OPTIONS', '/api/projects/p/raw/a.txt'], ['GET', '/api/projects/p/powered/a.js'], ['PUT', '/api/projects/p/files']]) {
     expect(studioRequestAvailable(method!, path!, () => true), `${method} ${path}`).toBe(false);
   }
@@ -163,4 +163,43 @@ it('opens only reviewed document and bundled catalog operations', () => {
       expect(matchMultiUserRoute(method, path).every(({ entry }) => entry.routeClass === 'actor-scoped'), key).toBe(true);
     }
   }
+});
+
+it('opens reviewed creation/import and private template operations without exposing host imports', () => {
+  const endpoints = [
+    ['home', 'POST', '/api/projects/p/duplicate', 'owner-scoped-project'],
+    ['home', 'POST', '/api/multiuser/projects/p/duplicate', 'owner-scoped-project'],
+    ['home', 'POST', '/api/import/files', 'actor-scoped'],
+    ['home', 'POST', '/api/import/claude-design', 'actor-scoped'],
+    ['home', 'POST', '/api/multiuser/import/claude-design', 'actor-scoped'],
+    ...['/api/templates', '/api/multiuser/catalog/templates'].flatMap((prefix) => [
+      ['catalogs', 'GET', prefix, 'actor-scoped'], ['catalogs', 'POST', prefix, 'actor-scoped'],
+      ['catalogs', 'GET', `${prefix}/snapshot`, 'actor-scoped'], ['catalogs', 'DELETE', `${prefix}/snapshot`, 'actor-scoped'],
+    ]),
+  ];
+  for (const [lane, method, path, routeClass] of endpoints) {
+    expect(studioRequestAvailable(method!, path!, (allowed) => allowed === lane), path).toBe(true);
+    expect(studioRequestAvailable(method!, path!, () => false), path).toBe(false);
+    const matches = matchMultiUserRoute(method!, path!);
+    expect(matches.length, path).toBeGreaterThan(0);
+    expect(matches.every(({ entry }) => entry.routeClass === routeClass), path).toBe(true);
+  }
+  for (const [method, path] of [['POST', '/api/import/folder'], ['POST', '/api/dialog/open-folder'],
+    ['PUT', '/api/templates/snapshot'], ['POST', '/api/templates/snapshot'], ['GET', '/api/import/files']]) {
+    expect(studioRequestAvailable(method!, path!, () => true), path).toBe(false);
+  }
+});
+
+
+it('opens only captured owner ZIP downloads in the partial delivery lane', () => {
+  for (const prefix of ['/api/projects/p', '/api/multiuser/projects/p']) {
+    for (const [method, suffix] of [['GET', '/archive'], ['POST', '/archive/batch']]) {
+      const path = prefix + suffix;
+      expect(studioRequestAvailable(method!, path, (lane) => lane === 'delivery'), path).toBe(true);
+      expect(studioRequestAvailable(method!, path, () => false), path).toBe(false);
+      expect(matchMultiUserRoute(method!, path).every(({ entry }) => entry.routeClass === 'owner-scoped-project'), path).toBe(true);
+    }
+  }
+  for (const [method, path] of [['POST', '/api/projects/p/export/html'], ['POST', '/api/projects/p/archive'], ['GET', '/api/projects/p/archive/batch']])
+    expect(studioRequestAvailable(method!, path!, () => true), path).toBe(false);
 });

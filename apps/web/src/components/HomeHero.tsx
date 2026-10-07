@@ -162,6 +162,7 @@ interface Props {
   activePluginIsExplicit?: boolean;
   activePluginRecord?: InstalledPluginRecord | null;
   activeChipId: string | null;
+  taskTypeUnavailableReason?: (chip: HomeHeroChip) => string | undefined;
   // Prototype's selected second-level scene is owned by HomeView so action
   // metadata and persistence stay aligned with the visible filter selection.
   activePrototypeSubtypeId?: string | null;
@@ -364,6 +365,7 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
     activeSkillTitle = null,
     activeSkillRecord = null,
     activeChipId,
+    taskTypeUnavailableReason,
     onClearActivePlugin,
     onClearActiveChip = onClearActivePlugin,
     onClearActiveSkill = () => undefined,
@@ -2355,6 +2357,7 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
               onPick={handlePickTaskChip}
               disabled={pluginsLoading || typeSelectionPending || pendingChipId !== null || pendingPluginId !== null}
               activeChipId={activeChipId}
+              unavailableReason={taskTypeUnavailableReason}
               labelFor={(id) => homeHeroChipLabel(id, t)}
             />
             {libraryPickerOpen ? (

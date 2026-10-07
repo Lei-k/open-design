@@ -577,6 +577,13 @@ async function collectArchiveEntries(dir, relDir, out) {
   }
 }
 
+/** Shared handoff metadata for archives whose file bytes have already been captured. */
+export function addDesignArchiveMetadata(zip: JSZip, fileNames: string[], projectLabel: string): void {
+  const entries = fileNames.map((relPath) => ({ relPath }));
+  addDesignHandoff(zip, entries, projectLabel);
+  addDesignManifest(zip, entries, projectLabel);
+}
+
 function addDesignHandoff(zip, entries, projectLabel) {
   if (entries.some((entry) => entry.relPath === DESIGN_HANDOFF_FILENAME)) return;
   zip.file(DESIGN_HANDOFF_FILENAME, buildDesignHandoff(entries, projectLabel), {

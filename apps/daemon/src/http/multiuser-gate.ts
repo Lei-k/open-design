@@ -315,8 +315,9 @@ const PROJECT_METADATA_FIELDS = new Set([
   'platform',
   'platformTargets',
   'nameSource',
+  'templateId',
 ]);
-const PROJECT_KINDS = new Set(['prototype', 'deck', 'other', 'image', 'video', 'audio']);
+const PROJECT_KINDS = new Set(['prototype', 'deck', 'template', 'other', 'image', 'video', 'audio']);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -330,7 +331,8 @@ function metadataAllowed(value: unknown, allowNull: boolean): boolean {
     if (!PROJECT_METADATA_FIELDS.has(key)) return false;
   }
   const platforms = ['auto', 'responsive', 'web-desktop', 'mobile-ios', 'mobile-android', 'tablet', 'desktop-app'];
-  return (value.kind === undefined || typeof value.kind === 'string' && PROJECT_KINDS.has(value.kind))
+  return (value.templateId === undefined || !allowNull && value.kind === 'template' && typeof value.templateId === 'string' && /^studio-template:[a-f0-9-]{36}$/.test(value.templateId))
+    && (value.kind === undefined || typeof value.kind === 'string' && PROJECT_KINDS.has(value.kind))
     && (value.fidelity === undefined || typeof value.fidelity === 'string' && ['wireframe', 'high-fidelity'].includes(value.fidelity))
     && (value.platform === undefined || typeof value.platform === 'string' && platforms.includes(value.platform))
     && (value.platformTargets === undefined || Array.isArray(value.platformTargets) && value.platformTargets.length <= 8
@@ -355,6 +357,13 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   const only = (fields: readonly string[]) => Object.keys(body).every((key) => fields.includes(key));
   const optionalText = (value: unknown, max: number) => value === undefined || value === null || (typeof value === 'string' && value.length <= max);
   const sessionMode = body.sessionMode === undefined || (typeof body.sessionMode === 'string' && ['design', 'chat', 'plan'].includes(body.sessionMode));
+  if (policy === 'archive-batch') return only(['files']) && Array.isArray(body.files) && body.files.length > 0
+    && body.files.length <= 500 && body.files.every(projectPathText);
+  if (policy === 'project-duplicate') return only(['name']) && (body.name === undefined
+    || typeof body.name === 'string' && body.name.trim().length > 0 && body.name.length <= 100 && !body.name.includes('\0'));
+  if (policy === 'template-save') return only(['name', 'description', 'sourceProjectId'])
+    && typeof body.name === 'string' && body.name.trim().length > 0 && body.name.length <= 100 && !body.name.includes('\0')
+    && optionalText(body.description, 2000) && typeof body.sourceProjectId === 'string' && body.sourceProjectId.length <= 128;
   if (policy === 'studio-settings') return only(['revision', 'customInstructions'])
     && Number.isSafeInteger(body.revision) && Number(body.revision) >= 0
     && typeof body.customInstructions === 'string' && body.customInstructions.length <= 5000 && !body.customInstructions.includes('\0');
@@ -432,6 +441,11 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   for (const key of Object.keys(body)) {
     if (!fields.has(key)) return false;
   }
+  if (policy === 'project-create' && (typeof body.id !== 'string' || body.id.length > 128
+    || typeof body.name !== 'string' || !body.name.trim() || body.name.length > 100 || body.name.includes('\0'))) return false;
+  if (!optionalText(body.pendingPrompt, 64_000) || !optionalText(body.customInstructions, 5000)) return false;
+  if (body.conversationMode !== undefined && (typeof body.conversationMode !== 'string' || !['design', 'chat', 'plan'].includes(body.conversationMode))) return false;
+  if (!sessionMode || body.skipDiscoveryBrief !== undefined && typeof body.skipDiscoveryBrief !== 'boolean') return false;
   if (body.skillId !== undefined && body.skillId !== null
     && (typeof body.skillId !== 'string' || body.skillId.length === 0 || body.skillId.length > 256)) return false;
   if (body.designSystemId !== undefined && body.designSystemId !== null

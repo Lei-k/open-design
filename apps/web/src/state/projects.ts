@@ -800,7 +800,8 @@ export async function createProject(
         },
         body: JSON.stringify(studioUsesLocalServices() ? { id, ...omitWorkspaceContext(input) } : {
           id, name: input.name, skillId: input.skillId, designSystemId: input.designSystemId,
-          metadata: input.metadata, pendingPrompt: input.pendingPrompt, conversationMode: input.conversationMode,
+          metadata: input.metadata ? (({ templateLabel: _label, ...metadata }) => metadata)(input.metadata) : undefined,
+          pendingPrompt: input.pendingPrompt, conversationMode: input.conversationMode,
         } satisfies import('@open-design/contracts').StudioProjectCreateRequest),
       });
       if (resp.ok) {
@@ -1005,6 +1006,28 @@ export async function importClaudeDesignZip(
 }
 
 // ---------- templates ----------
+/** Browser-selected directory files become a managed copy on the daemon. */
+export async function importBrowserDirectory(files: File[]): Promise<ImportFolderResponse> {
+  const form = new FormData();
+  let bytes = 0;
+  const visible = files.filter((file) => !file.webkitRelativePath.split('/').some((segment) => segment.startsWith('.') || segment === 'node_modules'));
+  if (!visible.length || visible.length > 500) throw new Error('Choose a folder with 1–500 visible files');
+  const fields: import('@open-design/contracts').StudioDirectoryImportFields = {
+    name: (visible[0]!.webkitRelativePath.split('/')[0] || 'Imported folder').slice(0, 100),
+  };
+  form.append('name', fields.name!);
+  for (const file of visible) {
+    bytes += file.size;
+    if (file.size > 25 * 1024 * 1024 || bytes > 64 * 1024 * 1024) throw new Error('Folder exceeds the 64 MB upload limit');
+    const relative = file.webkitRelativePath;
+    form.append('files', file, relative.includes('/') ? relative.slice(relative.indexOf('/') + 1) : file.name);
+  }
+  const response = await fetch('/api/import/files', { method: 'POST', body: form });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result?.error?.message ?? 'Folder import failed');
+  return result as ImportFolderResponse;
+}
+
 
 /**
  * Bumped by every successful local template mutation, and part of the read key.
@@ -1035,9 +1058,8 @@ export async function listTemplates(): Promise<ProjectTemplate[]> {
   // own refresh both exist to observe a change that just happened, so a shared
   // settled answer would hand them the list they were fired to replace.
   //
-  // One global key, deliberately not partitioned by Workspace identity: the
-  // daemon handler ignores the request entirely (`(_req, res) =>`) and answers
-  // from its local store, so this response cannot vary by caller identity.
+  // The single-user daemon uses its local store. Studio's session generation
+  // withdraws the coalesced cache before another actor can read its private list.
   // Throwing inside keeps a transient failure out of the shared entry, so the
   // next caller retries instead of joining a dead read.
   try {

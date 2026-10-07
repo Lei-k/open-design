@@ -38,9 +38,11 @@ export function studioLaneForRoute(entry: Pick<MultiUserRouteClassification, 'me
   if (parts[0] !== 'api') return null;
   const domain = parts[1];
   if (domain === 'multiuser') {
+    if (parts[2] === 'import') return 'home';
     if (parts[2] === 'settings') return 'settings';
     if (parts[2] === 'catalog') return 'catalogs';
     if (parts[2] === 'design-catalog') return 'catalogs';
+    if (path.includes('/archive')) return 'delivery';
     if (path.includes('/preview')) return 'preview';
     return parts[2] === 'projects' ? 'projects' : null;
   }
@@ -92,8 +94,9 @@ export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
   chat: 'Pilot chat: real-provider recordings and the full state-matrix acceptance are pending (#56).',
   composer: 'Pilot composer: text, attachments, private text skills, queue, stop and question answers; bundled skill attachments, design systems and model choice are pending (#57).',
   preview: 'Pilot preview: opaque HTML/deck/media previews, manual edit, inspect and owner-only immutable artifact snapshots/thumbnails; comments, renderer covers and complete browser acceptance are pending (#59).',
-  files: 'Pilot files: owner file list, read, write, upload, rename, delete, folders, search and versions; archive, public publish and resumable large uploads are pending (#58).',
-  home: 'Pilot Home: shared Prototype, Deck and Other setup with account skills and design systems; live artifacts, media, saved templates, duplicate and browser imports are pending (#60).',
+  files: 'Pilot files: owner file list, read, write, upload, rename, delete, folders, search and versions; public publish and resumable large uploads are pending (#58).',
+  delivery: 'Pilot delivery: owned project/folder/batch ZIP downloads with captured bytes and design handoff; PDF, PPTX, image, public publish and cloud delivery are pending (#66).',
+  home: 'Pilot Home: Prototype, Deck, Other, immutable saved templates, project copies and browser ZIP/directory imports; live artifacts, media and Figma import are pending (#60).',
   settings: 'Pilot settings: account instructions, manual memory and profile injection; automatic extraction, verification, connectors, MCP and library are pending (#62).',
   catalogs: 'Pilot catalogs: bundled templates and craft, account-owned text skills and versioned design documents; generation, skill attachments, plugins and team catalogs are pending (#61).',
 };

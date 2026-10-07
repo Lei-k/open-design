@@ -613,6 +613,7 @@ export function HomeView({
     () => (ownsComposerDraft ? readHomeComposerChipDraft() : null),
   );
   const [fallbackProjectKind, setFallbackProjectKind] = useState<ProjectKind | null>(null);
+  const [studioTaskChipId, setStudioTaskChipId] = useState<string | null>(null);
   const [fallbackProjectMetadata, setFallbackProjectMetadata] =
     useState<ProjectMetadata | null>(null);
   const [active, setActive] = useState<ActivePlugin | null>(null);
@@ -840,6 +841,7 @@ export function HomeView({
   // Composer in-flight guard: disables the send button, shows Sending…, and
   // swallows repeat clicks across the whole async create tail.
   const [sending, setSending] = useState(false);
+  const submitInFlight = useRef(false);
   const [elevenLabsVoices, setElevenLabsVoices] = useState<AudioVoiceOption[]>([]);
   const [elevenLabsVoicesLoading, setElevenLabsVoicesLoading] = useState(false);
   // Live AIHubMix image catalogue merged into the home media composer's model
@@ -1977,7 +1979,7 @@ export function HomeView({
   // Seed only the page's first untouched visit. Restored drafts and host
   // handoffs own their selection; a later clear must not re-run this default.
   const [defaultTypeSettled, setDefaultTypeSettled] = useState(false);
-  const defaultTypePending = ownsComposerDraft && !defaultTypeSettled && !active;
+  const defaultTypePending = studio.hostServices && ownsComposerDraft && !defaultTypeSettled && !active;
   useEffect(() => {
     if (!studio.hostServices) return;
     if (!ownsComposerDraft || defaultTypeSettled) return;
@@ -2399,6 +2401,7 @@ export function HomeView({
   }
 
   function clearActiveChipSelection() {
+    setStudioTaskChipId(null);
     activePluginApplyRequestRef.current += 1;
     setActive(null);
     setFallbackProjectKind(null);
@@ -2561,6 +2564,17 @@ export function HomeView({
       projectMetadata?: ProjectMetadata | null;
     },
   ) {
+    if (!studio.hostServices) {
+      if (['prototype', 'deck', 'document'].includes(chip.id) && chip.action.kind === 'apply-scenario') {
+        setStudioTaskChipId(chip.id);
+        setFallbackProjectKind(chip.action.projectKind);
+        setFallbackProjectMetadata(selection?.projectMetadata ?? chip.action.projectMetadata ?? null);
+        setError(null);
+      } else if (chip.action.kind === 'open-template-picker') {
+        onOpenNewProject?.('template');
+      } else setError(studio.reason('home'));
+      return;
+    }
     setError(null);
     releaseWebCloneScaffold(chip.id);
     const activeChipId = chip.id;
@@ -2808,7 +2822,6 @@ export function HomeView({
   // Fire the deferred carousel submit once the seeded prompt AND the bound
   // chip have landed in state, so submit()'s closure reads the real values.
   useEffect(() => {
-    if (!studio.hostServices) return;
     const pending = pendingCarouselSubmit;
     if (!pending || sending) return;
     if (prompt.trim() !== pending.text.trim()) return;
@@ -2823,7 +2836,7 @@ export function HomeView({
   async function submit() {
     // The send button disables itself while sending, but the Enter-to-send
     // path lands here directly — swallow re-entry during the in-flight window.
-    if (sending || defaultTypePending) return;
+    if (submitInFlight.current || sending || defaultTypePending) return;
     const trimmed = prompt.trim();
     if (!trimmed && stagedFiles.length === 0) return;
     // P0 ui_click area=chat_composer element=send_button. Fires before the
@@ -2872,6 +2885,7 @@ export function HomeView({
     // Sending covers the whole async tail — a pending plugin apply (when one
     // must resolve first) and the project-creation roundtrip are both windows
     // a second click could otherwise re-enter.
+    submitInFlight.current = true;
     setSending(true);
     try {
       const defaultInputs = { prompt: trimmed };
@@ -3121,6 +3135,7 @@ export function HomeView({
         }
       }
     } finally {
+      submitInFlight.current = false;
       setSending(false);
     }
   }
@@ -3171,7 +3186,9 @@ export function HomeView({
         activeSkillId={activeSkill?.id ?? null}
         activeSkillTitle={activeSkill ? localizeSkillName(locale, activeSkill) : null}
         activeSkillRecord={activeSkill}
-        activeChipId={active?.chipId ?? null}
+        activeChipId={active?.chipId ?? studioTaskChipId}
+        taskTypeUnavailableReason={studio.hostServices ? undefined : (chip) =>
+          ['prototype', 'deck', 'document'].includes(chip.id) ? undefined : studio.reason('home')}
         activePrototypeSubtypeId={active?.prototypeSubtypeId ?? null}
         showActivePluginChip={showActivePluginChip}
         onClearActivePlugin={clearActivePlugin}
@@ -3213,11 +3230,11 @@ export function HomeView({
         onRemoveFile={removeStagedFile}
         onImportFigma={() => setFigmaModalOpen(true)}
         pluginOptions={plugins}
-        pluginsLoading={
+        pluginsLoading={studio.hostServices && (
           pluginsLoading
           || workspaceContextState.loading
           || workspaceContextState.identityChangePending === true
-        }
+        )}
         skillOptions={selectableSkills}
         skillsLoading={skillsLoading}
         mcpOptions={enabledMcpServers}
@@ -3251,8 +3268,8 @@ export function HomeView({
         error={error}
         workingDir={workingDir}
         recentDirs={recentDirs}
-        onPickWorkingDir={handlePickWorkingDir}
-        onPickLocalCodeDir={handlePickLocalCodeDir}
+        onPickWorkingDir={studio.hostServices ? handlePickWorkingDir : undefined}
+        onPickLocalCodeDir={studio.hostServices ? handlePickLocalCodeDir : undefined}
         onSelectRecentWorkingDir={(dir) => {
           setWorkingDir(dir);
           // Recents come from the browser-side picker only; they carry no

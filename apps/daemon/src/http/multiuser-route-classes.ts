@@ -44,7 +44,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'archive-batch' | 'project-duplicate' | 'template-save' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -209,8 +209,28 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'actor-scoped',
     'creates a project owned by the actor; the owner binding is written in the create transaction; body limited by the project-create policy',
     ['POST /api/projects'],
-    { bodyPolicy: 'project-create' },
+    { bodyPolicy: 'project-create', rewriteTo: '/api/multiuser/projects', maxBodyBytes: 256_000 },
   ),
+  ...group('actor-scoped', 'account project creation with captured template files and atomic ownership', ['POST /api/multiuser/projects'],
+    { bodyPolicy: 'project-create', maxBodyBytes: 256_000 }),
+  ...group('owner-scoped-project', 'owned file copy; no host or conversation credentials copied', ['POST /api/projects/:id/duplicate'],
+    { projectParam: 'id', bodyPolicy: 'project-duplicate', maxBodyBytes: 4096, rewriteTo: '/api/multiuser/projects/:id/duplicate' }),
+  ...group('owner-scoped-project', 'owned file copy alias; authority rechecked before publication', ['POST /api/multiuser/projects/:id/duplicate'],
+    { projectParam: 'id', bodyPolicy: 'project-duplicate', maxBodyBytes: 4096 }),
+  ...['GET /api/templates', 'GET /api/templates/:id', 'POST /api/templates', 'DELETE /api/templates/:id'].flatMap((key) => {
+    const alias = key.replace('/api/templates', '/api/multiuser/catalog/templates');
+    const extras = key.startsWith('POST ') ? { bodyPolicy: 'template-save' as const, maxBodyBytes: 8192 }
+      : key.startsWith('DELETE ') ? { bodyPolicy: 'empty' as const } : {};
+    return [...group('actor-scoped', 'account-owned immutable template snapshots; no host template store', [key],
+      { ...extras, rewriteTo: alias.slice(alias.indexOf(' ') + 1) }),
+      ...group('actor-scoped', 'account template alias; same ownership checks', [alias], extras)];
+  }),
+  ...group('actor-scoped', 'bounded browser archive import to an owned managed project', ['POST /api/import/claude-design'],
+    { bodyPolicy: 'multipart', maxBodyBytes: MULTIUSER_UPLOAD_MAX_BYTES + 65536, rewriteTo: '/api/multiuser/import/claude-design' }),
+  ...group('actor-scoped', 'browser archive alias; no host paths or workspace identity', ['POST /api/multiuser/import/claude-design'],
+    { bodyPolicy: 'multipart', maxBodyBytes: MULTIUSER_UPLOAD_MAX_BYTES + 65536 }),
+  ...group('actor-scoped', 'bounded browser directory upload; relative files only, no host paths', ['POST /api/import/files'],
+    { bodyPolicy: 'multipart', maxBodyBytes: MULTIUSER_UPLOAD_MAX_BYTES + 65536 }),
   ...group('owner-scoped-project', 'project id must be owned by the actor (gate check before the handler); no admin override', [
     'GET /api/projects/:id',
     'DELETE /api/projects/:id',
@@ -262,7 +282,6 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
   ...blocked('imports through host Figma credentials/network', ['POST /api/projects/:id/figma/import']),
   ...blocked('copies content from plugins, templates or design systems that are not actor-scoped', [
     'POST /api/projects/:id/scenario/restore-automatic',
-    'POST /api/projects/:id/duplicate',
     'POST /api/projects/:id/design-system-copy',
   ]),
   ...blocked(R_NOT_MINIMUM, [
@@ -343,9 +362,17 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'GET /api/projects/:id/chat-artifact-snapshots/:sid/content',
     'GET /api/projects/:id/chat-artifact-snapshots/:sid/thumbnail',
   ], { projectParam: 'id', untrustedContent: true }),
+  ...['GET /api/projects/:id/archive', 'POST /api/projects/:id/archive/batch'].flatMap((key) => {
+    const method = key.startsWith('POST ') ? 'POST' : 'GET';
+    const route = key.slice(method.length + 1);
+    const alias = route.replace('/api/projects/', '/api/multiuser/projects/');
+    const extras = method === 'POST' ? { bodyPolicy: 'archive-batch' as const, maxBodyBytes: 512 * 1024 } : {};
+    return [...group('owner-scoped-project', 'bounded owned ZIP capture; no host paths or credentials', [key],
+      { projectParam: 'id', ...extras, rewriteTo: alias }),
+      ...group('owner-scoped-project', 'owned ZIP alias; fresh authority before byte release', [`${method} ${alias}`],
+        { projectParam: 'id', ...extras })];
+  }),
   ...blocked(R_PROJECT_FILES, [
-    'GET /api/projects/:id/archive',
-    'POST /api/projects/:id/archive/batch',
     'GET /api/projects/:id/export/manifest',
     'POST /api/projects/:id/export/pdf',
     'POST /api/projects/:id/export/pptx',
@@ -593,7 +620,6 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'PUT /api/project-locations',
     'POST /api/project-locations/scan',
     'POST /api/import/folder',
-    'POST /api/import/claude-design',
     'GET /api/codex-pets',
     'POST /api/codex-pets/sync',
     'GET /api/codex-pets/:id/spritesheet',
@@ -718,10 +744,6 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'GET /api/skills/:id/example',
     'GET /api/skills/:id/assets/*splat',
     'POST /api/skills/install',
-    'GET /api/templates',
-    'GET /api/templates/:id',
-    'POST /api/templates',
-    'DELETE /api/templates/:id',
     'POST /api/design-systems/install',
     'POST /api/design-systems/import/local',
     'POST /api/design-systems/import/github',

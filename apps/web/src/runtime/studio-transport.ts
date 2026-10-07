@@ -56,8 +56,19 @@ export function studioRequestAvailable(method: string, path: string,
   if (/^\/api\/projects\/[^/]+\/conversations\/[^/]+\/messages\/[^/]+$/.test(path)) return method === 'PUT';
   if (/^\/api\/projects\/[^/]+\/tabs$/.test(path)) return ['GET', 'PUT'].includes(method);
   if (/^\/api\/projects\/[^/]+\/events$/.test(path)) return method === 'GET';
+  if (usable('delivery')) {
+    if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/archive$/.test(path)) return method === 'GET';
+    if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/archive\/batch$/.test(path)) return method === 'POST';
+  }
+  if (usable('home')) {
+    if (path === '/api/import/files') return method === 'POST';
+    if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/duplicate$/.test(path)) return method === 'POST';
+    if (/^\/api\/(?:multiuser\/)?import\/claude-design$/.test(path)) return method === 'POST';
+  }
   if (usable('catalogs')) {
     const catalogPath = path.replace(/^\/api\/multiuser\/catalog\//, '/api/');
+    if (catalogPath === '/api/templates') return method === 'GET' || method === 'POST';
+    if (/^\/api\/templates\/[^/]+$/.test(catalogPath)) return method === 'GET' || method === 'DELETE';
     if (catalogPath === '/api/design-systems') return method === 'GET' || method === 'POST';
     if (/^\/api\/design-systems\/[^/]+$/.test(catalogPath)) return ['GET', 'PATCH', 'DELETE'].includes(method);
     if (/^\/api\/design-systems\/[^/]+\/(?:files|file|revisions|preview|showcase)$/.test(catalogPath)) return method === 'GET';

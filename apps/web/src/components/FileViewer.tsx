@@ -1,4 +1,4 @@
-import { useStudioCapabilities } from '../runtime/studio-capabilities';
+import { useStudioCapabilities, useStudioRequestAvailable } from '../runtime/studio-capabilities';
 import { registerStudioReset } from '../runtime/studio-resources';
 import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioSetInterval as setInterval, studioFetch as fetch, studioWindowSessionStorage } from '../runtime/studio-transport';
 import { useExperienceError } from '../observability/use-experience-error';
@@ -159,6 +159,7 @@ import {
 import type { ProjectFilePreview } from '../providers/registry';
 import {
   downloadImageDataUrl,
+  downloadProjectArchive,
   exportAsHtml,
   exportAsJsx,
   exportAsMd,
@@ -15058,7 +15059,9 @@ function HtmlViewer({
   // of vanishing. `canShare`/`canDownload` keep the `&& !viewerOnly` gate that
   // guards the actual export/publish handlers.
   // Share and Export are the delivery lane (#66); without it they would be dead ends.
-  const deliveryUsable = studio.available('delivery');
+  const studioRequest = useStudioRequestAvailable();
+  const deliveryUsable = studio.hostServices || studioRequest('POST', `/api/projects/${projectId}/export/html`);
+  const [archiveDownloading, setArchiveDownloading] = useState(false);
   const rawCanShare = deliveryUsable && source !== null && isShareableArtifact;
   const rawCanDownload = deliveryUsable && source !== null && (isShareableArtifact || isMarkdownArtifact);
   const canShare = rawCanShare && !viewerOnly;
@@ -16603,6 +16606,22 @@ function HtmlViewer({
         <div className="viewer-toolbar-actions">
           {showPreviewToolbarControls ? (
             <div className="viewer-toolbar-inline-actions">
+              {!studio.hostServices && studioRequest('GET', `/api/projects/${projectId}/archive`) && source !== null && !viewerOnly ? (
+                <Button variant="ghost" data-testid="download-project-archive" disabled={archiveDownloading} onClick={async () => {
+                  setArchiveDownloading(true);
+                  try {
+                    if (!await downloadProjectArchive({ projectId, fallbackTitle: exportTitle }))
+                      setExportToast({ message: t('fileViewer.exportFailed'), tone: 'error' });
+                  } finally { setArchiveDownloading(false); }
+                }}>
+                  {t('fileViewer.exportZip')}
+                </Button>
+              ) : null}
+              {!studio.hostServices && studioRequest('POST', '/api/templates') && source !== null && !viewerOnly ? (
+                <Button variant="ghost" data-testid="save-project-template" onClick={openSaveAsTemplateModal}>
+                  {t('fileViewer.saveAsTemplate')}
+                </Button>
+              ) : null}
               {mode === 'preview' ? (
                 <button
                   type="button"
