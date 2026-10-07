@@ -121,15 +121,15 @@ it('copies captured binary resources and runs scripts only through the provided 
   expect(await readFile(path.join(root, 'owner/fonts/brand.woff2'))).toEqual(font);
   await expect(readFile(path.join(root, 'escape.woff2'))).rejects.toMatchObject({ code: 'ENOENT' });
   expect(scripts).toEqual([{ skillId: 'selected', path: 'scripts/build.py', args: ['--out', 'deck.html'] }]);
-  expect(bodies[1]).toContain('SCRIPT_OK');
-  expect(bodies[1].match(/PROJECT_TOOL_REFUSED/g)).toHaveLength(2);
+  expect(bodies[1]!).toContain('SCRIPT_OK');
+  expect(bodies[1]!.match(/PROJECT_TOOL_REFUSED/g)).toHaveLength(2);
   expect(result.files).toEqual(['fonts/brand.woff2']);
-  expect(JSON.parse(bodies[0]).tools.map((tool: { name: string }) => tool.name)).toContain('run_skill_script');
+  expect(JSON.parse(bodies[0]!).tools.map((tool: { name: string }) => tool.name)).toContain('run_skill_script');
 
   // Without a host script sandbox the tool is neither advertised nor executed.
   scripts.length = 0; bodies.length = 0; request = 0;
   await turn(fetcher, { skillPackages: [captured] });
-  expect(JSON.parse(bodies[0]).tools.map((tool: { name: string }) => tool.name)).not.toContain('run_skill_script');
+  expect(JSON.parse(bodies[0]!).tools.map((tool: { name: string }) => tool.name)).not.toContain('run_skill_script');
   expect(scripts).toEqual([]);
-  expect(bodies[1].match(/PROJECT_TOOL_REFUSED/g)).toHaveLength(3);
+  expect(bodies[1]!.match(/PROJECT_TOOL_REFUSED/g)).toHaveLength(3);
 });
