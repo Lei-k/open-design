@@ -89,6 +89,16 @@ it('projects active frames incrementally with identical mid-run and final transc
     // Full re-projection is reserved for lifecycle edges (queued, start, terminal), never per frame.
     expect(all.length).toBeGreaterThan(10);
     expect(rebuilds.mock.calls.filter(([run]) => run.id === id).length).toBeLessThanOrEqual(3);
+    // #80: the fixture's streamed command output and patch bodies never reach SSE or any SQLite row.
+    expect(all.filter((e) => e.event === 'agent' && e.data.type === 'tool_in_flight').length).toBeGreaterThanOrEqual(3);
+    const forbidden = ['PRIVATE_DELTA_OUTPUT', 'PRIVATE_COMMAND_OUTPUT', 'FAKE_S3_SECRET', '/host/private', '<main></main>', root];
+    const db = new Database(path.join(root, 'app.sqlite'), { readonly: true });
+    try {
+      const durable = JSON.stringify([db.prepare('SELECT * FROM multiuser_run_events WHERE run_id = ?').all(id),
+        db.prepare('SELECT * FROM messages WHERE conversation_id = ?').all(target.conversationId),
+        db.prepare('SELECT b.* FROM message_event_batches b JOIN messages m ON m.id = b.message_id WHERE m.conversation_id = ?').all(target.conversationId)]);
+      for (const token of forbidden) expect(JSON.stringify(all).includes(token) || durable.includes(token), token).toBe(false);
+    } finally { db.close(); }
   } finally { rebuilds.mockRestore(); }
 });
 
