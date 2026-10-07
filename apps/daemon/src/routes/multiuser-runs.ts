@@ -246,6 +246,12 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     }
   }
   const children = new Map<string, ChildProcessWithoutNullStreams>();
+  /**
+   * #78: a child is only waited on while its process is alive. Once it has
+   * exited, its run is settling (e.g. the personal artifact snapshot) and a
+   * new 'close' listener may never fire, so cancellers settle the run directly.
+   */
+  const running = (child: ChildProcessWithoutNullStreams) => child.exitCode === null && child.signalCode === null;
   const studioMessages = new MultiUserStudioMessages(db);
   const cancelPending = new Set<string>();
   const sourceInvalidated = new Set<string>();
@@ -564,9 +570,15 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             onAgentEvent: (event) => projection.accept(event),
             onDone: (result) => { void (async () => {
               personal.secureHome(owner);
-              if (row(runId)?.status !== 'active') return;
-              if (shuttingDown) return finish(runId, 'canceled', { reason: 'daemon_shutdown' });
-              if (cancelPending.has(runId)) return finish(runId, 'canceled', sourceInvalidated.has(runId) ? { reason: 'MULTIUSER_PERSONAL_UNAVAILABLE' } : undefined);
+              /** #78: checked on both sides of the artifact snapshot; a terminal reached while it runs wins. */
+              const settled = (): boolean => {
+                if (row(runId)?.status !== 'active') return true;
+                if (shuttingDown) { finish(runId, 'canceled', { reason: 'daemon_shutdown' }); return true; }
+                if (!cancelPending.has(runId)) return false;
+                finish(runId, 'canceled', sourceInvalidated.has(runId) ? { reason: 'MULTIUSER_PERSONAL_UNAVAILABLE' } : undefined);
+                return true;
+              };
+              if (settled()) return;
               const baseline = artifactBaselines.get(runId);
               let files: string[] = [];
               if (baseline) {
@@ -579,6 +591,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                   // not leave a completed provider turn stuck as active.
                 }
               }
+              if (settled()) return;
               if (result.ok) {
                 projection.flush();
                 if (includeStable && stablePromptHash) {
@@ -613,7 +626,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       for (const run of rows) {
         sourceInvalidated.add(run.id);
         const child = children.get(run.id);
-        if (child) {
+        if (child && running(child)) {
           cancelPending.add(run.id);
           exits.push(new Promise<void>((resolve) => child.once('close', () => resolve())));
           child.kill('SIGTERM');
@@ -912,7 +925,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (!run) return;
     if (run.status === 'active') {
       const child = children.get(run.id);
-      if (child) {
+      if (child && running(child)) {
         cancelPending.add(run.id);
         child.once('close', () => res.json(body(row(run.id)!)));
         const interrupt = interrupts.get(run.id);
@@ -951,6 +964,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (shutdownPromise) return shutdownPromise;
     beginShutdown();
     shutdownPromise = (async () => {
+      // An exited child's run is settling, not running: settle it like its close handler would.
+      for (const [id, child] of [...children]) if (!running(child)) finish(id, 'canceled', { reason: 'daemon_shutdown' });
       const exits = [...children.values()].map((child) => new Promise<void>((resolve) => child.once('close', () => resolve())));
       const wait = async (ms: number) => {
         if (children.size === 0) return;
@@ -982,7 +997,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       try {
         for (const run of active) {
           const child = children.get(run.id);
-          if (child) { cancelPending.add(run.id); child.kill('SIGTERM'); }
+          if (child && running(child)) { cancelPending.add(run.id); child.kill('SIGTERM'); }
           else finish(run.id, 'canceled');
         }
       } finally { suspendDispatch = false; }
@@ -1012,7 +1027,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         try {
           for (const run of rows) {
             const child = children.get(run.id);
-            if (!child) { finish(run.id, 'canceled'); continue; }
+            if (!child || !running(child)) { finish(run.id, 'canceled'); continue; }
             cancelPending.add(run.id);
             exits.push(new Promise<void>((resolve) => {
               const deadline = setTimeout(() => { child.kill('SIGKILL'); }, 2_000);
