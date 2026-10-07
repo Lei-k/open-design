@@ -9,6 +9,18 @@ const TEXT_LIMIT = 512 * 1024;
 const EVENT_LIMIT = 2048;
 const BYTE_LIMIT = 2 * 1024 * 1024;
 const EVENT_BYTES = 16 * 1024;
+/** The personal child's own environment names (appServerEnv) plus host identity. */
+const RUN_ENV_NAMES = 'HOME|TMPDIR|TMP|TEMP|OD_DATA_DIR|CODEX_HOME|PATH|USER|USERNAME|LOGNAME|SHELL|PWD|OLDPWD|HOSTNAME';
+/**
+ * A name that carries a secret by convention (`API_TOKEN`, `SECRET_KEY`, `db_password`, `apiKey`),
+ * ending at a word boundary so counters such as `max_tokens` or `token_count` stay ordinary code.
+ */
+const SECRET_NAME = String.raw`(?:(?:[A-Za-z_][\w-]*?[_-])?(?:token|secret|passw(?:or)?d|pwd|credentials?|cookie|(?:api|access|private|secret)[_-]?key)|[A-Za-z_][\w-]*?[_-]key)\d*\b`;
+const VALUE = String.raw`(?:"[^"\n]*"|'[^'\n]*'|[^\s"'<>,;]+)`;
+// `NAME=value` for both; the `NAME: value` (YAML/header) form only for upper-case env-style names,
+// so prose such as "API token: optional" is untouched.
+const SENSITIVE_ASSIGNMENT = new RegExp(String.raw`\b((?:${RUN_ENV_NAMES}|(?i:${SECRET_NAME}))\s*=\s*|(?:${RUN_ENV_NAMES}|[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIALS?)[A-Z0-9_]*)\s*:\s+)${VALUE}`, 'gu');
+const CREDENTIAL_TOKEN = /\bBearer\s+[\w.~+/=-]{8,}|\bsk-[\w-]{20,}|\b(?:gh[pousr]_|github_pat_|xox[abprs]-)[\w-]{20,}|\bAKIA[0-9A-Z]{16}\b|\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]+|-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/giu;
 const redacted = (fields: string[]) => ({ policy: 'personal-subscription' as const, fields });
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const identifier = (value: unknown) => typeof value === 'string' && /^[\w.:/#-]{1,160}$/u.test(value) && !value.startsWith('/') ? value : `redacted-${createHash('sha256').update(String(value)).digest('hex').slice(0, 24)}`;
@@ -40,11 +52,18 @@ export class PersonalRunEvents {
   private marked = false;
   constructor(private readonly cwd: string, private readonly privateRoots: string[], private readonly emit: (event: ChatSseEvent) => void, private readonly clock?: ToolTimingClock) {}
 
+  /**
+   * #77: only sensitive values are removed, so ordinary code (`WIDTH=1440`,
+   * `API_URL = "https://…"`) and `<question-form>` content keep their meaning.
+   * Sensitive means: this run's private roots (every run-environment path
+   * value), the value assigned to a run-environment / host-identity name or a
+   * secret-shaped name, and credential-shaped tokens wherever they appear.
+   */
   private scrub(text: string): string {
+    // Assignments first: a value is removed whole, before a root inside it is rewritten.
+    text = text.replace(SENSITIVE_ASSIGNMENT, (_match, name: string) => `${name}[value omitted]`).replace(CREDENTIAL_TOKEN, '[credential omitted]');
     for (const root of [...this.privateRoots].sort((a, b) => b.length - a.length)) if (root) text = text.replaceAll(root, '[private path]');
     return text
-      .replace(/\b(?:Bearer\s+|sk-)[A-Za-z0-9._-]+/giu, '[credential omitted]')
-      .replace(/\b[A-Z][A-Z0-9_]*\s*=\s*(?:"[^"\n]*"|'[^'\n]*'|[^\s<>]+)/gu, '[environment omitted]')
       .replace(/(?<![\w:/])(?:\/(?:home|root|opt|tmp|var|etc|Users|host)\/|[A-Z]:\\)[^\s"<>]+/gu, '[private path]');
   }
   private mark(): void {
