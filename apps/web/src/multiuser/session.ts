@@ -1,6 +1,6 @@
 import { parseStudioRuntimeCapabilities, type AuthAccount, type AuthSessionResponse, type StudioRuntimeCapabilities } from '@open-design/contracts';
 
-export type SessionState = { generation: number; status: 'checking' | 'anonymous' | 'ready' | 'error'; account: AuthAccount | null; outcomeUnknown: boolean; studio?: StudioRuntimeCapabilities; studioRevision?: number };
+export type SessionState = { generation: number; status: 'checking' | 'anonymous' | 'ready' | 'error'; account: AuthAccount | null; outcomeUnknown: boolean; studio?: StudioRuntimeCapabilities; studioRevision?: number; studioMessageIdPrefix?: string };
 export class RequestFailure extends Error {
   constructor(readonly status: number, readonly code: string | null = null) { super('Request failed'); }
 }
@@ -162,12 +162,18 @@ export class CookieSession {
         || !Number.isSafeInteger(result.studioRevision) || result.studioRevision! < 0)) {
         this.withdraw(); this.publish('error'); return;
       }
+      // A pilot that can send must also name its transcript-id namespace.
+      const prefix = result.studioMessageIdPrefix;
+      if ((prefix !== undefined && (typeof prefix !== 'string' || !/^mua_[0-9a-f]{24}_$/.test(prefix)))
+        || (prefix === undefined && studio?.features.execution.status === 'pilot')) {
+        this.withdraw(); this.publish('error'); return;
+      }
       const previous = this.state.account;
       const changed = previous !== null && (previous.id !== a.id || previous.role !== a.role || previous.active !== a.active
         || this.state.studioRevision !== result.studioRevision
-        || JSON.stringify(this.state.studio) !== JSON.stringify(studio));
+        || JSON.stringify(this.state.studio) !== JSON.stringify(studio) || this.state.studioMessageIdPrefix !== prefix);
       if (changed) this.withdraw();
-      this.state = { ...this.state, studio: studio ?? undefined, studioRevision: result.studioRevision };
+      this.state = { ...this.state, studio: studio ?? undefined, studioRevision: result.studioRevision, studioMessageIdPrefix: prefix };
       this.publish('ready', a);
       // An overlapping write may take effect after this read; confirm once it settles.
       if (duringWrite && !changed) this.recheckRequested = true;

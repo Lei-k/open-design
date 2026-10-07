@@ -52,7 +52,7 @@ import express, {
   type Response,
 } from 'express';
 import type { ApiErrorCode, AuthSessionResponse } from '@open-design/contracts';
-import { multiUserStudioCapabilities } from '../http/studio-parity.js';
+import { multiUserStudioCapabilities, studioMessageIdPrefix } from '../http/studio-parity.js';
 import { sendApiError } from '../http/api-errors.js';
 import {
   AuthError,
@@ -113,6 +113,8 @@ export interface RegisterAuthRoutesDeps {
   /** Exact browser origins allowed to make state-changing requests. */
   allowedOrigins: readonly string[];
   onAccountSessionsRevoked?: (accountId: string) => void;
+  /** Server policy: whether personal-subscription runs can start at all. */
+  personalRunsEnabled?: boolean;
 }
 
 const STATUS_BY_AUTH_CODE: Record<AuthErrorCode, { status: number; code: ApiErrorCode }> = {
@@ -455,7 +457,9 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
     const actor = actorOf(res);
     const pilot = auth.getOwnStudioPilot(actor);
     res.status(200).json({ account: auth.getOwnAccount(actor), session: { expiresAt: actor.sessionExpiresAt },
-      studio: multiUserStudioCapabilities(pilot.studioPilot), studioRevision: pilot.revision } satisfies AuthSessionResponse);
+      studio: multiUserStudioCapabilities(pilot.studioPilot, { personalEnabled: deps.personalRunsEnabled === true }),
+      studioRevision: pilot.revision,
+      ...(pilot.studioPilot ? { studioMessageIdPrefix: studioMessageIdPrefix(actor.accountId) } : {}) } satisfies AuthSessionResponse);
   }));
 
   app.post(`${p}/session/rotate`, requireSession, handle((req, res) => {

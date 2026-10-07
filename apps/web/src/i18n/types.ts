@@ -84,6 +84,7 @@ export interface Dict {
   'multiuser.studioPilot': string;
   'multiuser.enableStudioPilot': string;
   'multiuser.disableStudioPilot': string;
+  'multiuser.executionSourcePersonalCodex': string;
   'multiuser.retry': string;
   'multiuser.username': string;
   'multiuser.password': string;
@@ -3085,6 +3086,18 @@ export interface Dict {
   'chat.runError.membershipConcurrencyLimitMessageNoTime': string;
   'chat.runError.upstreamUnavailableMessage': string;
   'chat.runError.toolLoopMessage': string;
+  'chat.runError.title.personalUsageLimit': string;
+  'chat.runError.personalUsageLimitMessage': string;
+  'chat.runError.title.personalAccount': string;
+  'chat.runError.personalAccountMessage': string;
+  'chat.runError.title.personalSourceMismatch': string;
+  'chat.runError.personalSourceMismatchMessage': string;
+  'chat.runError.title.personalQueueLimit': string;
+  'chat.runError.personalQueueLimitMessage': string;
+  'chat.runError.title.personalUnavailable': string;
+  'chat.runError.personalUnavailableMessage': string;
+  'chat.runError.title.personalRunFailed': string;
+  'chat.runError.personalRunFailedMessage': string;
   'chat.runError.outputInvalidMessage': string;
   'chat.runError.runtimeConfigMessage': string;
   /** S05 的正文。同样没有插值槽。 */

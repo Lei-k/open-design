@@ -1426,6 +1426,12 @@ export interface ChatMessage {
    */
   sendFailed?: boolean;
   /**
+   * The typed refusal code of a failed send (e.g. a personal account that must
+   * be re-linked), so the line under the bubble can name the fix. Client state:
+   * set only together with `sendFailed`.
+   */
+  sendFailureCode?: string;
+  /**
    * 这条消息之后**原地分叉**过一次(点了「新开会话」)。
    *
    * 设计稿第 38 格:分叉不是跳走 —— 上面是老会话说完的话,线以下是新会话,

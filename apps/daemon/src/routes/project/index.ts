@@ -5457,6 +5457,8 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           }
         }
       }
+      // Multi-user: `updatedAt` is only a touch; the server clock decides the value.
+      if (ctx.projectOwnership && patch.updatedAt !== undefined) patch.updatedAt = Date.now();
       const project = updateProject(db, req.params.id, patch);
       if (!project)
         return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');

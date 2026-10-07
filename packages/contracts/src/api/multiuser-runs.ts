@@ -32,9 +32,42 @@ export interface MultiUserRunRequest {
   /** Fixed by the conversation on its first turn; later turns may omit both. */
   skillId?: string;
   designSystemId?: string;
-  /** Only question_answer + sourceRunId are accepted in this lane. */
+  /** `entryFrom: 'question_answer'` + `sourceRunId` claim a pending question;
+   * other analytics keys are not applied. */
   analyticsHints?: Pick<NonNullable<ChatRequest['analyticsHints']>, 'entryFrom' | 'sourceRunId'>;
+  /** The turn text; preferred over `message` (see MULTIUSER_PERSONAL_RUN_FIELD_POLICY). */
+  currentPrompt?: string;
+  /** Proposed transcript ids; must lie in the actor's `studioMessageIdPrefix`. */
+  userMessageId?: string | null;
+  assistantMessageId?: string | null;
+  /** Idempotency key: the same owner+conversation+key returns the first run. */
+  clientRequestId?: string | null;
 }
+/**
+ * Personal-subscription admission also accepts the standard `ChatRequest` the
+ * shared Studio sends, so the App needs no multi-user request fork. Every
+ * standard field has exactly one policy; a field outside this table, or a
+ * `defaultOnly` field carrying a non-default value, is refused with
+ * `MULTIUSER_CAPABILITY_UNAVAILABLE` rather than silently dropped.
+ *
+ * - `honored`: applied to the run (`currentPrompt` is the turn text; the
+ *   personal native thread already holds earlier turns, so `message` is used
+ *   only when `currentPrompt` is absent).
+ * - `defaultOnly`: accepted only at the value the Studio sends when the
+ *   capability is not used (empty list, null, `false`, or `design` mode).
+ * - `notApplied`: accepted for request-shape compatibility and not applied:
+ *   the stitched transcript (the native thread is the context), the UI locale,
+ *   title generation, and analytics-only hints. None of them changes what
+ *   runs or who pays for it.
+ */
+export const MULTIUSER_PERSONAL_RUN_FIELD_POLICY = {
+  honored: ['projectId', 'conversationId', 'agentId', 'executionSource', 'message', 'currentPrompt', 'userMessageId',
+    'assistantMessageId', 'clientRequestId', 'skillId', 'designSystemId', 'analyticsHints'],
+  defaultOnly: ['skillIds', 'attachments', 'commentAttachments', 'model', 'reasoning', 'serviceTier',
+    'appliedPluginSnapshotId', 'sessionMode'],
+  notApplied: ['priorTranscript', 'locale', 'titleGeneration'],
+} as const;
+
 export interface MultiUserRunResponse { run: MultiUserRun }
 /** Standard run admission identity, additive to the legacy response. */
 export interface MultiUserRunCreateResponse extends MultiUserRunResponse { runId: string }

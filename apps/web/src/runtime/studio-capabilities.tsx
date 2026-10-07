@@ -11,18 +11,26 @@ interface StudioCapabilities {
   generation: number;
   available(lane: StudioParityLaneId): boolean;
   reason(lane: StudioParityLaneId): string;
+  /** The agent this actor's usable execution source runs; null when it cannot run. */
+  executionAgentId: 'codex' | null;
 }
 const local: StudioCapabilities = { actor: null, hostServices: true, capabilities: null, session: null, generation: 0,
-  available: () => true, reason: () => '' };
+  available: () => true, reason: () => '', executionAgentId: null };
 const Context = createContext<StudioCapabilities>(local);
-export function StudioCapabilitiesProvider({ session, generation, actor, capabilities, children }: {
-  session: CookieSession; generation: number; actor: AuthAccount; capabilities: StudioRuntimeCapabilities; children: ReactNode;
+export function StudioCapabilitiesProvider({ session, generation, actor, capabilities, messageIdPrefix, children }: {
+  session: CookieSession; generation: number; actor: AuthAccount; capabilities: StudioRuntimeCapabilities;
+  messageIdPrefix?: string | undefined; children: ReactNode;
 }) {
+  // A `pilot` lane is usable by this authenticated actor; it is still not a
+  // deployment-wide `supported` promise, and its reason stays readable.
+  const usable = (lane: StudioParityLaneId) => ['supported', 'pilot'].includes(capabilities.features[lane].status);
   // The session owns this lifetime (including StrictMode remounts). It releases
   // the transport and module registry before publishing another generation.
-  activateStudioTransport(session, generation);
+  activateStudioTransport(session, generation, { messageIdPrefix, usable });
   const value: StudioCapabilities = { actor, session, generation, capabilities, hostServices: false,
-    available: (lane) => capabilities.features[lane].status === 'supported',
+    // Multi-user execution is personal Codex only (MultiUserRun.agentId); the company pool has no real provider yet.
+    executionAgentId: usable('execution') ? 'codex' : null,
+    available: usable,
     reason: (lane) => { const feature = capabilities.features[lane]; return feature.status === 'supported' ? '' : feature.reason; } };
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }

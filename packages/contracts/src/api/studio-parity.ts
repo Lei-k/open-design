@@ -1,3 +1,4 @@
+import type { ChatMessageFeedback, ChatMessageFeedbackReasonCode } from './chat.js';
 /** Delivery ledger for #51. This describes readiness; it never grants authority. */
 export const STUDIO_PARITY_LANES = [
   { id: 'baseline', issue: 52, dependsOn: [], owner: 'contracts', component: 'App', data: 'public', credentials: 'none', web: 'shared', acceptance: 'Every registered route and desktop bridge has a lane and a decision.' },
@@ -22,9 +23,14 @@ export const STUDIO_PARITY_LANES = [
 ] as const;
 
 export type StudioParityLaneId = (typeof STUDIO_PARITY_LANES)[number]['id'];
+/**
+ * `supported` is a deployment-wide completion promise. `pilot` is usable only by
+ * the authenticated pilot actor that received it; it never appears in public
+ * version discovery and its reason names the acceptance still outstanding.
+ */
 export type StudioAvailability =
   | { status: 'supported' }
-  | { status: 'unavailable' | 'admin-disabled'; reason: string };
+  | { status: 'pilot' | 'unavailable' | 'admin-disabled'; reason: string };
 
 export interface StudioRuntimeCapabilities {
   schemaVersion: 1;
@@ -48,13 +54,56 @@ export interface StudioRouteParity {
   webStrategy: 'shared' | 'adapter' | 'daemon' | 'decision';
 }
 
-/** Restricted client writes; daemon-owned run fields arrive from the run engine. */
+/** Restricted client writes; daemon-owned run fields arrive from the run engine.
+ * `content` is applied to user rows only; `feedback` to assistant rows only. */
 export interface StudioMessageWriteRequest {
   id?: string;
   role: 'user' | 'assistant';
   content: string;
   createdAt?: number;
   createOnly?: boolean;
+  feedback?: StudioMessageFeedback | null;
+}
+
+export type StudioMessageFeedback = ChatMessageFeedback;
+const FEEDBACK_REASON_CODES = ['matched_request', 'strong_visual', 'useful_structure', 'easy_to_continue', 'followed_design_system',
+  'missed_request', 'weak_visual', 'could_not_run', 'too_slow', 'incomplete_output', 'hard_to_use', 'missed_design_system',
+  'other'] as const satisfies readonly ChatMessageFeedbackReasonCode[];
+type MissingReasonCode = Exclude<ChatMessageFeedbackReasonCode, (typeof FEEDBACK_REASON_CODES)[number]>;
+// Compile-time completeness: a new reason code must be listed above.
+const feedbackReasonCodesComplete: MissingReasonCode extends never ? true : never = true;
+void feedbackReasonCodesComplete;
+
+/** Strict feedback projection for owner writes: `null` clears, `undefined` means invalid. */
+export function parseStudioMessageFeedback(value: unknown): ChatMessageFeedback | null | undefined {
+  if (value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  const time = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+  if (Object.keys(input).some((key) => !['rating', 'reasonCodes', 'customReason', 'reasonsSubmittedAt', 'createdAt', 'updatedAt'].includes(key))
+    || (input.rating !== 'positive' && input.rating !== 'negative') || !time(input.createdAt)
+    || (input.updatedAt !== undefined && !time(input.updatedAt)) || (input.reasonsSubmittedAt !== undefined && !time(input.reasonsSubmittedAt))
+    || (input.customReason !== undefined && (typeof input.customReason !== 'string' || input.customReason.length > 2000))
+    || (input.reasonCodes !== undefined && (!Array.isArray(input.reasonCodes) || input.reasonCodes.length > FEEDBACK_REASON_CODES.length
+      || input.reasonCodes.some((code) => !(FEEDBACK_REASON_CODES as readonly unknown[]).includes(code))))) return undefined;
+  return {
+    rating: input.rating, createdAt: input.createdAt as number,
+    ...(input.reasonCodes ? { reasonCodes: [...new Set(input.reasonCodes as ChatMessageFeedbackReasonCode[])] } : {}),
+    ...(input.customReason !== undefined ? { customReason: input.customReason as string } : {}),
+    ...(input.reasonsSubmittedAt !== undefined ? { reasonsSubmittedAt: input.reasonsSubmittedAt as number } : {}),
+    ...(input.updatedAt !== undefined ? { updatedAt: input.updatedAt as number } : {}),
+  };
+}
+
+/**
+ * Client-proposed transcript ids are accepted only inside the actor's own
+ * namespace, which the authenticated session read returns. Another actor's
+ * ids can never be proposed, so admission cannot become a cross-tenant
+ * existence oracle; daemon-minted ids keep their own disjoint prefix.
+ */
+export const STUDIO_MESSAGE_ID_PATTERN = /^mua_[0-9a-f]{24}_[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$/;
+export function isStudioMessageIdInNamespace(id: unknown, prefix: string): id is string {
+  return typeof id === 'string' && id.startsWith(prefix) && STUDIO_MESSAGE_ID_PATTERN.test(id);
 }
 
 /** Validate and project the public capability fields; never forward unknown payload fields. */
@@ -64,10 +113,14 @@ export function parseStudioRuntimeCapabilities(value: unknown): StudioRuntimeCap
   if (studio.schemaVersion !== 1 || !['studio', 'legacy-multiuser'].includes(studio.shell ?? '')
     || !studio.features || typeof studio.features !== 'object' || Array.isArray(studio.features)) return null;
   const features = {} as StudioRuntimeCapabilities['features'];
+  // A legacy shell has no pilot lanes; refuse a contradictory record outright.
+  const pilotAllowed = studio.shell === 'studio';
   for (const { id } of STUDIO_PARITY_LANES) {
     const feature = studio.features[id];
     if (feature?.status === 'supported') features[id] = { status: 'supported' };
-    else if ((feature?.status === 'unavailable' || feature?.status === 'admin-disabled') && typeof feature.reason === 'string' && feature.reason.length > 0) {
+    else if (feature?.status === 'pilot' && !pilotAllowed) return null;
+    else if ((feature?.status === 'pilot' || feature?.status === 'unavailable' || feature?.status === 'admin-disabled')
+      && typeof feature.reason === 'string' && feature.reason.length > 0) {
       features[id] = { status: feature.status, reason: feature.reason };
     } else return null;
   }

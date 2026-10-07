@@ -117,4 +117,7 @@ export interface AuthSessionResponse {
   session: { expiresAt: number };
   studio: StudioRuntimeCapabilities;
   studioRevision: number;
+  /** Present for Studio pilot actors: the only namespace in which this actor may
+   * propose transcript ids (see `isStudioMessageIdInNamespace`). */
+  studioMessageIdPrefix?: string;
 }

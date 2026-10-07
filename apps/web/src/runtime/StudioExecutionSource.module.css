@@ -1,0 +1,22 @@
+.source {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 220px;
+  padding: 0 8px;
+  height: 32px;
+  border-radius: 8px;
+  color: var(--text-secondary, #555);
+  font-size: 13px;
+}
+
+.logo {
+  flex: none;
+}
+
+.label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

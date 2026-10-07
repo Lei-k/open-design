@@ -47,7 +47,7 @@ describe('classification registry is well formed', () => {
 
   it('declares a run param for every run-owner route', () => {
     const owned = MULTIUSER_ROUTE_CLASSIFICATION.filter((e) => e.routeClass === 'owner-scoped-run');
-    expect(owned.length).toBe(4);
+    expect(owned.length).toBe(5);
     for (const entry of owned) expect(entry.path.split('/')).toContain(`:${entry.runParam}`);
   });
 

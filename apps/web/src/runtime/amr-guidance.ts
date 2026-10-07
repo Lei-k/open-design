@@ -316,6 +316,12 @@ export type RunFailureMessageKey =
   | 'chat.runError.membershipConcurrencyLimitMessageNoTime'
   | 'chat.runError.upstreamUnavailableMessage'
   | 'chat.runError.toolLoopMessage'
+  | 'chat.runError.personalUsageLimitMessage'
+  | 'chat.runError.personalAccountMessage'
+  | 'chat.runError.personalSourceMismatchMessage'
+  | 'chat.runError.personalQueueLimitMessage'
+  | 'chat.runError.personalUnavailableMessage'
+  | 'chat.runError.personalRunFailedMessage'
   | 'chat.runError.outputInvalidMessage'
   | 'chat.runError.runtimeConfigMessage'
   | 'chat.runError.apiKeyInvalidMessage'
@@ -494,6 +500,12 @@ export type RunFailureTitleKey =
   | 'chat.runError.title.modelCapabilityUnsupported'
   | 'chat.runError.title.upstreamUnavailable'
   | 'chat.runError.title.toolLoop'
+  | 'chat.runError.title.personalUsageLimit'
+  | 'chat.runError.title.personalAccount'
+  | 'chat.runError.title.personalSourceMismatch'
+  | 'chat.runError.title.personalQueueLimit'
+  | 'chat.runError.title.personalUnavailable'
+  | 'chat.runError.title.personalRunFailed'
   | 'chat.runError.title.outputInvalid'
   | 'chat.runError.title.runtimeConfig'
   | 'chat.runError.title.apiKeyInvalid'
@@ -1008,7 +1020,30 @@ function contactSupportOnly(
 // (apps/daemon/src/run-failure-classification.ts); this is the user-facing half
 // of that taxonomy — a human-readable type name plus a one-line instruction,
 // with the raw upstream string preserved in the card's collapsible source area.
+// Personal-subscription runs (multi-user Studio, #55/#57). The daemon sends a
+// typed code and never falls back to another payer, so the fix is always the
+// actor's own account, queue or conversation: retry when that can succeed,
+// otherwise say why (rung 4), never "switch source".
+const personalAccountFailure = retryWithGuidance('chat.runError.title.personalAccount', 'chat.runError.personalAccountMessage');
+const personalQueueFailure = retryWithGuidance('chat.runError.title.personalQueueLimit', 'chat.runError.personalQueueLimitMessage');
+const personalUnavailableFailure = failureCard({}, 'chat.runError.title.personalUnavailable', 'chat.runError.personalUnavailableMessage');
+const PERSONAL_SUBSCRIPTION_FAILURE_UI: Record<string, RunFailureUi> = {
+  MULTIUSER_PERSONAL_USAGE_LIMIT: retryWithGuidance('chat.runError.title.personalUsageLimit', 'chat.runError.personalUsageLimitMessage'),
+  MULTIUSER_PERSONAL_REAUTH_REQUIRED: personalAccountFailure,
+  MULTIUSER_PERSONAL_UNAVAILABLE: personalAccountFailure,
+  MULTIUSER_PERSONAL_CONSENT_REQUIRED: personalAccountFailure,
+  MULTIUSER_PERSONAL_WORKSPACE_NOT_ALLOWED: personalAccountFailure,
+  MULTIUSER_PERSONAL_QUEUE_LIMIT: personalQueueFailure,
+  MULTIUSER_PERSONAL_BUSY: personalQueueFailure,
+  MULTIUSER_EXECUTION_SOURCE_MISMATCH: failureCard({}, 'chat.runError.title.personalSourceMismatch', 'chat.runError.personalSourceMismatchMessage'),
+  MULTIUSER_PERSONAL_DISABLED: personalUnavailableFailure,
+  MULTIUSER_CAPABILITY_UNAVAILABLE: personalUnavailableFailure,
+  MULTIUSER_AGENT_FORBIDDEN: personalUnavailableFailure,
+  MULTIUSER_PERSONAL_RUN_FAILED: retryWithGuidance('chat.runError.title.personalRunFailed', 'chat.runError.personalRunFailedMessage'),
+};
+
 const AGENT_AGNOSTIC_FAILURE_UI: Record<string, RunFailureUi> = {
+  ...PERSONAL_SUBSCRIPTION_FAILURE_UI,
   // S23 · 跑完了但没生成文件。正文以前是 `null`,于是卡面落到兜底那一句
   // (「这次没能顺利完成。反复出现的话,把日志发给我们。」)—— 用户面对的是一次
   // **正常结束**的任务,兜底句却在说它失败了,而且什么都没解释。文档 S23 有终稿,

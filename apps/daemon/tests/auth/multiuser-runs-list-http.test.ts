@@ -140,7 +140,9 @@ describe('GET /api/runs pagination and filters', () => {
     expect((await list(alice, `${query}&status=running`)).json.runs.map((run: ListedRun) => run.id)).toEqual([active]);
     expect((await list(alice, `${query}&status=succeeded`)).json.runs.map((run: ListedRun) => run.id)).toEqual([done]);
     expect((await list(alice, `${query}&status=queued`)).json.runs).toEqual([]);
-    for (const bad of ['active', 'RUNNING', 'bogus', '']) {
+    // `active` is the single-user filter the shared Studio uses for every non-terminal run.
+    expect((await list(alice, `${query}&status=active`)).json.runs.map((run: ListedRun) => run.id)).toEqual([active]);
+    for (const bad of ['ACTIVE', 'RUNNING', 'bogus', '']) {
       const res = await list(alice, `${query}&status=${bad}`);
       expect(res.status, bad).toBe(400);
       expect(res.json.error.code).toBe('BAD_REQUEST');

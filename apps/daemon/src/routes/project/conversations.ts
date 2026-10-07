@@ -1,5 +1,5 @@
 import type { Express } from 'express';
-import { type ChatSessionMode } from '@open-design/contracts';
+import { parseStudioMessageFeedback, type ChatSessionMode } from '@open-design/contracts';
 import { readAnalyticsContext } from '../../analytics.js';
 import { nextForkedConversationTitle } from '../../conversation-fork-title.js';
 import { backfillBrandExtractionTranscriptForProject } from '../../brands/index.js';
@@ -733,7 +733,14 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
       return res.json({ message: existing });
     }
     if (ctx.projectOwnership && existing?.role === 'assistant') {
-      return res.json({ message: existing });
+      // The run engine is the single writer of assistant rows; the owner may
+      // only rate the turn. The gate has validated the feedback shape.
+      if (m.feedback === undefined || m.role !== 'assistant') return res.json({ message: existing });
+      const feedback = parseStudioMessageFeedback(m.feedback);
+      if (feedback === undefined) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid feedback');
+      db.prepare('UPDATE messages SET feedback_json = ? WHERE id = ? AND conversation_id = ?')
+        .run(feedback ? JSON.stringify(feedback) : null, req.params.mid, req.params.cid);
+      return res.json({ message: getMessage(db, req.params.mid, req.params.cid) });
     }
     if (ctx.projectOwnership && m.role !== existing?.role) {
       return sendApiError(res, 400, 'BAD_REQUEST', 'message role is immutable');

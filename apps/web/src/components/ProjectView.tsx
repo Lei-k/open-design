@@ -1,6 +1,7 @@
 import { bindStudioPendingWrite } from '../runtime/studio-resources';
 import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioSetInterval as setInterval, studioFetch as fetch, studioWindowLocalStorage, studioWindowSessionStorage } from '../runtime/studio-transport';
 import { StudioLane, useStudioCapabilities } from '../runtime/studio-capabilities';
+import { StudioExecutionSource } from '../runtime/StudioExecutionSource';
 import { readRetriedErrorSurface, retriedErrorSurfaceKey, writeRetriedErrorSurface } from '../runtime/chat/retried-error-surface';
 import {
   startTransition,
@@ -150,6 +151,7 @@ import {
 } from '../utils/apiProtocol';
 import { playSound, showCompletionNotification } from '../utils/notifications';
 import { randomUUID } from '../utils/uuid';
+import { studioMessageId, studioUsesLocalServices } from '../runtime/studio-transport';
 import { DEFAULT_NOTIFICATIONS, KNOWN_PROVIDERS } from '../state/config';
 import type { TodoItem } from '../runtime/todos';
 import {
@@ -1405,8 +1407,8 @@ function homeAutoSendIdentity(projectId: string): Pick<
   const handoffId = `home-auto-send-${stableIdentityDigest(projectId)}`;
   return {
     clientRequestId: handoffId,
-    userMessageId: `${handoffId}-user`,
-    assistantMessageId: `${handoffId}-assistant`,
+    userMessageId: studioMessageId(`${handoffId}-user`),
+    assistantMessageId: studioMessageId(`${handoffId}-assistant`),
   };
 }
 
@@ -1441,7 +1443,7 @@ function questionFormAnswerIdentity(
 ): Pick<ProjectChatSendMeta, 'clientRequestId' | 'userMessageId'> {
   if (!sourceAssistantMessageId || !formId) return {};
   const answerId = `qf-answer-${stableIdentityDigest(`${sourceAssistantMessageId}:${formId}`)}`;
-  return { clientRequestId: answerId, userMessageId: `${answerId}-user` };
+  return { clientRequestId: answerId, userMessageId: studioMessageId(`${answerId}-user`) };
 }
 
 function autoSendPromptKey(projectId: string): string {
@@ -8600,7 +8602,7 @@ export function ProjectView({
       const previousConversationUpdatedAt = previousConversation?.updatedAt;
       const previousConversationLatestRun = previousConversation?.latestRun;
       const userMsg: ChatMessage = retryTarget?.userMsg ?? {
-        id: meta?.userMessageId ?? randomUUID(),
+        id: meta?.userMessageId ?? studioMessageId(randomUUID()),
         role: 'user',
         content: prompt,
         createdAt: startedAt,
@@ -8646,7 +8648,7 @@ export function ProjectView({
             )
           : apiProtocolModelLabel(config.apiProtocol, config.model);
       const preTurnFileNames = projectFiles.map((f) => f.name);
-      const assistantId = meta?.assistantMessageId ?? randomUUID();
+      const assistantId = meta?.assistantMessageId ?? studioMessageId(randomUUID());
       const assistantMsg: ChatMessage = {
         id: assistantId,
         role: 'assistant',
@@ -9019,7 +9021,9 @@ export function ProjectView({
       setArtifact(null);
       savedArtifactRef.current = null;
       onTouchProject();
-      if (!retryTarget) {
+      // A Studio actor's user row is created by run admission, atomically with
+      // its assistant row; there is nothing to persist ahead of the run.
+      if (!retryTarget && studioUsesLocalServices()) {
         // A send whose id was decided from its occupancy (an inline question
         // form's answer) claims that row once: the daemon keeps whichever
         // answer landed first and hands it back, and this view adopts it so
@@ -9918,10 +9922,11 @@ export function ProjectView({
                 const next = current.flatMap((message) => {
                   if (message.id === assistantId) return [];
                   if (message.id !== userMsg.id) return [message];
-                  failedUser = { ...message, sendFailed: true };
+                  failedUser = { ...message, sendFailed: true, ...(errorCode ? { sendFailureCode: errorCode } : {}) };
                   return [failedUser];
                 });
-                if (failedUser) persistMessage(failedUser);
+                // A Studio actor's refused send was never admitted; there is no row to update.
+                if (failedUser && studioUsesLocalServices()) persistMessage(failedUser);
                 return next;
               });
               if (runCommentAttachments.length > 0) {
@@ -10705,7 +10710,7 @@ export function ProjectView({
       const currentMessage = currentMessages.find((message) => message.id === failedMessage.id);
       if (currentMessage?.role !== 'user' || !currentMessage.sendFailed) return;
 
-      const retryMessage: ChatMessage = { ...currentMessage, sendFailed: undefined };
+      const retryMessage: ChatMessage = { ...currentMessage, sendFailed: undefined, sendFailureCode: undefined };
       function restoreFailedState() {
         updateMessageById(
           retryMessage.id,
@@ -11056,7 +11061,7 @@ export function ProjectView({
         || retryLocksRef.current.has(retryConversationId)
         || !resolveRetryTarget(messages, assistantMessage.id)
       ) return;
-      const replacementAssistantId = randomUUID();
+      const replacementAssistantId = studioMessageId(randomUUID());
       retryLocksRef.current.set(retryConversationId, replacementAssistantId);
       setRetryPending({
         conversationId: retryConversationId,
@@ -13567,7 +13572,9 @@ export function ProjectView({
 
   // CLI / agent selector lives below the chat conversation (composer footer),
   // not in the top-right header.
-  const executionControls = (
+  // Choosing an agent needs the host agent catalog (settings lane); without it
+  // the server-fixed execution source is shown instead.
+  const executionControls = !studio.available('settings') ? <StudioExecutionSource /> : (
     <>
       <AvatarMenu
         config={config}
@@ -13898,8 +13905,9 @@ export function ProjectView({
                 setError(null);
                 onModeChange('daemon');
               }}
-              onOpenAmrSettings={onOpenAmrSettings}
-              onSwitchToAmrAndRetry={handleSwitchToAmrAndRetry}
+              // Switching to Cloud needs provider settings; a Studio actor's source is server-fixed.
+              onOpenAmrSettings={studio.available('settings') ? onOpenAmrSettings : undefined}
+              onSwitchToAmrAndRetry={studio.available('settings') ? handleSwitchToAmrAndRetry : undefined}
               onLaunchAntigravityOauth={handleLaunchAntigravityOauth}
               onOpenMcpSettings={onOpenMcpSettings}
               onBrowsePlugins={onBrowsePlugins}
@@ -13972,7 +13980,8 @@ export function ProjectView({
               collapseControlLifted={!workspaceFocused}
               backLabel={t('project.backToProjects')}
               composerFooterAccessory={executionControls}
-              designSystemPicker={(
+              // The picker reads the design-system catalog; it follows that lane.
+              designSystemPicker={(studio.available('catalogs') &&
                 <DesignSystemPicker
                   variant="home"
                   designSystems={designSystems}
@@ -13981,7 +13990,7 @@ export function ProjectView({
                   disabled={projectMutationReadOnly}
                   onChange={handleChangeDesignSystemId}
                 />
-              )}
+              ) || undefined}
             />
           ) : creationHandoffActive ? null : (
             <div className="pane" data-testid="chat-pane-loading">

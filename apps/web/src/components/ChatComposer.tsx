@@ -631,6 +631,10 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
   ) {
     const { locale, t } = useI18n();
     const analytics = useAnalytics();
+    const studio = useStudioCapabilities();
+    // Every plus-menu entry belongs to one of these lanes; with none usable the
+    // menu would only offer dead ends.
+    const plusMenuUsable = (['files', 'catalogs', 'settings', 'web-host'] as const).some((lane) => studio.available(lane));
     const { workspaceContext } = useProjectCollabContext();
     const activeFileContext =
       projectMetadata?.importedFrom === 'folder' && activeProjectFileName
@@ -2308,6 +2312,8 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
 
     async function uploadFiles(files: File[]) {
       if (files.length === 0) return;
+      // Paste and drop reach here without the plus menu; the files lane decides.
+      if (!studio.available('files')) { setUploadError(studio.reason('files')); return; }
       const id = await ensureProject();
       if (!id) return;
       setUploading(true);
@@ -3615,7 +3621,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 e.target.value = '';
               }}
             />
-            <ComposerPlusMenu
+            {plusMenuUsable ? <ComposerPlusMenu
               workspaceContext={workspaceContext}
               triggerTestId="chat-plus-trigger"
               placementPreference="up"
@@ -3748,7 +3754,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 trackComposerBar({ element: 'design_system_open' });
                 openDesignSystemPicker();
               } : undefined}
-            />
+            /> : null}
             {/* #5517: the design-system picker sits inline in the composer's
                 icon row (palette icon) instead of the staged-context bar. */}
             {designSystemPicker}

@@ -1031,7 +1031,9 @@ function AppInner() {
       root.classList.remove('is-window-blurred');
     };
   }, [clientType, hostPlatform]);
-  const [config, setConfig] = useState<AppConfig>(() => studio.hostServices ? loadConfig() : { ...loadConfig(), onboardingCompleted: true, telemetry: { metrics: false, content: false }, notifications: { ...DEFAULT_NOTIFICATIONS, soundEnabled: false, desktopEnabled: false } });
+  const [config, setConfig] = useState<AppConfig>(() => studio.hostServices ? loadConfig() : { ...loadConfig(), onboardingCompleted: true, telemetry: { metrics: false, content: false }, notifications: { ...DEFAULT_NOTIFICATIONS, soundEnabled: false, desktopEnabled: false },
+    // The actor's execution source decides the agent; there is no host agent catalog to choose from.
+    mode: 'daemon', agentId: studio.executionAgentId });
   const configRef = useRef(config);
   configRef.current = config;
   const latestPersistedConfigRef = useRef(config);
@@ -1081,6 +1083,7 @@ function AppInner() {
   const [workingDirError, setWorkingDirError] = useState<string | null>(null);
   const [projectCreateError, setProjectCreateError] = useState<string | null>(null);
   const [projectOpenError, setProjectOpenError] = useState<string | null>(null);
+  const teamSharedProjectsUsable = studio.available('collaboration');
   const [deepLinkResolutionFailure, setDeepLinkResolutionFailure] = useState<{
     projectId: string;
     failure: 'missing' | 'materialization-failed';
@@ -4828,7 +4831,9 @@ function AppInner() {
         setRouteProjectSnapshotRevision((current) => current + 1);
         return;
       }
-      if (bootstrap.kind === 'forbidden') {
+      // Without the collaboration lane no team-shared copy can be waiting to
+      // materialize: an owner-scoped miss is final (foreign and missing alike).
+      if (bootstrap.kind === 'forbidden' || (bootstrap.kind === 'not-found' && !teamSharedProjectsUsable)) {
         setDeepLinkResolutionFailure({ projectId, failure: 'missing' });
         return;
       }
@@ -4966,6 +4971,7 @@ function AppInner() {
     projects,
     projectsLoading,
     daemonLive,
+    teamSharedProjectsUsable,
     deepLinkRetryRevision,
     beginProjectListRequest,
     listCurrentWorkspaceProjects,

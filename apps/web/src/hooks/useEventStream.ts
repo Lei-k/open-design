@@ -1,5 +1,5 @@
 import { useStudioCapabilities } from '../runtime/studio-capabilities';
-import { studioRequestAvailable } from '../runtime/studio-transport';
+import { studioRequestAvailable, studioEventSourceCtor } from '../runtime/studio-transport';
 import { useEffect, useRef, useState } from 'react';
 import { BackoffController } from '../lib/backoff';
 
@@ -333,7 +333,7 @@ export function useEventStream(
 
   useEffect(() => {
     const Ctor =
-      options.EventSourceCtor ?? (typeof EventSource === 'undefined' ? null : EventSource);
+      options.EventSourceCtor ?? studioEventSourceCtor();
     if (!enabled || !url || !Ctor) {
       setConnected(false);
       return;

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { matchMultiUserRoute } from '../../src/http/multiuser-route-classes.js';
+import { STUDIO_PILOT_LANES, studioMessageIdPrefix } from '../../src/http/studio-parity.js';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { cleanupIsolatedDataRoot, provisionAccounts, startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
 
@@ -28,7 +29,16 @@ it('defaults off, changes only the target effective shell, and rejects stale wri
   const own = await daemon.request({ path: '/api/auth/me', cookie: alice.cookie });
   expect(own.json.studio.shell).toBe('studio');
   expect(own.json.studioRevision).toBe(1);
-  expect(own.json.studio.features).toEqual(before.json.studio.features);
+  // The pilot opens only its declared lanes, as `pilot` (or `admin-disabled`
+  // when server policy is off), never as deployment-wide `supported`.
+  for (const [lane, feature] of Object.entries(own.json.studio.features) as Array<[string, { status: string; reason?: string }]>) {
+    const expected = lane === 'baseline' ? 'supported' : !(lane in STUDIO_PILOT_LANES) ? 'unavailable'
+      : ['execution', 'composer'].includes(lane) ? 'admin-disabled' : 'pilot';
+    expect([lane, feature.status]).toEqual([lane, expected]);
+    if (lane !== 'baseline') expect(feature.reason).toBeTruthy();
+  }
+  expect(own.json.studioMessageIdPrefix).toBe(studioMessageIdPrefix(alice.id));
+  expect(before.json.studioMessageIdPrefix).toBeUndefined();
   expect((await daemon.request({ path: '/api/auth/me', cookie: bob.cookie })).json.studio.shell).toBe('legacy-multiuser');
   expect((await daemon.request({ path: '/api/version' })).json.version.capabilities.studio.shell).toBe('legacy-multiuser');
   expect((await daemon.request({ method: 'PUT', path: route(alice.id), cookie: admin.cookie, body: { studioPilot: false, revision: 0 } })).status).toBe(409);

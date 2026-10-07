@@ -4,17 +4,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
-import { API_ERROR_CODES, emittedRenderableQuestionForm, type ApiErrorCode } from '@open-design/contracts';
+import { API_ERROR_CODES, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
 import { PersonalRunEvents } from '../runtimes/personal-run-events.js';
 import { classifyRunSteering } from '../runtimes/run-steering.js';
 import { RESTART_ERROR_CODE } from '../runtimes/run-restart-recovery.js';
 import type { MultiUserRun, MultiUserRunEvent, MultiUserRunStatus, MultiUserRunsResponse } from '@open-design/contracts';
-import { getConversation, getProject } from '../db.js';
+import { getConversation, getMessage, getProject, updateProject } from '../db.js';
 import { sendApiError } from '../http/api-errors.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { bindMultiUserStream, multiUserStreamAllowed } from '../http/multiuser-stream.js';
 import { PROJECT_OWNERS_TABLE, ProjectOwnershipStore } from '../storage/project-ownership.js';
 import { MultiUserStudioMessages } from '../storage/multiuser-studio-messages.js';
+import { studioMessageIdPrefix } from '../http/studio-parity.js';
 import { WorkerQuotaLedger } from '../storage/worker-quota-ledger.js';
 import { AuthStore } from '../storage/auth-store.js';
 import { isSafeId } from '../projects.js';
@@ -65,9 +66,75 @@ function storedRequest(requestJson: string | null): Record<string, unknown> | nu
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+type PersonalRunFields = {
+  /** The turn text the native thread receives. */
+  text: string;
+  turnIds: { userMessageId: string; assistantMessageId: string } | null;
+  clientRequestId: string | null;
+  skillId: string | null;
+  designSystemId: string | null;
+  /** Set only for `entryFrom: 'question_answer'`. */
+  questionSourceRunId: string | null;
+};
+type FieldRefusal = { status: number; code: ApiErrorCode; message: string };
+const REQUEST_KEY = /^[A-Za-z0-9._:-]{1,128}$/;
+const POLICY_FIELDS = new Set<string>([...MULTIUSER_PERSONAL_RUN_FIELD_POLICY.honored,
+  ...MULTIUSER_PERSONAL_RUN_FIELD_POLICY.defaultOnly, ...MULTIUSER_PERSONAL_RUN_FIELD_POLICY.notApplied]);
+const isDefault = (key: string, value: unknown): boolean => value === undefined || (
+  ['skillIds', 'attachments', 'commentAttachments'].includes(key) ? Array.isArray(value) && value.length === 0
+    : key === 'sessionMode' ? value === 'design' : value === null);
+
+/**
+ * `MULTIUSER_PERSONAL_RUN_FIELD_POLICY` applied to one admission body. Pure:
+ * the caller has already resolved the owned target and any source run, so a
+ * refusal here never distinguishes a foreign resource from a missing one.
+ */
+export function parsePersonalRunFields(body: Record<string, unknown>, messageIdPrefix: string): PersonalRunFields | FieldRefusal {
+  const refuse = (status: number, code: ApiErrorCode, message: string): FieldRefusal => ({ status, code, message });
+  if (body.agentId !== 'codex' || body.provider !== undefined) {
+    return refuse(403, 'MULTIUSER_AGENT_FORBIDDEN', 'personal subscription runs use the linked Codex account only');
+  }
+  const unsupported = Object.keys(body).filter((key) => !POLICY_FIELDS.has(key)
+    || ((MULTIUSER_PERSONAL_RUN_FIELD_POLICY.defaultOnly as readonly string[]).includes(key) && !isDefault(key, body[key])));
+  if (unsupported.length) {
+    return refuse(403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', `not available for personal Studio runs: ${unsupported.sort().join(', ')}`);
+  }
+  const text = typeof body.currentPrompt === 'string' ? body.currentPrompt : body.message;
+  if (typeof text !== 'string' || text.length > 64_000 || (body.message !== undefined && typeof body.message !== 'string')
+    || (body.priorTranscript !== undefined && typeof body.priorTranscript !== 'string')
+    || (body.locale !== undefined && (typeof body.locale !== 'string' || body.locale.length > 64))
+    || (body.titleGeneration !== undefined && (!body.titleGeneration || typeof body.titleGeneration !== 'object' || Array.isArray(body.titleGeneration)))) {
+    return refuse(400, 'BAD_REQUEST', 'invalid run request');
+  }
+  if (Buffer.byteLength(JSON.stringify({ message: text }), 'utf8') > 64 * 1024) return refuse(400, 'BAD_REQUEST', 'run request is too large');
+  const optionalKey = (value: unknown) => value === undefined || value === null || (typeof value === 'string' && REQUEST_KEY.test(value));
+  const userMessageId = body.userMessageId ?? null;
+  const assistantMessageId = body.assistantMessageId ?? null;
+  if ((userMessageId === null) !== (assistantMessageId === null) || userMessageId === assistantMessageId && userMessageId !== null
+    || (userMessageId !== null && (!isStudioMessageIdInNamespace(userMessageId, messageIdPrefix) || !isStudioMessageIdInNamespace(assistantMessageId, messageIdPrefix)))) {
+    return refuse(400, 'BAD_REQUEST', 'message ids must be a distinct pair in this account\'s namespace');
+  }
+  if (!optionalKey(body.clientRequestId) || !['skillId', 'designSystemId'].every((key) => body[key] === undefined || body[key] === null || typeof body[key] === 'string')) {
+    return refuse(400, 'BAD_REQUEST', 'invalid run request');
+  }
+  const hints = body.analyticsHints;
+  if (hints !== undefined && (!hints || typeof hints !== 'object' || Array.isArray(hints) || JSON.stringify(hints).length > 4096)) {
+    return refuse(400, 'BAD_REQUEST', 'invalid question answer');
+  }
+  const answer = (hints as Record<string, unknown> | undefined)?.entryFrom === 'question_answer';
+  const sourceRunId = (hints as Record<string, unknown> | undefined)?.sourceRunId;
+  if (answer && typeof sourceRunId !== 'string') return refuse(400, 'BAD_REQUEST', 'invalid question answer');
+  return {
+    text, clientRequestId: (body.clientRequestId as string | null | undefined) ?? null,
+    turnIds: userMessageId === null ? null : { userMessageId: userMessageId as string, assistantMessageId: assistantMessageId as string },
+    skillId: (body.skillId as string | null | undefined) ?? null, designSystemId: (body.designSystemId as string | null | undefined) ?? null,
+    questionSourceRunId: answer ? sourceRunId as string : null,
+  };
+}
+
 type RunListQuery = {
   limit: number; cursor: { createdAt: number; id: string } | null;
-  projectId?: string; conversationId?: string; status?: RunRow['status'];
+  projectId?: string; conversationId?: string; status?: RunRow['status'] | 'nonterminal';
 };
 /**
  * Strict `GET /api/runs` query. Repeated or non-string parameters, a malformed
@@ -94,8 +161,10 @@ function parseRunListQuery(query: Request['query']): RunListQuery | null {
     parsed.cursor = { createdAt: Number(match[1]), id: match[2]! };
   }
   if (status !== undefined) {
-    if (!Object.hasOwn(STORED_STATUS, status!)) return null;
-    parsed.status = STORED_STATUS[status as MultiUserRunStatus];
+    // `active` is the single-user filter for every non-terminal run.
+    if (status === 'active') parsed.status = 'nonterminal';
+    else if (!Object.hasOwn(STORED_STATUS, status!)) return null;
+    else parsed.status = STORED_STATUS[status as MultiUserRunStatus];
   }
   if (projectId !== undefined) parsed.projectId = projectId!;
   if (conversationId !== undefined) parsed.conversationId = conversationId!;
@@ -700,6 +769,34 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     fs.chmodSync(realCwd, 0o700);
     return { projectId, conversationId };
   };
+  db.exec(`CREATE TABLE IF NOT EXISTS multiuser_run_requests (
+    owner_account_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    client_request_id TEXT NOT NULL,
+    run_id TEXT NOT NULL REFERENCES ${table}(id) ON DELETE CASCADE,
+    PRIMARY KEY (owner_account_id, conversation_id, client_request_id)
+  )`);
+  /** Idempotent admission: one logical send (same owner, conversation and key) is one run. */
+  const requestedRun = (owner: string, conversationId: string, key: string | null): RunRow | undefined => {
+    if (key === null) return undefined;
+    const found = db.prepare('SELECT run_id AS id FROM multiuser_run_requests WHERE owner_account_id = ? AND conversation_id = ? AND client_request_id = ?')
+      .get(owner, conversationId, key) as { id: string } | undefined;
+    return found ? row(found.id) : undefined;
+  };
+  /**
+   * Proposed turn ids are in the actor's namespace, so existence never reveals
+   * another tenant's data. A new assistant id is required. The user id is new,
+   * or it is the user turn of this conversation's newest run that failed or
+   * was canceled: a retry answers the same turn again.
+   */
+  const turnIdsUsable = (conversationId: string, ids: { userMessageId: string; assistantMessageId: string }): boolean => {
+    if (getMessage(db, ids.assistantMessageId)) return false;
+    if (!getMessage(db, ids.userMessageId)) return true;
+    const retried = studioMessages.runForUserMessage(conversationId, ids.userMessageId);
+    const newest = db.prepare(`SELECT id, status FROM ${table} WHERE conversation_id = ? ORDER BY queue_seq DESC LIMIT 1`)
+      .get(conversationId) as { id: string; status: RunRow['status'] } | undefined;
+    return retried !== null && newest?.id === retried && (newest.status === 'failed' || newest.status === 'canceled');
+  };
   const createPersonalRun = async (inputBody: Record<string, unknown>, res: Response) => {
     const target = managedTarget(inputBody, res);
     if (!target) return;
@@ -707,41 +804,40 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const hints = inputBody.analyticsHints;
     const sourceId = hints && typeof hints === 'object' && !Array.isArray(hints) ? (hints as Record<string, unknown>).sourceRunId : undefined;
     const source = typeof sourceId === 'string' ? row(sourceId) : undefined;
+    // Owner first: a foreign or missing source run is the same 404 before any field is judged.
     if (sourceId !== undefined && (!source || source.owner_account_id !== owner || source.project_id !== target.projectId || source.conversation_id !== target.conversationId)) {
       return sendApiError(res, 404, 'NOT_FOUND', 'not found');
     }
-    if (inputBody.agentId !== 'codex' || inputBody.model !== undefined || inputBody.provider !== undefined ||
-        Object.keys(inputBody).some((key) => !['projectId', 'conversationId', 'agentId', 'executionSource', 'message', 'skillId', 'designSystemId', 'analyticsHints'].includes(key))) {
-      return sendApiError(res, 403, 'MULTIUSER_AGENT_FORBIDDEN', 'personal subscription runs use the linked Codex account only');
-    }
+    const fields = parsePersonalRunFields(inputBody, studioMessageIdPrefix(owner));
+    if ('code' in fields) return sendApiError(res, fields.status, fields.code, fields.message);
     if (!personal?.enabled) return sendApiError(res, 403, 'MULTIUSER_PERSONAL_DISABLED', 'personal subscriptions are not enabled on this server');
-    if (typeof inputBody.message !== 'string' || inputBody.message.length > 64_000) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid run request');
-    const encodedMessage = JSON.stringify({ message: inputBody.message });
-    if (Buffer.byteLength(encodedMessage, 'utf8') > 64 * 1024) return sendApiError(res, 400, 'BAD_REQUEST', 'run request is too large');
-    if (hints !== undefined && (!hints || typeof hints !== 'object' || Array.isArray(hints)
-      || Object.keys(hints).some((key) => !['entryFrom', 'sourceRunId'].includes(key))
-      || (hints as Record<string, unknown>).entryFrom !== 'question_answer' || typeof sourceId !== 'string')) {
-      return sendApiError(res, 400, 'BAD_REQUEST', 'invalid question answer');
-    }
-    const answerReady = () => !source || Boolean(db.prepare(`SELECT 1 FROM multiuser_run_questions q
+    const replay = requestedRun(owner, target.conversationId, fields.clientRequestId);
+    if (replay) { res.status(200).json({ runId: replay.id, run: body(replay) }); return; }
+    const question = fields.questionSourceRunId === null ? undefined : source;
+    const answerReady = () => !question || Boolean(db.prepare(`SELECT 1 FROM multiuser_run_questions q
       WHERE q.run_id = ? AND q.answered_by IS NULL AND NOT EXISTS (
         SELECT 1 FROM multiuser_runs newer WHERE newer.conversation_id = ? AND newer.queue_seq > ?)`)
-      .get(source.id, target.conversationId, source.queue_seq));
+      .get(question.id, target.conversationId, question.queue_seq));
     if (!answerReady()) return sendApiError(res, 409, 'CONFLICT', 'question is stale or already answered');
     const fixedDesign = input.design?.selection(target.conversationId, owner) ?? null;
+    // null means "the conversation's pinned selection"; a named one must match it.
+    if ((!fixedDesign && (fields.skillId !== null || fields.designSystemId !== null))
+        || (fixedDesign && ((fields.skillId !== null && fields.skillId !== fixedDesign.skillId)
+          || (fields.designSystemId !== null && fields.designSystemId !== fixedDesign.designSystemId)))) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
+    }
     const composed = fixedDesign
       ? await input.design?.composeStablePrompt({ conversationId: target.conversationId, ownerId: owner, projectId: target.projectId })
       : null;
-    if ((fixedDesign && (!composed || inputBody.skillId !== fixedDesign.skillId || inputBody.designSystemId !== fixedDesign.designSystemId))
-        || (!fixedDesign && (inputBody.skillId !== undefined || inputBody.designSystemId !== undefined))) {
-      return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
-    }
-    const request = JSON.stringify({ message: inputBody.message, ...(hints ? { analyticsHints: hints } : {}),
+    if (fixedDesign && !composed) return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
+    const request = JSON.stringify({ message: fields.text, ...(question ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId: question.id } } : {}),
       ...(composed ? { skillId: composed.selection.skillId, designSystemId: composed.selection.designSystemId,
         stablePrompt: composed.prompt, stablePromptHash: composed.hash } : {}) });
     // Prompt/catalog I/O yields: deletion or session revocation may have won
     // while it was in flight. Recheck before persisting or spawning anything.
     if (!multiUserStreamAllowed(res) || !managedTarget(inputBody, res)) return;
+    const raced = requestedRun(owner, target.conversationId, fields.clientRequestId);
+    if (raced) { res.status(200).json({ runId: raced.id, run: body(raced) }); return; }
     // Never fall back: an unusable personal account is an error, not a company run.
     const account = personal.usableAccount(owner);
     if (!account) {
@@ -754,10 +850,13 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       personal.audit(owner, owner, 'run_rejected', 'MULTIUSER_EXECUTION_SOURCE_MISMATCH');
       return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation continues on another execution source or account');
     }
-    if (source && (!answerReady() || source.personal_account_id !== account.id || source.credential_version !== account.credentialVersion
-      || storedRequest(source.request_json)?.stablePromptHash !== composed?.hash
-      || (storedJson(source.output) as { threadId?: string } | null)?.threadId !== session?.thread_id)) {
+    if (question && (!answerReady() || question.personal_account_id !== account.id || question.credential_version !== account.credentialVersion
+      || storedRequest(question.request_json)?.stablePromptHash !== composed?.hash
+      || (storedJson(question.output) as { threadId?: string } | null)?.threadId !== session?.thread_id)) {
       return sendApiError(res, 409, 'CONFLICT', 'question continuation is stale');
+    }
+    if (fields.turnIds && !turnIdsUsable(target.conversationId, fields.turnIds)) {
+      return sendApiError(res, 409, 'CONFLICT', 'message ids are already used by another turn');
     }
     const queuedCount = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE owner_account_id = ? AND status = 'queued' AND ${personalRows}`)
       .get(owner) as { n: number }).n;
@@ -769,11 +868,17 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         queue_seq, execution_source, personal_account_id, credential_version)
         VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM ${table}), 'personal_subscription', ?, ?)`)
         .run(id, owner, target.projectId, target.conversationId, createdAt, createdAt, request, account.id, account.credentialVersion);
-      if (source) db.prepare('UPDATE multiuser_run_questions SET answered_by = ? WHERE run_id = ? AND answered_by IS NULL').run(id, source.id);
+      if (fields.clientRequestId !== null) {
+        db.prepare('INSERT INTO multiuser_run_requests (owner_account_id, conversation_id, client_request_id, run_id) VALUES (?, ?, ?, ?)')
+          .run(owner, target.conversationId, fields.clientRequestId, id);
+      }
+      if (question) db.prepare('UPDATE multiuser_run_questions SET answered_by = ? WHERE run_id = ? AND answered_by IS NULL').run(id, question.id);
       // The first personal run pins the conversation to this account and its native session.
       db.prepare(`INSERT OR IGNORE INTO multiuser_personal_sessions (conversation_id, owner_account_id, personal_account_id, updated_at)
         VALUES (?, ?, ?, ?)`).run(target.conversationId, owner, account.id, createdAt);
-      studioMessages.reconcile(row(id)!);
+      studioMessages.reconcile(row(id)!, fields.turnIds ?? undefined);
+      // The project list orders by activity; admission is that activity.
+      updateProject(db, target.projectId, {});
       return persistEvent(id, 'queued', { runId: id });
     })();
     personal.audit(owner, owner, 'run_routed', 'personal_subscription', id);
@@ -788,7 +893,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (source !== undefined && source !== 'company_pool' && source !== 'personal_subscription') {
       return sendApiError(res, 400, 'BAD_REQUEST', 'invalid execution source');
     }
-    if (source === 'personal_subscription') return createPersonalRun(inputBody, res);
+    // The shared Studio sends the standard request without a source: codex is personal-only here.
+    if (source === 'personal_subscription' || (source === undefined && inputBody.agentId === 'codex')) return createPersonalRun(inputBody, res);
     if (inputBody.agentId !== 'test-mock' || inputBody.model !== undefined || inputBody.provider !== undefined ||
         Object.keys(inputBody).some((key) => !['projectId', 'conversationId', 'agentId', 'message', 'delayMs', 'executionSource'].includes(key))) {
       return sendApiError(res, 403, 'MULTIUSER_AGENT_FORBIDDEN', 'only the test mock is available');
@@ -848,7 +954,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const args: Array<string | number> = [owner, owner];
     if (query.projectId !== undefined) { where.push('r.project_id = ?'); args.push(query.projectId); }
     if (query.conversationId !== undefined) { where.push('r.conversation_id = ?'); args.push(query.conversationId); }
-    if (query.status !== undefined) { where.push('r.status = ?'); args.push(query.status); }
+    if (query.status === 'nonterminal') where.push("r.status IN ('queued','active')");
+    else if (query.status !== undefined) { where.push('r.status = ?'); args.push(query.status); }
     if (query.cursor) {
       where.push('(r.created_at < ? OR (r.created_at = ? AND r.id < ?))');
       args.push(query.cursor.createdAt, query.cursor.createdAt, query.cursor.id);
@@ -872,7 +979,14 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   app.get('/api/runs/:id/events', (req, res) => {
     const run = owned(req, res);
     if (!run) return;
-    const cursor = req.get('Last-Event-ID');
+    // Same cursor contract as the single-user stream: header or `?after=`.
+    const header = req.get('Last-Event-ID');
+    const after = req.query.after;
+    if (after !== undefined && (typeof after !== 'string' || (header !== undefined && header !== after))) {
+      sendApiError(res, 400, 'BAD_REQUEST', 'invalid event cursor');
+      return;
+    }
+    const cursor = header ?? after;
     if (cursor !== undefined && (!/^\d{1,15}$/.test(cursor) || !Number.isSafeInteger(Number(cursor)))) {
       sendApiError(res, 400, 'BAD_REQUEST', 'invalid event cursor');
       return;
@@ -926,6 +1040,24 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const verdict = classifyRunSteering({ runtimeAccepts: false, terminal: !['active', 'queued'].includes(run.status), stdinOpen: false });
     if (!verdict.ok) return sendApiError(res, 409, 'RUN_STEERING_UNSUPPORTED', 'personal Codex does not support mid-turn steering',
       { retryable: false, details: { refusal: verdict.refusal } });
+  });
+  // Telemetry side channel only: the rating itself is the owner's message
+  // write. Multi-user mode has no private-content telemetry egress, so a valid
+  // request is acknowledged as skipped; ownership is still checked first.
+  app.post('/api/runs/:id/feedback', (req, res) => {
+    const run = owned(req, res);
+    if (!run) return;
+    const input = req.body as Record<string, unknown> | null;
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || ['projectId', 'conversationId', 'assistantMessageId'].some((key) => Object.hasOwn(input, key))
+      || Object.keys(input).some((key) => !['rating', 'reasonCodes', 'hasCustomReason', 'customReason'].includes(key))
+      || parseStudioMessageFeedback({ rating: input.rating, createdAt: 0,
+        ...(input.reasonCodes === undefined ? {} : { reasonCodes: input.reasonCodes }),
+        ...(input.customReason === undefined ? {} : { customReason: input.customReason }) }) === undefined
+      || (input.hasCustomReason !== undefined && typeof input.hasCustomReason !== 'boolean')) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'invalid feedback');
+    }
+    res.status(202).json({ status: 'skipped_no_sink' } satisfies ChatRunFeedbackResponse);
   });
   const beginShutdown = () => {
     if (shuttingDown) return;

@@ -89,7 +89,7 @@ function MultiUserEntry({ setupToken, clearSetupToken }: { setupToken: string | 
   if (!state.account) return <>{outcome}<main className={styles.auth}><Brand /><h1>{t('multiuser.signIn')}</h1><p>{t('multiuser.inviteOnly')}</p>
     <Credentials busy={false} submit={(username, password) => { setLoginError(false); void session.login(username, password).catch(() => setLoginError(true)); }} />
     {loginError && <Alert>{t('multiuser.loginError')}</Alert>}<p className={styles.muted}>{t('multiuser.testOnly')}</p></main></>;
-  if (state.studio?.shell === 'studio') return <>{outcome}<StudioCapabilitiesProvider key={`${state.generation}:${state.account.id}:${state.account.role}`} session={session} actor={state.account} capabilities={state.studio} generation={state.generation}>
+  if (state.studio?.shell === 'studio') return <>{outcome}<StudioCapabilitiesProvider key={`${state.generation}:${state.account.id}:${state.account.role}`} session={session} actor={state.account} capabilities={state.studio} generation={state.generation} messageIdPrefix={state.studioMessageIdPrefix}>
     <Suspense fallback={<p role="status">{t('multiuser.loading')}</p>}><StudioApp /></Suspense>
   </StudioCapabilitiesProvider></>;
   return <>{outcome}<SignedIn key={`${state.generation}:${state.account.id}:${state.account.role}`} session={session} account={state.account} generation={state.generation} /></>;

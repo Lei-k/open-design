@@ -3,7 +3,9 @@ import { spawnSync } from 'node:child_process';
 import { expect, it } from 'vitest';
 import { MULTIUSER_ROUTE_CLASSIFICATION, matchMultiUserRoute } from '../../apps/daemon/src/http/multiuser-route-classes.js';
 const runtime = fileURLToPath(new URL('../../apps/web/src/runtime/studio-transport.ts', import.meta.url));
-const { studioRequestAvailable } = await import(runtime) as { studioRequestAvailable(method: string, path: string): boolean };
+const { studioRequestAvailable } = await import(runtime) as {
+  studioRequestAvailable(method: string, path: string, usable?: (lane: string) => boolean): boolean;
+};
 
 it('classifies every observed request from the real App and cookie entry lifecycle', () => {
   // Component execution stays in web; only this cross-runtime oracle imports
@@ -49,4 +51,26 @@ it('keeps the pilot transport within the real daemon route classifications', () 
     expect(matches.every(({ entry }) => entry.routeClass !== 'blocked-in-multiuser')).toBe(true);
   }
   expect(studioRequestAvailable('POST', '/api/unknown')).toBe(false);
+});
+
+it('opens run endpoints only with a usable execution lane, and only where the daemon classifies them', () => {
+  const runs = [['POST', '/api/runs'], ['GET', '/api/runs'], ['GET', '/api/runs/r'], ['GET', '/api/runs/r/events'],
+    ['POST', '/api/runs/r/cancel'], ['POST', '/api/runs/r/steer'], ['POST', '/api/runs/r/feedback'],
+    ['PUT', '/api/projects/p/conversations/c/messages/m']] as const;
+  for (const [method, path] of runs) {
+    expect(studioRequestAvailable(method, path, (lane) => lane === 'execution'), `${method} ${path}`).toBe(true);
+    const matches = matchMultiUserRoute(method, path);
+    expect(matches.length, `${method} ${path}`).toBeGreaterThan(0);
+    expect(matches.every(({ entry }) => entry.routeClass !== 'blocked-in-multiuser'), `${method} ${path}`).toBe(true);
+    if (path.startsWith('/api/runs')) expect(studioRequestAvailable(method, path, () => false), `${method} ${path} without execution`).toBe(false);
+  }
+  // Every blocked route stays closed even when every lane is usable: lanes never open daemon-blocked domains.
+  for (const entry of MULTIUSER_ROUTE_CLASSIFICATION) {
+    if (entry.routeClass !== 'blocked-in-multiuser' || !entry.path.startsWith('/api/') || entry.method === 'USE') continue;
+    const path = entry.path.replace(/:[\w]+/g, 'test-id').replace(/\*[\w]+/g, 'nested/test');
+    expect(studioRequestAvailable(entry.method, path, () => true), entry.key).toBe(false);
+  }
+  for (const [method, path] of [['DELETE', '/api/runs/r'], ['GET', '/api/runs/r/cancel'], ['POST', '/api/runs/r/replay'], ['GET', '/api/runs/r/agui']]) {
+    expect(studioRequestAvailable(method!, path!, () => true), `${method} ${path}`).toBe(false);
+  }
 });

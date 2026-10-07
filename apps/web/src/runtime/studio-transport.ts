@@ -1,16 +1,22 @@
+import type { StudioParityLaneId } from '@open-design/contracts';
 import type { CookieSession } from '../multiuser/session';
 import { withdrawStudioResources } from './studio-resources';
 
-type Scope = { session: CookieSession; generation: number; abort: AbortController; storage: Map<string, string> };
+type Scope = {
+  session: CookieSession; generation: number; abort: AbortController; storage: Map<string, string>;
+  messageIdPrefix: string | null; usable: (lane: StudioParityLaneId) => boolean; lastRecheck: number;
+};
 // undefined is the original local runtime; null is a withdrawn cookie runtime.
 let scope: Scope | null | undefined;
 
-export function activateStudioTransport(session: CookieSession, generation: number): void {
+export function activateStudioTransport(session: CookieSession, generation: number,
+  options: { messageIdPrefix?: string | undefined; usable?: (lane: StudioParityLaneId) => boolean } = {}): void {
   if (scope?.session === session && scope.generation === generation && !scope.abort.signal.aborted) return;
   scope?.abort.abort();
   scope = null;
   withdrawStudioResources();
-  const next: Scope = { session, generation, abort: new AbortController(), storage: new Map() };
+  const next: Scope = { session, generation, abort: new AbortController(), storage: new Map(),
+    messageIdPrefix: options.messageIdPrefix ?? null, usable: options.usable ?? (() => false), lastRecheck: 0 };
   scope = next;
   session.bindResource(() => {
     next.abort.abort(); next.storage.clear();
@@ -18,10 +24,24 @@ export function activateStudioTransport(session: CookieSession, generation: numb
   }, generation);
 }
 
+/**
+ * Transcript ids the App mints before a send. Local mode keeps its ids as-is;
+ * a Studio actor's ids live in the namespace its session read returned, the
+ * only one the daemon accepts from that actor. Deterministic bases (Home
+ * handoff, question answers) stay deterministic within the namespace.
+ */
+export function studioMessageId(base: string): string {
+  return scope?.messageIdPrefix ? `${scope.messageIdPrefix}${base}` : base;
+}
+
+const RUN = /^\/api\/runs\/[^/]+$/;
+const RUN_ACTION = /^\/api\/runs\/[^/]+\/(?:events|cancel|steer|feedback)$/;
 /** The pilot only consumes the established standard project and personal
  * account APIs. This is a UI availability boundary, never authorization. The
- * daemon still authenticates and authorizes each request independently. */
-export function studioRequestAvailable(method: string, path: string): boolean {
+ * daemon still authenticates and authorizes each request independently. Run
+ * endpoints open only while the execution lane is usable for this actor. */
+export function studioRequestAvailable(method: string, path: string,
+  usable: (lane: StudioParityLaneId) => boolean = (lane) => scope?.usable(lane) ?? false): boolean {
   if (/^\/api\/(?:version|health)$/.test(path)) return method === 'GET';
   if (path === '/api/active') return method === 'GET' || method === 'POST';
   if (path === '/api/projects') return method === 'GET' || method === 'POST';
@@ -29,12 +49,46 @@ export function studioRequestAvailable(method: string, path: string): boolean {
   if (/^\/api\/projects\/[^/]+\/conversations$/.test(path)) return ['GET', 'POST'].includes(method);
   if (/^\/api\/projects\/[^/]+\/conversations\/[^/]+$/.test(path)) return ['PATCH', 'DELETE'].includes(method);
   if (/^\/api\/projects\/[^/]+\/conversations\/[^/]+\/messages$/.test(path)) return method === 'GET';
+  if (/^\/api\/projects\/[^/]+\/conversations\/[^/]+\/messages\/[^/]+$/.test(path)) return method === 'PUT';
   if (/^\/api\/projects\/[^/]+\/tabs$/.test(path)) return ['GET', 'PUT'].includes(method);
   if (/^\/api\/projects\/[^/]+\/events$/.test(path)) return method === 'GET';
+  if (usable('execution')) {
+    if (path === '/api/runs') return method === 'GET' || method === 'POST';
+    if (RUN.test(path)) return method === 'GET';
+    const action = RUN_ACTION.exec(path) ? path.slice(path.lastIndexOf('/') + 1) : null;
+    if (action) return action === 'events' ? method === 'GET' : method === 'POST';
+  }
   return false;
 }
 
 export function studioUsesLocalServices(): boolean { return scope === undefined; }
+
+/**
+ * The daemon closes this actor's streams within a second of an identity, role
+ * or pilot-revision change, while ordinary requests keep succeeding. Treat a
+ * server-ended stream or a refusal as a cue to re-read the session now rather
+ * than at the next heartbeat (#73). Bounded so a flapping network cannot turn
+ * it into a polling loop.
+ */
+function recheckSession(issued: Scope): void {
+  const at = Date.now();
+  if (scope !== issued || issued.abort.signal.aborted || at - issued.lastRecheck < 2_000) return;
+  issued.lastRecheck = at;
+  void issued.session.verify();
+}
+
+/** EventSource for Studio streams; the local runtime keeps the native class. */
+export function studioEventSourceCtor(): typeof EventSource | null {
+  if (typeof EventSource === 'undefined') return null;
+  const issued = scope;
+  if (issued === undefined) return EventSource;
+  return class StudioEventSource extends EventSource {
+    constructor(url: string | URL, init?: EventSourceInit) {
+      super(url, init);
+      this.addEventListener('error', () => { if (issued) recheckSession(issued); });
+    }
+  };
+}
 
 /** Shared request seam: unavailable domains never reach fetch, and a response
  * cannot be consumed after its issuing identity has been withdrawn. */
@@ -62,6 +116,7 @@ async function fetchInStudio(input: RequestInfo | URL, init?: RequestInit): Prom
   try {
     const response = await globalThis.fetch(input, { ...init, headers, signal, credentials: 'same-origin', cache: 'no-store' });
     if (response.status === 401 && scope === issued) { issued.session.withdraw(); void issued.session.verify(); }
+    else if (response.status === 403) recheckSession(issued);
     if (signal.aborted || scope !== issued) { void response.body?.cancel(); throw new DOMException('Withdrawn Studio', 'AbortError'); }
     if (response.headers.get('content-type')?.includes('text/event-stream')) return response;
     // Fence parsing too: coalescers and state loaders receive only fully consumed

@@ -1,3 +1,4 @@
+import { studioEventSourceCtor } from '../runtime/studio-transport';
 import { useEffect, useRef } from 'react';
 import { useStudioCapabilities } from '../runtime/studio-capabilities';
 import { BackoffController } from '../lib/backoff';
@@ -113,8 +114,7 @@ export function createProjectEventsConnection(
   options: ProjectEventsConnectionOptions = {},
   workspaceContext?: WorkspaceCollabContext | null,
 ): ProjectEventsConnection {
-  const Ctor = options.EventSourceCtor
-    ?? (typeof EventSource === 'undefined' ? null : EventSource);
+  const Ctor = options.EventSourceCtor ?? studioEventSourceCtor();
   if (!Ctor) return { close() { /* noop */ } };
 
   const setT = options.setTimeoutFn ?? setTimeout;

@@ -5,6 +5,8 @@ import { serializeRunEventsForStorage } from '../runtimes/run-event-payload-budg
 import { getMessage, upsertMessage } from '../db.js';
 import { PROJECT_OWNERS_TABLE } from './project-ownership.js';
 
+export interface StudioTurnIds { userMessageId: string; assistantMessageId: string }
+
 export interface StudioRunMessageInput {
   id: string;
   owner_account_id: string;
@@ -25,9 +27,28 @@ export class MultiUserStudioMessages {
   constructor(private readonly db: Database.Database) {
     db.exec(`CREATE TABLE IF NOT EXISTS multiuser_studio_turns (
       run_id TEXT PRIMARY KEY REFERENCES multiuser_runs(id) ON DELETE CASCADE,
-      user_message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+      user_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
       assistant_message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE
-    );
+    );`);
+    // S4 (additive): a retry is another run answering the same user turn, so a
+    // user row may back several runs. Rebuild an S3 table that still carries
+    // UNIQUE(user_message_id); every binding row is copied unchanged.
+    const ddl = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'multiuser_studio_turns'").get() as { sql: string }).sql;
+    if (/user_message_id TEXT NOT NULL UNIQUE/.test(ddl)) {
+      db.transaction(() => {
+        db.exec(`DROP TRIGGER IF EXISTS multiuser_studio_turns_immutable;
+          CREATE TABLE multiuser_studio_turns_next (
+            run_id TEXT PRIMARY KEY REFERENCES multiuser_runs(id) ON DELETE CASCADE,
+            user_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+            assistant_message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE
+          );
+          INSERT INTO multiuser_studio_turns_next (run_id, user_message_id, assistant_message_id)
+            SELECT run_id, user_message_id, assistant_message_id FROM multiuser_studio_turns;
+          DROP TABLE multiuser_studio_turns;
+          ALTER TABLE multiuser_studio_turns_next RENAME TO multiuser_studio_turns;`);
+      }).immediate();
+    }
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_multiuser_studio_turns_user ON multiuser_studio_turns(user_message_id);
     CREATE TRIGGER IF NOT EXISTS multiuser_studio_turns_immutable BEFORE UPDATE ON multiuser_studio_turns
       BEGIN SELECT RAISE(ABORT, 'Studio turn binding is immutable'); END;`);
     // #39 compatibility is additive and idempotent. Unbound or damaged parent
@@ -41,13 +62,29 @@ export class MultiUserStudioMessages {
     })();
   }
 
-  ids(runId: string): { userMessageId: string; assistantMessageId: string } {
+  /** The stored binding wins; unbound legacy runs keep their derived ids. */
+  ids(runId: string): StudioTurnIds {
+    const bound = this.db.prepare('SELECT user_message_id AS userMessageId, assistant_message_id AS assistantMessageId FROM multiuser_studio_turns WHERE run_id = ?')
+      .get(runId) as StudioTurnIds | undefined;
+    if (bound) return bound;
     const digest = createHash('sha256').update(runId).digest('hex');
     return { userMessageId: `mu_user_${digest}`, assistantMessageId: `mu_assistant_${digest}` };
   }
 
-  reconcile(run: StudioRunMessageInput): void {
-    const ids = this.ids(run.id);
+  /** The newest run bound to `userMessageId` in this conversation, if any. */
+  runForUserMessage(conversationId: string, userMessageId: string): string | null {
+    return (this.db.prepare(`SELECT t.run_id AS id FROM multiuser_studio_turns t JOIN multiuser_runs r ON r.id = t.run_id
+      WHERE t.user_message_id = ? AND r.conversation_id = ? ORDER BY r.queue_seq DESC LIMIT 1`).get(userMessageId, conversationId) as { id: string } | undefined)?.id ?? null;
+  }
+
+  /**
+   * Project a run into its transcript turn. `proposed` ids are honored only on
+   * the run's first projection (admission), after the caller has checked them
+   * against the actor's namespace; afterwards the stored binding is final.
+   */
+  reconcile(run: StudioRunMessageInput, proposed?: StudioTurnIds): void {
+    const bound = this.db.prepare('SELECT 1 FROM multiuser_studio_turns WHERE run_id = ?').get(run.id);
+    const ids = bound || !proposed ? this.ids(run.id) : proposed;
     const parse = (raw: string | null): Record<string, unknown> => {
       try { const value: unknown = JSON.parse(raw ?? 'null'); return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
       catch { return {}; }

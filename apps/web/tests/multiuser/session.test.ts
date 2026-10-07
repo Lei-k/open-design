@@ -128,3 +128,36 @@ it.each([{ studioRevision: 1 }, { studio: null, studioRevision: 0 }, { studioRev
   expect(session.snapshot()).toMatchObject({ account: null, status: 'error' });
   session.dispose();
 });
+
+const pilotStudio = (execution: 'pilot' | 'unavailable') => ({ schemaVersion: 1, shell: 'studio', features: Object.fromEntries(STUDIO_PARITY_LANES.map(({ id }) => [id,
+  id === 'baseline' ? { status: 'supported' } : id === 'execution' ? { status: execution, reason: 'r' } : { status: 'unavailable', reason: 'r' }])) });
+const meWith = (extra: Record<string, unknown>) => vi.fn(async () => new Response(JSON.stringify({
+  account: { id: 'a', username: 'alice', active: true, role: 'user' }, studioRevision: 1, ...extra })));
+it('publishes the pilot transcript-id namespace and refuses a pilot that cannot name one', async () => {
+  const prefix = `mua_${'a'.repeat(24)}_`;
+  vi.stubGlobal('fetch', meWith({ studio: pilotStudio('pilot'), studioMessageIdPrefix: prefix }));
+  const ready = new CookieSession(); await ready.verify();
+  expect(ready.snapshot()).toMatchObject({ status: 'ready', studioMessageIdPrefix: prefix });
+  for (const extra of [{ studio: pilotStudio('pilot') }, { studio: pilotStudio('pilot'), studioMessageIdPrefix: 'mua_short_' },
+    { studio: pilotStudio('unavailable'), studioMessageIdPrefix: 42 }]) {
+    vi.stubGlobal('fetch', meWith(extra));
+    const refused = new CookieSession(); await refused.verify();
+    expect(refused.snapshot().status).toBe('error');
+    expect(refused.snapshot().account).toBeNull();
+  }
+  // A pilot without execution may omit the namespace (it cannot send).
+  vi.stubGlobal('fetch', meWith({ studio: pilotStudio('unavailable') }));
+  const readOnly = new CookieSession(); await readOnly.verify();
+  expect(readOnly.snapshot()).toMatchObject({ status: 'ready' });
+  expect(readOnly.snapshot().studioMessageIdPrefix).toBeUndefined();
+});
+it('withdraws private state when the namespace changes under the same account', async () => {
+  vi.stubGlobal('fetch', meWith({ studio: pilotStudio('pilot'), studioMessageIdPrefix: `mua_${'a'.repeat(24)}_` }));
+  const session = new CookieSession(); await session.verify();
+  const release = vi.fn();
+  session.bindResource(release, session.snapshot().generation);
+  vi.stubGlobal('fetch', meWith({ studio: pilotStudio('pilot'), studioMessageIdPrefix: `mua_${'b'.repeat(24)}_` }));
+  await session.verify();
+  expect(release).toHaveBeenCalledOnce();
+  expect(session.snapshot().studioMessageIdPrefix).toBe(`mua_${'b'.repeat(24)}_`);
+});

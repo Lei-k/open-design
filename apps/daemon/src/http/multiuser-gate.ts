@@ -29,6 +29,7 @@
 
 import type Database from 'better-sqlite3';
 import type { Express, Request, RequestHandler, Response } from 'express';
+import { parseStudioMessageFeedback } from '@open-design/contracts';
 import { sendApiError } from './api-errors.js';
 import { setMultiUserStreamAuthority } from './multiuser-stream.js';
 import { clearedSessionCookie, readSessionCookie, registerAuthRoutes } from '../routes/auth.js';
@@ -248,7 +249,8 @@ const PROJECT_CREATE_FIELDS = new Set([
   'sessionMode',
   'automaticStrategyTaskProfile',
 ]);
-const PROJECT_PATCH_FIELDS = new Set(['name', 'metadata', 'pendingPrompt', 'customInstructions']);
+// `updatedAt` is accepted as a touch only; the handler substitutes the server clock.
+const PROJECT_PATCH_FIELDS = new Set(['name', 'metadata', 'pendingPrompt', 'customInstructions', 'updatedAt']);
 /**
  * Descriptive metadata only. Everything that reaches host paths (baseDir,
  * linkedDirs, project locations, orchestrator workspace), global catalogs
@@ -301,8 +303,9 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown)
       && optionalText(body.seedFromConversationId, 128) && optionalText(body.forkAfterMessageId, 128);
   }
   if (policy === 'message-write') {
-    return only(['id', 'role', 'content', 'createdAt', 'createOnly'])
+    return only(['id', 'role', 'content', 'createdAt', 'createOnly', 'feedback'])
       && optionalText(body.id, 128) && (body.role === 'user' || body.role === 'assistant')
+      && (body.feedback === undefined || (body.role === 'assistant' && parseStudioMessageFeedback(body.feedback) !== undefined))
       && typeof body.content === 'string' && body.content.length <= 1_000_000
       && (body.createdAt === undefined || (typeof body.createdAt === 'number' && Number.isFinite(body.createdAt) && body.createdAt >= 0))
       && (body.createOnly === undefined || typeof body.createOnly === 'boolean');
@@ -317,6 +320,7 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown)
   for (const key of Object.keys(body)) {
     if (!fields.has(key)) return false;
   }
+  if (body.updatedAt !== undefined && (typeof body.updatedAt !== 'number' || !Number.isFinite(body.updatedAt))) return false;
   return metadataAllowed(body.metadata, policy === 'project-patch');
 }
 
@@ -405,6 +409,7 @@ export function installMultiUserFront(
     bootstrapSecret: mode.bootstrapSecret,
     allowedOrigins: mode.allowedOrigins,
     onAccountSessionsRevoked: (accountId) => cancelAccountRuns?.(accountId),
+    personalRunsEnabled: Boolean(mode.personalCodex),
   });
 
   const projectOwnershipHooks: ProjectOwnershipRouteHooks = {

@@ -1,4 +1,5 @@
 import { STUDIO_PARITY_LANES, type StudioParityLaneId, type StudioRouteParity, type StudioRuntimeCapabilities, type StudioAvailability } from '@open-design/contracts';
+import { createHash } from 'node:crypto';
 import { MULTIUSER_ROUTE_CLASSIFICATION, type MultiUserRouteClassification } from './multiuser-route-classes.js';
 
 // Responsibility routing, not authorization. New domains fail the inventory
@@ -78,15 +79,43 @@ export function studioRouteParityInventory(): StudioRouteParity[] {
   });
 }
 
+/**
+ * Lanes a pilot actor may use before their deployment-wide gate closes, with
+ * the acceptance still outstanding. `pilot` never reaches public discovery.
+ */
+export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
+  shell: 'Pilot shell: deployment rollout, legacy shell removal and the remaining provider closures are pending (#53, #70).',
+  projects: 'Pilot projects: artifact, upload and background-job lineage are pending (#54).',
+  execution: 'Pilot execution: personal Codex only; company pool, feedback telemetry and replay are pending (#55).',
+  chat: 'Pilot chat: real-provider recordings and the full state-matrix acceptance are pending (#56).',
+  composer: 'Pilot composer: text, queue, stop and question answers; attachments, skills, design systems and model choice are pending (#57).',
+};
+
 /** Advertise a lane only after its entire acceptance closes. The public
  * version call uses the default legacy shell; only a cookie-authorized session
- * read may opt its actor into the pilot. Pilot selection does not complete lanes.
+ * read may opt its actor into the pilot. Pilot selection does not complete
+ * lanes: it marks the pilot-usable ones `pilot`, never `supported`, and a lane
+ * whose server policy is off is `admin-disabled` for the pilot as well.
  */
-export function multiUserStudioCapabilities(studioPilot = false): StudioRuntimeCapabilities {
-  const features = Object.fromEntries(STUDIO_PARITY_LANES.map((lane): [StudioParityLaneId, StudioAvailability] => [lane.id,
-    lane.id === 'baseline' ? { status: 'supported' } : {
-      status: 'unavailable', reason: `Studio integration #${lane.issue} has not passed its complete parity gate; the legacy fallback remains active.`,
-    },
-  ])) as StudioRuntimeCapabilities['features'];
+export function multiUserStudioCapabilities(studioPilot = false, policy: { personalEnabled?: boolean } = {}): StudioRuntimeCapabilities {
+  const unavailable = (issue: number): StudioAvailability => ({
+    status: 'unavailable', reason: `Studio integration #${issue} has not passed its complete parity gate; the legacy fallback remains active.`,
+  });
+  const executionOff: StudioAvailability = { status: 'admin-disabled',
+    reason: 'Personal subscriptions are not enabled on this server, so this account cannot start Studio runs.' };
+  const features = Object.fromEntries(STUDIO_PARITY_LANES.map((lane): [StudioParityLaneId, StudioAvailability] => {
+    if (lane.id === 'baseline') return [lane.id, { status: 'supported' }];
+    const pilot = studioPilot ? STUDIO_PILOT_LANES[lane.id] : undefined;
+    if (!pilot) return [lane.id, unavailable(lane.issue)];
+    if ((lane.id === 'execution' || lane.id === 'composer') && !policy.personalEnabled) return [lane.id, executionOff];
+    return [lane.id, { status: 'pilot', reason: pilot }];
+  })) as StudioRuntimeCapabilities['features'];
   return { schemaVersion: 1, shell: studioPilot ? 'studio' : 'legacy-multiuser', features };
+}
+
+/** The actor's private transcript-id namespace (see `isStudioMessageIdInNamespace`).
+ * Derived, not stored: only the server-side actor selects it, and the digest
+ * does not reveal the account id inside message ids. */
+export function studioMessageIdPrefix(accountId: string): string {
+  return `mua_${createHash('sha256').update(`studio-message-namespace:${accountId}`).digest('hex').slice(0, 24)}_`;
 }

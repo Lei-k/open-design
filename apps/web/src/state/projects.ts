@@ -1516,11 +1516,21 @@ export async function saveMessage(
   options: SaveMessageOptions = {},
 ): Promise<ChatMessage | null> {
   try {
-    const body = {
-      ...message,
-      ...(options.telemetryFinalized ? { telemetryFinalized: true } : {}),
-      ...(options.createOnly ? { createOnly: true } : {}),
-    };
+    const body = studioUsesLocalServices()
+      ? {
+          ...message,
+          ...(options.telemetryFinalized ? { telemetryFinalized: true } : {}),
+          ...(options.createOnly ? { createOnly: true } : {}),
+        }
+      // Studio actors write only what they own (StudioMessageWriteRequest):
+      // user text and assistant feedback. Run fields come from the run engine.
+      : {
+          id: message.id,
+          role: message.role,
+          content: message.content,
+          ...(options.createOnly ? { createOnly: true } : {}),
+          ...(message.role === 'assistant' ? { feedback: message.feedback ?? null } : {}),
+        };
     const response = await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(message.id)}`,
       {

@@ -1,3 +1,4 @@
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
 import { studioUsesLocalServices, studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioWindowSessionStorage } from '../runtime/studio-transport';
 import { reportExperienceEvent } from '../observability/experience-diagnostics';
 import { conversationMetaLabel } from '../runtime/chat/conversation-time';
@@ -158,6 +159,7 @@ import {
   isReconnectOwnedFailure,
   resolveRunErrorCardDescription,
   resolveRunFailureUi,
+  type RunFailureMessageKey,
   RUN_FAILURE_FALLBACK_MESSAGE_KEY,
 } from '../runtime/amr-guidance';
 import {
@@ -1300,6 +1302,13 @@ function NewSessionGlyph(): ReactElement {
   );
 }
 
+/** The one-line reason under a refused send, only when the refusal names a fix. */
+function sendFailureReasonKey(code: string | undefined): RunFailureMessageKey | null {
+  if (!code) return null;
+  const ui = resolveRunFailureUi(code, null, null);
+  return ui.titleKey === 'chat.runError.title.generic' ? null : ui.messageKey;
+}
+
 export function ChatPane({
   messages,
   streaming,
@@ -1446,6 +1455,7 @@ export function ChatPane({
   const { workspaceContext } = useProjectCollabContext();
   const { t, locale } = useI18n();
   const analytics = useAnalytics();
+  const studio = useStudioCapabilities();
   const displayMessages = useMemo(
     () => foldStrategyTaskTurns(
       messages.filter((message) => !shouldHideEmptyBrandAssistantMessage(message, projectMetadata)),
@@ -2480,7 +2490,12 @@ export function ChatPane({
   // OPEND-2807 / G16: the failed run selects one fixed recovery action.
   // The classifier still owns approved copy and handoffs, never extra buttons.
   const failedRunUsesCloud = retryAssistant?.agentId === 'amr';
-  const showCloudRetry = Boolean(retryAssistant && failedRunUsesCloud && onRetry);
+  // A Studio actor's turns run on the server's execution source, not a local
+  // CLI: like a Cloud run, a transient failure is recovered by retrying there.
+  const failedRunOnServerExecution = studio.executionAgentId !== null && runFailureUi?.primaryAction === 'retry';
+  const showCloudRetry = Boolean(retryAssistant && (failedRunUsesCloud || failedRunOnServerExecution) && onRetry);
+  // Support and log export read host diagnostics; without that lane they are dead ends.
+  const hostDiagnosticsUsable = studio.available('web-host');
   const showCloudSwitchCta = Boolean(
     retryAssistant && !failedRunUsesCloud
     && (onSwitchToAmrAndRetry || onOpenAmrSettings),
@@ -4514,7 +4529,7 @@ export function ChatPane({
                     actions={(
                       <>
                         {/* OPEND-2807: two standing actions and one runtime action. */}
-                        <RunErrorCardAction
+                        {hostDiagnosticsUsable ? <RunErrorCardAction
                           type="button"
                           className="od-tooltip"
                           variant="secondary"
@@ -4524,8 +4539,8 @@ export function ChatPane({
                         >
                           <Icon name="headset" size={11} />
                           {t('chat.runError.contactSupportCta')}
-                        </RunErrorCardAction>
-                        <ExportLogsAction />
+                        </RunErrorCardAction> : null}
+                        {hostDiagnosticsUsable ? <ExportLogsAction /> : null}
                         {showCloudRetry && retryAssistant && onRetry ? (
                           <RunErrorCardAction
                             type="button"
@@ -6774,6 +6789,11 @@ const UserMessage = memo(UserMessageImpl);
                 </button>
               ) : null}
             </div>
+            {message.sendFailed && sendFailureReasonKey(message.sendFailureCode) ? (
+              <p className="user-send-failed-reason" role="status" data-testid="user-send-failed-reason">
+                {t(sendFailureReasonKey(message.sendFailureCode)!)}
+              </p>
+            ) : null}
           </div>
         ) : null}
       </div>
