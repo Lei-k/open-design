@@ -13583,7 +13583,7 @@ export function ProjectView({
   // not in the top-right header.
   // Choosing an agent needs the host agent catalog (settings lane); without it
   // the server-fixed execution source is shown instead.
-  const executionControls = !studio.available('settings') ? <StudioExecutionSource agentId={executionAgentId} onChange={studioPinnedAgentId ? undefined : onAgentChange} /> : (
+  const executionControls = !studio.hostServices ? <StudioExecutionSource agentId={executionAgentId} onChange={studioPinnedAgentId ? undefined : onAgentChange} /> : (
     <>
       <AvatarMenu
         config={config}
@@ -13915,8 +13915,8 @@ export function ProjectView({
                 onModeChange('daemon');
               }}
               // Switching to Cloud needs provider settings; a Studio actor's source is server-fixed.
-              onOpenAmrSettings={studio.available('settings') ? onOpenAmrSettings : undefined}
-              onSwitchToAmrAndRetry={studio.available('settings') ? handleSwitchToAmrAndRetry : undefined}
+              onOpenAmrSettings={studio.hostServices ? onOpenAmrSettings : undefined}
+              onSwitchToAmrAndRetry={studio.hostServices ? handleSwitchToAmrAndRetry : undefined}
               onLaunchAntigravityOauth={handleLaunchAntigravityOauth}
               onOpenMcpSettings={onOpenMcpSettings}
               onBrowsePlugins={onBrowsePlugins}

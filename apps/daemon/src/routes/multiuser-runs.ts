@@ -30,6 +30,7 @@ import type { PersonalRunLaneControls } from './multiuser-agent-accounts.js';
 import type { MultiUserDesignRoutes } from './multiuser-design.js';
 import { CompanyOpenAIConfigError, CompanyOpenAIStore } from '../storage/company-openai.js';
 import { CompanyOpenAIWorker, runCompanyOpenAITurn } from '../runtimes/company-openai.js';
+import type { StudioSettings } from '../storage/studio-settings.js';
 import type { StudioCatalog } from './studio-catalog.js';
 import { composeSystemPrompt } from '../prompts/system.js';
 
@@ -263,6 +264,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   personal?: PersonalCodexAccounts;
   design?: MultiUserDesignRoutes;
   catalog?: StudioCatalog;
+  settings?: StudioSettings;
 }): { cancelAccountRuns(accountId: string): void; isRunOwner(runId: string, accountId: string): boolean;
   cancelProjectRuns(accountId: string, projectId: string, conversationId?: string): Promise<() => void>;
   cancelPersonalRuns(accountId: string): Promise<void>; forgetNativeSessions(accountId: string): void; personalLane: PersonalRunLaneControls; listAccountIds(): string[];
@@ -1053,18 +1055,27 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           || (fields.designSystemId !== null && fields.designSystemId !== fixedDesign.designSystemId)))) {
       return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
     }
+    const actorContext = await input.settings?.capture(owner) ?? { userInstructions: '', memoryBody: '' };
     let composed = fixedDesign
-      ? await input.design?.composeStablePrompt({ conversationId: target.conversationId, ownerId: owner, projectId: target.projectId })
+      ? await input.design?.composeStablePrompt({ conversationId: target.conversationId, ownerId: owner, projectId: target.projectId, ...actorContext })
       : null;
     if (fixedDesign && !composed) return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
     const questionRequest = question ? storedRequest(question.request_json) : null;
     const inheritedSkillIds = Array.isArray(questionRequest?.skillIds) && questionRequest.skillIds.every((id) => typeof id === 'string')
       ? questionRequest.skillIds as string[] : [];
-    const inheritsSkills = Boolean(question && inheritedSkillIds.length && (fields.skillIds.length === 0
+    const inheritsSkills = Boolean(question && (fields.skillIds.length === 0
       || JSON.stringify(fields.skillIds) === JSON.stringify(inheritedSkillIds)));
     if (inheritsSkills && typeof questionRequest?.stablePrompt === 'string' && typeof questionRequest.stablePromptHash === 'string') {
       composed = { prompt: questionRequest.stablePrompt, hash: questionRequest.stablePromptHash,
         selection: fixedDesign ?? { conversationId: target.conversationId, skillId: '', designSystemId: '', locale: 'en' } };
+    }
+    if (inheritsSkills && typeof questionRequest?.stablePrompt !== 'string') composed = null;
+    if (!inheritsSkills && !composed && (actorContext.userInstructions || actorContext.memoryBody)) {
+      const prompt = composeSystemPrompt({ agentId: 'codex', streamFormat: 'json-event-stream',
+        executionProfile: 'filesystem', promptCoreVariant: 'slim', sessionMode: 'design', locale: 'en',
+        metadata: getProject(db, target.projectId)?.metadata, ...actorContext });
+      composed = { prompt, hash: createHash('sha256').update(prompt).digest('hex'),
+        selection: { conversationId: target.conversationId, skillId: '', designSystemId: '', locale: 'en' } };
     }
     const selectedSkills = fields.skillIds.length && !inheritsSkills ? await input.catalog?.readSkills(owner, fields.skillIds) : [];
     if (!selectedSkills || fields.skillIds.length > 12) return sendApiError(res, 404, 'NOT_FOUND', 'selected skills not found or unavailable');
@@ -1076,7 +1087,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         metadata: getProject(db, target.projectId)?.metadata,
         skillBody: selectedSkills.map((skill) => skill.body).join('\n\n---\n\n'),
         skillName: selectedSkills.map((skill) => skill.name).join(', '),
-        skillMode: selectedSkills[0]?.mode });
+        skillMode: selectedSkills[0]?.mode, ...actorContext });
       const prompt = [composed?.prompt, skillPrompt].filter(Boolean).join('\n\n');
       composed = { prompt, hash: createHash('sha256').update(prompt).digest('hex'),
         selection: composed?.selection ?? { conversationId: target.conversationId, skillId: '', designSystemId: '', locale: 'en' } };
@@ -1178,10 +1189,11 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     }
     const selected = !question && fields.skillIds.length ? await input.catalog?.readSkills(owner, fields.skillIds) : [];
     if (!selected) return sendApiError(res, 404, 'NOT_FOUND', 'selected skills not found or unavailable');
-    const design = fixed ? await input.design?.composeStablePrompt({ ...target, ownerId: owner }) : null;
+    const actorContext = await input.settings?.capture(owner) ?? { userInstructions: '', memoryBody: '' };
+    const design = fixed ? await input.design?.composeStablePrompt({ ...target, ownerId: owner, ...actorContext }) : null;
     if (fixed && !design) return sendApiError(res, 400, 'BAD_REQUEST', 'design selection unavailable');
     const stablePrompt = design?.prompt ?? composeSystemPrompt({ agentId: 'codex', streamFormat: 'json-event-stream',
-      executionProfile: 'filesystem', promptCoreVariant: 'slim', sessionMode: 'design', locale: 'en', metadata: getProject(db, target.projectId)?.metadata });
+      executionProfile: 'filesystem', promptCoreVariant: 'slim', sessionMode: 'design', locale: 'en', metadata: getProject(db, target.projectId)?.metadata, ...actorContext });
     const prompt = question && typeof previousRequest?.stablePrompt === 'string' ? previousRequest.stablePrompt : stablePrompt + selected.map((skill) => `\n\n---\n\n## Composed skill — ${skill.name}\n\n${skill.body.trim()}`).join('');
     if (!multiUserStreamAllowed(res) || !managedTarget(inputBody, res)) return;
     if (personalSession(target.conversationId)) return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation uses a personal subscription');

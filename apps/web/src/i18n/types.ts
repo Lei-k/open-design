@@ -30,6 +30,11 @@ export const LOCALE_LABEL: Record<Locale, string> = {
 // flat (not deeply nested) so missing-key TS errors point straight at the
 // offending string instead of a generic object mismatch.
 export interface Dict {
+  'studio.settingsReload': string;
+  'studio.settingsSaved': string;
+  'studio.settingsError': string;
+  'studio.settingsConflict': string;
+  'studio.manualMemoryHint': string;
   'multiuser.companyOpenAI': string;
   'multiuser.companyOpenAIHelp': string;
   'multiuser.companyKeyConfigured': string;

@@ -1,3 +1,4 @@
+import { CustomInstructionsSection } from './CustomInstructionsSection';
 import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioFetch as fetch } from '../runtime/studio-transport';
 import { useStudioCapabilities } from '../runtime/studio-capabilities';
 import { StudioAccountSettings } from '../runtime/StudioAccountSettings';
@@ -6061,31 +6062,7 @@ function LocalSettingsDialog({
           ) : null}
 
           {activeSection === 'instructions' ? (
-            <section className="settings-section settings-section-card instructions-rules-section">
-              <div className="memory-field-block instructions-rules-card">
-                <div className="memory-block-head">
-                  <div>
-                    <h4>{t('settings.customInstructionsTitle')}</h4>
-                    <p className="hint">
-                      {t('settings.customInstructionsDesc')}
-                    </p>
-                  </div>
-                </div>
-                <textarea
-                  className="custom-instructions-input memory-global-rules-input instructions-rules-input"
-                  rows={5}
-                  maxLength={5000}
-                  placeholder={t('settings.customInstructionsPlaceholder')}
-                  value={cfg.customInstructions ?? ''}
-                  onChange={(event) =>
-                    setCfg({
-                      ...cfg,
-                      customInstructions: event.target.value || undefined,
-                    })
-                  }
-                />
-              </div>
-            </section>
+            <CustomInstructionsSection value={cfg.customInstructions ?? ''} onChange={(value) => setCfg({ ...cfg, customInstructions: value || undefined })} />
           ) : null}
 
           {activeSection === 'memory' ? (

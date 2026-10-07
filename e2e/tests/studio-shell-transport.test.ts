@@ -126,3 +126,24 @@ it('opens only reviewed text skill operations with a usable catalog lane', () =>
     expect(studioRequestAvailable(method!, path!, () => true), path).toBe(false);
   }
 });
+
+it('opens only actor instructions and manual memory when settings is usable', () => {
+  const endpoints = [['GET', '/api/app-config'], ['PUT', '/api/app-config'], ['GET', '/api/memory'],
+    ['POST', '/api/memory'], ['GET', '/api/memory/tree'], ['PATCH', '/api/memory/tree/user_fact'],
+    ['GET', '/api/memory/user_fact'], ['PUT', '/api/memory/user_fact'], ['DELETE', '/api/memory/user_fact'],
+    ['GET', '/api/memory/events'], ['GET', '/api/memory/system-prompt'], ['PUT', '/api/memory/index'],
+    ['PATCH', '/api/memory/config']] as const;
+  for (const [method, standard] of endpoints) {
+    const alias = standard.replace('/api/app-config', '/api/multiuser/settings/config').replace('/api/memory', '/api/multiuser/settings/memory');
+    for (const path of [standard, alias]) {
+      expect(studioRequestAvailable(method, path, (lane) => lane === 'settings'), path).toBe(true);
+      expect(studioRequestAvailable(method, path, () => false), path).toBe(false);
+      const matches = matchMultiUserRoute(method, path);
+      expect(matches.length, path).toBeGreaterThan(0);
+      expect(matches.every(({ entry }) => entry.routeClass === 'actor-scoped'), path).toBe(true);
+    }
+  }
+  for (const path of ['/api/memory/extractions', '/api/memory/verifications', '/api/mcp/config', '/api/connectors/discovery', '/api/library/assets', '/api/agents']) {
+    expect(studioRequestAvailable('GET', path, () => true), path).toBe(false);
+  }
+});

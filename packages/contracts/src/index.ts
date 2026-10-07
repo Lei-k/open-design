@@ -4,6 +4,7 @@ export * from './api/failure-detail.js';
 export * from './settings-nav.js';
 export * from './tasks.js';
 export * from './api/app-config.js';
+export * from './api/studio-settings.js';
 export * from './api/strategy-rollout.js';
 export * from './api/agent-sessions.js';
 export * from './api/agent-setup.js';

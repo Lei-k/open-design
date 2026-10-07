@@ -1,6 +1,8 @@
 import type { Dict } from '../types';
 
 export const fa: Dict = {
+  "studio.manualMemoryHint": "Saved manual memories and profile facts are included in future runs. Automatic extraction, brief rewriting and verification are not available yet.",
+
   "multiuser.companyOpenAI": "OpenAI company pool",
   "multiuser.companyOpenAIHelp": "Choose the OpenAI model and concurrent workers. Leave the key blank to retain it. Credentials stay on the server. A model or key change requires new conversations.",
   "multiuser.companyKeyConfigured": "API key configured",
@@ -387,6 +389,10 @@ export const fa: Dict = {
   'libraryPicker.allKinds': 'همه',
   'libraryPicker.add': 'وارد کردن',
   'libraryPicker.loading': 'در حال بارگذاری…',
+  'studio.settingsReload': 'Reload saved settings',
+  'studio.settingsSaved': 'Account instructions saved.',
+  'studio.settingsError': 'Could not load or save account instructions.',
+  'studio.settingsConflict': 'Settings changed in another tab. Reload saved settings before saving again.',
   'common.save': 'ذخیره',
   'common.close': 'بستن',
   'common.clear': 'پاک کردن',

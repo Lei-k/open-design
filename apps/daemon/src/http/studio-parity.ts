@@ -38,6 +38,7 @@ export function studioLaneForRoute(entry: Pick<MultiUserRouteClassification, 'me
   if (parts[0] !== 'api') return null;
   const domain = parts[1];
   if (domain === 'multiuser') {
+    if (parts[2] === 'settings') return 'settings';
     if (parts[2] === 'catalog') return 'catalogs';
     if (parts[2] === 'design-catalog') return 'catalogs';
     if (path.includes('/preview')) return 'preview';
@@ -92,6 +93,7 @@ export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
   composer: 'Pilot composer: text, attachments, private text skills, queue, stop and question answers; bundled skill attachments, design systems and model choice are pending (#57).',
   preview: 'Pilot preview: opaque HTML/deck/media previews, manual edit, inspect and owner-only immutable artifact snapshots/thumbnails; comments, renderer covers and complete browser acceptance are pending (#59).',
   files: 'Pilot files: owner file list, read, write, upload, rename, delete, folders, search and versions; archive, public publish and resumable large uploads are pending (#58).',
+  settings: 'Pilot settings: account instructions, manual memory and profile injection; automatic extraction, verification, connectors, MCP and library are pending (#62).',
   catalogs: 'Pilot catalogs: bundled and account-owned text skills; skill attachments, templates, design systems, plugins and team catalogs are pending (#61).',
 };
 

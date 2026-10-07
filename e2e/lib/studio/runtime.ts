@@ -19,7 +19,7 @@ export interface StudioRuntime {
   admin: StudioPrincipal; a: StudioPrincipal; b: StudioPrincipal;
   request: (method: string, route: string, cookie?: string, body?: unknown) => Promise<StudioResponse>;
   linkCodex: (actor: StudioPrincipal) => Promise<void>;
-  configureTurn: (actor: StudioPrincipal, control: { reply: string; artifactBytes?: Record<string, string> }) => Promise<void>;
+  configureTurn: (actor: StudioPrincipal, control: { reply?: string; promptReplyMarkers?: string[]; artifactBytes?: Record<string, string> }) => Promise<void>;
   close: (preserve?: boolean) => Promise<void>;
 }
 
@@ -129,7 +129,7 @@ export async function createStudioRuntime(): Promise<StudioRuntime> {
       }
       throw new Error('Mock Codex connection timeout');
     };
-    const configureTurn = async (actor: StudioPrincipal, control: { reply: string; artifactBytes?: Record<string, string> }) => {
+    const configureTurn: StudioRuntime['configureTurn'] = async (actor, control) => {
       const home = path.join(root, 'data/multiuser-runtime', createHash('sha256').update(actor.id).digest('hex'), 'codex-home');
       await writeFile(path.join(home, 'mock-control.json'), JSON.stringify(control), { mode: 0o600 });
     };

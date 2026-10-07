@@ -253,9 +253,17 @@ export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
           }
         }
         if (matches.some((match) => match.entry.untrustedContent)) applyUntrustedContentPolicy(res);
-        const alias = matches.length === 1 ? matches[0]!.entry.rewriteTo : undefined;
-        if (alias) {
-          const target = alias.replace(/:([A-Za-z_]\w*)/g, (_all, name: string) => encodeURIComponent(matches[0]!.params[name] ?? ''));
+        const aliases = matches.filter((match) => match.entry.rewriteTo).map((match) =>
+          match.entry.rewriteTo!.replace(/:([A-Za-z_]\w*)/g, (_all, name: string) => encodeURIComponent(match.params[name] ?? '')));
+        // A static resource may also match an actor's :id route. Every
+        // matching authorization must agree on the same destination; skipping
+        // an ambiguous alias would accidentally reach the host-global handler.
+        if (aliases.length && (aliases.length !== matches.length || new Set(aliases).size !== 1)) {
+          sendApiError(res, 404, 'NOT_FOUND', 'not found');
+          return;
+        }
+        if (aliases.length) {
+          const target = aliases[0]!;
           const query = req.url.indexOf('?');
           req.url = `${target}${query >= 0 ? req.url.slice(query) : ''}`;
         }
@@ -335,6 +343,14 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   const only = (fields: readonly string[]) => Object.keys(body).every((key) => fields.includes(key));
   const optionalText = (value: unknown, max: number) => value === undefined || value === null || (typeof value === 'string' && value.length <= max);
   const sessionMode = body.sessionMode === undefined || (typeof body.sessionMode === 'string' && ['design', 'chat', 'plan'].includes(body.sessionMode));
+  if (policy === 'studio-settings') return only(['revision', 'customInstructions'])
+    && Number.isSafeInteger(body.revision) && Number(body.revision) >= 0
+    && typeof body.customInstructions === 'string' && body.customInstructions.length <= 5000 && !body.customInstructions.includes('\0');
+  if (policy === 'studio-memory-entry') return only(['id', 'name', 'description', 'type', 'body']);
+  if (policy === 'studio-memory-index') return only(['index']) && typeof body.index === 'string'
+    && Buffer.byteLength(body.index) <= 64 * 1024 && !body.index.includes('\0');
+  if (policy === 'studio-memory-config') return only(['enabled', 'profileEnabled'])
+    && Object.values(body).every((value) => typeof value === 'boolean');
   if (policy === 'company-openai') return only(['revision', 'enabled', 'model', 'capacity', 'apiKey'])
     && Number.isSafeInteger(body.revision) && Number(body.revision) >= 0 && typeof body.enabled === 'boolean'
     && typeof body.model === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(body.model)

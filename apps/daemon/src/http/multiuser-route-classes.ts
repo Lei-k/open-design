@@ -44,7 +44,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'company-openai' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -482,7 +482,6 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
   ]),
   ...blocked(R_SSE, [
     'GET /api/library/events',
-    'GET /api/memory/events',
     'GET /api/workspace/events',
     'GET /api/plugins/events',
     'GET /api/plugins/events/snapshot',
@@ -613,8 +612,6 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'GET /api/preview/isolation',
   ]),
   ...blocked('daemon-global app configuration (agent CLI env, providers, labs); admin surface is #10', [
-    'GET /api/app-config',
-    'PUT /api/app-config',
     'GET /api/strategies/od-next/rollout',
   ]),
   ...blocked(R_GLOBAL_STATE, [
@@ -623,11 +620,6 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'POST /api/analytics/mcp/event',
     'POST /api/attribution/claim',
     'POST /api/attribution/bridge-url',
-    'GET /api/memory',
-    'GET /api/memory/tree',
-    'PATCH /api/memory/tree/:id',
-    'PUT /api/memory/index',
-    'PATCH /api/memory/config',
     'GET /api/memory/extractions',
     'DELETE /api/memory/extractions',
     'DELETE /api/memory/extractions/:id',
@@ -638,11 +630,6 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'POST /api/memory/connectors/suggest',
     'POST /api/memory/connectors/extract',
     'POST /api/memory/extract',
-    'GET /api/memory/system-prompt',
-    'POST /api/memory',
-    'GET /api/memory/:id',
-    'PUT /api/memory/:id',
-    'DELETE /api/memory/:id',
     'POST /api/upload',
     'POST /api/artifacts/save',
     'POST /api/artifacts/lint',
@@ -678,6 +665,30 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'DELETE /api/brands/:id',
     'GET /api/brands/:id/logo',
   ]),
+
+  // Actor preferences and manual memory (#62); host registrars never run.
+  ...[
+    ['GET /api/app-config', undefined],
+    ['PUT /api/app-config', 'studio-settings'],
+    ['GET /api/memory', undefined],
+    ['GET /api/memory/tree', undefined],
+    ['PATCH /api/memory/tree/:id', 'studio-memory-entry'],
+    ['PUT /api/memory/index', 'studio-memory-index'],
+    ['PATCH /api/memory/config', 'studio-memory-config'],
+    ['GET /api/memory/events', undefined],
+    ['GET /api/memory/system-prompt', undefined],
+    ['POST /api/memory', 'studio-memory-entry'],
+    ['GET /api/memory/:id', undefined],
+    ['PUT /api/memory/:id', 'studio-memory-entry'],
+    ['DELETE /api/memory/:id', 'empty'],
+  ].flatMap(([key, policy]) => {
+    const alias = key!.replace('/api/app-config', '/api/multiuser/settings/config').replace('/api/memory', '/api/multiuser/settings/memory');
+    const bodyPolicy = policy as MultiUserBodyPolicy | undefined;
+    const extras = bodyPolicy ? { bodyPolicy } : {};
+    return [...group('actor-scoped', 'account-owned preferences and manual memory; private stream; no host settings or provider access', [key!],
+      { ...extras, rewriteTo: alias.slice(alias.indexOf(' ') + 1) }),
+      ...group('actor-scoped', 'actor settings alias; identical cookie authority and closed fields', [alias], extras)];
+  }),
 
   // Shared catalogs / plugins ------------------------------------------------------
   ...['GET /api/skills', 'GET /api/skills/:id', 'GET /api/skills/:id/files',

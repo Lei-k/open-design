@@ -63,6 +63,20 @@ export function studioRequestAvailable(method: string, path: string,
     if (/^\/api\/skills\/[^/]+$/.test(skillPath)) return ['GET', 'PUT', 'DELETE'].includes(method);
     if (/^\/api\/skills\/[^/]+\/files$/.test(skillPath)) return method === 'GET';
   }
+  if (usable('settings')) {
+    const settingsPath = path.replace(/^\/api\/multiuser\/settings\/config$/, '/api/app-config')
+      .replace(/^\/api\/multiuser\/settings\/memory(?=\/|$)/, '/api/memory');
+    if (settingsPath === '/api/app-config') return method === 'GET' || method === 'PUT';
+    if (settingsPath === '/api/memory') return method === 'GET' || method === 'POST';
+    if (/^\/api\/memory\/(?:tree|events|system-prompt)$/.test(settingsPath)) return method === 'GET';
+    if (settingsPath === '/api/memory/index') return method === 'PUT';
+    if (settingsPath === '/api/memory/config') return method === 'PATCH';
+    if (/^\/api\/memory\/tree\/[a-z0-9_]{1,128}$/.test(settingsPath)) return method === 'PATCH';
+    if (/^\/api\/memory\/[a-z0-9_]{1,128}$/.test(settingsPath)) {
+      if (['extractions', 'verifications', 'extract', 'rules', 'connectors'].includes(settingsPath.slice(12))) return false;
+      return ['GET', 'PUT', 'DELETE'].includes(method);
+    }
+  }
   if (usable('files')) {
     const file = /^\/api\/projects\/[^/]+\/(files|folders|search|upload|raw|text-preview|file-content)(?:\/(.+))?$/.exec(path);
     if (file) {
@@ -123,11 +137,19 @@ export function studioEventSourceCtor(): typeof EventSource | null {
   if (typeof EventSource === 'undefined') return null;
   const issued = scope;
   if (issued === undefined) return EventSource;
+  if (!issued || issued.abort.signal.aborted) return null;
+  const active = issued;
   return class StudioEventSource extends EventSource {
+    private release: (() => void) | undefined;
     constructor(url: string | URL, init?: EventSourceInit) {
+      const target = new URL(String(url), window.location.origin);
+      if (scope !== active || active.abort.signal.aborted || target.origin !== window.location.origin
+        || !studioRequestAvailable('GET', target.pathname, active.usable)) throw new DOMException('Unavailable Studio stream', 'AbortError');
       super(url, init);
-      this.addEventListener('error', () => { if (issued) recheckSession(issued); });
+      this.release = active.session.bindResource(() => { super.close(); }, active.generation);
+      this.addEventListener('error', () => recheckSession(active));
     }
+    override close(): void { super.close(); this.release?.(); this.release = undefined; }
   };
 }
 

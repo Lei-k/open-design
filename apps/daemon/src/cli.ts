@@ -247,7 +247,7 @@ const LIBRARY_ASSET_STRING_FLAGS = new Set([
 const LIBRARY_ASSET_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 const DIAGNOSTICS_STRING_FLAGS = new Set(['daemon-url', 'output']);
 const DIAGNOSTICS_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
-const CONFIG_STRING_FLAGS = new Set(['daemon-url', 'value', 'value-json']);
+const CONFIG_STRING_FLAGS = new Set(['daemon-url', 'value', 'value-json', 'prompt-file']);
 const CONFIG_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 const AMR_STRING_FLAGS = new Set(['daemon-url']);
 const AMR_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'refresh']);
@@ -10528,6 +10528,8 @@ async function runConfig(args) {
   od config set <key> <value>         Set a top-level key (string / number / boolean).
   od config set <key> --value-json '<json>'
                                        Set a key to a JSON value.
+  od config set customInstructions --prompt-file <path|->
+                                       Read long instructions from a file or stdin.
   od config unset <key>               Remove a top-level key.
 
 Common options:
@@ -10540,17 +10542,19 @@ Common options:
   const flags = parseFlags(rest, { string: CONFIG_STRING_FLAGS, boolean: CONFIG_BOOLEAN_FLAGS });
   const base = (await libraryDaemonUrl(flags)).replace(/\/$/, '');
 
+  let settingsRevision;
   const fetchConfig = async () => {
     const resp = await fetch(`${base}/api/app-config`);
     if (!resp.ok) return structuredHttpFailure(resp);
     const data = await resp.json();
+    settingsRevision = data?.revision;
     return data?.config ?? {};
   };
   const writeConfig = async (next) => {
     const resp = await fetch(`${base}/api/app-config`, {
       method:  'PUT',
       headers: { 'content-type': 'application/json' },
-      body:    JSON.stringify(next),
+      body:    JSON.stringify(settingsRevision === undefined ? next : { customInstructions: next.customInstructions ?? '', revision: settingsRevision }),
     });
     if (!resp.ok) return structuredHttpFailure(resp);
     return (await resp.json())?.config ?? next;
@@ -10580,14 +10584,16 @@ Common options:
     case 'set': {
       const positional = rest.filter((a) => !a.startsWith('-')
         && a !== flags.value
-        && a !== flags['value-json']);
+        && a !== flags['value-json'] && a !== flags['prompt-file'] && a !== flags['daemon-url']);
       const [key, scalarValue] = positional;
       if (!key) {
         console.error('Usage: od config set <key> <value> | od config set <key> --value-json <json>');
         process.exit(2);
       }
       let parsed;
-      if (typeof flags['value-json'] === 'string') {
+      if (typeof flags['prompt-file'] === 'string') {
+        parsed = await readMemoryPromptFile(flags);
+      } else if (typeof flags['value-json'] === 'string') {
         try { parsed = JSON.parse(flags['value-json']); } catch (err) {
           console.error(`--value-json must be valid JSON: ${err.message}`);
           process.exit(2);
@@ -10601,6 +10607,7 @@ Common options:
         process.exit(2);
       }
       const cfg = await fetchConfig();
+      if (settingsRevision !== undefined && key !== 'customInstructions') { console.error('Studio config supports customInstructions only'); process.exit(2); }
       const next = { ...cfg, [key]: parsed };
       const written = await writeConfig(next);
       if (flags.json) {
@@ -10617,6 +10624,7 @@ Common options:
         process.exit(2);
       }
       const cfg = await fetchConfig();
+      if (settingsRevision !== undefined && key !== 'customInstructions') { console.error('Studio config supports customInstructions only'); process.exit(2); }
       const next = { ...cfg };
       delete next[key];
       const written = await writeConfig(next);
@@ -10718,6 +10726,7 @@ function memoryPositionals(values) {
 }
 
 async function readMemoryBodyFromFlags(flags) {
+  if (typeof flags['prompt-file'] === 'string') return readMemoryPromptFile(flags);
   if (typeof flags.body === 'string') return flags.body;
   if (typeof flags['body-file'] !== 'string') return undefined;
   const path = flags['body-file'];

@@ -16,6 +16,8 @@
 //   rateLimits?: ok|unavailable }. A prompt containing `[mock-delay-ms=N]` delays the turn;
 //   `[mock-read=/abs/path]` reports in the reply whether that path was readable;
 //   `[mock-write=relative/path]` writes a deterministic test artifact in cwd.
+//   `promptReplyMarkers: string[]` replies only with markers actually present
+//   in the received prompt, keeping browser persistence witnesses bounded.
 import { randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -183,7 +185,11 @@ async function turn(id: number, params: Json): Promise<void> {
   fs.writeFileSync(path.join(home, 'mock-turn-evidence.json'), normalReply);
   // Deliberately exceeds the daemon's bounded final-text budget with
   // multi-byte characters, so integration tests cover UTF-8 truncation.
-  const reply = parity ? 'Done.\n' : typeof control().reply === 'string' ? String(control().reply) : text.includes('[mock-large-output]') ? '界'.repeat(200_000) : normalReply;
+  const markers = control().promptReplyMarkers;
+  const markerReply = Array.isArray(markers) ? markers.slice(0, 12)
+    .filter((marker): marker is string => typeof marker === 'string' && marker.length <= 200 && text.includes(marker)).join('\n') : null;
+  const reply = parity ? 'Done.\n' : typeof control().reply === 'string' ? String(control().reply)
+    : markerReply ?? (text.includes('[mock-large-output]') ? '界'.repeat(200_000) : normalReply);
   const itemId = `msg_${randomUUID()}`;
   notify('item/agentMessage/delta', { threadId, turnId, itemId, delta: reply });
   notify('item/completed', { threadId, turnId, item: { type: 'agentMessage', id: itemId, text: reply } });

@@ -123,3 +123,27 @@ it('retains outcome-unknown for an interrupted App mutation and never replays it
   expect(requests.mock.calls.filter(([url]) => url === '/api/projects')).toHaveLength(1);
   session.dispose();
 });
+
+it('closes actor EventSource resources synchronously and refuses stale or unavailable streams', async () => {
+  const { activateStudioTransport, studioEventSourceCtor } = await import('../../src/runtime/studio-transport');
+  const closed = vi.fn(); const starts = vi.fn();
+  vi.stubGlobal('EventSource', class {
+    constructor(url: string | URL) { starts(String(url)); }
+    addEventListener() {} close() { closed(); }
+  });
+  const session = new CookieSession();
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ account: account('A'),
+    studio: { ...capabilities, features: { ...capabilities.features, settings: { status: 'pilot', reason: 'Actor manual settings' } } }, studioRevision: 1 })));
+  await session.verify();
+  activateStudioTransport(session, session.snapshot().generation, { usable: (lane) => lane === 'settings' });
+  const Events = studioEventSourceCtor()!;
+  new Events('/api/memory/events');
+  expect(starts).toHaveBeenCalledOnce();
+  expect(() => new Events('/api/plugins/events')).toThrow('Unavailable Studio stream');
+  session.withdraw();
+  expect(closed).toHaveBeenCalledOnce();
+  expect(studioEventSourceCtor()).toBeNull();
+  expect(() => new Events('/api/memory/events')).toThrow('Unavailable Studio stream');
+  expect(starts).toHaveBeenCalledOnce();
+  session.dispose();
+});

@@ -1,6 +1,8 @@
 import type { Dict } from '../types';
 
 export const ja: Dict = {
+  "studio.manualMemoryHint": "Saved manual memories and profile facts are included in future runs. Automatic extraction, brief rewriting and verification are not available yet.",
+
   "multiuser.companyOpenAI": "OpenAI 共有プール",
   "multiuser.companyOpenAIHelp": "OpenAI モデルと同時実行数を設定します。キーを空欄にすると現在の値を保持します。認証情報はサーバーに保存されます。モデルやキーを変更した場合は新しい会話を開始してください。",
   "multiuser.companyKeyConfigured": "API キー設定済み",
@@ -387,6 +389,10 @@ export const ja: Dict = {
   'libraryPicker.allKinds': 'すべて',
   'libraryPicker.add': 'インポート',
   'libraryPicker.loading': '読み込み中…',
+  'studio.settingsReload': 'Reload saved settings',
+  'studio.settingsSaved': 'Account instructions saved.',
+  'studio.settingsError': 'Could not load or save account instructions.',
+  'studio.settingsConflict': 'Settings changed in another tab. Reload saved settings before saving again.',
   'common.save': '保存',
   'common.close': '閉じる',
   'common.clear': 'クリア',

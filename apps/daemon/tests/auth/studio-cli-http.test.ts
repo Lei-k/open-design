@@ -228,3 +228,22 @@ it('administers the OpenAI company pool through write-only stdin credentials and
     '--model', 'fixture-model', '--capacity', '0', '--revoke-key', '--session-file', file, '--json']));
   expect(revoked.provider.configured).toBe(false);
 }, 40_000);
+
+it('edits account instructions and manual profile through stdin and isolates B', async () => {
+  const first = path.join(root, 'cli-settings-a'); const second = path.join(root, 'cli-settings-b');
+  for (const [user, file] of [[alice, first], [bob, second]] as const) {
+    success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', user.username,
+      '--password-file', '-', '--session-file', file, '--json'], user.password + '\n'));
+  }
+  expect(success(await cli(['config', 'set', 'customInstructions', '--prompt-file', '-', '--session-file', first, '--json'], 'CLI_INSTRUCTIONS\nsecond line')))
+    .toEqual({ customInstructions: 'CLI_INSTRUCTIONS\nsecond line' });
+  expect(success(await cli(['config', 'get', 'customInstructions', '--session-file', second, '--json']))).toBe('');
+  expect((await cli(['config', 'set', 'agentCliEnv', '--value-json', '{}', '--session-file', first, '--json'])).code).not.toBe(0);
+  const profile = success(await cli(['memory', 'profile', 'set', '--prompt-file', '-', '--session-file', first, '--json'], '- Role: CLI_PROFILE_ORIGINAL'));
+  expect(profile.body).toContain('CLI_PROFILE_ORIGINAL');
+  expect(success(await cli(['memory', 'tree', 'list', '--session-file', first, '--json'])).tree.some((node: { id: string }) => node.id === 'user_profile')).toBe(true);
+  const edited = success(await cli(['memory', 'tree', 'edit', 'user_profile', '--prompt-file', '-', '--session-file', first, '--json'], '- Role: CLI_PROFILE_EDITED'));
+  expect(edited.entry.body).toContain('CLI_PROFILE_EDITED');
+  expect((await cli(['memory', 'tree', 'view', 'user_profile', '--session-file', second, '--json'])).code).not.toBe(0);
+  expect(success(await cli(['config', 'unset', 'customInstructions', '--session-file', first, '--json']))).toEqual({ customInstructions: '' });
+}, 40_000);

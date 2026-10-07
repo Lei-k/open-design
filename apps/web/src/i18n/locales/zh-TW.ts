@@ -1,6 +1,13 @@
 import type { Dict } from "../types";
 
 export const zhTW: Dict = {
+  "studio.manualMemoryHint": "手動儲存的記憶與個人檔案會帶入後續執行。目前尚未開放自動擷取、需求改寫與驗證。",
+
+  "studio.settingsReload": "重新載入設定",
+  "studio.settingsSaved": "已儲存個人指示。",
+  "studio.settingsError": "無法載入或儲存個人指示。",
+  "studio.settingsConflict": "另一個分頁已修改設定。請重新載入後再儲存。",
+
   "multiuser.companyOpenAI": "OpenAI 公司池",
   "multiuser.companyOpenAIHelp": "設定 OpenAI 模型和同時執行的任務數。密鑰留空則保留現有值，憑證保存在服務端。更改模型或密鑰後需要建立新對話。",
   "multiuser.companyKeyConfigured": "已設定 API 密鑰",

@@ -1,4 +1,4 @@
-import { studioFetch as fetch, studioLocalStorage } from '../runtime/studio-transport';
+import { studioUsesLocalServices, studioFetch as fetch, studioLocalStorage } from '../runtime/studio-transport';
 import type { AppConfigPrefs } from '@open-design/contracts';
 import { MEDIA_PROVIDERS } from '../media/models';
 import { isOpenAICompatible } from '../providers/openai-compatible';
@@ -1283,6 +1283,9 @@ export async function syncConfigToDaemon(
     allowOnboardingReset?: boolean;
   },
 ): Promise<void> {
+  // Account preferences are saved explicitly with their observed revision.
+  // A broad local-mode autosave must never overwrite them.
+  if (!studioUsesLocalServices()) return;
   const prefs: AppConfigPrefs = {
     ...(config.onboardingCompleted === true
       ? { onboardingCompleted: true }

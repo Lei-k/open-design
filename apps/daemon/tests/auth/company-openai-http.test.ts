@@ -173,3 +173,19 @@ it('revokes credentials, refuses old model/key bindings, and accepts no client-s
   expect((await run(await target())).json.error.code).toBe('MULTIUSER_PROVIDER_DISABLED');
   expect(readFileSync(path.join(root, 'app.sqlite')).includes(Buffer.from(secret))).toBe(false);
 });
+
+it('uses the actor instructions and manual memory in the OpenAI developer prompt', async () => {
+  expect((await config({ apiKey: secret, enabled: true })).status).toBe(200);
+  const prefs = await daemon.request({ path: '/api/app-config', cookie: a.cookie });
+  expect((await daemon.request({ method: 'PUT', path: '/api/app-config', cookie: a.cookie,
+    body: { revision: prefs.json.revision, customInstructions: 'OPENAI_ACTOR_INSTRUCTIONS' } })).status).toBe(200);
+  expect((await daemon.request({ method: 'POST', path: '/api/memory', cookie: a.cookie,
+    body: { name: 'Company memory', description: '', type: 'user', body: 'OPENAI_ACTOR_MEMORY' } })).status).toBe(200);
+  expect((await daemon.request({ method: 'POST', path: '/api/memory', cookie: b.cookie,
+    body: { name: 'Other memory', description: '', type: 'user', body: 'OPENAI_FOREIGN_MEMORY' } })).status).toBe(200);
+  const admitted = await run(await target()); expect(admitted.status, admitted.text).toBe(202);
+  await daemon.request({ path: `/api/runs/${admitted.json.runId}/events`, cookie: a.cookie });
+  const input = JSON.stringify(observed.at(-1)?.body.input);
+  expect(input).toContain('OPENAI_ACTOR_INSTRUCTIONS'); expect(input).toContain('OPENAI_ACTOR_MEMORY');
+  expect(input).not.toContain('OPENAI_FOREIGN_MEMORY');
+});

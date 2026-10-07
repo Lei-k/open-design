@@ -3658,7 +3658,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
               }}
               connectors={connectors}
-              onPickConnector={!studio.available('settings') ? undefined : (connector) => {
+              onPickConnector={!studioRequest('GET', '/api/connectors/discovery') ? undefined : (connector) => {
                 trackComposerBar({
                   element: 'plus_pick',
                   resource_kind: 'connector',
@@ -3666,7 +3666,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 insertConnectorMention(connector);
               }}
-              onAddConnector={studio.available('settings') && onOpenConnectors ? () => {
+              onAddConnector={studioRequest('GET', '/api/connectors/discovery') && onOpenConnectors ? () => {
                 trackComposerBar({ element: 'plus_add', resource_kind: 'connector' });
                 onOpenConnectors();
               } : undefined}
@@ -3693,7 +3693,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 void insertSkillMention(skill);
               }}
               mcpServers={enabledMcpServers}
-              onPickMcp={!studio.available('settings') ? undefined : (server) => {
+              onPickMcp={!studioRequest('GET', '/api/mcp/config') ? undefined : (server) => {
                 trackComposerBar({
                   element: 'plus_pick',
                   resource_kind: 'mcp',
@@ -3701,7 +3701,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 insertMcpMention(server);
               }}
-              onAddMcp={studio.available('settings') && onOpenMcpSettings ? () => {
+              onAddMcp={studioRequest('GET', '/api/mcp/config') && onOpenMcpSettings ? () => {
                 trackComposerBar({ element: 'plus_add', resource_kind: 'mcp' });
                 onOpenMcpSettings();
               } : undefined}
@@ -3727,7 +3727,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 void handleLinkLocalCodeContext();
               }}
               attachLoading={uploading}
-              onSelectFromLibrary={!studio.available('settings') ? undefined : () => {
+              onSelectFromLibrary={!studioRequest('GET', '/api/library/assets') ? undefined : () => {
                 trackChatPanelClick(analytics.track, {
                   page_name: 'chat_panel',
                   area: 'chat_panel',

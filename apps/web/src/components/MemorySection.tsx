@@ -1,4 +1,4 @@
-import { studioSetTimeout as setTimeout, studioWindowSetInterval, studioSetInterval as setInterval, studioFetch as fetch, studioWindowSessionStorage } from '../runtime/studio-transport';
+import { studioEventSourceCtor, studioUsesLocalServices, studioSetTimeout as setTimeout, studioWindowSetInterval, studioSetInterval as setInterval, studioFetch as fetch, studioWindowSessionStorage } from '../runtime/studio-transport';
 import {
   useCallback,
   useEffect,
@@ -733,6 +733,7 @@ export function MemorySection({
 }: MemorySectionProps = {}) {
   const t = useT();
   const logoTheme = useResolvedTheme();
+  const localServices = studioUsesLocalServices();
   const [enabled, setEnabled] = useState(true);
   const [chatExtractionEnabled, setChatExtractionEnabled] = useState(true);
   // False until `GET /api/memory` has actually answered. Every switch position
@@ -910,13 +911,13 @@ export function MemorySection({
 
   useEffect(() => {
     void reload();
-    void reloadExtractions();
-  }, [reload, reloadExtractions]);
+    if (localServices) void reloadExtractions();
+  }, [reload, reloadExtractions, localServices]);
 
   useEffect(() => {
-    if (activeTab !== 'connected') return;
+    if (!localServices || activeTab !== 'connected') return;
     void reloadConnectors();
-  }, [activeTab, reloadConnectors]);
+  }, [activeTab, reloadConnectors, localServices]);
 
   useEffect(() => {
     writePendingConnectorAuthIds(pendingConnectorAuthIds);
@@ -932,7 +933,9 @@ export function MemorySection({
   // so we just always reload on any change. EventSource auto-reconnects
   // on temporary daemon hiccups.
   useEffect(() => {
-    const es = new EventSource('/api/memory/events');
+    const EventSourceClass = studioEventSourceCtor();
+    if (!EventSourceClass) return;
+    const es = new EventSourceClass('/api/memory/events');
     es.addEventListener('change', (raw) => {
       try {
         const ev = JSON.parse((raw as MessageEvent).data) as MemoryChangeEvent;
@@ -1501,8 +1504,8 @@ export function MemorySection({
   // owns the master toggle has to show every one of them that is not running —
   // rather than leaving the user to find it under a second tab (OPEND-2606).
   const undisclosedHooks = useMemo(
-    () => hooksOffWhileEnabled(knownFlags),
-    [knownFlags],
+    () => hooksOffWhileEnabled(knownFlags).filter((key) => localServices || key === 'profileEnabled'),
+    [knownFlags, localServices],
   );
 
   const onSaveIndex = useCallback(async () => {
@@ -1844,7 +1847,7 @@ export function MemorySection({
 
       {topTab === 'how' ? (
         <div className="memory-how-panel">
-          <div className="memory-auto-flow">
+          {localServices && <div className="memory-auto-flow">
             <span>{t('memory.flowOnboarding')}</span>
             <Icon name="chevron-right" size={14} />
             <span>{t('memory.flowBrandContext')}</span>
@@ -1852,14 +1855,15 @@ export function MemorySection({
             <span>{t('memory.flowChatSignals')}</span>
             <Icon name="chevron-right" size={14} />
             <strong>{t('memory.flowSavedMemory')}</strong>
-          </div>
+          </div>}
           <p className="memory-how-copy">
-            {t('memory.howCopy')}
+            {t(localServices ? 'memory.howCopy' : 'studio.manualMemoryHint')}
           </p>
           <MemoryHooksPanel
             enabled={enabled}
             flags={hookFlags}
             onToggle={onToggleHook}
+            hooks={localServices ? undefined : ['profileEnabled']}
           />
         </div>
       ) : null}
@@ -1904,7 +1908,7 @@ export function MemorySection({
         role="tablist"
         aria-label={t('memory.areasAria')}
       >
-        {memoryTabs.map((tab) => (
+        {memoryTabs.filter((tab) => localServices || tab.id !== 'connected').map((tab) => (
           <button
             key={tab.id}
             type="button"

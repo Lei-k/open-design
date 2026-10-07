@@ -128,6 +128,32 @@ describe('route classification covers the real inventory', () => {
       .map((entry) => `${entry.routeClass} ${entry.key}`)
       .sort();
     expect(allowed).toEqual([...S5_OWNER_FILE_ROUTES, ...[
+      'actor-scoped GET /api/app-config',
+      'actor-scoped GET /api/multiuser/settings/config',
+      'actor-scoped PUT /api/app-config',
+      'actor-scoped PUT /api/multiuser/settings/config',
+      'actor-scoped GET /api/memory',
+      'actor-scoped GET /api/multiuser/settings/memory',
+      'actor-scoped GET /api/memory/tree',
+      'actor-scoped GET /api/multiuser/settings/memory/tree',
+      'actor-scoped PATCH /api/memory/tree/:id',
+      'actor-scoped PATCH /api/multiuser/settings/memory/tree/:id',
+      'actor-scoped PUT /api/memory/index',
+      'actor-scoped PUT /api/multiuser/settings/memory/index',
+      'actor-scoped PATCH /api/memory/config',
+      'actor-scoped PATCH /api/multiuser/settings/memory/config',
+      'actor-scoped GET /api/memory/events',
+      'actor-scoped GET /api/multiuser/settings/memory/events',
+      'actor-scoped GET /api/memory/system-prompt',
+      'actor-scoped GET /api/multiuser/settings/memory/system-prompt',
+      'actor-scoped POST /api/memory',
+      'actor-scoped POST /api/multiuser/settings/memory',
+      'actor-scoped GET /api/memory/:id',
+      'actor-scoped GET /api/multiuser/settings/memory/:id',
+      'actor-scoped PUT /api/memory/:id',
+      'actor-scoped PUT /api/multiuser/settings/memory/:id',
+      'actor-scoped DELETE /api/memory/:id',
+      'actor-scoped DELETE /api/multiuser/settings/memory/:id',
       'actor-scoped GET /api/skills',
       'actor-scoped GET /api/skills/:id',
       'actor-scoped GET /api/skills/:id/files',
@@ -253,7 +279,6 @@ describe('route classification covers the real inventory', () => {
       'USE /api/plugin-previews',
       'GET /*splat',
       'GET /api/library/events',
-      'GET /api/memory/events',
       'GET /api/workspace/events',
       'GET /api/plugins/events',
     ]) {
@@ -590,8 +615,8 @@ describe('fail-closed classification', () => {
   it('denies blocked-in-multiuser families to signed-in users and admins alike', async () => {
     const a = await createProject(alice, 'alice-blocked');
     const blocked: Array<{ method: string; path: string; body?: unknown }> = [
-      { method: 'GET', path: '/api/app-config' },
-      { method: 'PUT', path: '/api/app-config', body: {} },
+      { method: 'GET', path: '/api/strategies/od-next/rollout' },
+      { method: 'POST', path: '/api/memory/extract', body: {} },
       { method: 'POST', path: '/api/import/folder', body: { baseDir: '/' } },
       { method: 'POST', path: '/api/dialog/open-folder', body: {} },
       { method: 'GET', path: '/api/mcp/servers' },

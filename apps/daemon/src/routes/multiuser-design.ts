@@ -92,6 +92,8 @@ export interface MultiUserDesignRoutes {
     conversationId: string;
     ownerId: string;
     projectId: string;
+    userInstructions?: string;
+    memoryBody?: string;
   }): Promise<{ prompt: string; hash: string; selection: MultiUserDesignSelection } | null>;
   invalidateOwnerCapabilities(ownerId: string): void;
   close(): void;
@@ -364,7 +366,7 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
 
   return {
     selection,
-    async composeStablePrompt({ conversationId, ownerId, projectId }) {
+    async composeStablePrompt({ conversationId, ownerId, projectId, userInstructions, memoryBody }) {
       const design = selection(conversationId, ownerId);
       const project = getProject(db, projectId);
       if (!design || !project || !owners.isOwnedBy(projectId, ownerId)) return null;
@@ -396,8 +398,8 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
         designSystemFixtureHtml: assets.fixtureHtml,
         designSystemPullIndex: assets.pullIndex,
         designSystemImportMode: assets.importMode,
-        memoryBody: undefined,
-        userInstructions: undefined,
+        memoryBody,
+        userInstructions,
         pluginBlock: undefined,
       });
       return { prompt, hash: createHash('sha256').update(prompt).digest('hex'), selection: design };

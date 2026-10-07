@@ -55,8 +55,9 @@ test('[P1] Studio run renders its immutable image immediately and retains histor
 test.use({ ignoreHTTPSErrors: true });
 test.setTimeout(T.xlong * 3);
 
-test('[P1] Studio creates a private skill in shared Settings and sends its captured text from the composer', async ({ page, studio }, info) => {
+test('[P1] Studio saves private skills, instructions and memory in shared Settings and runs their captured text', async ({ page, studio }, info) => {
   await studio.linkCodex(studio.a);
+  await studio.configureTurn(studio.a, { promptReplyMarkers: ['Browser private skill marker', 'Browser account instructions marker', 'Browser account memory marker'] });
   await page.goto(`${studio.origin}/settings`);
   await page.locator('input[name="username"]').fill(studio.a.username);
   await page.locator('input[name="password"]').fill(studio.a.password);
@@ -64,13 +65,24 @@ test('[P1] Studio creates a private skill in shared Settings and sends its captu
   await page.getByTestId('skills-new').click();
   const form = page.getByTestId('skills-create-form');
   await form.getByPlaceholder('my-skill').fill('Browser private skill');
-  await form.locator('textarea[rows="14"]').fill('BROWSER_PRIVATE_SKILL_MARKER');
+  await form.locator('textarea[rows="14"]').fill('Browser private skill marker');
   const created = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/skills/import');
   await page.getByTestId('skills-save').click();
   const response = await created;
   expect(response.status()).toBe(201);
   const id = (await response.json()).skill.id;
   await expect(form).toHaveCount(0);
+  await page.locator('.custom-instructions-input').fill('Browser account instructions marker');
+  const instructionsSaved = page.waitForResponse((result) => result.request().method() === 'PUT' && new URL(result.url()).pathname === '/api/app-config');
+  await page.getByTestId('studio-instructions-save').click();
+  expect((await instructionsSaved).status()).toBe(200);
+  await page.getByRole('button', { name: 'Add or import memories', exact: true }).click();
+  const profile = page.getByTestId('memory-profile-panel');
+  await profile.getByRole('textbox', { name: 'Role', exact: true }).fill('Browser account memory marker');
+  const memorySaved = page.waitForResponse((result) => result.request().method() === 'PUT' && new URL(result.url()).pathname === '/api/memory/user_profile');
+  await profile.getByRole('button', { name: 'Save profile', exact: true }).click();
+  expect((await memorySaved).status()).toBe(200);
+  await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click();
   await page.screenshot({ path: info.outputPath('studio-skills-entry.png') });
   const projectId = studioProjectId();
   expect((await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Browser skill run' })).status).toBe(200);
@@ -86,10 +98,17 @@ test('[P1] Studio creates a private skill in shared Settings and sends its captu
   const started = await admitted;
   expect(started.status()).toBe(202);
   expect(started.request().postDataJSON().context.skillIds).toContain(id);
-  await expect(page.locator('body')).toContainText('BROWSER_PRIVATE_SKILL_MARKER', { timeout: T.long });
+  await expect(page.locator('body')).toContainText('Browser private skill marker', { timeout: T.long });
+  await expect(page.locator('body')).toContainText('Browser account instructions marker', { timeout: T.long });
+  await expect(page.locator('body')).toContainText('Browser account memory marker', { timeout: T.long });
   expect((await studio.request('GET', `/api/skills/${encodeURIComponent(id)}`, studio.b.cookie)).status).toBe(404);
   await page.reload();
-  await expect(page.locator('body')).toContainText('BROWSER_PRIVATE_SKILL_MARKER', { timeout: T.long });
+  await expect(page.locator('body')).toContainText('Browser private skill marker', { timeout: T.long });
+  await expect(page.locator('body')).toContainText('Browser account memory marker', { timeout: T.long });
+  expect((await studio.request('GET', '/api/memory/user_profile', studio.b.cookie)).status).toBe(404);
+  expect((await studio.request('GET', '/api/app-config', studio.b.cookie)).text).not.toContain('Browser account instructions marker');
+  await page.goto(`${studio.origin}/settings`);
+  await expect(page.locator('.custom-instructions-input')).toHaveValue('Browser account instructions marker');
   await page.screenshot({ path: info.outputPath('studio-skill-turn.png') });
 });
 

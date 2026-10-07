@@ -59,7 +59,8 @@ describe('classification registry is well formed', () => {
   it('never marks a parameterless project route owner-scoped or a project-param route actor-scoped', () => {
     for (const entry of MULTIUSER_ROUTE_CLASSIFICATION) {
       if (entry.routeClass === 'actor-scoped') {
-        expect(entry.path.includes(':'), entry.key).toBe(false);
+        expect(entry.projectParam, entry.key).toBeUndefined();
+        expect(/^\/api\/projects\/:[^/]+/.test(entry.path), entry.key).toBe(false);
       }
     }
   });
