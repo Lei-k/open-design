@@ -12,6 +12,7 @@ it('reads the target pilot and submits its revision, then requires a fresh read 
   let revision = 0;
   const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
     if (url === '/api/auth/me') return json({ account: admin });
+    if (url === '/api/admin/pool/openai') return json({ provider: { providerId: 'openai', configured: false, enabled: false, model: '', capacity: 0, revision: 0, credentialRevision: 0 } });
     if (url.startsWith('/api/auth/users?')) return json({ accounts: [admin, alice], page: { total: 2, offset: 0, limit: 20 } });
     expect(url).toBe('/api/admin/users/alice/studio-pilot');
     if (init?.method === 'PUT') { expect(JSON.parse(String(init.body))).toEqual({ studioPilot: true, revision: 0 }); revision = 1; return json({}, 409); }

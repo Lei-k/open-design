@@ -159,3 +159,58 @@ test('[P1] Studio deck navigation and manual edits survive reload under owner co
     expect(foreign.status()).toBe(404);
   } finally { await other.close(); }
 });
+
+
+test('[P1] admin configures the company pool and Studio runs and reloads on its pinned OpenAI source', async ({ page, studio }, info) => {
+  await page.goto(`${studio.origin}/admin/users`);
+  await page.locator('input[name="username"]').fill(studio.admin.username);
+  await page.locator('input[name="password"]').fill(studio.admin.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  const pool = page.getByTestId('company-openai-settings');
+  await expect(pool.locator('input[name="model"]')).toBeVisible({ timeout: T.long });
+  await pool.locator('input[name="model"]').fill('fixture-model');
+  await pool.locator('input[name="capacity"]').fill('1');
+  await pool.locator('input[name="enabled"]').check();
+  const key = 'sk-browser-fixture-secret-12345678901234567890';
+  await pool.locator('input[name="apiKey"]').fill(key);
+  const configured = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === '/api/admin/pool/openai');
+  await pool.getByRole('button', { name: 'Save', exact: true }).click();
+  const response = await configured;
+  expect(response.status()).toBe(200);
+  expect(JSON.stringify(await response.json())).not.toContain(key);
+  await expect(pool.locator('input[name="apiKey"]')).toHaveValue('');
+  await page.screenshot({ path: info.outputPath('studio-company-pool-entry.png') });
+  await page.context().clearCookies();
+  const projectId = studioProjectId();
+  expect((await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Company browser acceptance' })).status).toBe(200);
+  await page.goto(`${studio.origin}/projects/${projectId}`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  const source = page.getByTestId('studio-execution-source');
+  await expect(source.locator('select')).toBeVisible({ timeout: T.long });
+  await source.locator('select').selectOption('openai');
+  const composer = page.getByTestId('chat-composer-input');
+  await composer.fill('Create a company design.');
+  const admitted = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/runs');
+  await page.getByTestId('chat-send').click();
+  const run = await admitted;
+  expect(run.status(), await run.text()).toBe(202);
+  expect(run.request().postDataJSON().agentId).toBe('openai');
+  await expect(page.locator('body')).toContainText('Company browser design complete.', { timeout: T.long });
+  const fileUrl = `/api/projects/${projectId}/files/company.html`;
+  expect((await studio.request('GET', fileUrl, studio.a.cookie)).text).toContain('Company browser design');
+  expect((await studio.request('GET', fileUrl, studio.b.cookie)).status).toBe(404);
+  await page.reload();
+  await expect(source).toContainText('OpenAI · company pool');
+  await expect(page.getByTestId('assistant-role').first()).toContainText('OpenAI');
+  await expect(source.locator('select')).toHaveCount(0);
+  await composer.fill('Continue my company design.');
+  const continued = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/runs');
+  await page.getByTestId('chat-send').click();
+  const continuation = await continued;
+  expect(continuation.status()).toBe(202);
+  expect(continuation.request().postDataJSON().agentId).toBe('openai');
+  await expect(page.getByTestId('assistant-role').last()).toContainText('OpenAI');
+  await page.screenshot({ path: info.outputPath('studio-company-run.png') });
+});

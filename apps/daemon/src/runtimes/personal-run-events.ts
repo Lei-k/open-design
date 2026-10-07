@@ -21,7 +21,6 @@ const VALUE = String.raw`(?:"[^"\n]*"|'[^'\n]*'|[^\s"'<>,;]+)`;
 // so prose such as "API token: optional" is untouched.
 const SENSITIVE_ASSIGNMENT = new RegExp(String.raw`\b((?:${RUN_ENV_NAMES}|(?i:${SECRET_NAME}))\s*=\s*|(?:${RUN_ENV_NAMES}|[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIALS?)[A-Z0-9_]*)\s*:\s+)${VALUE}`, 'gu');
 const CREDENTIAL_TOKEN = /\bBearer\s+[\w.~+/=-]{8,}|\bsk-[\w-]{20,}|\b(?:gh[pousr]_|github_pat_|xox[abprs]-)[\w-]{20,}|\bAKIA[0-9A-Z]{16}\b|\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]+|-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/giu;
-const redacted = (fields: string[]) => ({ policy: 'personal-subscription' as const, fields });
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const identifier = (value: unknown) => typeof value === 'string' && /^[\w.:/#-]{1,160}$/u.test(value) && !value.startsWith('/') ? value : `redacted-${createHash('sha256').update(String(value)).digest('hex').slice(0, 24)}`;
 function prefix(text: string, bytes: number): string {
@@ -50,7 +49,8 @@ export class PersonalRunEvents {
   private pendingType: 'text_delta' | 'thinking_delta' = 'text_delta';
   private pendingOverflow = false;
   private marked = false;
-  constructor(private readonly cwd: string, private readonly privateRoots: string[], private readonly emit: (event: ChatSseEvent) => void, private readonly clock?: ToolTimingClock) {}
+  constructor(private readonly cwd: string, private readonly privateRoots: string[], private readonly emit: (event: ChatSseEvent) => void, private readonly clock?: ToolTimingClock, private readonly policy: 'personal-subscription' | 'company-pool' = 'personal-subscription') {}
+  private redacted(fields: string[]) { return { policy: this.policy, fields }; }
 
   /**
    * #77: only sensitive values are removed, so ordinary code (`WIDTH=1440`,
@@ -116,7 +116,7 @@ export class PersonalRunEvents {
     // escape-heavy delta: a JSON-escaped byte grows at most 6x, so a chunk that
     // does not fit at 8 KiB always fits at 2 KiB. One encode per flush.
     const event = (delta: string): ChatSseEvent => ({ event: 'agent', data: { type: this.pendingType, delta,
-      ...(safe === original ? {} : { redacted: redacted(['delta']) }) } });
+      ...(safe === original ? {} : { redacted: this.redacted(['delta']) }) } });
     for (let start = 0; start < bounded.length;) {
       let next: ChatSseEvent | null = null;
       let end = start;
@@ -160,7 +160,7 @@ export class PersonalRunEvents {
     let data: DaemonAgentPayload | null = null;
     if (type === 'status') data = { type, label: identifier(event.label),
       ...(typeof event.sessionId === 'string' ? { sessionId: identifier(event.sessionId) } : {}),
-      ...(event.detail || event.model ? { redacted: redacted(['detail', 'model']) } : {}) };
+      ...(event.detail || event.model ? { redacted: this.redacted(['detail', 'model']) } : {}) };
     if (type === 'thinking_start') data = { type };
     if (type === 'thinking_tokens' && typeof event.tokens === 'number' && Number.isFinite(event.tokens)) data = { type, tokens: event.tokens };
     if (type === 'tool_use' || type === 'tool_in_flight') {
@@ -185,13 +185,13 @@ export class PersonalRunEvents {
       }
       data = type === 'tool_in_flight'
         ? { type, id: identifier(event.id), name: identifier(event.name), input: safe,
-          redacted: redacted(['input', 'output']), startedAt: Number(event.startedAt) }
+          redacted: this.redacted(['input', 'output']), startedAt: Number(event.startedAt) }
         : { type, id: identifier(event.id), name: identifier(event.name), input: safe,
-          redacted: redacted(['input']), ...(typeof event.startedAt === 'number' ? { startedAt: event.startedAt } : {}) };
+          redacted: this.redacted(['input']), ...(typeof event.startedAt === 'number' ? { startedAt: event.startedAt } : {}) };
     }
     if (type === 'tool_result') data = { type, toolUseId: identifier(event.toolUseId),
-      content: '[Tool output omitted by personal-subscription privacy policy]', isError: event.isError === true,
-      redacted: redacted(['content']), ...(typeof event.completedAt === 'number' ? { completedAt: event.completedAt } : {}) };
+      content: `[Tool output omitted by ${this.policy} privacy policy]`, isError: event.isError === true,
+      redacted: this.redacted(['content']), ...(typeof event.completedAt === 'number' ? { completedAt: event.completedAt } : {}) };
     if (type === 'usage') {
       const usage = record(event.usage);
       data = { type, usage: Object.fromEntries(['input_tokens', 'output_tokens'].flatMap((key) =>
@@ -199,6 +199,6 @@ export class PersonalRunEvents {
     }
     if (data) this.send({ event: 'agent', data });
     else if (type !== 'turn_end') this.send({ event: 'diagnostic', data: { type: 'personal_provider_event',
-      providerType: identifier(type), redacted: redacted(['payload']) } });
+      providerType: identifier(type), redacted: this.redacted(['payload']) } });
   }
 }

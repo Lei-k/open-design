@@ -17580,6 +17580,7 @@ export async function startServer({
   const multiUserRuns = multiUserMode ? registerMultiUserRunRoutes(app, {
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
     ...(multiUserMode.testMockAgentScript ? { mockAgentScript: multiUserMode.testMockAgentScript } : {}),
+    ...(multiUserMode.testCompanyOpenAIFetch ? { companyFetch: multiUserMode.testCompanyOpenAIFetch } : {}),
     ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
     ...(personalCodex ? { personal: personalCodex } : {}),
     ...(multiUserDesign ? { design: multiUserDesign } : {}),
@@ -17589,6 +17590,7 @@ export async function startServer({
     multiUserRuns.cancelAccountRuns(accountId);
     personalCodex?.cancelPendingFor(accountId).catch(() => {});
   });
+  if (multiUserRuns) multiUserFront?.setCompanyPoolAvailable(() => multiUserRuns.openaiPoolAvailable);
   if (multiUserRuns) multiUserFront?.setIsRunOwner(multiUserRuns.isRunOwner);
   if (multiUserRuns) multiUserFront?.setCancelProjectRuns(multiUserRuns.cancelProjectRuns);
   if (multiUserRuns && personalCodex) {
@@ -17598,7 +17600,7 @@ export async function startServer({
     multiUserFront?.setIsAgentAccountOwner((param, id, accountId) => personalCodex.isOwner(param, id, accountId));
     registerMultiUserAgentAccountRoutes(app, {
       personal: personalCodex, runs: multiUserRuns.personalLane, listAccountIds: multiUserRuns.listAccountIds,
-      companyPoolAvailable: multiUserRuns.companyPoolAvailable,
+      companyPoolAvailable: () => multiUserRuns.companyPoolAvailable,
     });
   }
   registerRunRoutes(app, {

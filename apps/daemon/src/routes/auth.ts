@@ -115,6 +115,7 @@ export interface RegisterAuthRoutesDeps {
   onAccountSessionsRevoked?: (accountId: string) => void;
   /** Server policy: whether personal-subscription runs can start at all. */
   personalRunsEnabled?: boolean;
+  companyPoolAvailable?: () => boolean;
 }
 
 const STATUS_BY_AUTH_CODE: Record<AuthErrorCode, { status: number; code: ApiErrorCode }> = {
@@ -457,7 +458,7 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
     const actor = actorOf(res);
     const pilot = auth.getOwnStudioPilot(actor);
     res.status(200).json({ account: auth.getOwnAccount(actor), session: { expiresAt: actor.sessionExpiresAt },
-      studio: multiUserStudioCapabilities(pilot.studioPilot, { personalEnabled: deps.personalRunsEnabled === true }),
+      studio: multiUserStudioCapabilities(pilot.studioPilot, { personalEnabled: deps.personalRunsEnabled === true, companyEnabled: deps.companyPoolAvailable?.() === true }),
       studioRevision: pilot.revision,
       ...(pilot.studioPilot ? { studioMessageIdPrefix: studioMessageIdPrefix(actor.accountId) } : {}) } satisfies AuthSessionResponse);
   }));

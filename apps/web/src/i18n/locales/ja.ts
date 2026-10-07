@@ -1,6 +1,18 @@
 import type { Dict } from '../types';
 
 export const ja: Dict = {
+  "multiuser.companyOpenAI": "OpenAI 共有プール",
+  "multiuser.companyOpenAIHelp": "OpenAI モデルと同時実行数を設定します。キーを空欄にすると現在の値を保持します。認証情報はサーバーに保存されます。モデルやキーを変更した場合は新しい会話を開始してください。",
+  "multiuser.companyKeyConfigured": "API キー設定済み",
+  "multiuser.companyKeyMissing": "API キー未設定",
+  "multiuser.companyModel": "モデル ID",
+  "multiuser.companyCapacity": "同時実行数",
+  "multiuser.companyEnabled": "共有プールを有効にする",
+  "multiuser.companyKey": "新しい API キー（任意）",
+  "multiuser.companyRevokeKey": "API キーを取り消す",
+  "multiuser.companyRevokeWarning": "キーを取り消して共有プールの実行を停止しますか？",
+  "multiuser.executionSourceCompanyOpenAI": "OpenAI · 共有プール",
+  "multiuser.companySourceUnavailable": "実行元を利用できません",
   "multiuserRuns.conversations": "Conversations",
   "multiuserRuns.conversationTitle": "Conversation title",
   "multiuserRuns.createConversation": "Create conversation",

@@ -2645,6 +2645,10 @@ export function ProjectView({
     useRef<ConversationMaterializationRecovery | null>(null);
   const [messageLoadRetryNonce, setMessageLoadRetryNonce] = useState(0);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // Durable run rows pin the conversation. Reload and retry retain its source.
+  const studioPinnedAgentId = !studio.hostServices ? messages.find((message) => message.runId
+    && (message.agentId === 'codex' || message.agentId === 'openai'))?.agentId : undefined;
+  const executionAgentId = studioPinnedAgentId ?? config.agentId;
   const [forkingMessageId, setForkingMessageId] = useState<string | null>(null);
   const [activePluginActionPaths, setActivePluginActionPaths] = useState<Set<string>>(() => new Set());
   const [hiddenAssistantPluginActionPaths, setHiddenAssistantPluginActionPaths] = useState<Set<string>>(() => new Set());
@@ -5741,15 +5745,15 @@ export function ProjectView({
     agentName: string | undefined;
   }>(() => {
     if (config.mode === 'daemon') {
-      const selectedAgent = config.agentId ? agentsById.get(config.agentId) : null;
-      const selectedAgentChoice = config.agentId
-        ? config.agentModels?.[config.agentId]
+      const selectedAgent = executionAgentId ? agentsById.get(executionAgentId) : null;
+      const selectedAgentChoice = executionAgentId
+        ? config.agentModels?.[executionAgentId]
         : undefined;
       const effectiveChoice = effectiveAgentModelChoice(selectedAgent, selectedAgentChoice);
       return {
-        agentId: config.agentId ?? undefined,
+        agentId: executionAgentId ?? undefined,
         agentName: agentModelDisplayName(
-          config.agentId,
+          executionAgentId,
           selectedAgent?.name,
           effectiveChoice?.model,
         ),
@@ -5759,7 +5763,7 @@ export function ProjectView({
       agentId: apiProtocolAgentId(config.apiProtocol),
       agentName: apiProtocolModelLabel(config.apiProtocol, config.model),
     };
-  }, [config, agentsById]);
+  }, [config, agentsById, executionAgentId]);
 
   // One-shot: when extraction is blocked by an anti-bot wall (or has stalled past
   // the timeout), drop the assist card into the conversation so the user can
@@ -8625,12 +8629,12 @@ export function ProjectView({
         ),
       );
       const selectedAgent =
-        config.mode === 'daemon' && config.agentId
-          ? agentsById.get(config.agentId)
+        config.mode === 'daemon' && executionAgentId
+          ? agentsById.get(executionAgentId)
           : null;
       const selectedAgentChoice =
-        config.mode === 'daemon' && config.agentId
-          ? config.agentModels?.[config.agentId]
+        config.mode === 'daemon' && executionAgentId
+          ? config.agentModels?.[executionAgentId]
           : undefined;
       const effectiveSelectedAgentChoice = effectiveAgentModelChoice(
         selectedAgent,
@@ -8638,12 +8642,12 @@ export function ProjectView({
       );
       const assistantAgentId =
         config.mode === 'daemon'
-          ? config.agentId ?? undefined
+          ? executionAgentId ?? undefined
           : apiProtocolAgentId(config.apiProtocol);
       const assistantAgentName =
         config.mode === 'daemon'
           ? agentModelDisplayName(
-              config.agentId,
+              executionAgentId,
               selectedAgent?.name,
               effectiveSelectedAgentChoice?.model,
             )
@@ -10260,7 +10264,7 @@ export function ProjectView({
           recoveryActionInstanceId: taskAnalytics.recoveryActionInstanceId,
         };
         void streamViaDaemon({
-          agentId: config.agentId,
+          agentId: executionAgentId ?? config.agentId,
           history: nextHistory,
           signal: controller.signal,
           cancelSignal: cancelController.signal,
@@ -13579,7 +13583,7 @@ export function ProjectView({
   // not in the top-right header.
   // Choosing an agent needs the host agent catalog (settings lane); without it
   // the server-fixed execution source is shown instead.
-  const executionControls = !studio.available('settings') ? <StudioExecutionSource /> : (
+  const executionControls = !studio.available('settings') ? <StudioExecutionSource agentId={executionAgentId} onChange={studioPinnedAgentId ? undefined : onAgentChange} /> : (
     <>
       <AvatarMenu
         config={config}

@@ -1,6 +1,18 @@
 import type { Dict } from '../types';
 
 export const it: Dict = {
+  "multiuser.companyOpenAI": "OpenAI company pool",
+  "multiuser.companyOpenAIHelp": "Choose the OpenAI model and concurrent workers. Leave the key blank to retain it. Credentials stay on the server. A model or key change requires new conversations.",
+  "multiuser.companyKeyConfigured": "API key configured",
+  "multiuser.companyKeyMissing": "No API key configured",
+  "multiuser.companyModel": "Model ID",
+  "multiuser.companyCapacity": "Concurrent workers",
+  "multiuser.companyEnabled": "Enable company pool",
+  "multiuser.companyKey": "New API key (optional)",
+  "multiuser.companyRevokeKey": "Revoke API key",
+  "multiuser.companyRevokeWarning": "Revoke the key and stop company runs?",
+  "multiuser.executionSourceCompanyOpenAI": "OpenAI · company pool",
+  "multiuser.companySourceUnavailable": "Execution source unavailable",
   "multiuserRuns.conversations": "Conversations",
   "multiuserRuns.conversationTitle": "Conversation title",
   "multiuserRuns.createConversation": "Create conversation",

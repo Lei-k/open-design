@@ -14,7 +14,10 @@ let aFile: string;
 let bFile: string;
 beforeAll(async () => {
   ({ dataRoot: root } = await loadIsolatedServerModule());
-  daemon = await startMultiUserDaemon(multiUserOptions({ testMockAgentScript: path.resolve('../..', 'mocks/run-isolation-agent.ts'), testPersonalCodexAppServer: PERSONAL_CODEX_MOCK }));
+  daemon = await startMultiUserDaemon(multiUserOptions({ testMockAgentScript: path.resolve('../..', 'mocks/run-isolation-agent.ts'), testPersonalCodexAppServer: PERSONAL_CODEX_MOCK,
+    testCompanyOpenAIFetch: async () => new Response('data: ' + JSON.stringify({ type: 'response.output_text.delta', delta: 'CLI company completed.\n' })
+      + '\n\ndata: ' + JSON.stringify({ type: 'response.completed', response: { output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'CLI company completed.' }] }] } }) + '\n\n',
+      { headers: { 'content-type': 'text/event-stream' } }) }));
   const accounts = await provisionAccounts(daemon, ['cli-alice', 'cli-bob']);
   admin = accounts.admin;
   [alice, bob] = accounts.users as [Principal, Principal];
@@ -189,3 +192,39 @@ describe('same Studio APIs through remote od sessions', () => {
     expect((await cli(['session', 'me', '--session-file', bFile, '--json'])).code).not.toBe(0);
   });
 });
+
+
+it('administers the OpenAI company pool through write-only stdin credentials and refuses ordinary users', async () => {
+  const file = path.join(root, 'cli-company-admin-session');
+  const companyAFile = path.join(root, 'cli-company-a-session');
+  const companyBFile = path.join(root, 'cli-company-b-session');
+  for (const [user, sessionFile] of [[alice, companyAFile], [bob, companyBFile]] as const) {
+    success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', user.username,
+      '--password-file', '-', '--session-file', sessionFile, '--json'], user.password + '\n'));
+  }
+  success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', admin.username,
+    '--password-file', '-', '--session-file', file, '--json'], admin.password + '\n'));
+  const get = ['admin', 'pool', 'openai', 'get', '--session-file', file, '--json'];
+  const current = success(await cli(get)).provider;
+  const key = 'sk-cli-company-secret-123456789012345678901234567890';
+  const set = ['admin', 'pool', 'openai', 'set', '--enabled', 'true', '--revision', String(current.revision),
+    '--model', 'fixture-model', '--capacity', '1', '--api-key-file', '-', '--session-file', file, '--json'];
+  const written = await cli(set, key + '\n');
+  expect(success(written).provider).toMatchObject({ configured: true, enabled: true, model: 'fixture-model', revision: current.revision + 1 });
+  expect(written.stdout + written.stderr).not.toContain(key);
+  expect(success(await cli(get)).provider.configured).toBe(true);
+  expect((await cli(set, key)).code).not.toBe(0);
+  expect((await cli(['admin', 'pool', 'openai', 'get', '--session-file', companyBFile, '--json'])).code).not.toBe(0);
+  expect((await cli(['admin', 'pool', 'openai', 'set', '--api-key', key, '--session-file', file, '--json'])).code).not.toBe(0);
+  const made = success(await cli(['project', 'create', '--name', 'CLI OpenAI run', '--session-file', companyAFile, '--json']));
+  const admitted = success(await cli(['run', 'start', '--project', made.project.id, '--conversation', made.conversationId,
+    '--agent', 'openai', '--execution-source', 'company_pool', '--prompt-file', '-', '--session-file', companyAFile, '--json'], 'Company CLI prompt'));
+  const watched = await cli(['run', 'watch', admitted.runId, '--session-file', companyAFile, '--json']);
+  expect(watched.code, watched.stderr).toBe(0);
+  expect(watched.stdout).toContain('CLI company completed.');
+  expect(watched.stdout).not.toContain(key);
+  expect((await cli(['run', 'info', admitted.runId, '--session-file', companyBFile, '--json'])).code).not.toBe(0);
+  const revoked = success(await cli(['admin', 'pool', 'openai', 'set', '--enabled', 'false', '--revision', String(current.revision + 1),
+    '--model', 'fixture-model', '--capacity', '0', '--revoke-key', '--session-file', file, '--json']));
+  expect(revoked.provider.configured).toBe(false);
+}, 40_000);

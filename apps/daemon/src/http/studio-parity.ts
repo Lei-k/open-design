@@ -87,7 +87,7 @@ export function studioRouteParityInventory(): StudioRouteParity[] {
 export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
   shell: 'Pilot shell: deployment rollout, legacy shell removal and the remaining provider closures are pending (#53, #70).',
   projects: 'Pilot projects: artifact, upload and background-job lineage are pending (#54).',
-  execution: 'Pilot execution: personal Codex only; company pool, feedback telemetry and replay are pending (#55).',
+  execution: 'Pilot execution: personal Codex and the OpenAI company pool; real-provider acceptance, feedback telemetry and replay are pending (#55).',
   chat: 'Pilot chat: real-provider recordings and the full state-matrix acceptance are pending (#56).',
   composer: 'Pilot composer: text, attachments, private text skills, queue, stop and question answers; bundled skill attachments, design systems and model choice are pending (#57).',
   preview: 'Pilot preview: opaque HTML/deck/media previews, manual edit, inspect and owner-only immutable artifact snapshots/thumbnails; comments, renderer covers and complete browser acceptance are pending (#59).',
@@ -101,20 +101,24 @@ export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
  * lanes: it marks the pilot-usable ones `pilot`, never `supported`, and a lane
  * whose server policy is off is `admin-disabled` for the pilot as well.
  */
-export function multiUserStudioCapabilities(studioPilot = false, policy: { personalEnabled?: boolean } = {}): StudioRuntimeCapabilities {
+export function multiUserStudioCapabilities(studioPilot = false, policy: { personalEnabled?: boolean; companyEnabled?: boolean } = {}): StudioRuntimeCapabilities {
   const unavailable = (issue: number): StudioAvailability => ({
     status: 'unavailable', reason: `Studio integration #${issue} has not passed its complete parity gate; the legacy fallback remains active.`,
   });
   const executionOff: StudioAvailability = { status: 'admin-disabled',
-    reason: 'Personal subscriptions are not enabled on this server, so this account cannot start Studio runs.' };
+    reason: 'No execution source is enabled on this server.' };
   const features = Object.fromEntries(STUDIO_PARITY_LANES.map((lane): [StudioParityLaneId, StudioAvailability] => {
     if (lane.id === 'baseline') return [lane.id, { status: 'supported' }];
     const pilot = studioPilot ? STUDIO_PILOT_LANES[lane.id] : undefined;
     if (!pilot) return [lane.id, unavailable(lane.issue)];
-    if ((lane.id === 'execution' || lane.id === 'composer') && !policy.personalEnabled) return [lane.id, executionOff];
+    if ((lane.id === 'execution' || lane.id === 'composer') && !policy.personalEnabled && !policy.companyEnabled) return [lane.id, executionOff];
     return [lane.id, { status: 'pilot', reason: pilot }];
   })) as StudioRuntimeCapabilities['features'];
-  return { schemaVersion: 1, shell: studioPilot ? 'studio' : 'legacy-multiuser', features };
+  return { schemaVersion: 1, shell: studioPilot ? 'studio' : 'legacy-multiuser', features,
+    ...(studioPilot ? { executionSources: [
+      ...(policy.personalEnabled ? [{ source: 'personal_subscription' as const, agentId: 'codex' as const }] : []),
+      ...(policy.companyEnabled ? [{ source: 'company_pool' as const, agentId: 'openai' as const }] : []),
+    ] } : {}) };
 }
 
 /** The actor's private transcript-id namespace (see `isStudioMessageIdInNamespace`).

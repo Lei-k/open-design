@@ -1,6 +1,6 @@
 import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { parseStudioRuntimeCapabilities, type AuthAccount, type AuthSessionResponse, type StudioPilotState } from '@open-design/contracts';
+import { parseStudioRuntimeCapabilities, type AuthAccount, type AuthSessionResponse, type StudioPilotState, type CompanyOpenAIConfigResponse } from '@open-design/contracts';
 
 export interface CliSessionCredential {
   schemaVersion: 1;
@@ -104,16 +104,16 @@ function publicAccount(body: unknown): AuthAccount {
     passwordState: value.passwordState!, createdAt: value.createdAt, updatedAt: value.updatedAt };
 }
 
-async function passwordInput(file: string): Promise<string> {
+async function secretInput(file: string, label = 'Password'): Promise<string> {
   let raw: string;
   if (file === '-') {
-    if (process.stdin.isTTY) throw new Error('Pipe the password on stdin; interactive input must not echo');
+    if (process.stdin.isTTY) throw new Error(`Pipe ${label.toLowerCase()} on stdin; interactive input must not echo`);
     const chunks: Buffer[] = [];
     let bytes = 0;
     for await (const chunk of process.stdin) {
       const buffer = Buffer.from(chunk);
       bytes += buffer.length;
-      if (bytes > 4096) throw new Error('Password input is too large');
+      if (bytes > 4096) throw new Error(`${label} input is too large`);
       chunks.push(buffer);
     }
     raw = Buffer.concat(chunks).toString('utf8');
@@ -122,13 +122,13 @@ async function passwordInput(file: string): Promise<string> {
     try {
       const stat = fstatSync(fd);
       if (!stat.isFile() || stat.size > 4096 || (stat.mode & 0o077) !== 0 || (process.getuid && stat.uid !== process.getuid())) {
-        throw new Error('Password file must be private and owned by this user');
+        throw new Error(`${label} file must be private and owned by this user`);
       }
       raw = readFileSync(fd, 'utf8');
     } finally { closeSync(fd); }
   }
   const password = raw.replace(/\r?\n$/, '');
-  if (!password || password.length > 1024) throw new Error('Invalid password input');
+  if (!password || password.length > (label === 'Password' ? 1024 : 4096)) throw new Error(`Invalid ${label.toLowerCase()} input`);
   return password;
 }
 
@@ -155,7 +155,7 @@ export async function runSessionCli(args: string[], sessionFile: string | null):
     const target = sessionPath(sessionFile);
     try { lstatSync(target); throw new Error('Credential file already exists; choose a new file or log out first'); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-    const password = await passwordInput(flags['--password-file']);
+    const password = await secretInput(flags['--password-file']);
     const response = await fetch(`${origin}/api/auth/login`, { method: 'POST', redirect: 'error',
       headers: { 'content-type': 'application/json', ...(origin.startsWith('https:') ? { origin } : {}) },
       body: JSON.stringify({ username: flags['--username'], password }) });
@@ -204,8 +204,9 @@ export async function runSessionCli(args: string[], sessionFile: string | null):
 
 /** Explicit optimistic write; never silently read/retry a conflicting mutation. */
 export async function runStudioPilotCli(args: string[], sessionFile: string | null): Promise<void> {
+  if (args[0] === 'pool') return runCompanyOpenAICli(args.slice(1), sessionFile);
   if (args.includes('--help')) {
-    process.stdout.write('Usage: od admin studio-pilot get <account-id> --session-file <path> [--json]\n       od admin studio-pilot set <account-id> --enabled true|false --revision <integer> --session-file <path> [--json]\n');
+    process.stdout.write('Usage: od admin pool openai get|set --help\n       od admin studio-pilot get <account-id> --session-file <path> [--json]\n       od admin studio-pilot set <account-id> --enabled true|false --revision <integer> --session-file <path> [--json]\n');
     return;
   }
   const [domain, command, accountId, ...rest] = args;
@@ -233,4 +234,47 @@ export async function runStudioPilotCli(args: string[], sessionFile: string | nu
   const result = await response.json() as StudioPilotState;
   if (typeof result.studioPilot !== 'boolean' || !Number.isSafeInteger(result.revision) || result.revision < 0) throw new Error('Invalid pilot response');
   process.stdout.write(`${JSON.stringify({ studioPilot: result.studioPilot, revision: result.revision })}\n`);
+}
+
+
+/** API keys use private files or stdin, never argv or readable responses. */
+async function runCompanyOpenAICli(args: string[], sessionFile: string | null): Promise<void> {
+  if (args.includes('--help')) {
+    process.stdout.write('Usage: od admin pool openai get --session-file <path> [--json]\n       od admin pool openai set --revision <integer> --enabled true|false --model <id> --capacity <0..16> [--api-key-file <path|-> | --revoke-key] --session-file <path> [--json]\n');
+    return;
+  }
+  const [provider, command, ...rest] = args;
+  if (provider !== 'openai' || !['get', 'set'].includes(command ?? '') || !sessionFile) throw new Error('Invalid company pool command');
+  const flags: Record<string, string> = {};
+  for (let i = 0; i < rest.length; i++) {
+    const key = rest[i]!;
+    if (key === '--json') continue;
+    if (command !== 'set' || flags[key] !== undefined) throw new Error('Invalid company pool options');
+    if (key === '--revoke-key') { flags[key] = 'true'; continue; }
+    if (!['--revision', '--enabled', '--model', '--capacity', '--api-key-file'].includes(key)
+      || !rest[i + 1] || rest[i + 1]!.startsWith('--')) throw new Error('Invalid company pool options; keys require --api-key-file');
+    flags[key] = rest[++i]!;
+  }
+  let body: Record<string, unknown> | undefined;
+  if (command === 'set') {
+    if (!/^(0|[1-9][0-9]*)$/.test(flags['--revision'] ?? '') || !Number.isSafeInteger(Number(flags['--revision']))
+      || !['true', 'false'].includes(flags['--enabled'] ?? '') || !flags['--model']
+      || !/^(0|[1-9]|1[0-6])$/.test(flags['--capacity'] ?? '') || flags['--api-key-file'] && flags['--revoke-key']) throw new Error('Invalid company pool configuration');
+    body = { revision: Number(flags['--revision']), enabled: flags['--enabled'] === 'true', model: flags['--model'], capacity: Number(flags['--capacity']),
+      ...(flags['--revoke-key'] ? { apiKey: null } : {}),
+      ...(flags['--api-key-file'] ? { apiKey: await secretInput(flags['--api-key-file'], 'API key') } : {}) };
+  }
+  if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') throw new Error('TLS verification must not be disabled');
+  const credential = readCliSession(sessionFile);
+  const response = await cliSessionFetch(credential)(`${credential.origin}/api/admin/pool/openai`, body ? {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  } : undefined);
+  if (!response.ok) throw new Error(`Company pool request refused (${response.status})`);
+  const { provider: result } = await response.json() as CompanyOpenAIConfigResponse;
+  if (result?.providerId !== 'openai' || typeof result.enabled !== 'boolean' || typeof result.configured !== 'boolean'
+    || typeof result.model !== 'string' || !Number.isSafeInteger(result.capacity) || !Number.isSafeInteger(result.revision)
+    || !Number.isSafeInteger(result.credentialRevision)) throw new Error('Invalid company pool response');
+  // Project only the public contract even if a server response gains fields.
+  process.stdout.write(`${JSON.stringify({ provider: { providerId: 'openai', enabled: result.enabled, configured: result.configured,
+    model: result.model, capacity: result.capacity, revision: result.revision, credentialRevision: result.credentialRevision } })}\n`);
 }

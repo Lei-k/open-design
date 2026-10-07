@@ -1,6 +1,18 @@
 import type { Dict } from "../types";
 
 export const zhCN: Dict = {
+  "multiuser.companyOpenAI": "OpenAI 公司池",
+  "multiuser.companyOpenAIHelp": "设置 OpenAI 模型和并发任务数。密钥留空则保留现有值，凭证保存在服务端。更改模型或密钥后需要新建对话。",
+  "multiuser.companyKeyConfigured": "已配置 API 密钥",
+  "multiuser.companyKeyMissing": "尚未配置 API 密钥",
+  "multiuser.companyModel": "模型 ID",
+  "multiuser.companyCapacity": "并发任务数",
+  "multiuser.companyEnabled": "启用公司池",
+  "multiuser.companyKey": "新 API 密钥（可选）",
+  "multiuser.companyRevokeKey": "撤销 API 密钥",
+  "multiuser.companyRevokeWarning": "撤销密钥并停止公司池任务？",
+  "multiuser.executionSourceCompanyOpenAI": "OpenAI · 公司池",
+  "multiuser.companySourceUnavailable": "执行来源不可用",
   "multiuserRuns.conversations": "对话",
   "multiuserRuns.conversationTitle": "对话标题",
   "multiuserRuns.createConversation": "创建对话",

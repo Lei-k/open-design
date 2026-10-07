@@ -35,3 +35,13 @@ it('accepts transcript ids only inside the given namespace', () => {
     expect(isStudioMessageIdInNamespace(id, prefix)).toBe(false);
   }
 });
+
+it('accepts only declared server execution choices and rejects duplicates or credential fields', () => {
+  const base = { schemaVersion: 1, shell: 'studio', features };
+  const choices = [{ source: 'company_pool', agentId: 'openai' }];
+  expect(parseStudioRuntimeCapabilities({ ...base, executionSources: choices })?.executionSources).toEqual(choices);
+  for (const executionSources of [[...choices, ...choices], [{ source: 'company_pool', agentId: 'codex' }],
+    [{ ...choices[0], apiKey: 'private' }], {}, [{ source: 'unknown', agentId: 'openai' }]]) {
+    expect(parseStudioRuntimeCapabilities({ ...base, executionSources })).toBeNull();
+  }
+});

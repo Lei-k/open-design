@@ -78,6 +78,8 @@ export interface MultiUserModeOptions {
   auth?: MultiUserAuthServiceOverrides;
   /** Direct startServer test harness only; must resolve to the repository mock. */
   testMockAgentScript?: string;
+  /** Programmatic provider-fixture injection only; deployment config cannot supply it. */
+  testCompanyOpenAIFetch?: typeof fetch;
   /** Test harness clock for pool accounting. */
   poolClock?: () => number;
   /**
@@ -127,6 +129,8 @@ export interface ResolvedMultiUserMode {
   bootstrapSecret: string | null;
   auth: MultiUserAuthServiceOverrides;
   testMockAgentScript?: string;
+  /** Programmatic provider-fixture injection only; deployment config cannot supply it. */
+  testCompanyOpenAIFetch?: typeof fetch;
   poolClock?: () => number;
   /** How personal app-server children start; absent means the feature is off. */
   personalCodex?: ResolvedPersonalCodex;
@@ -215,6 +219,7 @@ export function resolveMultiUserMode(input: {
     input.probeSandbox ?? ((bwrap) => probePersonalSandbox(bwrap, tmpdir())));
   return { allowedOrigins, previewOrigin, bootstrapSecret, auth: { ...(options.auth ?? {}) },
     ...(options.testMockAgentScript ? { testMockAgentScript: options.testMockAgentScript } : {}),
+    ...(options.testCompanyOpenAIFetch ? { testCompanyOpenAIFetch: options.testCompanyOpenAIFetch } : {}),
     ...(options.poolClock ? { poolClock: options.poolClock } : {}),
     ...(personalCodex ? { personalCodex } : {}) };
 }

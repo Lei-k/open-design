@@ -44,7 +44,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'company-openai' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -415,6 +415,8 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'PUT /api/admin/pool/providers/:providerId',
     'PUT /api/admin/pool/users/:id/quota',
   ]),
+  ...group('admin-only', 'company OpenAI metadata; credentials never returned', ['GET /api/admin/pool/openai']),
+  ...group('admin-only', 'write-only encrypted company credential and revision-checked provider policy', ['PUT /api/admin/pool/openai'], { bodyPolicy: 'company-openai' }),
   ...group('actor-scoped', 'test mock only; create binds the trusted actor, owned managed project and conversation in one SQLite insert', [
     'POST /api/runs',
     'GET /api/runs',

@@ -14,12 +14,23 @@ process.once('message', async (input: { dataRoot: string; appOrigin: string; pre
   const { startServer } = await import(pathToFileURL(path.join(input.workspaceRoot, 'apps/daemon/src/server.ts')).href) as {
     startServer: (options: unknown) => Promise<StartedStudioHost>;
   };
+  // Mock only the external provider; all HTTP admission, authorization, file
+  // functions, persistence and browser transports use the production daemon.
+  const companyFetch: typeof fetch = async (_url, init) => {
+    const request = JSON.parse(String(init?.body)) as { input: Array<{ type?: string }> };
+    const wrote = request.input.some((item) => item.type === 'function_call_output');
+    const output = wrote ? [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Company browser design complete.' }] }]
+      : [{ type: 'function_call', call_id: 'browser-write', name: 'write_project_file', arguments: JSON.stringify({ path: 'company.html', content: '<!doctype html><html><body><h1>Company browser design</h1></body></html>' }) }];
+    const events = [...(wrote ? [{ type: 'response.output_text.delta', delta: 'Company browser design complete.\n' }] : []), { type: 'response.completed', response: { output } }];
+    return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
+  };
   const started = await startServer({ port: 0, host: '127.0.0.1', returnServer: true,
     staticDir: path.join(input.workspaceRoot, 'apps/web/out'),
     multiUser: { acknowledgeNotLaunchReady: MULTIUSER_NOT_LAUNCH_READY_ACK,
       allowedOrigins: [input.appOrigin], previewOrigin: input.previewOrigin,
       bootstrapSecret: 'studio-browser-fixture-bootstrap-secret',
       auth: { passwordParams: { logN: 14, r: 8, p: 1 } },
+      testCompanyOpenAIFetch: companyFetch,
       testPersonalCodexAppServer: path.join(input.workspaceRoot, 'mocks/personal-codex-app-server.ts') },
   });
   if (!started || typeof started !== 'object' || !('server' in started)) throw new Error('Missing daemon test host');

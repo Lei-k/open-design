@@ -5,6 +5,7 @@ import type { StudioPilotState, AuthAccount, AuthAccountListResponse, AuthAuditL
 import { useI18n, useT } from '../i18n';
 import { CookieSession, RequestFailure } from './session';
 import { StudioSessionProvider, useStudioSession } from '../runtime/studio-session';
+import { CompanyOpenAISection } from './CompanyOpenAISection';
 import { AgentAccountsPage } from './AgentAccountsPage';
 import { ProjectConversations } from './ProjectConversations';
 import { ConversationRuns } from './ConversationRuns';
@@ -184,7 +185,7 @@ export function AdminUsers(props: OwnedProps) {
       setNotice(t('multiuser.saved')); setRevision((r) => r + 1);
     } catch (e) { if (!isAborted(e)) setActionError(t(failureKey(e))); } finally { setBusy(false); }
   }
-  return <><h1>{t('multiuser.users')}</h1><p>{t('multiuser.usersHelp')}</p>
+  return <><CompanyOpenAISection session={props.session} generation={props.generation} /><h1>{t('multiuser.users')}</h1><p>{t('multiuser.usersHelp')}</p>
     <form className={styles.inlineForm} onSubmit={create}><label>{t('multiuser.username')}<input name="username" required pattern="[A-Za-z0-9_.-]{3,32}" maxLength={32} autoComplete="off" /></label><label>{t('multiuser.role')}<select name="role"><option value="user">{t('multiuser.user')}</option><option value="admin">{t('multiuser.admin')}</option></select></label><Button variant="primary" type="submit" disabled={busy}>{t('multiuser.createUser')}</Button></form>
     {setup && <SetupLink setup={setup} dismiss={() => setSetup(null)} />}
     {confirm && <section className={styles.confirm} aria-label={t('multiuser.confirmAction')}><h2>{t('multiuser.confirmAction')} · {confirm.account.username}</h2><p>{t(confirm.action === 'reset' ? 'multiuser.resetWarning' : 'multiuser.revokeWarning')}</p><div className={styles.actions}><Button disabled={busy} onClick={() => void apply()}>{t('multiuser.confirm')}</Button><Button disabled={busy} onClick={() => setConfirm(null)}>{t('multiuser.cancel')}</Button></div></section>}

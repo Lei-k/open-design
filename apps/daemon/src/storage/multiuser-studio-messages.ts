@@ -145,7 +145,7 @@ export class MultiUserStudioMessages {
     upsertMessage(this.db, run.conversation_id, {
       ...stored,
       id: ids.assistantMessageId, role: 'assistant', runId: run.id,
-      agentId: run.execution_source === 'personal_subscription' ? 'codex' : 'test-mock',
+      agentId: run.execution_source === 'personal_subscription' ? 'codex' : request?.companyProvider === 'openai' ? 'openai' : 'test-mock',
       content: frames.some((frame) => frame.event === 'agent' && parse(frame.data).type === 'text_delta') ? text : typeof output.text === 'string' ? output.text : stored?.content ?? '',
       ...(frames.length ? { events, lastRunEventId: String(frames.at(-1)!.seq) } : {}),
       runStatus: run.status === 'active' ? 'running' : run.status,

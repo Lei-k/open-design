@@ -990,7 +990,7 @@ export interface AgentEventPayloadTruncation {
 
 /** Multi-user events retain timing/identity but deliberately omit private tool data. */
 export interface AgentEventRedaction {
-  policy: 'personal-subscription';
+  policy: 'personal-subscription' | 'company-pool';
   fields: string[];
 }
 

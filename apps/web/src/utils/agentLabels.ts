@@ -19,6 +19,7 @@ const AGENT_LABELS: Record<string, string> = {
   antigravity: 'Antigravity',
   'anthropic-api': 'Anthropic API via OpenCode',
   'openai-api': 'OpenAI API via OpenCode',
+  openai: 'OpenAI',
   'azure-openai-api': 'Azure OpenAI via OpenCode',
   'google-gemini-api': 'Google Gemini via OpenCode',
   'ollama-cloud-api': 'Ollama Cloud API via OpenCode',

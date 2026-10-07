@@ -9,7 +9,7 @@ export interface MultiUserRun {
   id: string;
   projectId: string;
   conversationId: string;
-  agentId: 'test-mock' | 'codex';
+  agentId: 'test-mock' | 'codex' | 'openai';
   status: MultiUserRunStatus;
   queuePosition: number | null;
   createdAt: number;
@@ -26,7 +26,7 @@ export interface MultiUserRun {
 export interface MultiUserRunRequest {
   projectId: string;
   conversationId: string;
-  agentId: 'test-mock' | 'codex';
+  agentId: 'test-mock' | 'codex' | 'openai';
   message: string;
   executionSource: RunExecutionSource;
   /** Fixed by the conversation on its first turn; later turns may omit both. */
@@ -56,7 +56,7 @@ export interface MultiUserRunRequest {
  *   personal native thread already holds earlier turns, so `message` is used
  *   only when `currentPrompt` is absent). `context` is honored only as
  *   `file`/`folder`/`design-files` workspace items with project-relative
- *   paths; its skill/plugin/MCP/connector selections must be empty.
+ *   paths and private text skills; plugin/MCP/connector selections must be empty.
  * - `defaultOnly`: accepted only at the value the Studio sends when the
  *   capability is not used (empty list, null, `false`, or `design` mode).
  * - `notApplied`: accepted for request-shape compatibility and not applied:

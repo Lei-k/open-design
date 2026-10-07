@@ -151,6 +151,8 @@ describe('route classification covers the real inventory', () => {
       'actor-scoped POST /api/runs',
       'admin-only GET /api/admin/agent-accounts',
       'admin-only GET /api/admin/pool',
+      'admin-only GET /api/admin/pool/openai',
+      'admin-only PUT /api/admin/pool/openai',
       'admin-only GET /api/admin/users/:id/studio-pilot',
       'admin-only PUT /api/admin/agent-accounts/personal-capacity',
       'admin-only PUT /api/admin/pool/providers/:providerId',

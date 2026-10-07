@@ -12,7 +12,7 @@ interface StudioCapabilities {
   available(lane: StudioParityLaneId): boolean;
   reason(lane: StudioParityLaneId): string;
   /** The agent this actor's usable execution source runs; null when it cannot run. */
-  executionAgentId: 'codex' | null;
+  executionAgentId: 'codex' | 'openai' | null;
 }
 const local: StudioCapabilities = { actor: null, hostServices: true, capabilities: null, session: null, generation: 0,
   available: () => true, reason: () => '', executionAgentId: null };
@@ -28,8 +28,8 @@ export function StudioCapabilitiesProvider({ session, generation, actor, capabil
   // the transport and module registry before publishing another generation.
   activateStudioTransport(session, generation, { messageIdPrefix, usable });
   const value: StudioCapabilities = { actor, session, generation, capabilities, hostServices: false,
-    // Multi-user execution is personal Codex only (MultiUserRun.agentId); the company pool has no real provider yet.
-    executionAgentId: usable('execution') ? 'codex' : null,
+    // Choices are advertised by the authenticated daemon, never inferred from host configuration.
+    executionAgentId: usable('execution') ? (capabilities.executionSources?.[0]?.agentId ?? (capabilities.executionSources === undefined ? 'codex' : null)) : null,
     available: usable,
     reason: (lane) => { const feature = capabilities.features[lane]; return feature.status === 'supported' ? '' : feature.reason; } };
   return <Context.Provider value={value}>{children}</Context.Provider>;

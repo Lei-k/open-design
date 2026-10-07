@@ -32,11 +32,15 @@ export type StudioAvailability =
   | { status: 'supported' }
   | { status: 'pilot' | 'unavailable' | 'admin-disabled'; reason: string };
 
+export type StudioExecutionSource = { source: 'personal_subscription'; agentId: 'codex' } | { source: 'company_pool'; agentId: 'openai' };
+
 export interface StudioRuntimeCapabilities {
   schemaVersion: 1;
   /** A legacy shell must never be advertised as full Studio parity. */
   shell: 'studio' | 'legacy-multiuser';
   features: Record<StudioParityLaneId, StudioAvailability>;
+  /** Server-owned choices; absent on older deployments. */
+  executionSources?: StudioExecutionSource[];
 }
 
 export interface StudioRouteParity {
@@ -124,5 +128,12 @@ export function parseStudioRuntimeCapabilities(value: unknown): StudioRuntimeCap
       features[id] = { status: feature.status, reason: feature.reason };
     } else return null;
   }
-  return { schemaVersion: 1, shell: studio.shell!, features };
+  const choices = studio.executionSources;
+  if (choices !== undefined && (!Array.isArray(choices) || choices.length > 2 || choices.some((choice) =>
+    !choice || typeof choice !== 'object' || Object.keys(choice).some((key) => !['source', 'agentId'].includes(key))
+    || !(choice.source === 'personal_subscription' && choice.agentId === 'codex'
+      || choice.source === 'company_pool' && choice.agentId === 'openai'))
+    || new Set(choices.map((choice) => choice.source)).size !== choices.length)) return null;
+  return { schemaVersion: 1, shell: studio.shell!, features,
+    ...(choices !== undefined ? { executionSources: choices.map((choice) => ({ ...choice })) } : {}) };
 }

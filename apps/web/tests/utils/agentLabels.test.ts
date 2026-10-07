@@ -10,6 +10,7 @@ describe('agentDisplayName', () => {
   it('returns the canonical label for known agent ids', () => {
     expect(agentDisplayName('claude')).toBe('Claude');
     expect(agentDisplayName('codex')).toBe('Codex');
+    expect(agentDisplayName('openai')).toBe('OpenAI');
     expect(agentDisplayName('cursor-agent')).toBe('Cursor');
     expect(agentDisplayName('deepseek-harness')).toBe('DeepSeek Harness');
     expect(agentDisplayName('kimi')).toBe('Kimi CLI');

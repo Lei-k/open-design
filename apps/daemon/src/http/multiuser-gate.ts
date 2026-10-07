@@ -335,6 +335,11 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   const only = (fields: readonly string[]) => Object.keys(body).every((key) => fields.includes(key));
   const optionalText = (value: unknown, max: number) => value === undefined || value === null || (typeof value === 'string' && value.length <= max);
   const sessionMode = body.sessionMode === undefined || (typeof body.sessionMode === 'string' && ['design', 'chat', 'plan'].includes(body.sessionMode));
+  if (policy === 'company-openai') return only(['revision', 'enabled', 'model', 'capacity', 'apiKey'])
+    && Number.isSafeInteger(body.revision) && Number(body.revision) >= 0 && typeof body.enabled === 'boolean'
+    && typeof body.model === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(body.model)
+    && Number.isSafeInteger(body.capacity) && Number(body.capacity) >= 0 && Number(body.capacity) <= 16
+    && (body.apiKey === undefined || body.apiKey === null || typeof body.apiKey === 'string' && body.apiKey.trim().length >= 16 && body.apiKey.length <= 4096);
   if (policy === 'skill-write') {
     return only(['name', 'description', 'body', 'triggers'])
       && (body.name === undefined || (typeof body.name === 'string' && body.name.trim().length > 0 && body.name.length <= 120))
@@ -436,6 +441,7 @@ export interface MultiUserFront {
   /** Attach the ownership store to the main daemon database once it is open. */
   attachProjectOwnership: (db: Database.Database) => void;
   setCancelAccountRuns: (cancel: (accountId: string) => void) => void;
+  setCompanyPoolAvailable: (check: () => boolean) => void;
   setIsRunOwner: (check: (runId: string, accountId: string) => boolean) => void;
   setCancelProjectRuns: (cancel: (accountId: string, projectId: string, conversationId?: string) => Promise<() => void>) => void;
   setIsAgentAccountOwner: (check: (param: 'attemptId' | 'accountId', id: string, accountId: string) => boolean) => void;
@@ -459,6 +465,7 @@ export function installMultiUserFront(
     ...(mode.auth.sessionTtlMs ? { sessionTtlMs: mode.auth.sessionTtlMs } : {}),
     ...(mode.auth.sessionIdleTtlMs ? { sessionIdleTtlMs: mode.auth.sessionIdleTtlMs } : {}),
   });
+  let companyPoolAvailable = () => false;
   let ownership: ProjectOwnershipStore | null = null;
   let cancelAccountRuns: ((accountId: string) => void) | null = null;
   let isRunOwner: ((runId: string, accountId: string) => boolean) | null = null;
@@ -482,6 +489,7 @@ export function installMultiUserFront(
     allowedOrigins: mode.allowedOrigins,
     onAccountSessionsRevoked: (accountId) => cancelAccountRuns?.(accountId),
     personalRunsEnabled: Boolean(mode.personalCodex),
+    companyPoolAvailable: () => companyPoolAvailable(),
   });
 
   const projectOwnershipHooks: ProjectOwnershipRouteHooks = {
@@ -511,6 +519,7 @@ export function installMultiUserFront(
       ownership = new ProjectOwnershipStore(db);
     },
     setCancelAccountRuns(cancel) { cancelAccountRuns = cancel; },
+    setCompanyPoolAvailable(check) { companyPoolAvailable = check; },
     setIsRunOwner(check) { isRunOwner = check; },
     setCancelProjectRuns(cancel) { cancelProjectRuns = cancel; },
     setIsAgentAccountOwner(check) { isAgentAccountOwner = check; },
