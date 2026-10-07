@@ -29,7 +29,7 @@
   min-width: 0;
   max-width: 120px;
   height: 28px;
-  padding: 0 6px;
+  padding: 0 24px 0 6px;
   border-radius: 6px;
   font-size: 12px;
 }

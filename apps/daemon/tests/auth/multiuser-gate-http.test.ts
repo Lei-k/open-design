@@ -268,6 +268,8 @@ describe('route classification covers the real inventory', () => {
       'owner-scoped-project POST /api/projects/:id/archive/batch',
       'owner-scoped-project GET /api/multiuser/projects/:id/archive',
       'owner-scoped-project POST /api/multiuser/projects/:id/archive/batch',
+      'owner-scoped-project POST /api/projects/:id/export/html',
+      'owner-scoped-project POST /api/multiuser/projects/:id/export/html',
       'owner-scoped-project POST /api/projects/:id/duplicate',
       'owner-scoped-project POST /api/multiuser/projects/:id/duplicate',
       'owner-scoped-project PUT /api/projects/:id/conversations/:cid/messages/:mid',

@@ -59,6 +59,7 @@ export function studioRequestAvailable(method: string, path: string,
   if (usable('delivery')) {
     if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/archive$/.test(path)) return method === 'GET';
     if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/archive\/batch$/.test(path)) return method === 'POST';
+    if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/export\/html$/.test(path)) return method === 'POST';
   }
   if (usable('home')) {
     if (path === '/api/import/files') return method === 'POST';

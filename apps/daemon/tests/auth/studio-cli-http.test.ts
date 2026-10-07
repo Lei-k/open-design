@@ -85,6 +85,12 @@ describe('same Studio APIs through remote od sessions', () => {
       sha256: createHash('sha256').update(readFileSync(archiveOutput)).digest('hex'), bytes: statSync(archiveOutput).size });
     const overwrite = await cli(['project', 'archive', imported.project.id, '--out', archiveOutput, '--session-file', session, '--json']);
     expect(overwrite.code).not.toBe(0);
+    const htmlOutput = path.join(root, 'cli-owned-export.html');
+    const html = success(await cli(['project', 'export-html', projectId, '--path', 'index.html', '--out', htmlOutput,
+      '--title', 'CLI export', '--session-file', session, '--json']));
+    expect(html).toMatchObject({ projectId, entry: 'index.html', path: htmlOutput, externalDependencies: 0 });
+    expect(readFileSync(htmlOutput, 'utf8')).toContain('CLI captured version');
+    expect((await cli(['project', 'export-html', projectId, '--path', 'index.html', '--out', htmlOutput, '--session-file', session, '--json'])).code).not.toBe(0);
 
     const { default: JSZip } = await import('jszip'); const zip = new JSZip(); zip.file('index.html', 'CLI archive original');
     const downloaded = await JSZip.loadAsync(readFileSync(archiveOutput));

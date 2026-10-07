@@ -5,16 +5,19 @@ import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
 import { STUDIO_ARCHIVE_SHA256_HEADER, type StudioArchiveBatchRequest } from '@open-design/contracts';
 import { getProject } from '../db.js';
-import { addDesignArchiveMetadata, validateProjectPath } from '../projects.js';
+import path from 'node:path';
+import { addDesignArchiveMetadata, mimeFor, validateProjectPath } from '../projects.js';
 import { sanitizeArchiveFilename } from '../projects/archive-filename.js';
 import { captureStudioProject } from '../projects/studio-snapshot.js';
 import { ProjectOwnershipStore } from '../storage/project-ownership.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { bindMultiUserStream, multiUserStreamAllowed } from '../http/multiuser-stream.js';
 import { sendApiError } from '../http/api-errors.js';
+import { bundleStandaloneHtml, StandaloneHtmlExportError } from '../artifacts/standalone-html.js';
 
-/** Captures bounded owned bytes before compressing. Standard endpoints rewrite
- * here so the host archive walkers never execute for a remote actor. */
+/** Captures bounded owned bytes before compressing or bundling. Standard
+ * endpoints rewrite here so the host archive/export walkers never execute for
+ * a remote actor. */
 export function registerStudioArchiveRoutes(app: Express, input: { db: Database.Database; projectsRoot: string }): void {
   const ownership = new ProjectOwnershipStore(input.db);
   const active = new Set<string>();
@@ -75,6 +78,49 @@ export function registerStudioArchiveRoutes(app: Express, input: { db: Database.
       if (!res.headersSent && !res.writableEnded) sendApiError(res, 400, 'BAD_REQUEST', 'archive capture refused');
     } finally { active.delete(owner!); }
   };
+  // One-file HTML on the same bounded capture: same-project assets are read
+  // from captured bytes, never by re-resolving a worker-writable path.
+  const exportHtml = async (req: Request, res: Response) => {
+    const id = String(req.params.id);
+    const owner = multiUserActorOf(res)?.accountId;
+    const project = owner && ownership.isOwnedBy(id, owner) ? getProject(input.db, id) : null;
+    if (!project) return sendApiError(res, 404, 'NOT_FOUND', 'resource not found');
+    if (active.has(owner!) || active.size >= 4) return sendApiError(res, 429, 'RATE_LIMITED', 'export busy; retry later');
+    active.add(owner!);
+    try {
+      const { fileName, title } = req.body as { fileName: string; title?: string | null };
+      const entryPath = safePath(fileName);
+      const files = new Map(captureStudioProject(input.projectsRoot, id).map((file) => [file.name, file.bytes]));
+      const entry = files.get(entryPath);
+      if (!entry) return sendApiError(res, 404, 'FILE_NOT_FOUND', 'HTML entry not found');
+      if (!mimeFor(entryPath).startsWith('text/html')) return sendApiError(res, 415, 'UNSUPPORTED_MEDIA_TYPE', 'standalone export only supports HTML entry files');
+      const bundled = await bundleStandaloneHtml({ entryPath, html: entry.toString('utf8'),
+        readAsset: async (projectPath) => {
+          const bytes = files.get(projectPath);
+          return bytes ? { buffer: bytes, mime: mimeFor(projectPath), size: bytes.length } : null;
+        } });
+      if (req.aborted || res.destroyed || !multiUserStreamAllowed(res)) return;
+      if (!ownership.isOwnedBy(id, owner!) || !getProject(input.db, id)) return sendApiError(res, 404, 'NOT_FOUND', 'resource not found');
+      const base = (typeof title === 'string' && title.trim()) || path.posix.basename(entryPath, path.posix.extname(entryPath)) || 'artifact';
+      const name = `${sanitizeArchiveFilename(base) || 'artifact'}.html`;
+      const encoded = encodeURIComponent(name).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+      res.set({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': 'sandbox allow-scripts',
+        'Content-Disposition': `attachment; filename="${name.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '_')}"; filename*=UTF-8''${encoded}`,
+        'X-Open-Design-External-Dependencies': String(bundled.externalDependencies.length) });
+      res.send(bundled.html);
+    } catch (error) {
+      if (res.headersSent) return;
+      if (error instanceof StandaloneHtmlExportError) {
+        const details = { kind: error.kind, ...(error.dependency ? { dependency: error.dependency } : {}), ...(error.limit ? { limit: error.limit } : {}) };
+        if (error.kind === 'limit-exceeded') return sendApiError(res, 413, 'PAYLOAD_TOO_LARGE', error.message, { details });
+        const unprocessable = error.kind === 'missing-local-dependency' || error.kind === 'invalid-source';
+        return sendApiError(res, unprocessable ? 422 : 400, unprocessable ? 'VALIDATION_FAILED' : 'BAD_REQUEST', error.message, { details });
+      }
+      sendApiError(res, 400, 'BAD_REQUEST', 'export refused');
+    } finally { active.delete(owner!); }
+  };
+  app.post('/api/multiuser/projects/:id/export/html', (req, res) => { void exportHtml(req, res); });
   app.get('/api/multiuser/projects/:id/archive', (req, res) => { void download(req, res, false); });
   app.post('/api/multiuser/projects/:id/archive/batch', (req, res) => { void download(req, res, true); });
 }

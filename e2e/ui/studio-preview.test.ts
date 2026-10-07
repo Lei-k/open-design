@@ -372,6 +372,17 @@ test('[P1] Studio deck navigation and manual edits survive reload under owner co
   await expect(frame.getByRole('heading', { name: 'Owner Slide One' })).toBeVisible();
   await expect.poll(() => frame.locator('body').evaluate((body) => getComputedStyle(body).backgroundColor)).toBe('rgb(238, 242, 255)');
   await page.screenshot({ path: info.outputPath('studio-deck-owner.png') });
+  // Export: the owner's one-file HTML bundle; renderer formats stay closed until #66.
+  await page.getByRole('button', { name: 'Export', exact: true }).click();
+  const exportMenu = page.locator('.chrome-unified-panel');
+  await expect(exportMenu.getByRole('menuitem', { name: 'Export as standalone HTML' })).toBeVisible();
+  await expect(exportMenu.getByRole('menuitem', { name: /PDF/ })).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath('studio-export-html-entry.png'), animations: 'disabled' });
+  const exported = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `/api/projects/${projectId}/export/html`);
+  const downloaded = page.waitForEvent('download');
+  await exportMenu.getByRole('menuitem', { name: 'Export as standalone HTML' }).click();
+  expect((await exported).status()).toBe(200);
+  expect((await downloaded).suggestedFilename()).toMatch(/\.html$/);
   const other = await browser.newContext({ ignoreHTTPSErrors: true });
   try {
     const b = await other.newPage();
@@ -385,6 +396,7 @@ test('[P1] Studio deck navigation and manual edits survive reload under owner co
     await expect(activeArtifactPreview(b)).toHaveCount(0);
     const foreign = await other.request.get(`${studio.origin}/api/projects/${projectId}/files/deck.html`);
     expect(foreign.status()).toBe(404);
+    expect((await other.request.post(`${studio.origin}/api/projects/${projectId}/export/html`, { data: { fileName: 'deck.html' } })).status()).toBe(404);
   } finally { await other.close(); }
 });
 

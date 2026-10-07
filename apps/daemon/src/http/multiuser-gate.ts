@@ -359,6 +359,8 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   const sessionMode = body.sessionMode === undefined || (typeof body.sessionMode === 'string' && ['design', 'chat', 'plan'].includes(body.sessionMode));
   if (policy === 'archive-batch') return only(['files']) && Array.isArray(body.files) && body.files.length > 0
     && body.files.length <= 500 && body.files.every(projectPathText);
+  // Current-version export only: a historical versionId would bundle today's dependencies.
+  if (policy === 'export-html') return only(['fileName', 'title']) && projectPathText(body.fileName) && optionalText(body.title, 200);
   if (policy === 'project-duplicate') return only(['name']) && (body.name === undefined
     || typeof body.name === 'string' && body.name.trim().length > 0 && body.name.length <= 100 && !body.name.includes('\0'));
   if (policy === 'template-save') return only(['name', 'description', 'sourceProjectId'])

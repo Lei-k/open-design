@@ -44,7 +44,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'archive-batch' | 'project-duplicate' | 'template-save' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'archive-batch' | 'export-html' | 'project-duplicate' | 'template-save' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -372,13 +372,17 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
       ...group('owner-scoped-project', 'owned ZIP alias; fresh authority before byte release', [`${method} ${alias}`],
         { projectParam: 'id', ...extras })];
   }),
+  ...group('owner-scoped-project', 'one-file HTML bundle of an owned entry; same-project assets only, no renderer or host paths',
+    ['POST /api/projects/:id/export/html'],
+    { projectParam: 'id', bodyPolicy: 'export-html', maxBodyBytes: 8 * 1024, rewriteTo: '/api/multiuser/projects/:id/export/html' }),
+  ...group('owner-scoped-project', 'owned HTML export alias; fresh authority before byte release', ['POST /api/multiuser/projects/:id/export/html'],
+    { projectParam: 'id', bodyPolicy: 'export-html', maxBodyBytes: 8 * 1024 }),
   ...blocked(R_PROJECT_FILES, [
     'GET /api/projects/:id/export/manifest',
     'POST /api/projects/:id/export/pdf',
     'POST /api/projects/:id/export/pptx',
     'POST /api/projects/:id/export/pdf-image',
     'POST /api/projects/:id/export/image',
-    'POST /api/projects/:id/export/html',
     'POST /api/projects/:id/export',
     'GET /api/projects/:id/export/*splat',
     'GET /api/projects/:id/design-token-suggestions',

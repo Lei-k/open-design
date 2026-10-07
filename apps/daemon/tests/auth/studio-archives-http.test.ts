@@ -153,3 +153,36 @@ it('withdraws a backpressured download after logout instead of sending the remai
   expect(transfer.declared).toBeGreaterThan(12 * 1024 * 1024);
   expect(transfer.bytes).toBeLessThan(transfer.declared);
 });
+
+it('exports one-file HTML from captured owner bytes on the standard route and refuses foreign, unsafe and historical requests', async () => {
+  const id = await project();
+  await write(id, 'site/index.html', '<link rel="stylesheet" href="style.css"><img src="assets/logo.png"><h1>Owned export</h1>');
+  await write(id, 'site/style.css', 'h1 { color: rgb(1, 2, 3); }');
+  await write(id, 'site/assets/logo.png', 'AP8BgA==', 'base64');
+  const response = await download(id, a, '/export/html', { fileName: 'site/index.html', title: 'Owned export' });
+  expect(response.status, await response.clone().text()).toBe(200);
+  expect(response.headers.get('content-security-policy')).toBe('sandbox allow-scripts');
+  expect(response.headers.get('cache-control')).toBe('no-store');
+  expect(response.headers.get('content-disposition')).toContain('Owned-export.html');
+  const html = await response.text();
+  expect(html).toContain('rgb(1, 2, 3)');
+  expect(html).toContain('data:image/png;base64,AP8BgA==');
+  expect(html).not.toContain(root);
+
+  // A worker-planted link to daemon data is not part of the capture and is never embedded.
+  writeFileSync(path.join(root, 'outside-secret.css'), 'body { content: "DAEMON_SECRET"; }');
+  symlinkSync(path.join(root, 'outside-secret.css'), path.join(root, 'projects', id, 'site', 'leak.css'));
+  await write(id, 'site/leak.html', '<link rel="stylesheet" href="leak.css"><p>leak</p>');
+  const leaked = await download(id, a, '/export/html', { fileName: 'site/leak.html' }, true);
+  expect(await leaked.text()).not.toContain('DAEMON_SECRET');
+
+  expect((await download(id, b, '/export/html', { fileName: 'site/index.html' })).status).toBe(404);
+  expect((await download(id, admin, '/export/html', { fileName: 'site/index.html' })).status).toBe(404);
+  const anonymous = await fetch(`${daemon.baseUrl}/api/projects/${id}/export/html`, { method: 'POST',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fileName: 'site/index.html' }) });
+  expect(anonymous.status).toBe(401);
+  for (const body of [{ fileName: '../escape.html' }, { fileName: 'site/index.html', versionId: 'v1' }, { fileName: 'site/style.css' },
+    { fileName: 'site/missing.html' }, {}]) {
+    expect((await download(id, a, '/export/html', body)).status).toBeGreaterThanOrEqual(400);
+  }
+});

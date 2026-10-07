@@ -15060,9 +15060,13 @@ function HtmlViewer({
   // guards the actual export/publish handlers.
   // Share and Export are the delivery lane (#66); without it they would be dead ends.
   const studioRequest = useStudioRequestAvailable();
+  // Studio exports only what the daemon renders for an owner today: the one-file
+  // HTML bundle (and client-side Markdown). Share/publish/deploy and rendered
+  // PDF/image/PPTX remain the open part of #66; ZIP has its own owner action.
   const deliveryUsable = studio.hostServices || studioRequest('POST', `/api/projects/${projectId}/export/html`);
+  const rendererExports = studio.hostServices;
   const [archiveDownloading, setArchiveDownloading] = useState(false);
-  const rawCanShare = deliveryUsable && source !== null && isShareableArtifact;
+  const rawCanShare = rendererExports && deliveryUsable && source !== null && isShareableArtifact;
   const rawCanDownload = deliveryUsable && source !== null && (isShareableArtifact || isMarkdownArtifact);
   const canShare = rawCanShare && !viewerOnly;
   const canDownload = rawCanDownload && !viewerOnly;
@@ -17334,6 +17338,7 @@ function HtmlViewer({
                     ) : null}
                     {unifiedActionTab === 'export' && rawCanDownload ? (
                       <div className="chrome-unified-panel">
+                  {rendererExports ? (
                   <button
                     type="button"
                     className="share-menu-item"
@@ -17345,6 +17350,7 @@ function HtmlViewer({
                     <span className="share-menu-icon"><RemixIcon name="file-line" size={15} /></span>
                     <span>{t('fileViewer.exportPdf')}</span>
                   </button>
+                  ) : null}
                   {showPptxExport ? (
                     <button
                       type="button"
@@ -17381,6 +17387,7 @@ function HtmlViewer({
                       "produce a file/link out of this artifact" menu; a capture
                       that only lands on the clipboard is a different job and the
                       toolbar's screenshot-to-chat already leads with it. */}
+                  {rendererExports ? (
                   <button
                     type="button"
                     className="share-menu-item"
@@ -17392,6 +17399,7 @@ function HtmlViewer({
                     <span className="share-menu-icon"><RemixIcon name="file-zip-line" size={15} /></span>
                     <span>{t('fileViewer.exportZip')}</span>
                   </button>
+                  ) : null}
                   <button
                     type="button"
                     className="share-menu-item"
