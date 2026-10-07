@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
-import { listCompanyProjectFiles, readCompanyProjectFile, writeCompanyProjectFile } from '../services/company-project-files.js';
+import { listCompanyProjectFiles, readCompanyProjectFile, writeCompanyProjectBytes, writeCompanyProjectFile } from '../services/company-project-files.js';
 import type { StudioSkillPackage } from '../services/studio-skill-packages.js';
+import type { StudioSkillScriptRunner } from '../services/studio-skill-scripts.js';
 
 type Json = Record<string, unknown>;
 const RESPONSE_BYTES_LIMIT = 4 * 1024 * 1024;
@@ -10,6 +11,10 @@ const tools = [
   { name: 'list_skill_files', description: 'List immutable resources of the skills selected for this conversation. Each result identifies the skill and its relative resource paths.', properties: {}, required: [] },
   { name: 'read_skill_file', description: 'Read a UTF-8 resource from a selected skill’s captured revision. Resolve relative skill references here.',
     properties: { skillId: { type: 'string' }, path: { type: 'string' } }, required: ['skillId', 'path'] },
+  { name: 'copy_skill_file', description: 'Copy a captured resource (text or binary, such as a font, image or template) from a selected skill into the current project.',
+    properties: { skillId: { type: 'string' }, path: { type: 'string' }, destination: { type: 'string' } }, required: ['skillId', 'path', 'destination'] },
+  { name: 'run_skill_script', description: 'Run a script shipped by a selected skill in an offline sandbox. The working directory is the current project, which the script may read and write; $OD_SKILL_DIR is the skill’s read-only directory. Returns exit code, stdout and stderr.',
+    properties: { skillId: { type: 'string' }, path: { type: 'string' }, args: { type: 'array', items: { type: 'string' } } }, required: ['skillId', 'path', 'args'] },
   { name: 'list_project_files', description: 'List files in the current project.', properties: {}, required: [] },
   { name: 'read_project_file', description: 'Read a UTF-8 text file in the current project.', properties: { path: { type: 'string' } }, required: ['path'] },
   { name: 'write_project_file', description: 'Create or replace a UTF-8 text file in the current project. Use HTML with inline assets for browser designs.',
@@ -21,7 +26,8 @@ export interface CompanyOpenAITurnResult { ok: boolean; input: Json[]; files: st
 
 /** Same lifecycle the scheduler uses for native children, without giving an
  * agent process the company API key. The daemon executes only bounded,
- * project-scoped file functions; there is no host shell or client endpoint. */
+ * project-scoped file functions and, when the host provides one, captured
+ * skill scripts in an offline sandbox; there is no host shell or client endpoint. */
 export class CompanyOpenAIWorker extends EventEmitter {
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
@@ -48,6 +54,8 @@ export async function runCompanyOpenAITurn(input: {
   apiKey: string; model: string; prompt: string; systemPrompt?: string; history: Json[];
   projectsRoot: string; projectId: string; worker: CompanyOpenAIWorker;
   skillPackages?: readonly StudioSkillPackage[];
+  /** Present only when the host can build the offline script sandbox. */
+  runSkillScript?: StudioSkillScriptRunner;
   authorized: () => boolean; onAgentEvent: (event: Json) => void;
   fetch?: typeof fetch;
 }): Promise<CompanyOpenAITurnResult> {
@@ -65,7 +73,8 @@ export async function runCompanyOpenAITurn(input: {
     const response = await (input.fetch ?? fetch)('https://api.openai.com/v1/responses', {
       method: 'POST', signal, redirect: 'error', headers: { authorization: `Bearer ${input.apiKey}`, 'content-type': 'application/json' },
       body: JSON.stringify({ model: input.model, store: false, stream: true, input: history,
-        include: ['reasoning.encrypted_content'], max_output_tokens: 8192, tools, parallel_tool_calls: false }),
+        include: ['reasoning.encrypted_content'], max_output_tokens: 8192, parallel_tool_calls: false,
+        tools: tools.filter((tool) => tool.name !== 'run_skill_script' || input.runSkillScript) }),
     });
     check();
     if (!response.ok || !response.body || !response.headers.get('content-type')?.includes('text/event-stream')) {
@@ -109,7 +118,8 @@ export async function runCompanyOpenAITurn(input: {
         const args = JSON.parse(call.arguments) as Json;
         if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('invalid tool arguments');
         emit({ type: 'tool_use', id: call.call_id, name: call.name,
-          input: { ...(typeof args.path === 'string' ? { file_path: args.path } : {}) } });
+          input: { ...(typeof args.path === 'string' ? { file_path: args.path } : {}),
+            ...(typeof args.destination === 'string' ? { destination: args.destination } : {}) } });
         if (call.name === 'list_skill_files' && Object.keys(args).length === 0) {
           result = (input.skillPackages ?? []).map((resource) => ({ skillId: resource.id,
             files: resource.files.map((file) => ({ path: file.path, bytes: Buffer.byteLength(file.data, 'base64'), sha256: file.sha256 })) }));
@@ -118,6 +128,15 @@ export async function runCompanyOpenAITurn(input: {
           const file = input.skillPackages?.find((resource) => resource.id === args.skillId)?.files.find((entry) => entry.path === args.path);
           if (!file || Buffer.byteLength(file.data, 'base64') > FILE_BYTES_LIMIT) throw new Error('skill resource refused');
           result = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(file.data, 'base64'));
+        } else if (call.name === 'copy_skill_file' && typeof args.skillId === 'string' && safePath(args.path) && safePath(args.destination)
+          && Object.keys(args).every((key) => ['skillId', 'path', 'destination'].includes(key))) {
+          const file = input.skillPackages?.find((resource) => resource.id === args.skillId)?.files.find((entry) => entry.path === args.path);
+          if (!file) throw new Error('skill resource refused');
+          check(); writeCompanyProjectBytes(input.projectsRoot, input.projectId, args.destination, Buffer.from(file.data, 'base64'));
+          files.add(args.destination); result = { copied: args.destination };
+        } else if (call.name === 'run_skill_script' && input.runSkillScript && typeof args.skillId === 'string' && safePath(args.path)
+          && Array.isArray(args.args) && Object.keys(args).every((key) => ['skillId', 'path', 'args'].includes(key))) {
+          check(); result = await input.runSkillScript({ skillId: args.skillId, path: args.path, args: args.args as string[], signal });
         } else if (call.name === 'list_project_files' && Object.keys(args).length === 0) {
           result = listCompanyProjectFiles(input.projectsRoot, input.projectId);
         } else if (call.name === 'read_project_file' && safePath(args.path) && Object.keys(args).every((key) => key === 'path')) {

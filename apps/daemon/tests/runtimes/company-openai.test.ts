@@ -91,3 +91,45 @@ it('fails incomplete streams and does not forward upstream error bodies', async 
   await expect(turn(async () => new Response('data: {"type":"response.output_text.delta","delta":"partial"}\n\n',
     { headers: { 'content-type': 'text/event-stream' } }))).rejects.toThrow('company_response_incomplete');
 });
+it('copies captured binary resources and runs scripts only through the provided runner', async () => {
+  const resources = path.join(root, 'bundled'); const folder = path.join(resources, 'selected');
+  await mkdir(path.join(folder, 'assets'), { recursive: true });
+  await mkdir(path.join(folder, 'scripts'), { recursive: true });
+  await writeFile(path.join(folder, 'SKILL.md'), '---\nname: selected\n---\nRun scripts/build.py');
+  const font = Buffer.from([0, 1, 2, 0xff, 0xfe, 0x80]);
+  await writeFile(path.join(folder, 'assets/font.woff2'), font);
+  await writeFile(path.join(folder, 'scripts/build.py'), 'print("x")');
+  const captured = captureStudioSkill(resources, folder, 'selected').package;
+  await writeFile(path.join(folder, 'assets/font.woff2'), 'LIVE_REPLACEMENT');
+  const scripts: Array<{ skillId: string; path: string; args: readonly string[] }> = [];
+  const runner = async (request: { skillId: string; path: string; args: readonly string[] }) => {
+    scripts.push({ skillId: request.skillId, path: request.path, args: request.args });
+    return { exitCode: 0, timedOut: false, stdout: 'SCRIPT_OK', stderr: '' };
+  };
+  const bodies: string[] = []; let request = 0;
+  const fetcher: typeof fetch = async (_url, init) => {
+    bodies.push(String(init?.body));
+    if (request++ === 0) return completed([
+      call('copy_skill_file', { skillId: 'selected', path: 'assets/font.woff2', destination: 'fonts/brand.woff2' }, 'copy'),
+      call('copy_skill_file', { skillId: 'selected', path: 'assets/font.woff2', destination: '../escape.woff2' }, 'copy-escape'),
+      call('copy_skill_file', { skillId: 'foreign', path: 'assets/font.woff2', destination: 'foreign.woff2' }, 'copy-foreign'),
+      call('run_skill_script', { skillId: 'selected', path: 'scripts/build.py', args: ['--out', 'deck.html'] }, 'run'),
+    ]);
+    return completed([], 'done');
+  };
+  const result = await turn(fetcher, { skillPackages: [captured], runSkillScript: runner });
+  expect(await readFile(path.join(root, 'owner/fonts/brand.woff2'))).toEqual(font);
+  await expect(readFile(path.join(root, 'escape.woff2'))).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(scripts).toEqual([{ skillId: 'selected', path: 'scripts/build.py', args: ['--out', 'deck.html'] }]);
+  expect(bodies[1]).toContain('SCRIPT_OK');
+  expect(bodies[1].match(/PROJECT_TOOL_REFUSED/g)).toHaveLength(2);
+  expect(result.files).toEqual(['fonts/brand.woff2']);
+  expect(JSON.parse(bodies[0]).tools.map((tool: { name: string }) => tool.name)).toContain('run_skill_script');
+
+  // Without a host script sandbox the tool is neither advertised nor executed.
+  scripts.length = 0; bodies.length = 0; request = 0;
+  await turn(fetcher, { skillPackages: [captured] });
+  expect(JSON.parse(bodies[0]).tools.map((tool: { name: string }) => tool.name)).not.toContain('run_skill_script');
+  expect(scripts).toEqual([]);
+  expect(bodies[1].match(/PROJECT_TOOL_REFUSED/g)).toHaveLength(3);
+});

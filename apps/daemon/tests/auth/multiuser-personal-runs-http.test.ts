@@ -142,7 +142,26 @@ describe('personal subscription run lane', () => {
     const followUp = await finished(alice, followUpRun.json.run.id);
     const followUpReply = JSON.parse(followUp.output.text);
     expect(followUpReply.threadId).toBe(firstReply.threadId);
-    expect(followUpReply.message).toBe('make the heading shorter');
+    // Only the request and the captured, read-only resource location; the stable prompt is not resent.
+    expect(followUpReply.message.split('\n\n# Captured skill resources\n\n')[0]).toBe('make the heading shorter');
+    expect(followUpReply.message).toContain(`- ${skill.id}: [private path]/skill-packages/`);
+
+    // The fixed selection captures its primary skill package and design system
+    // once; the follow-up reuses those bytes rather than the live catalog, and
+    // the prompt never names the daemon's bundled skill directory.
+    const db = new Database(path.join(dataRoot, 'app.sqlite'));
+    let requests: Array<Record<string, any>>;
+    try {
+      requests = [firstRun, followUpRun].map((run) => JSON.parse((db.prepare('SELECT request_json FROM multiuser_runs WHERE id = ?')
+        .get(run.json.run.id) as { request_json: string }).request_json));
+    } finally { db.close(); }
+    for (const captured of requests) {
+      expect(captured.skillSnapshots[0]).toMatchObject({ id: skill.id, package: { id: skill.id, hash: expect.any(String) } });
+      expect(captured.designSnapshot).toMatchObject({ id: system.id });
+      expect(captured.stablePrompt).not.toContain(path.resolve(process.cwd(), '../../skills'));
+    }
+    expect(requests[1]!.skillSnapshots[0].hash).toBe(requests[0]!.skillSnapshots[0].hash);
+    expect(requests[1]!.designSnapshot.hash).toBe(requests[0]!.designSnapshot.hash);
   });
 
   it('runs each user only through their own CODEX_HOME with an explicit environment', async () => {

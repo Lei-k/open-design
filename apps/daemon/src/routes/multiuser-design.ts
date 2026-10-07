@@ -86,6 +86,13 @@ function setPreviewHeaders(res: Response): void {
   res.setHeader('Referrer-Policy', 'no-referrer');
 }
 
+export interface MultiUserDesignCapture {
+  skill: { id: string; name: string; body: string; mode?: Parameters<typeof composeSystemPrompt>[0]['skillMode'] };
+  design: { id: string } & Pick<Parameters<typeof composeSystemPrompt>[0],
+    'designSystemBody' | 'designSystemTitle' | 'designSystemUsageMd' | 'designSystemTokensCss' |
+    'designSystemComponentsManifest' | 'designSystemFixtureHtml' | 'designSystemPullIndex' | 'designSystemImportMode'>;
+}
+
 export interface MultiUserDesignRoutes {
   selection(conversationId: string, ownerId: string): MultiUserDesignSelection | null;
   composeStablePrompt(input: {
@@ -94,6 +101,8 @@ export interface MultiUserDesignRoutes {
     projectId: string;
     userInstructions?: string;
     memoryBody?: string;
+    /** Conversation-captured revisions; the live bundled tree is never read. */
+    captured: MultiUserDesignCapture;
   }): Promise<{ prompt: string; hash: string; selection: MultiUserDesignSelection } | null>;
   invalidateOwnerCapabilities(ownerId: string): void;
   close(): void;
@@ -106,15 +115,6 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
   previewOrigin: string;
   listBuiltInSkills: () => Promise<SkillInfo[]>;
   listBuiltInDesignSystems: () => Promise<DesignSystemSummary[]>;
-  readBuiltInDesignSystem: (id: string) => Promise<string | null>;
-  readBuiltInDesignSystemAssets: (id: string) => Promise<{
-    usageMd?: string;
-    tokensCss?: string;
-    componentsManifest?: string;
-    fixtureHtml?: string;
-    pullIndex?: string;
-    importMode?: 'normalized' | 'hybrid' | 'verbatim';
-  }>;
   clock?: () => number;
 }): MultiUserDesignRoutes {
   const { db, projectsRoot } = input;
@@ -366,19 +366,12 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
 
   return {
     selection,
-    async composeStablePrompt({ conversationId, ownerId, projectId, userInstructions, memoryBody }) {
+    async composeStablePrompt({ conversationId, ownerId, projectId, userInstructions, memoryBody, captured }) {
       const design = selection(conversationId, ownerId);
       const project = getProject(db, projectId);
       if (!design || !project || !owners.isOwnedBy(projectId, ownerId)) return null;
-      const available = await catalog();
-      const skill = available.rawSkills.find((item) => item.source === 'built-in' && item.id === design.skillId);
-      const system = available.rawSystems.find((item) => item.source === 'built-in' && item.id === design.designSystemId);
-      if (!skill || !system) return null;
-      const [designSystemBody, assets] = await Promise.all([
-        input.readBuiltInDesignSystem(system.id),
-        input.readBuiltInDesignSystemAssets(system.id),
-      ]);
-      if (!designSystemBody) return null;
+      if (captured.skill.id !== design.skillId || captured.design.id !== design.designSystemId || !captured.design.designSystemBody) return null;
+      const { id: _designId, ...designPrompt } = captured.design;
       const prompt = composeSystemPrompt({
         agentId: 'codex',
         streamFormat: 'json-event-stream',
@@ -387,17 +380,10 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
         sessionMode: 'design',
         locale: design.locale,
         metadata: project.metadata,
-        skillBody: skill.body,
-        skillName: skill.name,
-        skillMode: skill.mode,
-        designSystemBody,
-        designSystemTitle: system.title,
-        designSystemUsageMd: assets.usageMd,
-        designSystemTokensCss: assets.tokensCss,
-        designSystemComponentsManifest: assets.componentsManifest,
-        designSystemFixtureHtml: assets.fixtureHtml,
-        designSystemPullIndex: assets.pullIndex,
-        designSystemImportMode: assets.importMode,
+        skillBody: captured.skill.body,
+        skillName: captured.skill.name,
+        skillMode: captured.skill.mode,
+        ...designPrompt,
         memoryBody,
         userInstructions,
         pluginBlock: undefined,

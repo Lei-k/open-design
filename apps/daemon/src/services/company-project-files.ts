@@ -4,13 +4,15 @@ import { kindFor, projectDir, validateProjectPath } from '../projects.js';
 import { normalizeArtifactRuntimeImports } from '../artifacts/runtime-compat.js';
 
 const FILE_LIMIT = 1024 * 1024;
+/** Captured skill resources may be binary and up to their package's per-file bound. */
+const RESOURCE_LIMIT = 4 * 1024 * 1024;
 const fdPath = (fd: number) => `/proc/self/fd/${fd}`;
 
 /** EC2/Linux project functions hold directory inodes instead of reopening a
  * checked pathname. A personal worker may concurrently rename a directory or
  * plant symlinks; neither can redirect these functions into daemon/foreign data.
  * No fallback to an ordinary following path when descriptor paths are absent. */
-function withFile<T>(projectsRoot: string, projectId: string, name: string, write: boolean, operate: (fd: number) => T): T {
+function withFile<T>(projectsRoot: string, projectId: string, name: string, write: boolean, operate: (fd: number) => T, limit = FILE_LIMIT): T {
   const safe = validateProjectPath(name) as string;
   if (safe.split('/').some((segment) => ['.file-versions', '.live-artifacts'].includes(segment))) throw new Error('project tool path refused');
   const expectedRoot = realpathSync(projectDir(projectsRoot, projectId));
@@ -35,7 +37,7 @@ function withFile<T>(projectsRoot: string, projectId: string, name: string, writ
       | (write ? constants.O_WRONLY | constants.O_CREAT : constants.O_RDONLY), 0o600);
     const stat = fstatSync(file);
     const actual = realpathSync(fdPath(file));
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > FILE_LIMIT || !actual.startsWith(expectedRoot + path.sep)) throw new Error('project tool file refused');
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > limit || !actual.startsWith(expectedRoot + path.sep)) throw new Error('project tool file refused');
     return operate(file);
   } finally {
     if (file !== undefined) closeSync(file);
@@ -62,6 +64,15 @@ export function writeCompanyProjectFile(projectsRoot: string, projectId: string,
   withFile(projectsRoot, projectId, name, true, (fd) => { ftruncateSync(fd, 0); writeFileSync(fd, normalized); });
 }
 
+/** Bytes from an immutable captured package; text-like HTML still passes the
+ * same runtime-import normalization as a model-authored write. */
+export function writeCompanyProjectBytes(projectsRoot: string, projectId: string, name: string, bytes: Buffer): void {
+  if (bytes.length > RESOURCE_LIMIT) throw new Error('project tool file limit');
+  let text: string | null = null;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { /* binary */ }
+  if (text !== null && bytes.length <= FILE_LIMIT) return writeCompanyProjectFile(projectsRoot, projectId, name, text);
+  withFile(projectsRoot, projectId, name, true, (fd) => { ftruncateSync(fd, 0); writeFileSync(fd, bytes); }, RESOURCE_LIMIT);
+}
 
 /** Bounded descriptor traversal: no foreign names leak through a renamed or
  * symlinked intermediate directory, and no FIFO/device is ever opened to read. */

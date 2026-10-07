@@ -17589,10 +17589,6 @@ export async function startServer({
     listBuiltInDesignSystems: () => listDesignSystems(DESIGN_SYSTEMS_DIR, {
       source: 'built-in', isEditable: false, defaultStatus: 'published',
     }),
-    readBuiltInDesignSystem: (id) => readDesignSystem(DESIGN_SYSTEMS_DIR, id),
-    // Multi-user prompt composition is deliberately built-in only. Do not let
-    // an installed package with the same id fill missing bundled assets.
-    readBuiltInDesignSystemAssets: (id) => readDesignSystemAssets(DESIGN_SYSTEMS_DIR, id),
     ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
   }) : null;
   const multiUserRuns = multiUserMode ? registerMultiUserRunRoutes(app, {
@@ -17601,6 +17597,7 @@ export async function startServer({
     ...(multiUserMode.testCompanyOpenAIFetch ? { companyFetch: multiUserMode.testCompanyOpenAIFetch } : {}),
     ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
     ...(personalCodex ? { personal: personalCodex } : {}),
+    ...(multiUserMode.personalCodex?.sandbox ? { scriptSandbox: multiUserMode.personalCodex.sandbox } : {}),
     ...(multiUserDesign ? { design: multiUserDesign } : {}),
     ...(studioCatalog ? { catalog: studioCatalog } : {}),
     ...(studioSettings ? { settings: studioSettings } : {}),

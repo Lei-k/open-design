@@ -37,6 +37,8 @@ export interface PersonalSandboxMounts {
   cwd: string;
   /** Captured resource subtree, mounted after writable parents. */
   skillPackages?: string;
+  /** Provider children need the remote API; company skill scripts do not get a network. */
+  network?: boolean;
 }
 
 const SYSTEM_DIRECTORIES = ['/usr', '/etc/ssl', '/etc/ca-certificates', '/etc/pki', '/etc/alternatives'];
@@ -53,7 +55,7 @@ function exists(file: string): boolean {
 
 /** The bubblewrap arguments that build the sandbox's filesystem, without the command. */
 export function personalSandboxArgs(sandbox: PersonalSandbox, mounts: PersonalSandboxMounts): string[] {
-  const args = ['--unshare-all', '--share-net', '--die-with-parent', '--new-session'];
+  const args = ['--unshare-all', ...(mounts.network === false ? [] : ['--share-net']), '--die-with-parent', '--new-session'];
   for (const dir of SYSTEM_DIRECTORIES) if (exists(dir)) args.push('--ro-bind', dir, dir);
   for (const entry of SYSTEM_TOP_LEVEL) {
     const info = fs.lstatSync(entry, { throwIfNoEntry: false });

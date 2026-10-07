@@ -176,11 +176,15 @@ it('narrows run context to the owner\'s project files and refuses host-side cont
     ...target, agentId: 'codex', executionSource: 'personal_subscription', message: `ctx ${randomUUID()}`, context } });
   for (const context of [{ workspaceItems: [{ id: 'x', kind: 'local-code', label: 'x', absolutePath: '/etc' }] },
     { workspaceItems: [{ id: 'x', kind: 'file', label: 'x', path: 'page.html', absolutePath: '/etc/passwd' }] },
-    { workspaceItems: [{ id: 'x', kind: 'browser', label: 'x', url: 'http://169.254.169.254/' }] }, { skillIds: ['s'] }]) {
+    { workspaceItems: [{ id: 'x', kind: 'browser', label: 'x', url: 'http://169.254.169.254/' }] }]) {
     const refused = await start(context);
     expect(refused.status).toBe(403);
     expect(refused.json.error.code).toBe('MULTIUSER_CAPABILITY_UNAVAILABLE');
   }
+  // Context skills are catalog selections now (S8/S17); an unknown id is not found, never a host lookup.
+  const unknownSkill = await start({ skillIds: ['s'] });
+  expect(unknownSkill.status).toBe(404);
+  expect(unknownSkill.json.error.code).toBe('NOT_FOUND');
   expect((await start({ workspaceItems: [{ id: 'x', kind: 'file', label: 'x', path: '../secret' }] })).status).toBe(400);
   const made = await start({ skillIds: [], workspaceItems: [{ id: 'tab:page.html', kind: 'file', label: 'page.html', path: 'page.html' }] });
   expect(made.status).toBe(202);
