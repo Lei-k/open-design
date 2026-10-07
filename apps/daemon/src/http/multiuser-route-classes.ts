@@ -44,7 +44,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -701,16 +701,20 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     return [...group('actor-scoped', 'bundled reads and account-owned text skills; immutable revisions; no host registry access', [key], { ...extras, rewriteTo }),
       ...group('actor-scoped', 'actor catalog alias; same cookie authority and bounded skill body', [alias], extras)];
   }),
+  ...['GET /api/craft', 'GET /api/craft/:id', 'GET /api/design-templates', 'GET /api/design-templates/:id', 'GET /api/prompt-templates', 'GET /api/prompt-templates/:surface/:id', 'GET /api/design-systems', 'POST /api/design-systems', 'PATCH /api/design-systems/:id', 'DELETE /api/design-systems/:id', 'GET /api/design-systems/:id', 'GET /api/design-systems/:id/revisions', 'GET /api/design-systems/:id/files', 'GET /api/design-systems/:id/file', 'GET /api/design-systems/:id/preview', 'GET /api/design-systems/:id/showcase'].flatMap((key) => {
+    const alias = key.replace('/api/', '/api/multiuser/catalog/');
+    const bodyPolicy = key.startsWith('POST ') || key.startsWith('PATCH ') ? 'design-system-document' as const
+      : key.startsWith('DELETE ') ? 'empty' as const : undefined;
+    const extras = { ...(bodyPolicy ? { bodyPolicy, maxBodyBytes: 300_000 } : {}),
+      ...(/\/(?:preview|showcase)$/.test(key) ? { untrustedContent: true } : {}) };
+    return [...group('actor-scoped', 'bundled catalog reads and account-owned versioned design documents; no host registry access', [key],
+      { ...extras, rewriteTo: alias.slice(alias.indexOf(' ') + 1) }),
+      ...group('actor-scoped', 'actor design catalog alias; identical cookie authority and closed fields', [alias], extras)];
+  }),
   ...blocked(R_SHARED_CATALOG, [
     'GET /api/asset-cache',
     'GET /api/atoms',
     'GET /api/atoms/:id',
-    'GET /api/craft',
-    'GET /api/craft/:id',
-    'GET /api/design-templates',
-    'GET /api/design-templates/:id',
-    'GET /api/prompt-templates',
-    'GET /api/prompt-templates/:surface/:id',
     'GET /api/skills/:id/example',
     'GET /api/skills/:id/assets/*splat',
     'POST /api/skills/install',
@@ -718,28 +722,18 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'GET /api/templates/:id',
     'POST /api/templates',
     'DELETE /api/templates/:id',
-    'GET /api/design-systems',
     'POST /api/design-systems/install',
     'POST /api/design-systems/import/local',
     'POST /api/design-systems/import/github',
     'POST /api/design-systems/import/shadcn',
-    'DELETE /api/design-systems/:id',
-    'POST /api/design-systems',
     'POST /api/design-systems/generation-jobs',
     'GET /api/design-systems/generation-jobs/:jobId',
     'POST /api/design-systems/:id/revision-jobs',
     'POST /api/design-systems/:id/token-contract/rebuild-jobs',
-    'GET /api/design-systems/:id/revisions',
     'PATCH /api/design-systems/:id/revisions/:revisionId',
-    'GET /api/design-systems/:id',
-    'GET /api/design-systems/:id/preview',
-    'GET /api/design-systems/:id/showcase',
     'GET /api/design-systems/:id/static',
     'POST /api/design-systems/:id/workspace',
-    'GET /api/design-systems/:id/files',
-    'GET /api/design-systems/:id/file',
     'GET /api/design-systems/:id/archive',
-    'PATCH /api/design-systems/:id',
     'POST /api/design-systems/:id/sync-assets',
   ]),
   ...blocked(R_PLUGINS, [

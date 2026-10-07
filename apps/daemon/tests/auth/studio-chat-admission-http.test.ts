@@ -116,7 +116,7 @@ it('refuses capabilities the personal lane does not apply instead of dropping th
       .toEqual([Object.keys(extra)[0], 403, 'MULTIUSER_CAPABILITY_UNAVAILABLE']);
   }
   const named = await send(studioRequest(target, 'x', a, { designSystemId: 'some-system' }));
-  expect(named.status).toBe(400);
+  expect(named.status).toBe(404);
   expect(await runCount(target)).toBe(0);
 });
 

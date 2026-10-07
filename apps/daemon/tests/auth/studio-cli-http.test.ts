@@ -247,3 +247,20 @@ it('edits account instructions and manual profile through stdin and isolates B',
   expect((await cli(['memory', 'tree', 'view', 'user_profile', '--session-file', second, '--json'])).code).not.toBe(0);
   expect(success(await cli(['config', 'unset', 'customInstructions', '--session-file', first, '--json']))).toEqual({ customInstructions: '' });
 }, 40_000);
+
+
+it('creates, edits, reads and deletes private DESIGN.md through stdin on the standard APIs', async () => {
+  const first = path.join(root, 'cli-design-a'); const second = path.join(root, 'cli-design-b');
+  for (const [user, file] of [[alice, first], [bob, second]] as const) {
+    success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', user.username,
+      '--password-file', '-', '--session-file', file, '--json'], user.password + '\n'));
+  }
+  const created = success(await cli(['design-systems', 'create', '--title', 'CLI document', '--prompt-file', '-', '--session-file', first, '--json'], '# CLI DESIGN ORIGINAL'));
+  const id = created.designSystem.id;
+  expect(created.designSystem.body).toBe('# CLI DESIGN ORIGINAL');
+  expect((await cli(['design-systems', 'show', id, '--session-file', second, '--json'])).code).not.toBe(0);
+  expect(success(await cli(['design-systems', 'update', id, '--prompt-file', '-', '--session-file', first, '--json'], '# CLI DESIGN EDITED')).designSystem.body).toBe('# CLI DESIGN EDITED');
+  expect(success(await cli(['design-systems', 'show', id, '--session-file', first, '--json'])).designSystem.body).toBe('# CLI DESIGN EDITED');
+  expect(success(await cli(['design-systems', 'delete', id, '--session-file', first, '--json']))).toEqual({ ok: true });
+  expect((await cli(['design-systems', 'show', id, '--session-file', first, '--json'])).code).not.toBe(0);
+}, 40_000);

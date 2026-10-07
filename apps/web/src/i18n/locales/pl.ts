@@ -4667,6 +4667,7 @@ export const pl: Dict = {
   'dsCreate.continueToGeneration': 'Continue to generation',
   'dsCreate.embeddedTitle': 'Generate from your material',
   'dsCreate.embeddedBody': 'Start with a website or brand reference, then add any source files you already have.',
+  'dsCreate.manualDocumentHelp': 'Paste a DESIGN.md document, save it privately, then select it in your project. New conversations use your current document; existing conversations keep the version they first used.',
   'dsCreate.sourceSectionTitle': 'Extract from GitHub, websites, or source material',
   'dsCreate.sourceSectionBody': 'Start with a GitHub repo, website, DESIGN.md, or files that show your style. OpenDesign first creates a usable system quickly, then AI can refine it inside the project.',
   'dsCreate.githubWebsiteLabel': 'GitHub or website',

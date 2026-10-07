@@ -1,3 +1,4 @@
+import { multiUserStreamAllowed } from '../../http/multiuser-stream.js';
 import { multiUserActorOf } from '../../http/multiuser-gate.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
@@ -339,6 +340,7 @@ export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | '
    * the `OD_PROJECT_CREATE_PREPARATION_TIMEOUT_MS` env seam may shorten it.
    */
   projectCreatePreparationTimeoutMs?: number;
+  readActorDesignSystem?: (owner: string, id: string) => Promise<boolean>;
   /**
    * Multi-user mode only (#3): scopes `GET /api/projects` to the actor and
    * binds the actor as immutable owner inside the create transaction. Absent
@@ -5371,7 +5373,14 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       if (typeof patch.customInstructions === 'string' && patch.customInstructions.length > 5000) {
         return sendApiError(res, 400, 'BAD_REQUEST', 'customInstructions exceeds 5 000 character limit');
       }
-      if (Object.prototype.hasOwnProperty.call(patch, 'designSystemId')) {
+      if (Object.prototype.hasOwnProperty.call(patch, 'designSystemId') && multiUserActorOf(res)) {
+        const owner = multiUserActorOf(res)!.accountId;
+        if (patch.designSystemId !== null && !await ctx.readActorDesignSystem?.(owner, patch.designSystemId))
+          return sendApiError(res, 404, 'NOT_FOUND', 'design system not found');
+        if (!multiUserStreamAllowed(res)) return;
+        if (!ctx.projectOwnership?.filterVisibleProjects(res, [patchProject]).length)
+          return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
+      } else if (Object.prototype.hasOwnProperty.call(patch, 'designSystemId')) {
         const projectBinding = getWorkspaceProjectByProjectId(db, req.params.id);
         const designSystemValidation = await validateProjectDesignSystemId(
           patch.designSystemId,

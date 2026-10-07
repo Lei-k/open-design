@@ -1,4 +1,4 @@
-import { createContext, useContext, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, type ReactNode } from 'react';
 import type { AuthAccount, StudioRuntimeCapabilities, StudioParityLaneId } from '@open-design/contracts';
 import type { CookieSession } from '../multiuser/session';
 import { activateStudioTransport, studioRequestAvailable } from './studio-transport';
@@ -38,7 +38,8 @@ export function useStudioCapabilities() { return useContext(Context); }
 /** Partial pilot lanes expose only the operations reviewed by the transport. */
 export function useStudioRequestAvailable() {
   const studio = useStudioCapabilities();
-  return (method: string, path: string) => studio.hostServices || studioRequestAvailable(method, path, studio.available);
+  return useCallback((method: string, path: string) => studio.hostServices || studioRequestAvailable(method, path, studio.available),
+    [studio.hostServices, studio.available]);
 }
 export function StudioUnavailable({ lane }: { lane: StudioParityLaneId }) {
   const studio = useStudioCapabilities();

@@ -5068,6 +5068,7 @@ export const zhTW: Dict = {
   "dsCreate.continueToGeneration": "繼續生成",
   "dsCreate.embeddedTitle": "從你的素材生成",
   "dsCreate.embeddedBody": "先加入網站或品牌參考，再補充你已有的來源檔案。",
+  "dsCreate.manualDocumentHelp": "貼上 DESIGN.md 文件，儲存為個人設計系統，再於專案中選擇它。新對話使用目前文件；既有對話保留首次使用的版本。",
   "dsCreate.sourceSectionTitle": "從 GitHub、網站或來源素材擷取",
   "dsCreate.sourceSectionBody":
     "從 GitHub repo、網站、DESIGN.md 或能體現風格的檔案開始。OpenDesign 會先快速建立一套可用系統，之後 AI 可在專案中繼續細化。",

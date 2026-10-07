@@ -944,6 +944,7 @@ import { registerRunRoutes } from './routes/runs.js';
 import { registerMultiUserRunRoutes } from './routes/multiuser-runs.js';
 import { registerMultiUserDesignRoutes } from './routes/multiuser-design.js';
 import { registerStudioSettingsRoutes } from './routes/studio-settings.js';
+import { registerStudioDesignCatalogRoutes } from './routes/studio-design-catalog.js';
 import { registerStudioCatalogRoutes } from './routes/studio-catalog.js';
 import { registerMultiUserAgentAccountRoutes } from './routes/multiuser-agent-accounts.js';
 import { PersonalCodexAccounts } from './services/personal-codex-accounts.js';
@@ -8796,6 +8797,7 @@ export async function startServer({
   registerSocialShareRoutes(app, { http: httpDeps });
   const projectCreatePreparationTimeoutMs = projectCreatePreparationTimeoutMsFromEnv();
   registerProjectRoutes(app, {
+    ...(multiUserMode ? { readActorDesignSystem: async (owner: string, id: string) => Boolean(await studioDesignCatalog?.readSystem(owner, id)) } : {}),
     db,
     design,
     projectOwnership: multiUserFront?.projectOwnershipHooks ?? null,
@@ -17564,6 +17566,11 @@ export async function startServer({
   const studioCatalog = multiUserMode ? registerStudioCatalogRoutes(app, {
     db, listBuiltInSkills: async () => (await listSkills(SKILLS_DIR)).map((skill) => ({ ...skill, source: 'built-in' as const })),
   }) : null;
+  const studioDesignCatalog = multiUserMode ? registerStudioDesignCatalogRoutes(app, {
+    db, designSystemsRoot: DESIGN_SYSTEMS_DIR, promptTemplatesRoot: PROMPT_TEMPLATES_DIR, craftRoot: CRAFT_DIR,
+    listBuiltInSystems: () => listDesignSystems(DESIGN_SYSTEMS_DIR, { source: 'built-in', isEditable: false, defaultStatus: 'published' }),
+    listBuiltInTemplates: () => listSkills(DESIGN_TEMPLATES_DIR),
+  }) : null;
   const multiUserDesign = multiUserMode ? registerMultiUserDesignRoutes(app, {
     db,
     dataRoot: RUNTIME_DATA_DIR,
@@ -17588,6 +17595,7 @@ export async function startServer({
     ...(multiUserDesign ? { design: multiUserDesign } : {}),
     ...(studioCatalog ? { catalog: studioCatalog } : {}),
     ...(studioSettings ? { settings: studioSettings } : {}),
+    ...(studioDesignCatalog ? { designCatalog: studioDesignCatalog } : {}),
   }) : null;
   if (multiUserRuns) multiUserFront?.setCancelAccountRuns((accountId) => {
     multiUserRuns.cancelAccountRuns(accountId);

@@ -5092,6 +5092,7 @@ export interface Dict {
   'dsCreate.continueToGeneration': string;
   'dsCreate.embeddedTitle': string;
   'dsCreate.embeddedBody': string;
+  'dsCreate.manualDocumentHelp': string;
   'dsCreate.sourceSectionTitle': string;
   'dsCreate.sourceSectionBody': string;
   'dsCreate.githubWebsiteLabel': string;

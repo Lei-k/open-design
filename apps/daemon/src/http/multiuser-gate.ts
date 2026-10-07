@@ -294,11 +294,11 @@ const PROJECT_CREATE_FIELDS = new Set([
   'automaticStrategyTaskProfile',
 ]);
 // `updatedAt` is accepted as a touch only; the handler substitutes the server clock.
-const PROJECT_PATCH_FIELDS = new Set(['name', 'metadata', 'pendingPrompt', 'customInstructions', 'updatedAt']);
+const PROJECT_PATCH_FIELDS = new Set(['name', 'metadata', 'pendingPrompt', 'customInstructions', 'updatedAt', 'designSystemId']);
 /**
  * Descriptive metadata only. Everything that reaches host paths (baseDir,
  * linkedDirs, project locations, orchestrator workspace), global catalogs
- * (templates, plugins, skills, design systems) or daemon-owned bindings is
+ * (templates, plugins, skills) or daemon-owned bindings is
  * refused in multi-user mode.
  */
 const PROJECT_METADATA_FIELDS = new Set([
@@ -356,6 +356,13 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
     && typeof body.model === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(body.model)
     && Number.isSafeInteger(body.capacity) && Number(body.capacity) >= 0 && Number(body.capacity) <= 16
     && (body.apiKey === undefined || body.apiKey === null || typeof body.apiKey === 'string' && body.apiKey.trim().length >= 16 && body.apiKey.length <= 4096);
+  if (policy === 'design-system-document') return only(['title', 'summary', 'category', 'surface', 'status', 'body'])
+    && Object.keys(body).length > 0
+    && ['title', 'summary', 'category', 'body'].every((key) => body[key] === undefined
+      || typeof body[key] === 'string' && !body[key].includes('\0')
+        && Buffer.byteLength(body[key]) <= ({ title: 512, summary: 16_000, category: 128, body: 256_000 } as Record<string, number>)[key]!)
+    && (body.surface === undefined || ['web', 'image', 'video', 'audio'].includes(String(body.surface)))
+    && (body.status === undefined || ['draft', 'published'].includes(String(body.status)));
   if (policy === 'skill-write') {
     return only(['name', 'description', 'body', 'triggers'])
       && (body.name === undefined || (typeof body.name === 'string' && body.name.trim().length > 0 && body.name.length <= 120))
@@ -413,6 +420,8 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   for (const key of Object.keys(body)) {
     if (!fields.has(key)) return false;
   }
+  if (body.designSystemId !== undefined && body.designSystemId !== null
+    && (typeof body.designSystemId !== 'string' || body.designSystemId.length === 0 || body.designSystemId.length > 256)) return false;
   if (body.updatedAt !== undefined && (typeof body.updatedAt !== 'number' || !Number.isFinite(body.updatedAt))) return false;
   return metadataAllowed(body.metadata, policy === 'project-patch');
 }

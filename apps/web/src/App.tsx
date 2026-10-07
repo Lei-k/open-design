@@ -1,6 +1,6 @@
 import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioFetch as fetch, studioWindowSessionStorage } from './runtime/studio-transport';
 import { AdminUsers, Audit } from './multiuser/MultiUserApp';
-import { useStudioCapabilities, StudioUnavailable } from './runtime/studio-capabilities';
+import { useStudioCapabilities, useStudioRequestAvailable, StudioUnavailable } from './runtime/studio-capabilities';
 import { StudioAccountChrome } from './runtime/StudioAccountChrome';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
@@ -943,6 +943,7 @@ export function App() {
 
 function AppInner() {
   const studio = useStudioCapabilities();
+  const studioRequest = useStudioRequestAvailable();
   const { t } = useI18n();
   const iframeKeepAlivePool = useIframeKeepAlivePool();
   const clientType = useMemo(() => detectClientType(), []);
@@ -2111,6 +2112,15 @@ function AppInner() {
           setSkillsLoading(false);
         });
       }
+      if (studioRequest('GET', '/api/design-systems')) {
+        setDsLoading(true);
+        void fetchDesignSystems().then((items) => {
+          if (cancelled) return;
+          setWorkspaceDesignSystems({ identity: currentWorkspaceCatalogIdentity, items }); setDsLoading(false);
+        });
+        void fetchDesignTemplates().then((items) => { if (!cancelled) setDesignTemplates(items); });
+        void fetchPromptTemplates().then((items) => { if (!cancelled) setPromptTemplates(items); });
+      }
       const request = beginProjectListRequest(workspaceProjectViewRef.current);
       void listCurrentWorkspaceProjects().then((list) => {
         if (cancelled) return;
@@ -2580,7 +2590,7 @@ function AppInner() {
     const requestGeneration =
       (designSystemsRequestGenerationRef.current.get(issuedCatalogIdentity) ?? 0) + 1;
     designSystemsRequestGenerationRef.current.set(issuedCatalogIdentity, requestGeneration);
-    if (!studio.hostServices) return;
+    if (!studioRequest('GET', '/api/design-systems')) return;
     const list = await fetchDesignSystems(issuedContext, options);
     if (
       workspaceContextStateRef.current.identityChangePending
@@ -5311,7 +5321,8 @@ function AppInner() {
     !daemonConfigLoaded;
   if (studio.actor && studio.session && window.location.pathname.startsWith('/admin/')) {
     appMain = studio.actor.role !== 'admin' ? <p role="alert">{t('multiuser.denied')}</p> : window.location.pathname === '/admin/audit' ? <Audit session={studio.session} account={studio.actor} generation={studio.generation} /> : <AdminUsers session={studio.session} account={studio.actor} generation={studio.generation} />;
-  } else if (!studio.hostServices && route.kind !== 'home' && route.kind !== 'project') {
+  } else if (!studio.hostServices && route.kind !== 'home' && route.kind !== 'project'
+    && !(['design-system-create', 'design-system-detail'].includes(route.kind) && studioRequest('GET', '/api/design-systems'))) {
     appMain = <StudioUnavailable lane="catalogs" />;
   } else if (pendingFirstRunOnboardingRoute) {
     appMain = (
@@ -5403,6 +5414,7 @@ function AppInner() {
   } else if (route.kind === 'design-system-create') {
     appMain = (
       <DesignSystemCreationFlow
+        onDocumentCreated={(designSystemId) => navigate({ kind: 'design-system-detail', designSystemId })}
         onBack={handleDesignSystemCreateBack}
         designSystems={enabledDS}
         onCreated={(projectId, project, conversationId) => {

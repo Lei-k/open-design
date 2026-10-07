@@ -4668,6 +4668,7 @@ export const ru: Dict = {
   'dsCreate.continueToGeneration': 'Перейти к генерации',
   'dsCreate.embeddedTitle': 'Создать из ваших материалов',
   'dsCreate.embeddedBody': 'Начните с сайта или бренд-референса, затем добавьте любые исходные файлы, которые у вас уже есть.',
+  'dsCreate.manualDocumentHelp': 'Paste a DESIGN.md document, save it privately, then select it in your project. New conversations use your current document; existing conversations keep the version they first used.',
   'dsCreate.sourceSectionTitle': 'Извлечь из GitHub, сайтов или исходных материалов',
   'dsCreate.sourceSectionBody': 'Начните с GitHub-репозитория, сайта, DESIGN.md или файлов, которые показывают ваш стиль. OpenDesign сначала быстро создает рабочую систему, а затем AI может уточнить ее внутри проекта.',
   'dsCreate.githubWebsiteLabel': 'GitHub или сайт',

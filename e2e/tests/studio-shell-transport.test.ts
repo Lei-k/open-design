@@ -122,7 +122,7 @@ it('opens only reviewed text skill operations with a usable catalog lane', () =>
     }
   }
   for (const [method, path] of [['POST', '/api/skills/install'], ['GET', '/api/skills/s/assets/file'],
-    ['POST', '/api/skills/s/examples'], ['GET', '/api/plugins'], ['GET', '/api/design-systems']]) {
+    ['POST', '/api/skills/s/examples'], ['GET', '/api/plugins'], ['POST', '/api/design-systems/install']]) {
     expect(studioRequestAvailable(method!, path!, () => true), path).toBe(false);
   }
 });
@@ -145,5 +145,22 @@ it('opens only actor instructions and manual memory when settings is usable', ()
   }
   for (const path of ['/api/memory/extractions', '/api/memory/verifications', '/api/mcp/config', '/api/connectors/discovery', '/api/library/assets', '/api/agents']) {
     expect(studioRequestAvailable('GET', path, () => true), path).toBe(false);
+  }
+});
+
+
+it('opens only reviewed document and bundled catalog operations', () => {
+  const keys = ['GET /api/design-systems', 'POST /api/design-systems', 'GET /api/design-systems/user:studio_x',
+    'PATCH /api/design-systems/user:studio_x', 'DELETE /api/design-systems/user:studio_x',
+    ...['revisions', 'files', 'file', 'preview', 'showcase'].map((resource) => `GET /api/design-systems/user:studio_x/${resource}`),
+    'GET /api/design-templates', 'GET /api/design-templates/web', 'GET /api/prompt-templates',
+    'GET /api/prompt-templates/image/editorial', 'GET /api/craft', 'GET /api/craft/web'];
+  for (const key of keys) {
+    const [method, standard] = key.split(' ') as [string, string];
+    for (const path of [standard, standard.replace('/api/', '/api/multiuser/catalog/')]) {
+      expect(studioRequestAvailable(method, path, (lane) => lane === 'catalogs'), key).toBe(true);
+      expect(studioRequestAvailable(method, path, () => false), key).toBe(false);
+      expect(matchMultiUserRoute(method, path).every(({ entry }) => entry.routeClass === 'actor-scoped'), key).toBe(true);
+    }
   }
 });

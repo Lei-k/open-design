@@ -30,6 +30,7 @@ import type { PersonalRunLaneControls } from './multiuser-agent-accounts.js';
 import type { MultiUserDesignRoutes } from './multiuser-design.js';
 import { CompanyOpenAIConfigError, CompanyOpenAIStore } from '../storage/company-openai.js';
 import { CompanyOpenAIWorker, runCompanyOpenAITurn } from '../runtimes/company-openai.js';
+import type { StudioDesignCatalog } from './studio-design-catalog.js';
 import type { StudioSettings } from '../storage/studio-settings.js';
 import type { StudioCatalog } from './studio-catalog.js';
 import { composeSystemPrompt } from '../prompts/system.js';
@@ -265,11 +266,36 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   design?: MultiUserDesignRoutes;
   catalog?: StudioCatalog;
   settings?: StudioSettings;
+  designCatalog?: StudioDesignCatalog;
 }): { cancelAccountRuns(accountId: string): void; isRunOwner(runId: string, accountId: string): boolean;
   cancelProjectRuns(accountId: string, projectId: string, conversationId?: string): Promise<() => void>;
   cancelPersonalRuns(accountId: string): Promise<void>; forgetNativeSessions(accountId: string): void; personalLane: PersonalRunLaneControls; listAccountIds(): string[];
   beginShutdown(): void; shutdown(): Promise<void>; companyPoolAvailable: boolean; openaiPoolAvailable: boolean } {
   const { db, dataRoot, projectsRoot } = input;
+  type DesignSnapshot = { id: string; hash: string; prompt: Pick<Parameters<typeof composeSystemPrompt>[0],
+    'designSystemBody' | 'designSystemTitle' | 'designSystemUsageMd' | 'designSystemTokensCss' |
+    'designSystemComponentsManifest' | 'designSystemFixtureHtml' | 'designSystemPullIndex' | 'designSystemImportMode'> };
+  const captureDesign = async (owner: string, conversationId: string, requestedId: string | null, question?: RunRow): Promise<DesignSnapshot | null | false> => {
+    const previous = question ?? (requestedId === null ? undefined : db.prepare(`SELECT * FROM multiuser_runs
+      WHERE owner_account_id = ? AND conversation_id = ? AND json_valid(request_json)
+        AND json_extract(request_json, '$.designSnapshot.id') = ? ORDER BY queue_seq DESC LIMIT 1`)
+      .get(owner, conversationId, requestedId) as RunRow | undefined);
+    const request = previous ? storedRequest(previous.request_json) : null;
+    const captured = request?.designSnapshot as DesignSnapshot | undefined;
+    if (question && requestedId !== null && requestedId !== captured?.id) return false;
+    if (captured && typeof captured.id === 'string' && typeof captured.prompt?.designSystemBody === 'string'
+      && (question && requestedId === null || requestedId === captured.id)) return captured;
+    if (requestedId === null) return null;
+    const system = await input.designCatalog?.readSystem(owner, requestedId);
+    if (!system?.body.trim()) return false;
+    const assets = await input.designCatalog!.readSystemAssets(system.id);
+    const prompt: DesignSnapshot['prompt'] = { designSystemBody: system.body, designSystemTitle: system.title,
+      designSystemUsageMd: assets.usageMd, designSystemTokensCss: assets.tokensCss,
+      designSystemComponentsManifest: assets.componentsManifest, designSystemFixtureHtml: assets.fixtureHtml,
+      designSystemPullIndex: assets.pullIndex, designSystemImportMode: assets.importMode };
+    return { id: system.id, hash: createHash('sha256').update(JSON.stringify(prompt)).digest('hex'), prompt };
+  };
+
   const artifactBlobs = createChatArtifactBlobStore({ dataDir: dataRoot });
   const companyOpenAI = new CompanyOpenAIStore(db, dataRoot);
   db.exec(`CREATE TABLE IF NOT EXISTS multiuser_company_sessions (
@@ -1050,11 +1076,13 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (!answerReady()) return sendApiError(res, 409, 'CONFLICT', 'question is stale or already answered');
     const fixedDesign = input.design?.selection(target.conversationId, owner) ?? null;
     // null means "the conversation's pinned selection"; a named one must match it.
-    if ((!fixedDesign && (fields.skillId !== null || fields.designSystemId !== null))
+    if ((!fixedDesign && fields.skillId !== null)
         || (fixedDesign && ((fields.skillId !== null && fields.skillId !== fixedDesign.skillId)
           || (fields.designSystemId !== null && fields.designSystemId !== fixedDesign.designSystemId)))) {
       return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
     }
+    const designSnapshot = fixedDesign ? null : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? getProject(db, target.projectId)?.designSystemId ?? null, question);
+    if (designSnapshot === false) return sendApiError(res, 404, 'NOT_FOUND', 'selected design system not found or unavailable');
     const actorContext = await input.settings?.capture(owner) ?? { userInstructions: '', memoryBody: '' };
     let composed = fixedDesign
       ? await input.design?.composeStablePrompt({ conversationId: target.conversationId, ownerId: owner, projectId: target.projectId, ...actorContext })
@@ -1070,10 +1098,13 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         selection: fixedDesign ?? { conversationId: target.conversationId, skillId: '', designSystemId: '', locale: 'en' } };
     }
     if (inheritsSkills && typeof questionRequest?.stablePrompt !== 'string') composed = null;
-    if (!inheritsSkills && !composed && (actorContext.userInstructions || actorContext.memoryBody)) {
+    const lastDesign = db.prepare('SELECT request_json FROM multiuser_runs WHERE owner_account_id = ? AND conversation_id = ? ORDER BY queue_seq DESC LIMIT 1')
+      .get(owner, target.conversationId) as { request_json: string | null } | undefined;
+    if (!inheritsSkills && !composed && (actorContext.userInstructions || actorContext.memoryBody || designSnapshot
+      || lastDesign && storedRequest(lastDesign.request_json)?.designSnapshot)) {
       const prompt = composeSystemPrompt({ agentId: 'codex', streamFormat: 'json-event-stream',
         executionProfile: 'filesystem', promptCoreVariant: 'slim', sessionMode: 'design', locale: 'en',
-        metadata: getProject(db, target.projectId)?.metadata, ...actorContext });
+        metadata: getProject(db, target.projectId)?.metadata, ...actorContext, ...designSnapshot?.prompt });
       composed = { prompt, hash: createHash('sha256').update(prompt).digest('hex'),
         selection: { conversationId: target.conversationId, skillId: '', designSystemId: '', locale: 'en' } };
     }
@@ -1096,7 +1127,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       ...(inheritsSkills || selectedSkills.length ? { skillIds: inheritsSkills ? inheritedSkillIds : fields.skillIds } : {}),
       ...(fields.workspaceItems.length ? { workspaceItems: fields.workspaceItems } : {}),
       ...(question ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId: question.id } } : {}),
-      ...(composed ? { skillId: composed.selection.skillId, designSystemId: composed.selection.designSystemId,
+      ...(designSnapshot ? { designSnapshot } : {}),
+      ...(composed ? { skillId: composed.selection.skillId, designSystemId: designSnapshot?.id ?? composed.selection.designSystemId,
         stablePrompt: composed.prompt, stablePromptHash: composed.hash } : {}) });
     // Prompt/catalog I/O yields: deletion or session revocation may have won
     // while it was in flight. Recheck before persisting or spawning anything.
@@ -1183,17 +1215,19 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       return sendApiError(res, 409, 'CONFLICT', 'question skills changed');
     }
     const fixed = input.design?.selection(target.conversationId, owner) ?? null;
-    if ((!fixed && (fields.skillId !== null || fields.designSystemId !== null)) || fixed &&
+    if ((!fixed && fields.skillId !== null) || fixed &&
       (fields.skillId !== null && fields.skillId !== fixed.skillId || fields.designSystemId !== null && fields.designSystemId !== fixed.designSystemId)) {
       return sendApiError(res, 400, 'BAD_REQUEST', 'design selection mismatch');
     }
+    const designSnapshot = fixed ? null : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? getProject(db, target.projectId)?.designSystemId ?? null, question);
+    if (designSnapshot === false) return sendApiError(res, 404, 'NOT_FOUND', 'selected design system not found or unavailable');
     const selected = !question && fields.skillIds.length ? await input.catalog?.readSkills(owner, fields.skillIds) : [];
     if (!selected) return sendApiError(res, 404, 'NOT_FOUND', 'selected skills not found or unavailable');
     const actorContext = await input.settings?.capture(owner) ?? { userInstructions: '', memoryBody: '' };
     const design = fixed ? await input.design?.composeStablePrompt({ ...target, ownerId: owner, ...actorContext }) : null;
     if (fixed && !design) return sendApiError(res, 400, 'BAD_REQUEST', 'design selection unavailable');
     const stablePrompt = design?.prompt ?? composeSystemPrompt({ agentId: 'codex', streamFormat: 'json-event-stream',
-      executionProfile: 'filesystem', promptCoreVariant: 'slim', sessionMode: 'design', locale: 'en', metadata: getProject(db, target.projectId)?.metadata, ...actorContext });
+      executionProfile: 'filesystem', promptCoreVariant: 'slim', sessionMode: 'design', locale: 'en', metadata: getProject(db, target.projectId)?.metadata, ...actorContext, ...designSnapshot?.prompt });
     const prompt = question && typeof previousRequest?.stablePrompt === 'string' ? previousRequest.stablePrompt : stablePrompt + selected.map((skill) => `\n\n---\n\n## Composed skill — ${skill.name}\n\n${skill.body.trim()}`).join('');
     if (!multiUserStreamAllowed(res) || !managedTarget(inputBody, res)) return;
     if (personalSession(target.conversationId)) return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation uses a personal subscription');
@@ -1216,6 +1250,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const request = JSON.stringify({ message: fields.text, companyProvider: 'openai', companyModel: config.model,
       companyCredentialRevision: config.credentialRevision, stablePrompt: prompt, stablePromptHash: createHash('sha256').update(prompt).digest('hex'),
       skillIds: question ? capturedSkillIds : fields.skillIds,
+      ...(designSnapshot ? { designSnapshot, designSystemId: designSnapshot.id } : {}),
       ...(question ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId: question.id } } : {}),
       attachments: fields.attachments, workspaceItems: fields.workspaceItems });
     const frame = db.transaction(() => {

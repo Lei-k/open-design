@@ -11,6 +11,7 @@ import { runConnectorsToolCli } from './tools-connectors-cli.js';
 import { runDesignSystemsToolCli } from './tools-design-systems-cli.js';
 import { DESIGN_SYSTEMS_USAGE, isDesignSystemsHelpArg } from './cli-help/index.js';
 import { BRAND_USAGE, isBrandHelpArg } from './cli-help/index.js';
+import { runDesignSystemDocumentCli } from './design-systems/document-cli.js';
 import { parseDesignSystemRenameArgs } from './design-systems/rename-args.js';
 import { runLiveArtifactsToolCli } from './tools-live-artifacts-cli.js';
 import { runDeliverableSyntaxToolCli } from './tools-deliverable-syntax-cli.js';
@@ -9967,6 +9968,18 @@ async function runSkillUninstall(rest) {
 async function runCraft(args)         { return runLibraryList('craft', args); }
 
 async function runDesignSystems(args) {
+  if (['create', 'update', 'delete'].includes(args[0])) {
+    const stringFlags = new Set([...LIBRARY_STRING_FLAGS, 'title', 'summary', 'category', 'surface', 'status', 'prompt', 'prompt-file']);
+    const rest = args.slice(1);
+    const flags = parseFlags(rest, { string: stringFlags, boolean: LIBRARY_BOOLEAN_FLAGS });
+    const id = positionalArgs(rest, stringFlags)[0];
+    const content = await readPromptFromFlags(flags);
+    const document = Object.fromEntries(['title', 'summary', 'category', 'surface', 'status'].filter((key) => typeof flags[key] === 'string').map((key) => [key, flags[key]]));
+    if (content !== null && content !== undefined) document.body = content;
+    return runDesignSystemDocumentCli({ operation: args[0], id, document, base: (await libraryDaemonUrl(flags)).replace(/\/$/, ''),
+      fetch, json: Boolean(flags.json), failure: structuredHttpFailure, write: (value) => process.stdout.write(JSON.stringify(value) + '\n') });
+  }
+
   if (args[0] === 'rename') return runDesignSystemRename(args.slice(1));
   if (args[0] === 'download') return runDesignSystemDownload(args.slice(1));
   if (args[0] === 'import-local') return runDesignSystemImportLocal(args.slice(1));

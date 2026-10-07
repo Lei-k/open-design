@@ -6,7 +6,8 @@ class FakeEventSource extends EventTarget {
   constructor(readonly url: string | URL) { super(); }
   close() {}
 }
-afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+const sessions: CookieSession[] = [];
+afterEach(() => { for (const session of sessions.splice(0)) session.withdraw(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 it('keeps local ids and the native EventSource outside a Studio scope', () => {
   vi.stubGlobal('EventSource', FakeEventSource);
@@ -17,7 +18,8 @@ it('keeps local ids and the native EventSource outside a Studio scope', () => {
 it('re-reads the session once when the server ends a Studio stream (#73) and namespaces ids', () => {
   vi.useFakeTimers();
   vi.stubGlobal('EventSource', FakeEventSource);
-  const session = new CookieSession();
+  const session = new CookieSession(); sessions.push(session);
+  vi.stubGlobal('window', { location: { origin: 'https://studio.test' } });
   const verify = vi.spyOn(session, 'verify').mockResolvedValue(undefined);
   activateStudioTransport(session, session.snapshot().generation, { messageIdPrefix: `mua_${'c'.repeat(24)}_`, usable: (lane) => lane === 'execution' });
   expect(studioMessageId('turn')).toBe(`mua_${'c'.repeat(24)}_turn`);
@@ -38,7 +40,8 @@ it('re-reads the session once when the server ends a Studio stream (#73) and nam
 });
 
 it('never activates a scope for a generation the session has not published (#75)', () => {
-  const session = new CookieSession();
+  const session = new CookieSession(); sessions.push(session);
+  vi.stubGlobal('window', { location: { origin: 'https://studio.test' } });
   const stale = session.snapshot().generation;
   session.withdraw();
   activateStudioTransport(session, stale, { messageIdPrefix: `mua_${'d'.repeat(24)}_`, usable: () => true });

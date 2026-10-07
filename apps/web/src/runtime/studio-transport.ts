@@ -57,6 +57,12 @@ export function studioRequestAvailable(method: string, path: string,
   if (/^\/api\/projects\/[^/]+\/tabs$/.test(path)) return ['GET', 'PUT'].includes(method);
   if (/^\/api\/projects\/[^/]+\/events$/.test(path)) return method === 'GET';
   if (usable('catalogs')) {
+    const catalogPath = path.replace(/^\/api\/multiuser\/catalog\//, '/api/');
+    if (catalogPath === '/api/design-systems') return method === 'GET' || method === 'POST';
+    if (/^\/api\/design-systems\/[^/]+$/.test(catalogPath)) return ['GET', 'PATCH', 'DELETE'].includes(method);
+    if (/^\/api\/design-systems\/[^/]+\/(?:files|file|revisions|preview|showcase)$/.test(catalogPath)) return method === 'GET';
+    if (/^\/api\/(?:craft|design-templates)(?:\/[^/]+)?$/.test(catalogPath)) return method === 'GET';
+    if (catalogPath === '/api/prompt-templates' || /^\/api\/prompt-templates\/[^/]+\/[^/]+$/.test(catalogPath)) return method === 'GET';
     const skillPath = path.replace(/^\/api\/multiuser\/catalog\/skills(?=\/|$)/, '/api/skills');
     if (skillPath === '/api/skills') return method === 'GET';
     if (skillPath === '/api/skills/import' && method === 'POST') return true;
