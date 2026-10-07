@@ -1027,6 +1027,7 @@ function contactSupportOnly(
 const personalAccountFailure = retryWithGuidance('chat.runError.title.personalAccount', 'chat.runError.personalAccountMessage');
 const personalQueueFailure = retryWithGuidance('chat.runError.title.personalQueueLimit', 'chat.runError.personalQueueLimitMessage');
 const personalUnavailableFailure = failureCard({}, 'chat.runError.title.personalUnavailable', 'chat.runError.personalUnavailableMessage');
+const personalRunFailure = retryWithGuidance('chat.runError.title.personalRunFailed', 'chat.runError.personalRunFailedMessage');
 const PERSONAL_SUBSCRIPTION_FAILURE_UI: Record<string, RunFailureUi> = {
   MULTIUSER_PERSONAL_USAGE_LIMIT: retryWithGuidance('chat.runError.title.personalUsageLimit', 'chat.runError.personalUsageLimitMessage'),
   MULTIUSER_PERSONAL_REAUTH_REQUIRED: personalAccountFailure,
@@ -1039,7 +1040,13 @@ const PERSONAL_SUBSCRIPTION_FAILURE_UI: Record<string, RunFailureUi> = {
   MULTIUSER_PERSONAL_DISABLED: personalUnavailableFailure,
   MULTIUSER_CAPABILITY_UNAVAILABLE: personalUnavailableFailure,
   MULTIUSER_AGENT_FORBIDDEN: personalUnavailableFailure,
-  MULTIUSER_PERSONAL_RUN_FAILED: retryWithGuidance('chat.runError.title.personalRunFailed', 'chat.runError.personalRunFailedMessage'),
+  MULTIUSER_RUN_REQUEST_INVALID: personalUnavailableFailure,
+  MULTIUSER_PERSONAL_RUN_FAILED: personalRunFailure,
+  // Source-neutral terminal codes (#79): the run stopped on the server side.
+  MULTIUSER_RUN_FAILED: personalRunFailure,
+  MULTIUSER_RUN_START_FAILED: personalRunFailure,
+  MULTIUSER_RUN_SHUTDOWN_TIMEOUT: personalRunFailure,
+  MULTIUSER_RUN_ADMISSION_REPLAYED: personalRunFailure,
 };
 
 const AGENT_AGNOSTIC_FAILURE_UI: Record<string, RunFailureUi> = {

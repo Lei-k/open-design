@@ -171,6 +171,26 @@ function parseRunListQuery(query: Request['query']): RunListQuery | null {
   return parsed;
 }
 
+/** Stored reasons that name a run-engine condition, not a contract code. */
+const ENGINE_REASON_CODES: Record<string, ApiErrorCode> = {
+  shutdown_timeout: 'MULTIUSER_RUN_SHUTDOWN_TIMEOUT',
+  ledger_admission_replayed: 'MULTIUSER_RUN_ADMISSION_REPLAYED',
+};
+/**
+ * #79: the public code of a failed run's terminal error. A stored contract
+ * code passes through unless it is personal-lane specific on a company run;
+ * an engine reason maps to its own code; anything else (no reason, free text)
+ * becomes the generic failure of the run's own execution source. Stored
+ * reasons are never echoed otherwise, so no provider prose or secret leaks.
+ */
+export function multiUserTerminalErrorCode(source: 'company_pool' | 'personal_subscription', reason: unknown): ApiErrorCode {
+  const personal = source === 'personal_subscription';
+  if (typeof reason === 'string' && Object.hasOwn(ENGINE_REASON_CODES, reason)) return ENGINE_REASON_CODES[reason]!;
+  if (typeof reason === 'string' && (API_ERROR_CODES as readonly string[]).includes(reason)
+    && (personal || !reason.startsWith('MULTIUSER_PERSONAL_'))) return reason as ApiErrorCode;
+  return personal ? 'MULTIUSER_PERSONAL_RUN_FAILED' : 'MULTIUSER_RUN_FAILED';
+}
+
 /**
  * Separate test-only execution plane. The normal run/agent stack is never reached.
  * Company-pool rows run the repository test mock; personal-subscription rows
@@ -299,6 +319,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     }
   }
   const queuedRecovery = db.prepare(`SELECT * FROM ${table} WHERE status = 'queued'`).all() as RunRow[];
+  // #79: settled through `finish` below, so a replay gets its error/end and transcript like any terminal.
+  const replayed: RunRow[] = [];
   for (const run of queuedRecovery) {
     const entry = ledger.entry(run.id);
     if (!entry) continue;
@@ -306,8 +328,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       ledger.finish(entry.actorId, run.id);
       reconciled.add(run.id);
     }
-    db.prepare(`UPDATE ${table} SET status = 'failed', output = ?, updated_at = ? WHERE id = ?`)
-      .run(JSON.stringify({ reason: 'ledger_admission_replayed' }), now(), run.id);
+    replayed.push(run);
   }
   for (const entry of ledgerActive) {
     if (!reconciled.has(entry.runId)) {
@@ -315,6 +336,12 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     }
   }
   const children = new Map<string, ChildProcessWithoutNullStreams>();
+  /**
+   * #78: a child is only waited on while its process is alive. Once it has
+   * exited, its run is settling (e.g. the personal artifact snapshot) and a
+   * new 'close' listener may never fire, so cancellers settle the run directly.
+   */
+  const running = (child: ChildProcessWithoutNullStreams) => child.exitCode === null && child.signalCode === null;
   const studioMessages = new MultiUserStudioMessages(db);
   const cancelPending = new Set<string>();
   const sourceInvalidated = new Set<string>();
@@ -356,12 +383,15 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     ...studioMessages.ids(run.id),
     ...(isPersonal(run) ? { executionSource: 'personal_subscription' as const } : {}),
   });
-  /** Persist before publishing; start events participate in the row/turn transaction. */
+  /**
+   * Persist before publishing; start events participate in the row/turn transaction.
+   * The transcript follows incrementally (#76); lifecycle edges call `reconcile`.
+   */
   const persistEvent = <E extends MultiUserRunEvent['event']>(id: string, event: E, data: RunEventData<E>) => {
     const seq = (db.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM multiuser_run_events WHERE run_id = ?').get(id) as { seq: number }).seq;
     const payload = JSON.stringify(data);
     db.prepare('INSERT INTO multiuser_run_events (run_id, seq, event, data) VALUES (?, ?, ?, ?)').run(id, seq, event, payload);
-    studioMessages.reconcile(row(id)!);
+    studioMessages.append(id, row(id)!.conversation_id, seq, event, data);
     return `id: ${seq}\nevent: ${event}\ndata: ${payload}\n\n`;
   };
   const publishEvent = (id: string, frame: string) => {
@@ -399,14 +429,23 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   let retryTimer: NodeJS.Timeout | null = null;
   let dispatch = () => {};
   let dispatchPersonal = () => {};
+  /**
+   * #72: a company worker span closes at most once, and only when the ledger
+   * still holds it. A restored app DB without its ledger row is recorded with a
+   * fixed code instead of aborting recovery; nothing is charged for it.
+   */
+  const closeLedgerSpan = (run: RunRow, status: 'succeeded' | 'failed' | 'canceled') => {
+    const entry = ledger.entry(run.id);
+    if (!entry || entry.actorId !== run.owner_account_id) return studioMessages.recordIssue(run.id, 'MULTIUSER_LEDGER_ENTRY_MISSING');
+    if (entry.status !== 'active') return;
+    if (status === 'canceled') ledger.cancel(run.owner_account_id, run.id);
+    else ledger.finish(run.owner_account_id, run.id);
+  };
   const finish = (id: string, status: 'succeeded' | 'failed' | 'canceled', output?: unknown) => {
     if (storesClosed) return;
     const existing = row(id);
     if (!existing || (existing.status !== 'active' && existing.status !== 'queued')) return;
-    if (existing.status === 'active' && !isPersonal(existing)) {
-      if (status === 'canceled') ledger.cancel(existing.owner_account_id, id);
-      else ledger.finish(existing.owner_account_id, id);
-    }
+    if (existing.status === 'active' && !isPersonal(existing)) closeLedgerSpan(existing, status);
     const projection = projections.get(id);
     projection?.flush();
     const result = { ...(projection ? { text: projection.text, textTruncated: projection.truncated } : {}),
@@ -417,8 +456,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         .run(status, Object.keys(result).length ? JSON.stringify(result) : null, time, time, id);
       const frames: string[] = [];
       if (status === 'failed' || result.reason === 'MULTIUSER_PERSONAL_UNAVAILABLE') {
-        const reason = typeof result.reason === 'string' && (API_ERROR_CODES as readonly string[]).includes(result.reason)
-          ? result.reason as ApiErrorCode : 'MULTIUSER_PERSONAL_RUN_FAILED';
+        const reason = multiUserTerminalErrorCode(existing.execution_source, result.reason);
         frames.push(persistEvent(id, 'error', { message: reason, error: { code: reason, message: reason }, ...(projection?.errorDetail ? { codexErrorInfo: projection.errorDetail } : {}) }));
       }
       const files = Array.isArray(result.files) ? result.files as string[] : [];
@@ -443,6 +481,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (!shuttingDown && !suspendDispatch) { dispatch(); dispatchPersonal(); }
   };
   for (const run of recovery) finish(run.id, 'failed', { reason: RESTART_ERROR_CODE });
+  for (const run of replayed) finish(run.id, 'failed', { reason: 'ledger_admission_replayed' });
   const capacity = () => Number((db.prepare("SELECT value FROM multiuser_pool_config WHERE key = 'test-mock-capacity'").get() as { value: string } | undefined)?.value ?? '2');
   dispatch = () => {
     if (dispatching || shuttingDown || !mockAgentScript) return;
@@ -621,9 +660,15 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             onAgentEvent: (event) => projection.accept(event),
             onDone: (result) => { void (async () => {
               personal.secureHome(owner);
-              if (row(runId)?.status !== 'active') return;
-              if (shuttingDown) return finish(runId, 'canceled', { reason: 'daemon_shutdown' });
-              if (cancelPending.has(runId)) return finish(runId, 'canceled', sourceInvalidated.has(runId) ? { reason: 'MULTIUSER_PERSONAL_UNAVAILABLE' } : undefined);
+              /** #78: checked on both sides of the artifact snapshot; a terminal reached while it runs wins. */
+              const settled = (): boolean => {
+                if (row(runId)?.status !== 'active') return true;
+                if (shuttingDown) { finish(runId, 'canceled', { reason: 'daemon_shutdown' }); return true; }
+                if (!cancelPending.has(runId)) return false;
+                finish(runId, 'canceled', sourceInvalidated.has(runId) ? { reason: 'MULTIUSER_PERSONAL_UNAVAILABLE' } : undefined);
+                return true;
+              };
+              if (settled()) return;
               const baseline = artifactBaselines.get(runId);
               let files: string[] = [];
               if (baseline) {
@@ -636,6 +681,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                   // not leave a completed provider turn stuck as active.
                 }
               }
+              if (settled()) return;
               if (result.ok) {
                 projection.flush();
                 if (includeStable && stablePromptHash) {
@@ -670,7 +716,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       for (const run of rows) {
         sourceInvalidated.add(run.id);
         const child = children.get(run.id);
-        if (child) {
+        if (child && running(child)) {
           cancelPending.add(run.id);
           exits.push(new Promise<void>((resolve) => child.once('close', () => resolve())));
           child.kill('SIGTERM');
@@ -1014,7 +1060,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (!run) return;
     if (run.status === 'active') {
       const child = children.get(run.id);
-      if (child) {
+      if (child && running(child)) {
         cancelPending.add(run.id);
         child.once('close', () => res.json(body(row(run.id)!)));
         const interrupt = interrupts.get(run.id);
@@ -1071,6 +1117,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (shutdownPromise) return shutdownPromise;
     beginShutdown();
     shutdownPromise = (async () => {
+      // An exited child's run is settling, not running: settle it like its close handler would.
+      for (const [id, child] of [...children]) if (!running(child)) finish(id, 'canceled', { reason: 'daemon_shutdown' });
       const exits = [...children.values()].map((child) => new Promise<void>((resolve) => child.once('close', () => resolve())));
       const wait = async (ms: number) => {
         if (children.size === 0) return;
@@ -1102,7 +1150,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       try {
         for (const run of active) {
           const child = children.get(run.id);
-          if (child) { cancelPending.add(run.id); child.kill('SIGTERM'); }
+          if (child && running(child)) { cancelPending.add(run.id); child.kill('SIGTERM'); }
           else finish(run.id, 'canceled');
         }
       } finally { suspendDispatch = false; }
@@ -1132,7 +1180,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         try {
           for (const run of rows) {
             const child = children.get(run.id);
-            if (!child) { finish(run.id, 'canceled'); continue; }
+            if (!child || !running(child)) { finish(run.id, 'canceled'); continue; }
             cancelPending.add(run.id);
             exits.push(new Promise<void>((resolve) => {
               const deadline = setTimeout(() => { child.kill('SIGKILL'); }, 2_000);

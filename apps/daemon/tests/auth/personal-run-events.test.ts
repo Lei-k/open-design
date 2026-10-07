@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import type { ChatSseEvent } from '@open-design/contracts';
+import { emittedRenderableQuestionForm, type ChatSseEvent } from '@open-design/contracts';
 import { PersonalRunEvents } from '../../src/runtimes/personal-run-events.js';
 
 it('drops hostile tool arguments/output with a typed privacy marker and keeps safe identity and file metadata', () => {
@@ -31,7 +31,7 @@ it('bounds event and aggregate bytes, preserves UTF-8, and records explicit omis
   const boundary = new PersonalRunEvents('/workspace', [], (event) => frames.push(event));
   boundary.accept({ type: 'text_delta', delta: '界'.repeat(200_000) });
   boundary.flush();
-  for (let n = 0; n < 2100; n++) boundary.accept({ type: 'status', label: 'running' });
+  for (let n = 0; n < 2100; n++) boundary.accept({ type: 'status', label: `running-${n}` });
   expect(boundary.truncated).toBe(true);
   expect(boundary.text.at(-1)).toBe('界');
   expect(Buffer.byteLength(boundary.text)).toBeLessThanOrEqual(512 * 1024);
@@ -40,11 +40,74 @@ it('bounds event and aggregate bytes, preserves UTF-8, and records explicit omis
   expect(frames.every((e) => Buffer.byteLength(JSON.stringify(e)) <= 16 * 1024)).toBe(true);
 });
 
-it('omits bare and quoted environment assignments even when their names have no secret suffix', () => {
+it('omits run-environment, host-identity and secret-named assignments', () => {
   const frames: ChatSseEvent[] = [];
   const boundary = new PersonalRunEvents('/workspace', [], (event) => frames.push(event));
-  boundary.accept({ type: 'text_delta', delta: 'HOME=PRIVATE_ENV TOKEN="PRIVATE_ENV with spaces" LANG=PRIVATE_ENV\nDone' });
+  boundary.accept({ type: 'text_delta', delta: 'HOME=PRIVATE_ENV TOKEN="PRIVATE_ENV with spaces" USER=PRIVATE_ENV CODEX_HOME: PRIVATE_ENV\nDone' });
   boundary.flush();
   expect(JSON.stringify(frames).includes('PRIVATE_ENV')).toBe(false);
   expect(boundary.text).toContain('Done');
+});
+
+it('keeps ordinary code and question-form text while credentials never reach a frame, even split across deltas (#77)', () => {
+  const frames: ChatSseEvent[] = [];
+  const boundary = new PersonalRunEvents('/workspace', ['/srv/od-data'], (event) => frames.push(event));
+  const ordinary = [
+    'Set WIDTH=1440 and HEIGHT = 900 for the hero.',
+    'const API_URL = "https://api.example.com/v1"; const MAX_ITEMS=50;',
+    'LANG=en_US.UTF-8 NODE_ENV=production DEBUG=false max_tokens=1024 token_count = 3 key="id"',
+    'The bearer token is described in the guide; use sk-learn for the model.',
+    '<question-form id="brief" title="Brief">{"questions":[{"id":"size","label":"Canvas WIDTH=1440?","type":"text"},{"id":"password","label":"API token: optional","type":"text"}]}</question-form>',
+  ].join('\n') + '\n';
+  const secrets = [
+    'OPENAI_API_KEY=FAKE77_sk_value', 'export GITHUB_TOKEN="FAKE77 quoted token"', 'db_password = \'FAKE77pw\'',
+    'Authorization: Bearer FAKE77abcdefghijklmnop', 'key sk-FAKE77abcdefghijklmnopqrstu', 'HOME=/srv/od-data/FAKE77',
+    'AWS_SECRET_ACCESS_KEY: FAKE77aws', 'ghp_FAKE77abcdefghijklmnopqrstuvwxyz0123',
+  ].join('\n') + '\n';
+  const all = ordinary + secrets;
+  // Every split position must still scrub: deltas are buffered through a complete line.
+  for (let n = 0; n < all.length; n += 7) boundary.accept({ type: 'text_delta', delta: all.slice(n, n + 7) });
+  boundary.flush();
+  expect(boundary.text.startsWith(ordinary)).toBe(true);
+  expect(emittedRenderableQuestionForm(boundary.text)).toBe(true);
+  expect(JSON.stringify(frames).includes('FAKE77')).toBe(false);
+  expect(frames.filter((e) => e.event === 'agent' && 'redacted' in e.data && e.data.redacted)).not.toHaveLength(0);
+});
+
+it('coalesces information-free repeats so running-command updates never spend the event budget (#76)', () => {
+  const frames: ChatSseEvent[] = [];
+  const boundary = new PersonalRunEvents('/workspace', [], (event) => frames.push(event));
+  // 250ms running-command updates differ only in fields the privacy policy drops.
+  for (let n = 0; n < 3000; n++) {
+    for (const id of ['cmd-a', 'cmd-b']) boundary.accept({ type: 'tool_in_flight', id, name: 'Bash', input: { command: 'build' }, output: `line ${n}`, startedAt: 10 });
+  }
+  boundary.accept({ type: 'status', label: 'running' });
+  boundary.accept({ type: 'status', label: 'running' });
+  boundary.accept({ type: 'text_delta', delta: 'Final reply\n' });
+  boundary.flush();
+  expect(boundary.truncated).toBe(false);
+  expect(frames.filter((e) => e.event === 'agent' && e.data.type === 'tool_in_flight').map((e) => (e.data as { id: string }).id)).toEqual(['cmd-a', 'cmd-b']);
+  expect(frames.filter((e) => e.event === 'agent' && e.data.type === 'status')).toHaveLength(1);
+  expect(boundary.text).toBe('Final reply\n');
+});
+
+it('splits escape-heavy text below the per-event limit without losing any of it (#76)', () => {
+  const frames: ChatSseEvent[] = [];
+  const boundary = new PersonalRunEvents('/workspace', [], (event) => frames.push(event));
+  const text = `${'"\\'.repeat(20_000)}${'\u0001'.repeat(9_000)}界\n`;
+  boundary.accept({ type: 'text_delta', delta: text });
+  boundary.flush();
+  expect(boundary.truncated).toBe(false);
+  expect(boundary.text).toBe(text);
+  expect(frames.every((e) => Buffer.byteLength(JSON.stringify(e)) <= 16 * 1024)).toBe(true);
+});
+
+it('buffers long newline-free text in near-linear time (#76)', () => {
+  const frames: ChatSseEvent[] = [];
+  const boundary = new PersonalRunEvents('/workspace', [], (event) => frames.push(event));
+  const started = performance.now();
+  for (let n = 0; n < 120_000; n++) boundary.accept({ type: 'text_delta', delta: 'abcd' });
+  boundary.flush();
+  expect(performance.now() - started).toBeLessThan(1_500);
+  expect(boundary.text).toBe('abcd'.repeat(120_000));
 });

@@ -1,3 +1,4 @@
+import { mkdirSync, rmSync } from 'node:fs';
 import http, { type IncomingMessage } from 'node:http';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -181,6 +182,10 @@ it('F4 reconciles a queued row whose ledger entry was already closed before rest
   terminalLedgerRow(alice, id);
   daemon = await startMultiUserDaemon(options());
   expect(await status(alice, id)).toBe('failed');
+  // #79: the startup replay settles like any other terminal — a company code, error then end, once.
+  expect(terminalFrames((await events(alice, id)).text)).toEqual([['error', 'MULTIUSER_RUN_ADMISSION_REPLAYED'], ['end', 'failed']]);
+  const transcript = await daemon.request({ path: `/api/projects/${projects.get(alice.id)!.id}/conversations/${projects.get(alice.id)!.conversationId}/messages`, cookie: alice.cookie });
+  expect(transcript.json.messages.find((m: { runId?: string }) => m.runId === id)?.runStatus).toBe('failed');
 });
 
 it('F4 fails a replayed queued row and continues dispatching another account', async () => {
@@ -191,4 +196,52 @@ it('F4 fails a replayed queued row and continues dispatching another account', a
   await capacity(1);
   expect(await status(alice, poisoned)).toBe('failed');
   expect(await status(bob, healthy)).toBe('running');
+  expect(terminalFrames((await events(alice, poisoned)).text)).toEqual([['error', 'MULTIUSER_RUN_ADMISSION_REPLAYED'], ['end', 'failed']]);
+});
+
+it('F6 reports a reasonless company/test-mock failure with a company code, never the personal one (#79)', async () => {
+  await capacity(0);
+  const id = await run(alice, 'reasonless-failure');
+  rmSync(path.join(dataRoot, 'projects', projects.get(alice.id)!.id), { recursive: true, force: true });
+  try {
+    await capacity(1);
+    expect(await status(alice, id)).toBe('failed');
+    expect(terminalFrames((await events(alice, id)).text)).toEqual([['error', 'MULTIUSER_RUN_FAILED'], ['end', 'failed']]);
+  } finally { mkdirSync(path.join(dataRoot, 'projects', projects.get(alice.id)!.id), { recursive: true, mode: 0o700 }); }
+});
+
+const sse = (text: string) => text.split('\n\n').filter((s) => s.includes('data:')).map((s) => ({
+  event: /^event: (.*)$/m.exec(s)![1]!, data: JSON.parse(/^data: (.*)$/m.exec(s)![1]!) as Record<string, any>,
+}));
+const terminalFrames = (text: string) => sse(text).filter((e) => e.event === 'error' || e.event === 'end').map((e) => {
+  if (e.event === 'error') expect(e.data.message).toBe(e.data.error.code);
+  return [e.event, e.event === 'error' ? e.data.error.code : e.data.status];
+});
+
+it('F5 recovers an active row restored without its ledger entry; start, other accounts and billing are unaffected (#72)', async () => {
+  await capacity(0);
+  const damaged = await run(alice, 'restored-without-ledger');
+  const healthy = await run(bob, 'healthy-after-restore');
+  await daemon.close();
+  const db = new Database(path.join(dataRoot, 'app.sqlite'));
+  try {
+    db.prepare("UPDATE multiuser_runs SET status = 'active' WHERE id = ?").run(damaged);
+    db.prepare("UPDATE multiuser_pool_config SET value = '1' WHERE key = 'test-mock-capacity'").run();
+  } finally { db.close(); }
+  daemon = await startMultiUserDaemon(options());
+  expect(await status(alice, damaged)).toBe('failed');
+  expect(await status(bob, healthy)).toBe('running');
+  const terminal = sse((await events(alice, damaged)).text).filter((e) => e.event === 'error' || e.event === 'end');
+  expect(terminal.map((e) => [e.event, e.data.error?.code ?? e.data.status])).toEqual([['error', 'DAEMON_RESTARTED'], ['end', 'failed']]);
+  const check = new Database(path.join(dataRoot, 'app.sqlite'), { readonly: true });
+  try {
+    expect(check.prepare('SELECT code FROM multiuser_recovery_issues WHERE run_id = ?').all(damaged)).toEqual([{ code: 'MULTIUSER_LEDGER_ENTRY_MISSING' }]);
+  } finally { check.close(); }
+  await capacity(0);
+  await daemon.request({ method: 'POST', path: `/api/runs/${healthy}/cancel`, cookie: bob.cookie });
+  await daemon.close();
+  const ledger = new WorkerQuotaLedger({ dataRoot, clock: () => poolTime });
+  try { expect(ledger.entry(damaged)).toBeUndefined(); } finally { ledger.close(); }
+  daemon = await startMultiUserDaemon(options());
+  expect(sse((await events(alice, damaged)).text).filter((e) => e.event === 'error' || e.event === 'end')).toHaveLength(2);
 });

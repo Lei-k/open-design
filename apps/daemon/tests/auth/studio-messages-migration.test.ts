@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { closeDatabase, deleteConversation, getMessage, insertConversation, insertProject, listMessages, openDatabase, upsertMessage } from '../../src/db.js';
 import { ProjectOwnershipStore } from '../../src/storage/project-ownership.js';
 import { MultiUserStudioMessages, type StudioRunMessageInput } from '../../src/storage/multiuser-studio-messages.js';
@@ -98,16 +98,41 @@ describe('additive Studio transcript migration (#54/#55)', () => {
     expect(db.prepare('SELECT COUNT(*) AS n FROM multiuser_runs').get()).toEqual({ n: 3 });
   });
 
-  it('rolls back the entire backfill when a restored message namespace conflicts', () => {
+  it('quarantines a restored namespace conflict with a fixed code and still projects every other row (#72)', () => {
     const store = new MultiUserStudioMessages(db);
     run('valid-first');
     run('conflict-last', { created_at: 2 });
+    run('other-owner', { project_id: 'p-b', conversation_id: 'c-b', owner_account_id: 'b', created_at: 3 });
     const conflictId = store.ids('conflict-last').userMessageId;
     upsertMessage(db, 'c-b', { id: conflictId, role: 'user', content: 'Other actor' });
-    expect(() => new MultiUserStudioMessages(db)).toThrow(/binding conflict/);
-    expect(listMessages(db, 'c-a')).toEqual([]);
+    expect(() => new MultiUserStudioMessages(db)).not.toThrow();
+    expect(listMessages(db, 'c-a').map((m) => m.id)).toEqual(Object.values(store.ids('valid-first')));
+    expect(listMessages(db, 'c-b').filter((m) => m.id !== conflictId)).toHaveLength(2);
     expect(getMessage(db, conflictId, 'c-b')?.content).toBe('Other actor');
-    expect(db.prepare('SELECT COUNT(*) AS n FROM multiuser_studio_turns').get()).toEqual({ n: 0 });
+    expect(db.prepare('SELECT run_id FROM multiuser_studio_turns ORDER BY run_id').all()).toEqual([{ run_id: 'other-owner' }, { run_id: 'valid-first' }]);
+    expect(db.prepare('SELECT run_id, code FROM multiuser_recovery_issues').all()).toEqual([{ run_id: 'conflict-last', code: 'MULTIUSER_STUDIO_BINDING_CONFLICT' }]);
+    // A runtime projection of the quarantined row is skipped instead of throwing into the run engine.
+    expect(store.reconcile(db.prepare('SELECT * FROM multiuser_runs WHERE id = ?').get('conflict-last') as StudioRunMessageInput)).toBe(false);
+    // Observable once, not retried or re-logged on every boot.
+    new MultiUserStudioMessages(db);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM multiuser_recovery_issues').get()).toEqual({ n: 1 });
+  });
+
+  it('reconciles only unbound, unfinished or stale rows at startup (#72)', () => {
+    run('done');
+    run('live', { status: 'active', output: null, created_at: 2 });
+    db.exec('CREATE TABLE multiuser_run_events (run_id TEXT, seq INTEGER, event TEXT, data TEXT, PRIMARY KEY(run_id, seq))');
+    new MultiUserStudioMessages(db);
+    const spy = vi.spyOn(MultiUserStudioMessages.prototype, 'reconcile');
+    try {
+      new MultiUserStudioMessages(db);
+      expect(spy.mock.calls.map(([row]) => row.id)).toEqual(['live']);
+      spy.mockClear();
+      // A durable frame the transcript has not seen makes a terminal row stale.
+      db.prepare('INSERT INTO multiuser_run_events VALUES (?, ?, ?, ?)').run('done', 1, 'end', JSON.stringify({ status: 'succeeded' }));
+      new MultiUserStudioMessages(db);
+      expect(spy.mock.calls.map(([row]) => row.id).sort()).toEqual(['done', 'live']);
+    } finally { spy.mockRestore(); }
   });
 
   it('removes turn bindings with their conversation without changing another owner', () => {

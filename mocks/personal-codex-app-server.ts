@@ -146,14 +146,25 @@ async function turn(id: number, params: Json): Promise<void> {
     notify('item/started', { threadId, turnId, item: {
       type: 'commandExecution', id: commandId, command: 'test-command --redacted', aggregatedOutput: '', exitCode: null, status: 'inProgress',
     } });
+    // Streamed output, each chunk past the normalizer's 250ms update throttle,
+    // so every chunk becomes its own running-row (tool_in_flight) update.
+    if (parity) {
+      for (const delta of ['compiling PRIVATE_DELTA_OUTPUT=FAKE_S3_SECRET\n', 'wrote /host/private/s3/build.log\n']) {
+        await new Promise((resolve) => setTimeout(resolve, 320));
+        notify('item/commandExecution/outputDelta', { threadId, turnId, itemId: commandId, delta });
+      }
+    }
     notify('item/completed', { threadId, turnId, item: {
       type: 'commandExecution', id: commandId, command: 'test-command --redacted',
       aggregatedOutput: 'PRIVATE_COMMAND_OUTPUT=FAKE_S3_SECRET\nHOME=/host/private/s3\nAPI_TOKEN=FAKE_S3_SECRET\n', exitCode: 0, status: 'completed',
     } });
   }
   if (parity) {
+    // Patch previews grow file by file before the item completes.
+    const patch = [{ path: 'index.html', kind: 'add', diff: '+safe\n+<main></main>' }, { path: 'styles.css', kind: 'update', diff: '-a\n+b\n+c' }];
+    for (const size of [1, 2]) notify('item/fileChange/patchUpdated', { threadId, turnId, itemId: 'file_fixture', changes: patch.slice(0, size) });
     for (const item of [
-      { type: 'fileChange', id: 'file_fixture', status: 'completed', changes: [{ path: 'index.html', kind: 'add', diff: '+safe' }] },
+      { type: 'fileChange', id: 'file_fixture', status: 'completed', changes: patch },
       { type: 'mcpToolCall', id: 'mcp_fixture', server: 'fixture', tool: 'lookup', arguments: { secret: 'FAKE_S3_SECRET' }, result: { content: 'FAKE_S3_SECRET' }, status: 'completed' },
       { type: 'webSearch', id: 'web_fixture', query: 'layout', action: { type: 'search', query: 'layout' } },
     ]) notify('item/completed', { threadId, turnId, item });
