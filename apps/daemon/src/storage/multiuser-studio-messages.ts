@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { runSseEventToPersistedAgentEvent } from '../runtimes/chat-run-messages.js';
 import { serializeRunEventsForStorage } from '../runtimes/run-event-payload-budget.js';
-import { getMessage, upsertMessage } from '../db.js';
+import { appendMessageAgentEvents, clearMessageAgentEventBatches, getMessage, upsertMessage } from '../db.js';
 import { PROJECT_OWNERS_TABLE } from './project-ownership.js';
 
 export interface StudioRunMessageInput {
@@ -124,7 +124,24 @@ export class MultiUserStudioMessages {
       this.db.prepare('UPDATE messages SET events_json = ?, content = ? WHERE id = ? AND conversation_id = ?')
         .run(serializeRunEventsForStorage(events), text || (typeof output.text === 'string' ? output.text : stored?.content ?? ''), ids.assistantMessageId, run.conversation_id);
     }
+    // The rebuild above already contains every incrementally appended frame.
+    clearMessageAgentEventBatches(this.db, ids.assistantMessageId);
     this.db.prepare(`INSERT OR IGNORE INTO multiuser_studio_turns (run_id, user_message_id, assistant_message_id) VALUES (?, ?, ?)`)
       .run(run.id, ids.userMessageId, ids.assistantMessageId);
+  }
+
+  /**
+   * #76: the per-frame path between lifecycle edges. One durable frame costs
+   * one append-only batch row plus a cursor bump — the standard daemon's own
+   * active-run storage — never a re-read of the run's earlier frames. The
+   * next `reconcile` (start, terminal, startup) folds batches into the rebuild.
+   * An unbound (quarantined or not yet projected) run is left to `reconcile`.
+   */
+  append(runId: string, conversationId: string, seq: number, event: string, data: unknown): void {
+    const bound = this.db.prepare('SELECT assistant_message_id AS id FROM multiuser_studio_turns WHERE run_id = ?').get(runId) as { id: string } | undefined;
+    if (!bound) return;
+    const persisted = runSseEventToPersistedAgentEvent(event, data);
+    if (persisted) appendMessageAgentEvents(this.db, bound.id, [persisted]);
+    this.db.prepare('UPDATE messages SET last_run_event_id = ? WHERE id = ? AND conversation_id = ?').run(String(seq), bound.id, conversationId);
   }
 }

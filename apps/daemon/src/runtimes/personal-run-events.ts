@@ -2,11 +2,13 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { stampToolTiming, type ToolTimingClock } from './tool-timing.js';
 import { parseCodexErrorDetail, type CodexErrorDetail } from './codex-error-info.js';
+import { runSseEventToPersistedAgentEvent } from './chat-run-messages.js';
 import type { ChatSseEvent, DaemonAgentPayload } from '@open-design/contracts';
 
 const TEXT_LIMIT = 512 * 1024;
 const EVENT_LIMIT = 2048;
 const BYTE_LIMIT = 2 * 1024 * 1024;
+const EVENT_BYTES = 16 * 1024;
 const redacted = (fields: string[]) => ({ policy: 'personal-subscription' as const, fields });
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const identifier = (value: unknown) => typeof value === 'string' && /^[\w.:/#-]{1,160}$/u.test(value) && !value.startsWith('/') ? value : `redacted-${createHash('sha256').update(String(value)).digest('hex').slice(0, 24)}`;
@@ -30,6 +32,9 @@ export class PersonalRunEvents {
   private bytes = 0;
   private textBytes = 0;
   private pending = '';
+  private pendingBytes = 0;
+  private lastStored = '';
+  private readonly inFlight = new Map<string, string>();
   private pendingType: 'text_delta' | 'thinking_delta' = 'text_delta';
   private pendingOverflow = false;
   private marked = false;
@@ -46,12 +51,36 @@ export class PersonalRunEvents {
     this.truncated = true;
     if (this.marked) return;
     this.marked = true;
-    this.emit({ event: 'agent', data: { type: 'status', label: 'warning', detail: 'Run event storage limit reached; some content was omitted.' } });
-    this.emit({ event: 'diagnostic', data: { type: 'personal_event_budget', truncated: true, maxEvents: EVENT_LIMIT, maxBytes: BYTE_LIMIT } });
+    this.publish({ event: 'agent', data: { type: 'status', label: 'warning', detail: 'Run event storage limit reached; some content was omitted.' } });
+    this.publish({ event: 'diagnostic', data: { type: 'personal_event_budget', truncated: true, maxEvents: EVENT_LIMIT, maxBytes: BYTE_LIMIT } });
+  }
+  /**
+   * #76: a frame that says nothing new — the stored form of the previous frame
+   * again, or a running row's update whose only change was a dropped field —
+   * is never streamed, stored or charged to the budget. Dropping it here keeps
+   * live SSE, the mid-run transcript and the final transcript identical.
+   */
+  private repeats(event: ChatSseEvent): boolean {
+    const persisted = runSseEventToPersistedAgentEvent(event.event, event.data);
+    if (!persisted) return false;
+    if (persisted.kind === 'text' || persisted.kind === 'thinking') { this.lastStored = ''; return false; }
+    if (event.event === 'agent' && event.data.type === 'tool_in_flight') {
+      const json = JSON.stringify(event.data);
+      if (this.inFlight.get(event.data.id) === json) return true;
+      this.inFlight.set(event.data.id, json);
+    }
+    const key = JSON.stringify(persisted);
+    if (key === this.lastStored) return true;
+    this.lastStored = key;
+    return false;
+  }
+  private publish(event: ChatSseEvent): void {
+    if (!this.repeats(event)) this.emit(event);
   }
   private send(event: ChatSseEvent): boolean {
+    if (this.repeats(event)) return true;
     const bytes = Buffer.byteLength(JSON.stringify(event));
-    if (bytes > 16 * 1024 || this.count >= EVENT_LIMIT || this.bytes + bytes > BYTE_LIMIT) { this.mark(); return false; }
+    if (bytes > EVENT_BYTES || this.count >= EVENT_LIMIT || this.bytes + bytes > BYTE_LIMIT) { this.mark(); return false; }
     this.count++; this.bytes += bytes;
     this.emit(event); return true;
   }
@@ -60,19 +89,29 @@ export class PersonalRunEvents {
     const original = this.pending;
     const safe = this.scrub(original);
     this.pending = '';
-    const bounded = prefix(safe, Math.max(0, TEXT_LIMIT - this.textBytes));
-    if (bounded !== safe || this.pendingOverflow) this.mark();
+    this.pendingBytes = 0;
+    const bounded = Buffer.from(prefix(safe, Math.max(0, TEXT_LIMIT - this.textBytes)));
+    if (bounded.length !== Buffer.byteLength(safe) || this.pendingOverflow) this.mark();
     this.pendingOverflow = false;
-    // Keep each durable event small, including when the provider sends a huge delta.
-    let remaining = bounded;
-    while (remaining) {
-      const delta = prefix(remaining, 8 * 1024);
-      remaining = remaining.slice(delta.length);
-      const event: ChatSseEvent = { event: 'agent', data: { type: this.pendingType, delta,
-        ...(safe === original ? {} : { redacted: redacted(['delta']) }) } };
-      if (!this.send(event)) break;
-      this.textBytes += Buffer.byteLength(delta);
+    // Keep each durable event under the per-event limit, including a huge or
+    // escape-heavy delta: a JSON-escaped byte grows at most 6x, so a chunk that
+    // does not fit at 8 KiB always fits at 2 KiB. One encode per flush.
+    const event = (delta: string): ChatSseEvent => ({ event: 'agent', data: { type: this.pendingType, delta,
+      ...(safe === original ? {} : { redacted: redacted(['delta']) }) } });
+    for (let start = 0; start < bounded.length;) {
+      let next: ChatSseEvent | null = null;
+      let end = start;
+      for (const size of [8 * 1024, 2 * 1024]) {
+        end = Math.min(start + size, bounded.length);
+        while (end > start && end < bounded.length && (bounded[end]! & 0xc0) === 0x80) end--;
+        next = event(bounded.subarray(start, end).toString('utf8'));
+        if (Buffer.byteLength(JSON.stringify(next)) <= EVENT_BYTES) break;
+      }
+      if (!next || !this.send(next)) break;
+      const delta = (next.data as { delta: string }).delta;
+      this.textBytes += end - start;
       if (this.pendingType === 'text_delta') this.text += delta;
+      start = end;
     }
   }
   accept(event: Record<string, unknown>): void {
@@ -82,16 +121,19 @@ export class PersonalRunEvents {
     if ((type === 'text_delta' || type === 'thinking_delta') && typeof event.delta === 'string') {
       if (this.pendingType !== type) this.flush();
       this.pendingType = type;
-      const room = Math.max(0, TEXT_LIMIT - Buffer.byteLength(this.pending));
-      const part = prefix(event.delta, room);
+      // Near-linear: only the new part is measured and searched for a line end.
+      const room = Math.max(0, TEXT_LIMIT - this.pendingBytes);
+      const part = Buffer.byteLength(event.delta) <= room ? event.delta : prefix(event.delta, room);
       this.pending += part;
+      this.pendingBytes += Buffer.byteLength(part);
       if (part !== event.delta) this.pendingOverflow = true;
-      const end = this.pending.lastIndexOf('\n') + 1;
-      if (end > 0) {
-        const tail = this.pending.slice(end);
-        this.pending = this.pending.slice(0, end);
+      const newline = part.lastIndexOf('\n');
+      if (newline >= 0) {
+        const tail = part.slice(newline + 1);
+        this.pending = this.pending.slice(0, this.pending.length - tail.length);
         this.flush();
         this.pending = tail;
+        this.pendingBytes = Buffer.byteLength(tail);
       }
       return;
     }

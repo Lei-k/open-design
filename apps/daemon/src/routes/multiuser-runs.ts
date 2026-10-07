@@ -287,12 +287,15 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     ...studioMessages.ids(run.id),
     ...(isPersonal(run) ? { executionSource: 'personal_subscription' as const } : {}),
   });
-  /** Persist before publishing; start events participate in the row/turn transaction. */
+  /**
+   * Persist before publishing; start events participate in the row/turn transaction.
+   * The transcript follows incrementally (#76); lifecycle edges call `reconcile`.
+   */
   const persistEvent = <E extends MultiUserRunEvent['event']>(id: string, event: E, data: RunEventData<E>) => {
     const seq = (db.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM multiuser_run_events WHERE run_id = ?').get(id) as { seq: number }).seq;
     const payload = JSON.stringify(data);
     db.prepare('INSERT INTO multiuser_run_events (run_id, seq, event, data) VALUES (?, ?, ?, ?)').run(id, seq, event, payload);
-    studioMessages.reconcile(row(id)!);
+    studioMessages.append(id, row(id)!.conversation_id, seq, event, data);
     return `id: ${seq}\nevent: ${event}\ndata: ${payload}\n\n`;
   };
   const publishEvent = (id: string, frame: string) => {

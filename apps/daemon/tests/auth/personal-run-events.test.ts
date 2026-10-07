@@ -31,7 +31,7 @@ it('bounds event and aggregate bytes, preserves UTF-8, and records explicit omis
   const boundary = new PersonalRunEvents('/workspace', [], (event) => frames.push(event));
   boundary.accept({ type: 'text_delta', delta: '界'.repeat(200_000) });
   boundary.flush();
-  for (let n = 0; n < 2100; n++) boundary.accept({ type: 'status', label: 'running' });
+  for (let n = 0; n < 2100; n++) boundary.accept({ type: 'status', label: `running-${n}` });
   expect(boundary.truncated).toBe(true);
   expect(boundary.text.at(-1)).toBe('界');
   expect(Buffer.byteLength(boundary.text)).toBeLessThanOrEqual(512 * 1024);
@@ -47,4 +47,42 @@ it('omits bare and quoted environment assignments even when their names have no 
   boundary.flush();
   expect(JSON.stringify(frames).includes('PRIVATE_ENV')).toBe(false);
   expect(boundary.text).toContain('Done');
+});
+
+it('coalesces information-free repeats so running-command updates never spend the event budget (#76)', () => {
+  const frames: ChatSseEvent[] = [];
+  const boundary = new PersonalRunEvents('/workspace', [], (event) => frames.push(event));
+  // 250ms running-command updates differ only in fields the privacy policy drops.
+  for (let n = 0; n < 3000; n++) {
+    for (const id of ['cmd-a', 'cmd-b']) boundary.accept({ type: 'tool_in_flight', id, name: 'Bash', input: { command: 'build' }, output: `line ${n}`, startedAt: 10 });
+  }
+  boundary.accept({ type: 'status', label: 'running' });
+  boundary.accept({ type: 'status', label: 'running' });
+  boundary.accept({ type: 'text_delta', delta: 'Final reply\n' });
+  boundary.flush();
+  expect(boundary.truncated).toBe(false);
+  expect(frames.filter((e) => e.event === 'agent' && e.data.type === 'tool_in_flight').map((e) => (e.data as { id: string }).id)).toEqual(['cmd-a', 'cmd-b']);
+  expect(frames.filter((e) => e.event === 'agent' && e.data.type === 'status')).toHaveLength(1);
+  expect(boundary.text).toBe('Final reply\n');
+});
+
+it('splits escape-heavy text below the per-event limit without losing any of it (#76)', () => {
+  const frames: ChatSseEvent[] = [];
+  const boundary = new PersonalRunEvents('/workspace', [], (event) => frames.push(event));
+  const text = `${'"\\'.repeat(20_000)}${'\u0001'.repeat(9_000)}界\n`;
+  boundary.accept({ type: 'text_delta', delta: text });
+  boundary.flush();
+  expect(boundary.truncated).toBe(false);
+  expect(boundary.text).toBe(text);
+  expect(frames.every((e) => Buffer.byteLength(JSON.stringify(e)) <= 16 * 1024)).toBe(true);
+});
+
+it('buffers long newline-free text in near-linear time (#76)', () => {
+  const frames: ChatSseEvent[] = [];
+  const boundary = new PersonalRunEvents('/workspace', [], (event) => frames.push(event));
+  const started = performance.now();
+  for (let n = 0; n < 120_000; n++) boundary.accept({ type: 'text_delta', delta: 'abcd' });
+  boundary.flush();
+  expect(performance.now() - started).toBeLessThan(1_500);
+  expect(boundary.text).toBe('abcd'.repeat(120_000));
 });

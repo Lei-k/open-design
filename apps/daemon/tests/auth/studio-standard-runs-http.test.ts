@@ -2,8 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { afterAll, beforeAll, expect, it } from 'vitest';
+import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { runSseEventToPersistedAgentEvent } from '../../src/runtimes/chat-run-messages.js';
+import { MultiUserStudioMessages } from '../../src/storage/multiuser-studio-messages.js';
 import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts,
   startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
 import { PERSONAL_CODEX_MOCK, codexHome, linkCodex, setTurnMode } from './personal-codex-helpers.js';
@@ -62,6 +63,33 @@ it('records normalized events once, redacts hostile command output, and reloads 
   expect(assistant.events).toEqual(all.map((e) => runSseEventToPersistedAgentEvent(e.event, e.data)).filter(Boolean));
   expect(assistant.content).toBe(all.filter((e) => e.event === 'agent' && e.data.type === 'text_delta').map((e) => e.data.delta).join(''));
   for (const cursor of all.slice(0, -1)) expect(frames((await events(made.json.runId, cursor.id)).text)).toEqual(all.filter((e) => Number(e.id) > Number(cursor.id)));
+});
+
+it('projects active frames incrementally with identical mid-run and final transcripts (#76)', async () => {
+  const target = await project();
+  const rebuilds = vi.spyOn(MultiUserStudioMessages.prototype, 'reconcile');
+  try {
+    const made = await start(target, '[mock-delay-ms=600] [mock-parity]');
+    const id = made.json.runId as string;
+    const response = await fetch(`${daemon.baseUrl}/api/runs/${id}/events`, { headers: { cookie: a.cookie }, signal: AbortSignal.timeout(8000) });
+    const reader = response.body!.getReader(); let text = '';
+    try { while (!text.includes('sessionId')) { const next = await reader.read(); if (next.done) break; text += new TextDecoder().decode(next.value); } }
+    finally { await reader.cancel(); }
+    const read = async () => (await daemon.request({ path: `/api/projects/${target.projectId}/conversations/${target.conversationId}/messages`, cookie: a.cookie }))
+      .json.messages.find((m: any) => m.role === 'assistant');
+    const mid = await read();
+    expect(mid.runStatus).toBe('running');
+    const all = frames((await events(id)).text);
+    const project = (until: number) => all.filter((e) => Number(e.id) <= until).map((e) => runSseEventToPersistedAgentEvent(e.event, e.data)).filter(Boolean);
+    expect(mid.events).toEqual(project(Number(mid.lastRunEventId)));
+    const done = await read();
+    expect(done.lastRunEventId).toBe(all.at(-1)!.id);
+    expect(done.events).toEqual(project(Infinity));
+    expect(done.content).toBe(all.filter((e) => e.event === 'agent' && e.data.type === 'text_delta').map((e) => e.data.delta).join(''));
+    // Full re-projection is reserved for lifecycle edges (queued, start, terminal), never per frame.
+    expect(all.length).toBeGreaterThan(10);
+    expect(rebuilds.mock.calls.filter(([run]) => run.id === id).length).toBeLessThanOrEqual(3);
+  } finally { rebuilds.mockRestore(); }
 });
 
 it('answers an owned question exactly once on the same thread and rejects foreign and stale answers', async () => {
