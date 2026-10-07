@@ -330,14 +330,23 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   let retryTimer: NodeJS.Timeout | null = null;
   let dispatch = () => {};
   let dispatchPersonal = () => {};
+  /**
+   * #72: a company worker span closes at most once, and only when the ledger
+   * still holds it. A restored app DB without its ledger row is recorded with a
+   * fixed code instead of aborting recovery; nothing is charged for it.
+   */
+  const closeLedgerSpan = (run: RunRow, status: 'succeeded' | 'failed' | 'canceled') => {
+    const entry = ledger.entry(run.id);
+    if (!entry || entry.actorId !== run.owner_account_id) return studioMessages.recordIssue(run.id, 'MULTIUSER_LEDGER_ENTRY_MISSING');
+    if (entry.status !== 'active') return;
+    if (status === 'canceled') ledger.cancel(run.owner_account_id, run.id);
+    else ledger.finish(run.owner_account_id, run.id);
+  };
   const finish = (id: string, status: 'succeeded' | 'failed' | 'canceled', output?: unknown) => {
     if (storesClosed) return;
     const existing = row(id);
     if (!existing || (existing.status !== 'active' && existing.status !== 'queued')) return;
-    if (existing.status === 'active' && !isPersonal(existing)) {
-      if (status === 'canceled') ledger.cancel(existing.owner_account_id, id);
-      else ledger.finish(existing.owner_account_id, id);
-    }
+    if (existing.status === 'active' && !isPersonal(existing)) closeLedgerSpan(existing, status);
     const projection = projections.get(id);
     projection?.flush();
     const result = { ...(projection ? { text: projection.text, textTruncated: projection.truncated } : {}),

@@ -192,3 +192,35 @@ it('F4 fails a replayed queued row and continues dispatching another account', a
   expect(await status(alice, poisoned)).toBe('failed');
   expect(await status(bob, healthy)).toBe('running');
 });
+
+const sse = (text: string) => text.split('\n\n').filter((s) => s.includes('data:')).map((s) => ({
+  event: /^event: (.*)$/m.exec(s)![1]!, data: JSON.parse(/^data: (.*)$/m.exec(s)![1]!) as Record<string, any>,
+}));
+
+it('F5 recovers an active row restored without its ledger entry; start, other accounts and billing are unaffected (#72)', async () => {
+  await capacity(0);
+  const damaged = await run(alice, 'restored-without-ledger');
+  const healthy = await run(bob, 'healthy-after-restore');
+  await daemon.close();
+  const db = new Database(path.join(dataRoot, 'app.sqlite'));
+  try {
+    db.prepare("UPDATE multiuser_runs SET status = 'active' WHERE id = ?").run(damaged);
+    db.prepare("UPDATE multiuser_pool_config SET value = '1' WHERE key = 'test-mock-capacity'").run();
+  } finally { db.close(); }
+  daemon = await startMultiUserDaemon(options());
+  expect(await status(alice, damaged)).toBe('failed');
+  expect(await status(bob, healthy)).toBe('running');
+  const terminal = sse((await events(alice, damaged)).text).filter((e) => e.event === 'error' || e.event === 'end');
+  expect(terminal.map((e) => [e.event, e.data.error?.code ?? e.data.status])).toEqual([['error', 'DAEMON_RESTARTED'], ['end', 'failed']]);
+  const check = new Database(path.join(dataRoot, 'app.sqlite'), { readonly: true });
+  try {
+    expect(check.prepare('SELECT code FROM multiuser_recovery_issues WHERE run_id = ?').all(damaged)).toEqual([{ code: 'MULTIUSER_LEDGER_ENTRY_MISSING' }]);
+  } finally { check.close(); }
+  await capacity(0);
+  await daemon.request({ method: 'POST', path: `/api/runs/${healthy}/cancel`, cookie: bob.cookie });
+  await daemon.close();
+  const ledger = new WorkerQuotaLedger({ dataRoot, clock: () => poolTime });
+  try { expect(ledger.entry(damaged)).toBeUndefined(); } finally { ledger.close(); }
+  daemon = await startMultiUserDaemon(options());
+  expect(sse((await events(alice, damaged)).text).filter((e) => e.event === 'error' || e.event === 'end')).toHaveLength(2);
+});

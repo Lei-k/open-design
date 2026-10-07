@@ -20,6 +20,11 @@ export interface StudioRunMessageInput {
   output: string | null;
 }
 
+/** Fixed, observable recovery codes (#72). A recorded row is skipped, never retried on every boot. */
+export type MultiUserRecoveryIssue = 'MULTIUSER_STUDIO_BINDING_CONFLICT' | 'MULTIUSER_STUDIO_PROJECTION_FAILED' | 'MULTIUSER_LEDGER_ENTRY_MISSING';
+/** Only a binding conflict quarantines; a failed projection is recorded and retried on the next boot. */
+const QUARANTINED = (runId: string) => `SELECT 1 FROM multiuser_recovery_issues i WHERE i.run_id = ${runId} AND i.code = 'MULTIUSER_STUDIO_BINDING_CONFLICT'`;
+
 /** #54/#55: run admission and the standard transcript share the main DB transaction. */
 export class MultiUserStudioMessages {
   constructor(private readonly db: Database.Database) {
@@ -29,16 +34,34 @@ export class MultiUserStudioMessages {
       assistant_message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE
     );
     CREATE TRIGGER IF NOT EXISTS multiuser_studio_turns_immutable BEFORE UPDATE ON multiuser_studio_turns
-      BEGIN SELECT RAISE(ABORT, 'Studio turn binding is immutable'); END;`);
+      BEGIN SELECT RAISE(ABORT, 'Studio turn binding is immutable'); END;
+    CREATE TABLE IF NOT EXISTS multiuser_recovery_issues (
+      run_id TEXT NOT NULL REFERENCES multiuser_runs(id) ON DELETE CASCADE,
+      code TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (run_id, code)
+    );`);
     // #39 compatibility is additive and idempotent. Unbound or damaged parent
     // rows are never claimed; the legacy run/event tables remain intact.
-    db.transaction(() => {
-      const rows = db.prepare(`SELECT r.* FROM multiuser_runs r
-        JOIN ${PROJECT_OWNERS_TABLE} o ON o.project_id = r.project_id AND o.owner_account_id = r.owner_account_id
-        JOIN conversations c ON c.id = r.conversation_id AND c.project_id = r.project_id
-        ORDER BY r.created_at, r.queue_seq, r.id`).all() as StudioRunMessageInput[];
-      for (const run of rows) this.reconcile(run);
-    })();
+    // #72: only rows that can still change are visited — unfinished, unbound,
+    // or a transcript cursor behind its durable frames — so a boot costs the
+    // live work, not every run ever stored. Each row is its own unit: one
+    // damaged row is quarantined and never blocks another account or startup.
+    const events = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'multiuser_run_events'").get();
+    const rows = db.prepare(`SELECT r.* FROM multiuser_runs r
+      JOIN ${PROJECT_OWNERS_TABLE} o ON o.project_id = r.project_id AND o.owner_account_id = r.owner_account_id
+      JOIN conversations c ON c.id = r.conversation_id AND c.project_id = r.project_id
+      LEFT JOIN multiuser_studio_turns t ON t.run_id = r.id
+      WHERE NOT EXISTS (${QUARANTINED('r.id')}) AND (r.status IN ('queued', 'active') OR t.run_id IS NULL${events ? `
+        OR NOT EXISTS (SELECT 1 FROM messages m WHERE m.id = t.assistant_message_id AND COALESCE(m.last_run_event_id, '')
+          = COALESCE((SELECT CAST(MAX(e.seq) AS TEXT) FROM multiuser_run_events e WHERE e.run_id = r.id), ''))` : ''})
+      ORDER BY r.created_at, r.queue_seq, r.id`).all() as StudioRunMessageInput[];
+    for (const run of rows) this.reconcile(run);
+  }
+
+  /** Durable, idempotent and logged once with a fixed code; never carries row content. */
+  recordIssue(runId: string, code: MultiUserRecoveryIssue): void {
+    if (this.db.prepare('INSERT OR IGNORE INTO multiuser_recovery_issues (run_id, code, created_at) VALUES (?, ?, ?)').run(runId, code, Date.now()).changes) {
+      console.warn(`[od] multiuser_recovery code=${code} runId=${runId}`);
+    }
   }
 
   ids(runId: string): { userMessageId: string; assistantMessageId: string } {
@@ -46,7 +69,24 @@ export class MultiUserStudioMessages {
     return { userMessageId: `mu_user_${digest}`, assistantMessageId: `mu_assistant_${digest}` };
   }
 
-  reconcile(run: StudioRunMessageInput): void {
+  /**
+   * Project one run into its standard transcript pair. False when the run is
+   * (or just became) quarantined: its durable frames and SSE stay intact, only
+   * the transcript projection is withheld. Never throws into the run engine.
+   */
+  reconcile(run: StudioRunMessageInput): boolean {
+    if (this.db.prepare(QUARANTINED('?')).get(run.id)) return false;
+    // This guard also protects a restored database with corrupted turn ids.
+    const ids = this.ids(run.id);
+    if ([ids.userMessageId, ids.assistantMessageId].some((id) => this.db.prepare('SELECT 1 FROM messages WHERE id = ? AND conversation_id IS NOT ?').get(id, run.conversation_id))) {
+      this.recordIssue(run.id, 'MULTIUSER_STUDIO_BINDING_CONFLICT');
+      return false;
+    }
+    try { this.db.transaction(() => this.project(run))(); return true; }
+    catch { this.recordIssue(run.id, 'MULTIUSER_STUDIO_PROJECTION_FAILED'); return false; }
+  }
+
+  private project(run: StudioRunMessageInput): void {
     const ids = this.ids(run.id);
     const parse = (raw: string | null): Record<string, unknown> => {
       try { const value: unknown = JSON.parse(raw ?? 'null'); return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
@@ -55,10 +95,6 @@ export class MultiUserStudioMessages {
     const request = parse(run.request_json);
     const output = parse(run.output);
     const stored = getMessage(this.db, ids.assistantMessageId, run.conversation_id);
-    // This guard also protects a restored database with corrupted turn ids.
-    for (const id of [ids.userMessageId, ids.assistantMessageId]) {
-      if (getMessage(this.db, id) && !getMessage(this.db, id, run.conversation_id)) throw new Error('Studio message binding conflict');
-    }
     const hasEvents = this.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'multiuser_run_events'").get();
     const frames = hasEvents ? this.db.prepare('SELECT seq, event, data FROM multiuser_run_events WHERE run_id = ? ORDER BY seq').all(run.id) as Array<{ seq: number; event: string; data: string }> : [];
     const events = frames.map((frame) => runSseEventToPersistedAgentEvent(frame.event, parse(frame.data))).filter((event) => event !== null);
