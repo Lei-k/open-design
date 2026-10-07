@@ -78,6 +78,10 @@ function setPrivateFileHeaders(res: Response): void {
 
 function setPreviewHeaders(res: Response): void {
   setPrivateFileHeaders(res);
+  // The Studio viewer's opaque srcDoc frame loads fonts and fetches relative
+  // assets from here; the bytes are already readable by any holder of this
+  // bearer URL, and no credentials are ever honored on the preview origin.
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Content-Security-Policy', PREVIEW_CSP);
   res.setHeader('Referrer-Policy', 'no-referrer');
 }
@@ -294,7 +298,7 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
       const response: MultiUserPreviewUrlResponse = {
         url: `${input.previewOrigin}/api/multiuser/projects/${encodeURIComponent(project.id)}/preview/${scope}/${encodedPath(meta.name)}`,
         renewUrl: `/api/multiuser/projects/${encodeURIComponent(project.id)}/preview/${scope}/renew`,
-        expiresAt,
+        expiresAt, file: meta.name, csp: PREVIEW_CSP, iframeSandbox: 'allow-scripts allow-forms', opaqueOrigin: true,
       };
       res.setHeader('Cache-Control', 'no-store');
       res.json(response);

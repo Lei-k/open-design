@@ -31,10 +31,21 @@ it('keeps host Studio shims out of literals and serialized functions in every we
         if (node.text.includes('<script')) scripts++;
         if (shim.test(node.text)) fail(node, 'host shim in emitted text');
       }
-      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
-        && node.expression.name.text === 'toString' && ts.isIdentifier(node.expression.expression)) {
-        if (aliases.has(node.expression.expression.text)) fail(node, 'serialized host shim import');
-        const fn = functions.get(node.expression.expression.text);
+      // Every way source text of a function reaches a string (#75): x.toString(),
+      // String(x), `${x}` and '...' + x.
+      const isText = (part: ts.Node) => ts.isStringLiteralLike(part) || ts.isTemplateExpression(part);
+      const serializedName = ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+        && node.expression.name.text === 'toString' && ts.isIdentifier(node.expression.expression) ? node.expression.expression.text
+        : ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'String'
+          && node.arguments.length === 1 && ts.isIdentifier(node.arguments[0]!) ? node.arguments[0].text
+        : ts.isTemplateSpan(node) && ts.isIdentifier(node.expression) ? node.expression.text
+        : ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken
+          && ((isText(node.left) && ts.isIdentifier(node.right)) || (isText(node.right) && ts.isIdentifier(node.left)))
+          ? (ts.isIdentifier(node.right) ? node.right.text : (node.left as ts.Identifier).text)
+        : null;
+      if (serializedName !== null) {
+        if (aliases.has(serializedName)) fail(node, 'serialized host shim import');
+        const fn = functions.get(serializedName);
         if (fn) {
           serialized++;
           const check = (part: ts.Node) => {

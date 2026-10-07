@@ -1,4 +1,5 @@
 import type { Conversation } from './projects.js';
+import type { ProjectPreviewUrlResponse } from './files.js';
 
 /** Safe, body-free catalogue exposed only by the multi-user daemon. */
 export interface MultiUserDesignCatalogSkill {
@@ -52,11 +53,14 @@ export interface MultiUserDesignSelectionsResponse {
   designs: MultiUserDesignSelection[];
 }
 
-export interface MultiUserPreviewUrlResponse {
-  url: string;
+/**
+ * Owner- and session-bound preview capability on the dedicated preview origin.
+ * A superset of the standard `ProjectPreviewUrlResponse`, so the shared
+ * Studio viewer consumes it unchanged (S6, #59); `url` is absolute.
+ */
+export interface MultiUserPreviewUrlResponse extends ProjectPreviewUrlResponse {
   /** Main-app-origin endpoint used by the authenticated host to extend this scope. */
   renewUrl: string;
-  expiresAt: number;
 }
 
 export interface MultiUserPreviewRenewResponse {

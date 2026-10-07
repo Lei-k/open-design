@@ -1,3 +1,4 @@
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
 import { registerStudioReset } from '../runtime/studio-resources';
 import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioSetInterval as setInterval, studioFetch as fetch, studioWindowSessionStorage } from '../runtime/studio-transport';
 import { useExperienceError } from '../observability/use-experience-error';
@@ -7305,6 +7306,8 @@ export function fileViewerSourceAuthorizationScopeKey(
   const authority = projectResourceAuthority
     ?? (workspaceContextLoading ? 'pending' : workspaceContext ? 'workspace' : 'local');
   if (authority === 'local') return 'local';
+  // A Studio actor: the daemon authorizes each read against its cookie session.
+  if (authority === 'session') return 'session';
   if (authority === 'workspace' && workspaceContext) {
     return `workspace:${workspaceIdentityCacheKey(workspaceContext)}`;
   }
@@ -7408,6 +7411,7 @@ function HtmlViewer({
 }) {
   const { locale, t } = useI18n();
   const iframeKeepAlivePool = useIframeKeepAlivePool();
+  const studio = useStudioCapabilities();
   // Retained viewers prewarm new file revisions behind the active tab. Keeping
   // the live metadata here is what lets an agent edit finish loading before
   // the user switches back; activation itself must not promote a stale
@@ -10208,6 +10212,7 @@ function HtmlViewer({
     inspectMode,
     drawMode: drawOverlayOpen,
     forceInline: forceInline && !needsPowered,
+    sessionScopedPreview: projectResourceAuthority === 'session',
     needsSandboxShim: needsSandboxShim && !needsPowered,
     // Daemon guards wrap the settled on-disk response. Streaming/in-memory
     // HTML has no matching URL representation, so keep it on srcDoc until it
@@ -10264,7 +10269,9 @@ function HtmlViewer({
   );
   useEffect(() => {
     if (
-      workspaceContext?.workspaceType !== 'team'
+      // Team workspaces and Studio actors resolve srcDoc assets through a
+      // scoped capability instead of the app-origin raw route.
+      (workspaceContext?.workspaceType !== 'team' && projectResourceAuthority !== 'session')
       ||
       useUrlLoadPreview
       || authoredSrcDocBase !== false
@@ -10294,6 +10301,7 @@ function HtmlViewer({
     useUrlLoadPreview,
     workspaceActive,
     workspaceContext,
+    projectResourceAuthority,
   ]);
   const urlPreviewBaseIdentity = `url\0${srcDocPreviewBaseIdentity}`;
   const effectiveUrlLoadedPreviewBase =
@@ -15049,8 +15057,10 @@ function HtmlViewer({
   // unified chrome action still renders (disabled) for read-only members instead
   // of vanishing. `canShare`/`canDownload` keep the `&& !viewerOnly` gate that
   // guards the actual export/publish handlers.
-  const rawCanShare = source !== null && isShareableArtifact;
-  const rawCanDownload = source !== null && (isShareableArtifact || isMarkdownArtifact);
+  // Share and Export are the delivery lane (#66); without it they would be dead ends.
+  const deliveryUsable = studio.available('delivery');
+  const rawCanShare = deliveryUsable && source !== null && isShareableArtifact;
+  const rawCanDownload = deliveryUsable && source !== null && (isShareableArtifact || isMarkdownArtifact);
   const canShare = rawCanShare && !viewerOnly;
   const canDownload = rawCanDownload && !viewerOnly;
   // PPTX export is slide-based, so show it only for explicit decks plus
@@ -16608,7 +16618,8 @@ function HtmlViewer({
                   <RemixIcon name="camera-line" size={15} />
                 </button>
               ) : null}
-              <div className="artifact-tool-menu-anchor">
+              {/* Comments are the collaboration lane (#65); hidden rather than dead without it. */}
+              {studio.available('collaboration') ? <div className="artifact-tool-menu-anchor">
                 <button
                   type="button"
                   className={`viewer-action viewer-action-icon viewer-comment-toggle od-tooltip${boardMode && !commentCreateMode && boardTool === 'inspect' ? ' active' : ''}`}
@@ -16622,7 +16633,7 @@ function HtmlViewer({
                 >
                   <RemixIcon name="chat-new-line" size={15} />
                 </button>
-              </div>
+              </div> : null}
               <button
                 className={`viewer-action viewer-action-icon od-tooltip${drawOverlayOpen ? ' active' : ''}`}
                 type="button"
@@ -16652,6 +16663,7 @@ function HtmlViewer({
               >
                 <RemixIcon name="edit-line" size={15} />
               </button>
+              {studio.available('collaboration') ? <>
               <span className="viewer-toolbar-tool-divider" aria-hidden />
               <button
                 ref={commentPanelToggleRef}
@@ -16668,6 +16680,7 @@ function HtmlViewer({
                 <RemixIcon name="message-3-line" size={15} />
                 <span className="viewer-comment-count" aria-hidden>{visibleSideComments.length}</span>
               </button>
+              </> : null}
               {source !== null && mode === 'preview' ? (
                 <div className="zoom-menu viewer-toolbar-zoom" ref={zoomMenuRef}>
                   <button

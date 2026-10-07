@@ -253,6 +253,12 @@ export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
           }
         }
         if (matches.some((match) => match.entry.untrustedContent)) applyUntrustedContentPolicy(res);
+        const alias = matches.length === 1 ? matches[0]!.entry.rewriteTo : undefined;
+        if (alias) {
+          const target = alias.replace(/:([A-Za-z_]\w*)/g, (_all, name: string) => encodeURIComponent(matches[0]!.params[name] ?? ''));
+          const query = req.url.indexOf('?');
+          req.url = `${target}${query >= 0 ? req.url.slice(query) : ''}`;
+        }
         res.locals[ACTOR_LOCAL] = actor;
         res.locals[ROUTE_LOCAL] = matches;
         setMultiUserStreamAuthority(res, () => actor !== null && deps.auth.isActorCurrent(actor)
@@ -356,8 +362,10 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
     return only(['prompt', 'source', 'label']) && optionalText(body.prompt, 64_000) && optionalText(body.source, 32) && optionalText(body.label, 256);
   }
   if (policy === 'file-write') {
-    // Artifact manifests and artifact creation belong to the preview/artifact lane (#59).
-    return only(['name', 'content', 'encoding', 'overwrite', 'versionLabel', 'versionPrompt', 'versionSource', 'parentVersionId'])
+    // `artifactManifest` is project-local metadata the handler validates (#59);
+    // server-side artifact creation (`artifact: true`) stays unavailable.
+    return only(['name', 'content', 'encoding', 'overwrite', 'versionLabel', 'versionPrompt', 'versionSource', 'parentVersionId', 'artifactManifest'])
+      && (body.artifactManifest === undefined || body.artifactManifest === null || isPlainObject(body.artifactManifest))
       && projectPathText(body.name) && typeof body.content === 'string'
       && (body.encoding === undefined || body.encoding === 'utf8' || body.encoding === 'base64')
       && (body.overwrite === undefined || typeof body.overwrite === 'boolean')

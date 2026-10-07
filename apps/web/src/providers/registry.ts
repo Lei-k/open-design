@@ -2602,6 +2602,11 @@ function previewCapabilityHref(pathname: string): string {
   return new URL(pathname, runtimeHref).href;
 }
 
+/** Scope path prefix: the standard daemon's, or the multi-user preview capability's. */
+function previewScopePrefix(projectId: string, capability: boolean): string {
+  return `/api/${capability ? 'multiuser/' : ''}projects/${encodeURIComponent(projectId)}/preview/`;
+}
+
 export async function fetchProjectPreviewBaseHref(
   projectId: string,
   name: string,
@@ -2616,9 +2621,13 @@ export async function fetchProjectPreviewBaseHref(
     });
     if (!response.ok) return null;
     const body = (await response.json()) as ProjectPreviewUrlResponse;
-    if (typeof body.url !== 'string' || !body.url.startsWith('/')) return null;
+    if (typeof body.url !== 'string') return null;
+    // A multi-user daemon answers with an absolute capability on its separate
+    // preview origin (owner/session bound); everything else stays root-relative.
+    const capability = /^https:\/\//.test(body.url);
+    if (!capability && !body.url.startsWith('/')) return null;
     const parsed = new URL(body.url, 'http://open-design.local');
-    const expectedPrefix = `/api/projects/${encodeURIComponent(projectId)}/preview/`;
+    const expectedPrefix = previewScopePrefix(projectId, capability);
     if (!parsed.pathname.startsWith(expectedPrefix)) return null;
     const directoryEnd = parsed.pathname.lastIndexOf('/') + 1;
     if (directoryEnd <= expectedPrefix.length) return null;
@@ -2630,7 +2639,7 @@ export async function fetchProjectPreviewBaseHref(
       // <base> is ignored in a Blob document, leaving document.baseURI on the
       // Blob and breaking lazy or script-created relative assets. Resolve the
       // capability against the host document while it still has a real origin.
-      href: previewCapabilityHref(parsed.pathname.slice(0, directoryEnd)),
+      href: capability ? `${parsed.origin}${parsed.pathname.slice(0, directoryEnd)}` : previewCapabilityHref(parsed.pathname.slice(0, directoryEnd)),
       expiresAt,
     };
   } catch {
@@ -2644,7 +2653,8 @@ export async function renewProjectPreviewBaseScope(
 ): Promise<number | null> {
   try {
     const parsed = new URL(href, 'http://open-design.local');
-    const expectedPrefix = `/api/projects/${encodeURIComponent(projectId)}/preview/`;
+    const capability = parsed.protocol === 'https:' && parsed.origin !== globalThis.location?.origin;
+    const expectedPrefix = previewScopePrefix(projectId, capability);
     if (!parsed.pathname.startsWith(expectedPrefix)) return null;
     const scopeEnd = parsed.pathname.indexOf('/', expectedPrefix.length);
     if (scopeEnd <= expectedPrefix.length) return null;
@@ -2655,7 +2665,8 @@ export async function renewProjectPreviewBaseScope(
       {
         method: 'POST',
         cache: 'no-store',
-        headers: { 'x-od-preview-scope-renewal': '1' },
+        // The multi-user renewal reads the non-`x-od` header (client identity headers are stripped).
+        headers: { 'x-od-preview-scope-renewal': '1', 'preview-scope-renewal': '1' },
       },
     );
     if (!response.ok) return null;

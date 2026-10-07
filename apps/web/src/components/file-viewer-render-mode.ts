@@ -50,6 +50,12 @@ export interface UrlLoadDecision {
   tweaksBridge?: boolean;
   /** User explicitly opted into the inline path via ?forceInline=1. */
   forceInline: boolean;
+  /**
+   * A Studio actor's preview (session resource authority): the app origin
+   * never executes generated HTML, so the document is an opaque srcDoc whose
+   * relative assets resolve against the preview-origin capability (#59).
+   */
+  sessionScopedPreview?: boolean;
   /** The artifact needs the opaque-origin Web Storage/history sandbox shim. */
   needsSandboxShim?: boolean;
   /** The daemon-served URL response includes the sandbox shim. */
@@ -120,6 +126,7 @@ export function shouldUrlLoadHtmlPreview(d: UrlLoadDecision): boolean {
   // the artifact ships a `.tw-panel`.
   if (d.tweaksBridge) return false;
   if (d.forceInline) return false;
+  if (d.sessionScopedPreview) return false;
   if (d.needsSandboxShim && !d.urlSandboxGuard) return false;
   if (d.needsFocusGuard && !d.urlFocusGuard) return false;
   // A self-redirecting document needs the redirect-loop guard on whichever

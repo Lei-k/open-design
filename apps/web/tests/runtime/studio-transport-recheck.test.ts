@@ -36,3 +36,13 @@ it('re-reads the session once when the server ends a Studio stream (#73) and nam
   expect(verify).toHaveBeenCalledTimes(2);
   expect(studioRequestAvailable('POST', '/api/runs')).toBe(false);
 });
+
+it('never activates a scope for a generation the session has not published (#75)', () => {
+  const session = new CookieSession();
+  const stale = session.snapshot().generation;
+  session.withdraw();
+  activateStudioTransport(session, stale, { messageIdPrefix: `mua_${'d'.repeat(24)}_`, usable: () => true });
+  expect(studioMessageId('x')).toBe('x');
+  activateStudioTransport(session, session.snapshot().generation, { messageIdPrefix: `mua_${'d'.repeat(24)}_`, usable: () => true });
+  expect(studioMessageId('x')).toBe(`mua_${'d'.repeat(24)}_x`);
+});

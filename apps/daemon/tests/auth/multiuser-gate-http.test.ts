@@ -89,6 +89,8 @@ afterAll(async () => {
 
 /** S5 (#58): the reviewed owner file routes, including the matched regex routes. */
 const S5_OWNER_FILE_ROUTES = [
+  // S6 (#59): reviewed alias to the owner/session-bound preview capability.
+  'owner-scoped-project GET /api/projects/:id/preview-url',
   'owner-scoped-project DELETE /^\\/api\\/projects\\/([^/]+)\\/raw\\/(.+)$/u',
   'owner-scoped-project DELETE /api/projects/:id/files/:name',
   'owner-scoped-project DELETE /api/projects/:id/folders',
@@ -201,6 +203,7 @@ describe('route classification covers the real inventory', () => {
       'public-web GET /design-systems/:designSystemId',
       'public-web GET /design-systems/create',
       'public-web GET /drafts',
+      'public-web GET /editor-icons/:icon',
       'public-web GET /fonts/AlbertSans-Italic-VariableFont_wght.ttf',
       'public-web GET /fonts/AlbertSans-VariableFont_wght.ttf',
       'public-web GET /fonts/JiduMonoPro-Regular.otf',

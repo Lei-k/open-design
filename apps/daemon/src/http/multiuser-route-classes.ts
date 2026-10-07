@@ -1,4 +1,4 @@
-import { MULTIUSER_SHELL_PATHS, MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE, MULTIUSER_AGENT_ICON_ROUTE, publicMultiUserFile } from './multiuser-static.js';
+import { MULTIUSER_SHELL_PATHS, MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE, MULTIUSER_AGENT_ICON_ROUTE, MULTIUSER_EDITOR_ICON_ROUTE, publicMultiUserFile } from './multiuser-static.js';
 
 // Multi-user route classification registry (issue #4) — declarative data.
 //
@@ -84,13 +84,20 @@ export interface MultiUserRouteClassification {
   untrustedContent?: boolean;
   /** Declared request-body ceiling; the gate requires a Content-Length within it. */
   maxBodyBytes?: number;
+  /**
+   * Reviewed alias: after authorization the gate routes the request to this
+   * multi-user implementation (`:param` filled from the match, query kept), so
+   * the shared client keeps one standard endpoint while the daemon serves the
+   * owner/session-bound variant.
+   */
+  rewriteTo?: string;
 }
 
 export function routeKey(method: string, path: string): string {
   return `${method.toUpperCase()} ${path}`;
 }
 
-type EntryExtras = Pick<MultiUserRouteClassification, 'projectParam' | 'runParam' | 'agentAccountParam' | 'bodyPolicy' | 'nonStringPath' | 'catchAll' | 'untrustedContent' | 'maxBodyBytes'>;
+type EntryExtras = Pick<MultiUserRouteClassification, 'projectParam' | 'runParam' | 'agentAccountParam' | 'bodyPolicy' | 'nonStringPath' | 'catchAll' | 'untrustedContent' | 'maxBodyBytes' | 'rewriteTo'>;
 
 function group(
   routeClass: MultiUserRouteClass,
@@ -152,7 +159,7 @@ const R_GLOBAL_STATE = 'daemon-global state shared by every account';
 
 export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassification[] = [
   ...group('public-web', 'reviewed public app code only; canonical file and symlink checks in the static handler',
-    [...MULTIUSER_SHELL_PATHS, ...MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE, MULTIUSER_AGENT_ICON_ROUTE].map((path) => `GET ${path}`)),
+    [...MULTIUSER_SHELL_PATHS, ...MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE, MULTIUSER_AGENT_ICON_ROUTE, MULTIUSER_EDITOR_ICON_ROUTE].map((path) => `GET ${path}`)),
   // Probes -------------------------------------------------------------------
   ...group('public-probe', 'process liveness/readiness/version only; carries no account or project data', [
     'GET /api/health',
@@ -305,6 +312,10 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
   ...group('owner-scoped-project', 'owner file delete inside the managed project root', ['DELETE /api/projects/:id/files/:name'], { projectParam: 'id' }),
   ...group('owner-scoped-project', 'owner multipart upload into the managed project root; bounded request', ['POST /api/projects/:id/upload'],
     { projectParam: 'id', bodyPolicy: 'multipart', maxBodyBytes: MULTIUSER_UPLOAD_MAX_BYTES }),
+  // S6 (#59): the standard preview URL mints the owner/session-bound capability
+  // on the dedicated preview origin (#39), never an app-origin scope.
+  ...group('owner-scoped-project', 'mints an owner/session-bound capability on the preview origin', ['GET /api/projects/:id/preview-url'],
+    { projectParam: 'id', rewriteTo: '/api/multiuser/projects/:id/preview-url' }),
   ...regexGroup('owner-scoped-project', 'owner file bytes on the app origin; served under the untrusted-content policy', [
     ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)$/u, ['id', 'path']],
     ['GET', /^\/api\/projects\/([^/]+)\/raw\/(.+)$/u, ['id', 'path']],
@@ -336,7 +347,6 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'GET /api/projects/:id/export/*splat',
     'GET /api/projects/:id/design-token-suggestions',
     'GET /api/projects/:id/design-system-package-audit',
-    'GET /api/projects/:id/preview-url',
     'POST /api/projects/:id/preview/:scope/renew',
     'GET /api/projects/:id/files/:name/preview',
     'GET /api/projects/:id/conversations/:cid/messages/:mid/artifacts',

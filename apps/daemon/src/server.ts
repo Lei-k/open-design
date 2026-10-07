@@ -3455,8 +3455,10 @@ export async function startServer({
 
   // Routes that serve content to sandboxed iframes (Origin: null) for
   // read-only purposes.  All other /api routes reject Origin: null.
+  // Multi-user preview capabilities live on their own cookie-free origin;
+  // opaque Studio srcDoc frames fetch their fonts and assets from there (#59).
   const _NULL_ORIGIN_SAFE_GET_RE =
-    /^\/projects\/[^/]+\/(?:raw|preview)\/|^\/codex-pets\/[^/]+\/spritesheet$|^\/asset-cache$/;
+    /^\/projects\/[^/]+\/(?:raw|preview)\/|^\/multiuser\/projects\/[^/]+\/preview\/|^\/codex-pets\/[^/]+\/spritesheet$|^\/asset-cache$/;
   const _POWERED_PREVIEW_SAFE_RE = /^\/projects\/[^/]+\/powered\/.+$/u;
 
   // Reject cross-origin requests to API endpoints.

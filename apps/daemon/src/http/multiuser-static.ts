@@ -19,6 +19,8 @@ export const MULTIUSER_ASSET_PATHS = ['/app-icon.png', '/fonts/AlbertSans-Variab
 export const MULTIUSER_BUILD_ASSET_ROUTE = '/_next/static/*asset';
 /** Public agent brand marks the shared chat renders beside assistant turns. */
 export const MULTIUSER_AGENT_ICON_ROUTE = '/agent-icons/:icon';
+/** Public editor marks the shared viewer's open-in menus render. */
+export const MULTIUSER_EDITOR_ICON_ROUTE = '/editor-icons/:icon';
 
 /** encodeURIComponent is the router's sole spelling for a dynamic segment. */
 function canonicalSegment(value: string): boolean {
@@ -40,7 +42,7 @@ export function publicMultiUserFile(rawPath: string): string | null {
       : part.startsWith(':') ? canonicalSegment(segments[index]!) : segments[index] === part)) return 'index.html';
   }
   if ((MULTIUSER_ASSET_PATHS as readonly string[]).includes(rawPath)) return rawPath.slice(1);
-  if (/^\/agent-icons\/[a-z0-9-]{1,64}\.(?:svg|png)$/.test(rawPath)) return rawPath.slice(1);
+  if (/^\/(?:agent|editor)-icons\/[a-z0-9-]{1,64}\.(?:svg|png)$/.test(rawPath)) return rawPath.slice(1);
   if (!/^\/_next\/static\/(?:chunks|media)\/[A-Za-z0-9_.~-]+\.(?:js|css|woff2?|ttf|otf|png|svg)$/.test(rawPath)) return null;
   if (segments.some((part) => part === '.' || part === '..')) return null;
   return rawPath.slice(1);
@@ -62,7 +64,7 @@ function regularPublicFile(root: string, relative: string): boolean {
 }
 
 export function registerMultiUserStatic(app: Express, staticDir: string): void {
-  for (const route of [...MULTIUSER_SHELL_PATHS, ...MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE, MULTIUSER_AGENT_ICON_ROUTE]) {
+  for (const route of [...MULTIUSER_SHELL_PATHS, ...MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE, MULTIUSER_AGENT_ICON_ROUTE, MULTIUSER_EDITOR_ICON_ROUTE]) {
     app.get(route, (req, res) => {
       const file = publicMultiUserFile(req.path);
       res.setHeader('Cache-Control', 'no-store');

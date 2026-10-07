@@ -12,6 +12,10 @@ let scope: Scope | null | undefined;
 export function activateStudioTransport(session: CookieSession, generation: number,
   options: { messageIdPrefix?: string | undefined; usable?: (lane: StudioParityLaneId) => boolean } = {}): void {
   if (scope?.session === session && scope.generation === generation && !scope.abort.signal.aborted) return;
+  // Called during render so children never fetch before activation (their
+  // effects run first). Only the session's current generation may activate:
+  // a concurrent render for any other generation can never claim the scope (#75).
+  if (session.snapshot().generation !== generation) return;
   scope?.abort.abort();
   scope = null;
   withdrawStudioResources();
@@ -69,6 +73,10 @@ export function studioRequestAvailable(method: string, path: string,
       if ((area === 'text-preview' || area === 'file-content') && rest) return method === 'GET';
       return false;
     }
+  }
+  if (usable('preview')) {
+    if (/^\/api\/projects\/[^/]+\/preview-url$/.test(path)) return method === 'GET';
+    if (/^\/api\/multiuser\/projects\/[^/]+\/preview\/[^/]+\/renew$/.test(path)) return method === 'POST';
   }
   if (usable('execution')) {
     if (path === '/api/runs') return method === 'GET' || method === 'POST';
@@ -191,13 +199,15 @@ export function studioWindowLocalStorage(): Storage { return scope === undefined
 export function studioWindowSessionStorage(): Storage { return scope === undefined ? window.sessionStorage : sessionMemory; }
 
 function timer(repeat: boolean, handler: TimerHandler, delay?: number, ...args: unknown[]): number {
+  // String handlers are eval; a Studio scope never schedules code from text (#75).
+  if (typeof handler !== 'function') throw new TypeError('Studio timers require a function handler');
   const issued = scope;
   if (!issued) return 0;
   const schedule = repeat ? globalThis.setInterval : globalThis.setTimeout;
   const release = () => { globalThis.clearTimeout(id); globalThis.clearInterval(id); };
   const id = schedule(() => {
     if (!repeat) issued.abort.signal.removeEventListener('abort', release);
-    if (scope === issued && !issued.abort.signal.aborted && typeof handler === 'function') handler(...args);
+    if (scope === issued && !issued.abort.signal.aborted) handler(...args);
   }, delay);
   issued.abort.signal.addEventListener('abort', release, { once: true });
   return id as unknown as number;

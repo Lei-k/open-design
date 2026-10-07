@@ -89,6 +89,7 @@ export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
   execution: 'Pilot execution: personal Codex only; company pool, feedback telemetry and replay are pending (#55).',
   chat: 'Pilot chat: real-provider recordings and the full state-matrix acceptance are pending (#56).',
   composer: 'Pilot composer: text, attachments, queue, stop and question answers; skills, design systems and model choice are pending (#57).',
+  preview: 'Pilot preview: HTML/deck/media previews in opaque srcDoc frames with assets from the preview-origin capability, manual edit and inspect; comments, artifact snapshots, thumbnails and live reload bridges are pending (#59).',
   files: 'Pilot files: owner file list, read, write, upload, rename, delete, folders, search and versions; archive, public publish and resumable large uploads are pending (#58).',
 };
 

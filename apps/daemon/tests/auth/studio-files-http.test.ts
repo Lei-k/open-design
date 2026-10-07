@@ -129,7 +129,9 @@ it('bounds uploads and refuses artifact manifests, traversal and symlink escapes
   expect(await declared({ 'transfer-encoding': 'chunked' })).toBe(413);
   const jsonUpload = await daemon.request({ method: 'POST', path: `/api/projects/${projectId}/upload`, cookie: a.cookie, body: { files: [] } });
   expect(jsonUpload.status).toBe(400);
-  expect((await write(projectId, 'a.html', '<p/>', a, { artifactManifest: { kind: 'html' } })).status).toBe(400);
+  // Manifests are validated by the handler; server-side artifact creation stays unavailable.
+  expect((await write(projectId, 'a.html', '<p/>', a, { artifactManifest: 'not-an-object' })).status).toBe(400);
+  expect((await write(projectId, 'a.html', '<p/>', a, { artifactManifest: { kind: 'nope' } })).status).toBe(400);
   expect((await write(projectId, 'a.html', '<p/>', a, { artifact: true })).status).toBe(400);
   const outside = path.join(root, 'outside-secret.txt');
   writeFileSync(outside, 'HOST-SECRET-9999');
