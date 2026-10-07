@@ -187,7 +187,8 @@ describe('personal account lifecycle', () => {
     const result = await finished(switchUser, followUp.json.run.id);
     expect(result, JSON.stringify(result)).toMatchObject({ status: 'succeeded', executionSource: 'personal_subscription' });
     expect(result.output.threadId).not.toBe(first.output.threadId);
-    expect(JSON.parse(result.output.text)).toMatchObject({ codexHome: home, turnsInThread: 1 });
+    expect(JSON.parse(readFileSync(path.join(home, 'mock-turn-evidence.json'), 'utf8'))).toMatchObject({ codexHome: home, turnsInThread: 1 });
+    expect(result.output.text.includes(home)).toBe(false);
   });
 
   it('restores the previous subscription intact when a switch fails to bind', async () => {
@@ -255,7 +256,8 @@ describe('personal account lifecycle', () => {
     const result = await finished(ambiguousUser, followUp.json.run.id);
     expect(result, JSON.stringify(result)).toMatchObject({ status: 'succeeded', executionSource: 'personal_subscription' });
     expect(result.output.threadId).not.toBe(first.output.threadId);
-    expect(JSON.parse(result.output.text)).toMatchObject({ codexHome: home, turnsInThread: 1 });
+    expect(JSON.parse(readFileSync(path.join(home, 'mock-turn-evidence.json'), 'utf8'))).toMatchObject({ codexHome: home, turnsInThread: 1 });
+    expect(result.output.text.includes(home)).toBe(false);
   });
 
   it('restarts with active and queued personal work at nonzero capacity', async () => {

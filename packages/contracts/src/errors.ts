@@ -197,6 +197,9 @@ export const API_ERROR_CODES = [
   // Personal subscription lane (#18). DISABLED: the server-side enablement
   // switch is off. UNAVAILABLE: no usable linked account (not linked,
   // requires_reauth or disabled); never falls back to the company pool.
+  'DAEMON_RESTARTED',
+  'MULTIUSER_PERSONAL_RUN_FAILED',
+  'MULTIUSER_RUN_REQUEST_INVALID',
   'MULTIUSER_PERSONAL_DISABLED',
   'MULTIUSER_PERSONAL_UNAVAILABLE',
   'MULTIUSER_PERSONAL_CONSENT_REQUIRED',
@@ -248,6 +251,8 @@ export type LegacyErrorResponse =
 export type CompatibleErrorResponse = ApiErrorResponse | LegacyErrorResponse;
 
 export interface SseErrorPayload {
+  /** Safe normalized provider classification; never provider free text. */
+  codexErrorInfo?: { reason: string; httpStatusCode?: number };
   message: string;
   error?: ApiError;
   /**

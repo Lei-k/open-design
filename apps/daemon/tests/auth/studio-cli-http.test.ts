@@ -3,6 +3,7 @@ import { readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts, startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
+import { PERSONAL_CODEX_MOCK, linkCodex, setTurnMode } from './personal-codex-helpers.js';
 
 let daemon: StartedMultiUserDaemon;
 let alice: Principal;
@@ -13,7 +14,7 @@ let aFile: string;
 let bFile: string;
 beforeAll(async () => {
   ({ dataRoot: root } = await loadIsolatedServerModule());
-  daemon = await startMultiUserDaemon(multiUserOptions({ testMockAgentScript: path.resolve('../..', 'mocks/run-isolation-agent.ts') }));
+  daemon = await startMultiUserDaemon(multiUserOptions({ testMockAgentScript: path.resolve('../..', 'mocks/run-isolation-agent.ts'), testPersonalCodexAppServer: PERSONAL_CODEX_MOCK }));
   const accounts = await provisionAccounts(daemon, ['cli-alice', 'cli-bob']);
   admin = accounts.admin;
   [alice, bob] = accounts.users as [Principal, Principal];
@@ -122,6 +123,25 @@ describe('same Studio APIs through remote od sessions', () => {
     expect(lifecycle.stderr).toContain('CLI_SESSION_CAPABILITY_PENDING');
     expect((await daemon.request({ path: '/api/health' })).status).toBe(200);
   });
+
+  it('answers a personal question using prompt-file stdin and the standard run contract', async () => {
+    await linkCodex(daemon, root, alice, 'cli-a@example.test');
+    setTurnMode(root, alice, { reply: '<question-form id="brief">{"questions":[{"id":"color","label":"Color","type":"text"}]}</question-form>' });
+    const made = success(await cli(['project', 'create', '--name', 'CLI question', '--session-file', aFile, '--json']));
+    const base = ['run', 'start', '--project', made.project.id, '--conversation', made.conversationId,
+      '--execution-source', 'personal_subscription', '--prompt-file', '-', '--session-file', aFile, '--json'];
+    const question = success(await cli(base, 'ask'));
+    const watch = await cli(['run', 'watch', question.runId, '--session-file', aFile, '--json']);
+    expect(watch.code).toBe(0);
+    expect(watch.stdout.includes('"type":"text_delta"')).toBe(true);
+    setTurnMode(root, alice, {});
+    const answer = success(await cli([...base, '--question-answer', question.runId], '[form answers — brief]\nColor: blue'));
+    expect((await cli(['run', 'watch', answer.runId, '--session-file', aFile, '--json'])).code).toBe(0);
+    expect((await cli([...base, '--question-answer', question.runId], 'duplicate')).code).not.toBe(0);
+    const first = await daemon.request({ path: `/api/runs/${question.runId}`, cookie: alice.cookie });
+    const next = await daemon.request({ path: `/api/runs/${answer.runId}`, cookie: alice.cookie });
+    expect(next.json.output.threadId).toBe(first.json.output.threadId);
+  }, 40_000);
 
   it('honors server revocation and logs B out without printing or retaining credentials', async () => {
     const revoked = await daemon.request({ method: 'POST', path: `/api/auth/users/${alice.id}/sessions/revoke`, cookie: admin.cookie, body: {} });

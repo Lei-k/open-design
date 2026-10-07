@@ -88,10 +88,10 @@ export class CookieSession {
     }
   }
   /** Stream transport uses the same generation fence and cookie as JSON requests. */
-  async stream(url: string, mountSignal: AbortSignal, generation: number): Promise<Response> {
+  async stream(url: string, mountSignal: AbortSignal, generation: number, lastEventId?: string): Promise<Response> {
     if (generation !== this.state.generation) throw new DOMException('Stale stream', 'AbortError');
     const signal = AbortSignal.any([this.abort.signal, mountSignal]);
-    const response = await fetch(url, { credentials: 'same-origin', cache: 'no-store', signal, headers: { Accept: 'text/event-stream' } });
+    const response = await fetch(url, { credentials: 'same-origin', cache: 'no-store', signal, headers: { Accept: 'text/event-stream', ...(lastEventId ? { 'Last-Event-ID': lastEventId } : {}) } });
     if (signal.aborted || generation !== this.state.generation) {
       await response.body?.cancel();
       throw new DOMException('Stale stream', 'AbortError');

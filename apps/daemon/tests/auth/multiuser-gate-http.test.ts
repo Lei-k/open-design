@@ -156,6 +156,7 @@ describe('route classification covers the real inventory', () => {
       'owner-scoped-run GET /api/runs/:id',
       'owner-scoped-run GET /api/runs/:id/events',
       'owner-scoped-run POST /api/runs/:id/cancel',
+      'owner-scoped-run POST /api/runs/:id/steer',
       'preview-capability GET /api/multiuser/projects/:id/preview/:scope/*path',
       'public-probe GET /api/health',
       'public-probe GET /api/ready',

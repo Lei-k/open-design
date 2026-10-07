@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { runSseEventToPersistedAgentEvent } from '../runtimes/chat-run-messages.js';
+import { serializeRunEventsForStorage } from '../runtimes/run-event-payload-budget.js';
 import { getMessage, upsertMessage } from '../db.js';
 import { PROJECT_OWNERS_TABLE } from './project-ownership.js';
 
@@ -57,6 +59,10 @@ export class MultiUserStudioMessages {
     for (const id of [ids.userMessageId, ids.assistantMessageId]) {
       if (getMessage(this.db, id) && !getMessage(this.db, id, run.conversation_id)) throw new Error('Studio message binding conflict');
     }
+    const hasEvents = this.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'multiuser_run_events'").get();
+    const frames = hasEvents ? this.db.prepare('SELECT seq, event, data FROM multiuser_run_events WHERE run_id = ? ORDER BY seq').all(run.id) as Array<{ seq: number; event: string; data: string }> : [];
+    const events = frames.map((frame) => runSseEventToPersistedAgentEvent(frame.event, parse(frame.data))).filter((event) => event !== null);
+    const text = events.filter((event) => event.kind === 'text').map((event) => event.text).join('');
     const terminal = run.status !== 'active' && run.status !== 'queued';
     if (!getMessage(this.db, ids.userMessageId, run.conversation_id)) {
       upsertMessage(this.db, run.conversation_id, {
@@ -67,13 +73,21 @@ export class MultiUserStudioMessages {
       ...stored,
       id: ids.assistantMessageId, role: 'assistant', runId: run.id,
       agentId: run.execution_source === 'personal_subscription' ? 'codex' : 'test-mock',
-      content: typeof output.text === 'string' ? output.text : stored?.content ?? '',
+      content: frames.some((frame) => frame.event === 'agent' && parse(frame.data).type === 'text_delta') ? text : typeof output.text === 'string' ? output.text : stored?.content ?? '',
+      ...(frames.length ? { events, lastRunEventId: String(frames.at(-1)!.seq) } : {}),
       runStatus: run.status === 'active' ? 'running' : run.status,
       createdAt: run.created_at,
       ...(run.started_at === null ? {} : { startedAt: run.started_at }),
       ...(terminal ? { endedAt: run.ended_at ?? run.updated_at } : {}),
       ...(Array.isArray(output.files) ? { producedFiles: output.files } : {}),
     });
+    // upsertMessage protects active daemon events from browser snapshots. This
+    // is the owning daemon's durable projection, so update its active snapshot
+    // explicitly as well; otherwise a mid-run reload has a cursor but no events.
+    if (frames.length) {
+      this.db.prepare('UPDATE messages SET events_json = ?, content = ? WHERE id = ? AND conversation_id = ?')
+        .run(serializeRunEventsForStorage(events), text || (typeof output.text === 'string' ? output.text : stored?.content ?? ''), ids.assistantMessageId, run.conversation_id);
+    }
     this.db.prepare(`INSERT OR IGNORE INTO multiuser_studio_turns (run_id, user_message_id, assistant_message_id) VALUES (?, ?, ?)`)
       .run(run.id, ids.userMessageId, ids.assistantMessageId);
   }

@@ -4,6 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
+import { API_ERROR_CODES, emittedRenderableQuestionForm, type ApiErrorCode } from '@open-design/contracts';
+import { PersonalRunEvents } from '../runtimes/personal-run-events.js';
+import { classifyRunSteering } from '../runtimes/run-steering.js';
+import { RESTART_ERROR_CODE } from '../runtimes/run-restart-recovery.js';
 import type { MultiUserRun, MultiUserRunEvent, MultiUserRunStatus, MultiUserRunsResponse } from '@open-design/contracts';
 import { getConversation, getProject } from '../db.js';
 import { sendApiError } from '../http/api-errors.js';
@@ -224,7 +228,6 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       ledger.finish(entry.actorId, run.id);
       reconciled.add(run.id);
     }
-    db.prepare(`UPDATE ${table} SET status = 'failed', updated_at = ? WHERE id = ?`).run(now(), run.id);
   }
   const queuedRecovery = db.prepare(`SELECT * FROM ${table} WHERE status = 'queued'`).all() as RunRow[];
   for (const run of queuedRecovery) {
@@ -245,12 +248,18 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   const children = new Map<string, ChildProcessWithoutNullStreams>();
   const studioMessages = new MultiUserStudioMessages(db);
   const cancelPending = new Set<string>();
+  const sourceInvalidated = new Set<string>();
   const failurePending = new Set<string>();
   let shuttingDown = false;
   let storesClosed = false;
   const listeners = new Map<string, Set<Response>>();
   const artifactBaselines = new Map<string, { cwd: string; before: ArtifactSnapshot }>();
-  const progressCounts = new Map<string, number>();
+  const projections = new Map<string, PersonalRunEvents>();
+  const interrupts = new Map<string, () => void>();
+  db.exec(`CREATE TABLE IF NOT EXISTS multiuser_run_questions (
+    run_id TEXT PRIMARY KEY REFERENCES multiuser_runs(id) ON DELETE CASCADE,
+    answered_by TEXT REFERENCES multiuser_runs(id) ON DELETE SET NULL
+  )`);
   const row = (id: string) => db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id) as RunRow | undefined;
   const actor = (res: Response) => multiUserActorOf(res)?.accountId ?? '';
   const owned = (req: Request, res: Response): RunRow | null => {
@@ -283,20 +292,14 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const seq = (db.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM multiuser_run_events WHERE run_id = ?').get(id) as { seq: number }).seq;
     const payload = JSON.stringify(data);
     db.prepare('INSERT INTO multiuser_run_events (run_id, seq, event, data) VALUES (?, ?, ?, ?)').run(id, seq, event, payload);
+    studioMessages.reconcile(row(id)!);
     return `id: ${seq}\nevent: ${event}\ndata: ${payload}\n\n`;
   };
   const publishEvent = (id: string, frame: string) => {
     for (const res of listeners.get(id) ?? []) if (multiUserStreamAllowed(res)) res.write(frame);
   };
   const emit = <E extends MultiUserRunEvent['event']>(id: string, event: E, data: RunEventData<E>) => {
-    publishEvent(id, persistEvent<E>(id, event, data));
-  };
-  const emitProgress = (id: string, data: RunEventData<'progress'>) => {
-    const count = progressCounts.get(id) ?? 0;
-    const payload = JSON.stringify(data);
-    if (count >= 256 || Buffer.byteLength(payload, 'utf8') > 8 * 1024) return;
-    progressCounts.set(id, count + 1);
-    emit(id, 'progress', data);
+    publishEvent(id, db.transaction(() => persistEvent<E>(id, event, data))());
   };
   /** A run starts, consumes its lane's turn, and records its event together, before live publication. */
   const startRun = (run: RunRow) => {
@@ -312,7 +315,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         VALUES (?, (SELECT COALESCE(MAX(last_seq), 0) + 1 FROM ${turnsTable}))
         ON CONFLICT(account_id) DO UPDATE SET last_seq = excluded.last_seq`).run(run.owner_account_id);
       studioMessages.reconcile(row(run.id)!);
-      return persistEvent(run.id, 'start', { runId: run.id });
+      return persistEvent(run.id, 'start', { runId: run.id, bin: isPersonal(run) ? 'codex' : 'test-mock', agentId: isPersonal(run) ? 'codex' : 'test-mock', protocolVersion: 1 });
     })();
     publishEvent(run.id, frame);
   };
@@ -335,23 +338,42 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       if (status === 'canceled') ledger.cancel(existing.owner_account_id, id);
       else ledger.finish(existing.owner_account_id, id);
     }
-    // Personal worker time is recorded for visibility only; it has no budget.
-    if (existing.status === 'active' && isPersonal(existing)) db.prepare(`UPDATE ${table} SET ended_at = ? WHERE id = ?`).run(now(), id);
-    db.transaction(() => {
-      db.prepare(`UPDATE ${table} SET status = ?, output = ?, updated_at = ? WHERE id = ?`)
-        .run(status, output === undefined ? null : JSON.stringify(output), now(), id);
+    const projection = projections.get(id);
+    projection?.flush();
+    const result = { ...(projection ? { text: projection.text, textTruncated: projection.truncated } : {}),
+      ...(output && typeof output === 'object' ? output : {}) } as Record<string, unknown>;
+    const frames = db.transaction(() => {
+      const time = now();
+      db.prepare(`UPDATE ${table} SET status = ?, output = ?, updated_at = ?, ended_at = CASE WHEN started_at IS NOT NULL THEN ? ELSE ended_at END WHERE id = ?`)
+        .run(status, Object.keys(result).length ? JSON.stringify(result) : null, time, time, id);
+      const frames: string[] = [];
+      if (status === 'failed' || result.reason === 'MULTIUSER_PERSONAL_UNAVAILABLE') {
+        const reason = typeof result.reason === 'string' && (API_ERROR_CODES as readonly string[]).includes(result.reason)
+          ? result.reason as ApiErrorCode : 'MULTIUSER_PERSONAL_RUN_FAILED';
+        frames.push(persistEvent(id, 'error', { message: reason, error: { code: reason, message: reason }, ...(projection?.errorDetail ? { codexErrorInfo: projection.errorDetail } : {}) }));
+      }
+      const files = Array.isArray(result.files) ? result.files as string[] : [];
+      frames.push(persistEvent(id, 'end', { status, code: status === 'succeeded' ? 0 : status === 'failed' ? 1 : null,
+        terminalAt: time, artifactPaths: files, artifactCount: files.length }));
+      if (status === 'succeeded' && isPersonal(existing) && emittedRenderableQuestionForm(String(result.text ?? ''))) {
+        db.prepare('INSERT OR IGNORE INTO multiuser_run_questions (run_id) VALUES (?)').run(id);
+      }
       studioMessages.reconcile(row(id)!);
+      return frames;
     })();
-    emit(id, 'end', { status, ...(output === undefined ? {} : { output }) });
+    for (const frame of frames) publishEvent(id, frame);
     for (const res of listeners.get(id) ?? []) res.end();
     listeners.delete(id);
     children.delete(id);
     cancelPending.delete(id);
+    sourceInvalidated.delete(id);
     failurePending.delete(id);
     artifactBaselines.delete(id);
-    progressCounts.delete(id);
+    projections.delete(id);
+    interrupts.delete(id);
     if (!shuttingDown && !suspendDispatch) { dispatch(); dispatchPersonal(); }
   };
+  for (const run of recovery) finish(run.id, 'failed', { reason: RESTART_ERROR_CODE });
   const capacity = () => Number((db.prepare("SELECT value FROM multiuser_pool_config WHERE key = 'test-mock-capacity'").get() as { value: string } | undefined)?.value ?? '2');
   dispatch = () => {
     if (dispatching || shuttingDown || !mockAgentScript) return;
@@ -429,7 +451,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           try {
             const output = JSON.parse(stdout.trim()) as unknown;
             if (row(next.id)?.status !== 'active') return;
-            emit(next.id, 'agent', output);
+            emit(next.id, 'agent', { type: 'text_delta', delta: typeof (output as { message?: unknown })?.message === 'string' ? (output as { message: string }).message : '' });
             finish(next.id, 'succeeded', output);
           } catch { finish(next.id, 'failed'); }
         });
@@ -510,7 +532,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           const accountId = account.id;
           const includeStable = Boolean(stablePrompt) && (!session.thread_id || session.stable_prompt_hash !== stablePromptHash);
           const prompt = includeStable ? `${stablePrompt}\n\n---\n\n# User request\n\n${userPrompt}` : userPrompt;
-          const progressTools = new Map<string, { kind: 'file'; path: string } | { kind: 'command'; name: string }>();
+          const projection = new PersonalRunEvents(realCwd, [dataRoot, account.codexHome, runHome, realCwd], (event) => emit(runId, event.event, event.data));
+          projections.set(runId, projection);
           const turn = runPersonalCodexTurn({
             command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
             prompt, resumeThreadId: session.thread_id,
@@ -526,48 +549,12 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             sandboxMode: launch.sandbox ? 'danger-full-access' : codexResolvedSandboxMode(),
             onThread: (threadId) => db.prepare(`UPDATE multiuser_personal_sessions SET thread_id = ?, updated_at = ?
               WHERE conversation_id = ? AND personal_account_id = ?`).run(threadId, now(), next.conversation_id, accountId),
-            onAgentEvent: (event) => {
-              const toolId = typeof event.id === 'string' ? event.id
-                : typeof event.toolUseId === 'string' ? event.toolUseId : '';
-              const name = typeof event.name === 'string' ? event.name : '';
-              const eventInput = event.input && typeof event.input === 'object' ? event.input as Record<string, unknown> : {};
-              const rawPath = typeof eventInput.file_path === 'string' ? eventInput.file_path
-                : typeof eventInput.path === 'string' ? eventInput.path : '';
-              if (event.type === 'tool_use' && /^(?:Write|Edit|MultiEdit|apply_patch|write_file|replace)$/iu.test(name) && rawPath) {
-                const absolute = path.resolve(realCwd, rawPath);
-                const relative = path.relative(realCwd, absolute).replaceAll('\\', '/');
-                if (toolId && relative && relative !== '..' && !relative.startsWith('../') && !path.isAbsolute(relative)) {
-                  progressTools.set(toolId, { kind: 'file', path: relative });
-                }
-              } else if (event.type === 'tool_use' && /todo|update_plan/iu.test(name)) {
-                const items = Array.isArray(eventInput.todos) ? eventInput.todos : Array.isArray(eventInput.plan) ? eventInput.plan : [];
-                const safeItems = items.slice(0, 64).flatMap((item) => {
-                  if (!item || typeof item !== 'object') return [];
-                  const value = item as Record<string, unknown>;
-                  return typeof value.content === 'string' || typeof value.step === 'string'
-                    ? [{ content: String(value.content ?? value.step).slice(0, 500), status: String(value.status ?? 'pending').slice(0, 32) }]
-                    : [];
-                });
-                if (safeItems.length) emitProgress(runId, { kind: 'todo', items: safeItems });
-              } else if (event.type === 'tool_use' && /^(?:Bash|Shell|command_execution|exec_command|shell_command)$/iu.test(name)) {
-                const safeName = name.slice(0, 80);
-                if (toolId) progressTools.set(toolId, { kind: 'command', name: safeName });
-                emitProgress(runId, { kind: 'command', name: safeName, status: 'started' });
-              } else if (event.type === 'tool_result' && toolId) {
-                const pending = progressTools.get(toolId);
-                progressTools.delete(toolId);
-                if (pending?.kind === 'file' && event.isError !== true) {
-                  emitProgress(runId, { kind: 'file', path: pending.path, status: 'changed' });
-                } else if (pending?.kind === 'command') {
-                  emitProgress(runId, { kind: 'command', name: pending.name, status: event.isError === true ? 'failed' : 'completed' });
-                }
-              }
-            },
+            onAgentEvent: (event) => projection.accept(event),
             onDone: (result) => { void (async () => {
               personal.secureHome(owner);
               if (row(runId)?.status !== 'active') return;
               if (shuttingDown) return finish(runId, 'canceled', { reason: 'daemon_shutdown' });
-              if (cancelPending.has(runId)) return finish(runId, 'canceled');
+              if (cancelPending.has(runId)) return finish(runId, 'canceled', sourceInvalidated.has(runId) ? { reason: 'MULTIUSER_PERSONAL_UNAVAILABLE' } : undefined);
               const baseline = artifactBaselines.get(runId);
               let files: string[] = [];
               if (baseline) {
@@ -581,12 +568,12 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 }
               }
               if (result.ok) {
-                emit(runId, 'agent', { text: result.text });
+                projection.flush();
                 if (includeStable && stablePromptHash) {
                   db.prepare(`UPDATE multiuser_personal_sessions SET stable_prompt_hash = ?, updated_at = ?
                     WHERE conversation_id = ? AND personal_account_id = ?`).run(stablePromptHash, now(), next.conversation_id, accountId);
                 }
-                return finish(runId, 'succeeded', { text: result.text, textTruncated: result.textTruncated, files, threadId: result.threadId });
+                return finish(runId, 'succeeded', { text: projection.text, textTruncated: projection.truncated, files, threadId: result.threadId });
               }
               if (result.problem) personal.recordProblem(owner, accountId, result.problem);
               finish(runId, 'failed', { reason: result.problem ? PROBLEM_ERRORS[result.problem].code : 'MULTIUSER_PERSONAL_RUN_FAILED', files });
@@ -595,6 +582,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             }); },
           });
           children.set(runId, turn.child);
+          interrupts.set(runId, turn.interrupt);
         } catch {
           // A rolled-back start stays queued; a committed start keeps its turn and worker timestamps.
           if (!children.has(runId)) finish(runId, 'failed', { reason: 'MULTIUSER_PERSONAL_RUN_FAILED' });
@@ -611,12 +599,13 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     suspendDispatch = true;
     try {
       for (const run of rows) {
+        sourceInvalidated.add(run.id);
         const child = children.get(run.id);
         if (child) {
           cancelPending.add(run.id);
           exits.push(new Promise<void>((resolve) => child.once('close', () => resolve())));
           child.kill('SIGTERM');
-        } else finish(run.id, 'canceled');
+        } else finish(run.id, 'canceled', { reason: 'MULTIUSER_PERSONAL_UNAVAILABLE' });
       }
     } finally { suspendDispatch = false; }
     await Promise.all(exits);
@@ -712,17 +701,33 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     return { projectId, conversationId };
   };
   const createPersonalRun = async (inputBody: Record<string, unknown>, res: Response) => {
+    const target = managedTarget(inputBody, res);
+    if (!target) return;
+    const owner = actor(res);
+    const hints = inputBody.analyticsHints;
+    const sourceId = hints && typeof hints === 'object' && !Array.isArray(hints) ? (hints as Record<string, unknown>).sourceRunId : undefined;
+    const source = typeof sourceId === 'string' ? row(sourceId) : undefined;
+    if (sourceId !== undefined && (!source || source.owner_account_id !== owner || source.project_id !== target.projectId || source.conversation_id !== target.conversationId)) {
+      return sendApiError(res, 404, 'NOT_FOUND', 'not found');
+    }
     if (inputBody.agentId !== 'codex' || inputBody.model !== undefined || inputBody.provider !== undefined ||
-        Object.keys(inputBody).some((key) => !['projectId', 'conversationId', 'agentId', 'executionSource', 'message', 'skillId', 'designSystemId'].includes(key))) {
+        Object.keys(inputBody).some((key) => !['projectId', 'conversationId', 'agentId', 'executionSource', 'message', 'skillId', 'designSystemId', 'analyticsHints'].includes(key))) {
       return sendApiError(res, 403, 'MULTIUSER_AGENT_FORBIDDEN', 'personal subscription runs use the linked Codex account only');
     }
     if (!personal?.enabled) return sendApiError(res, 403, 'MULTIUSER_PERSONAL_DISABLED', 'personal subscriptions are not enabled on this server');
-    const target = managedTarget(inputBody, res);
-    if (!target) return;
     if (typeof inputBody.message !== 'string' || inputBody.message.length > 64_000) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid run request');
     const encodedMessage = JSON.stringify({ message: inputBody.message });
     if (Buffer.byteLength(encodedMessage, 'utf8') > 64 * 1024) return sendApiError(res, 400, 'BAD_REQUEST', 'run request is too large');
-    const owner = actor(res);
+    if (hints !== undefined && (!hints || typeof hints !== 'object' || Array.isArray(hints)
+      || Object.keys(hints).some((key) => !['entryFrom', 'sourceRunId'].includes(key))
+      || (hints as Record<string, unknown>).entryFrom !== 'question_answer' || typeof sourceId !== 'string')) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'invalid question answer');
+    }
+    const answerReady = () => !source || Boolean(db.prepare(`SELECT 1 FROM multiuser_run_questions q
+      WHERE q.run_id = ? AND q.answered_by IS NULL AND NOT EXISTS (
+        SELECT 1 FROM multiuser_runs newer WHERE newer.conversation_id = ? AND newer.queue_seq > ?)`)
+      .get(source.id, target.conversationId, source.queue_seq));
+    if (!answerReady()) return sendApiError(res, 409, 'CONFLICT', 'question is stale or already answered');
     const fixedDesign = input.design?.selection(target.conversationId, owner) ?? null;
     const composed = fixedDesign
       ? await input.design?.composeStablePrompt({ conversationId: target.conversationId, ownerId: owner, projectId: target.projectId })
@@ -731,7 +736,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         || (!fixedDesign && (inputBody.skillId !== undefined || inputBody.designSystemId !== undefined))) {
       return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
     }
-    const request = JSON.stringify({ message: inputBody.message,
+    const request = JSON.stringify({ message: inputBody.message, ...(hints ? { analyticsHints: hints } : {}),
       ...(composed ? { skillId: composed.selection.skillId, designSystemId: composed.selection.designSystemId,
         stablePrompt: composed.prompt, stablePromptHash: composed.hash } : {}) });
     // Prompt/catalog I/O yields: deletion or session revocation may have won
@@ -749,23 +754,30 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       personal.audit(owner, owner, 'run_rejected', 'MULTIUSER_EXECUTION_SOURCE_MISMATCH');
       return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation continues on another execution source or account');
     }
+    if (source && (!answerReady() || source.personal_account_id !== account.id || source.credential_version !== account.credentialVersion
+      || storedRequest(source.request_json)?.stablePromptHash !== composed?.hash
+      || (storedJson(source.output) as { threadId?: string } | null)?.threadId !== session?.thread_id)) {
+      return sendApiError(res, 409, 'CONFLICT', 'question continuation is stale');
+    }
     const queuedCount = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE owner_account_id = ? AND status = 'queued' AND ${personalRows}`)
       .get(owner) as { n: number }).n;
     if (queuedCount >= PERSONAL_QUEUE_LIMIT) return sendApiError(res, 409, 'MULTIUSER_PERSONAL_QUEUE_LIMIT', 'personal queue limit reached');
     const id = randomUUID();
     const createdAt = now();
-    db.transaction(() => {
+    const queuedFrame = db.transaction(() => {
       db.prepare(`INSERT INTO ${table} (id, owner_account_id, project_id, conversation_id, status, created_at, updated_at, request_json,
         queue_seq, execution_source, personal_account_id, credential_version)
         VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM ${table}), 'personal_subscription', ?, ?)`)
         .run(id, owner, target.projectId, target.conversationId, createdAt, createdAt, request, account.id, account.credentialVersion);
+      if (source) db.prepare('UPDATE multiuser_run_questions SET answered_by = ? WHERE run_id = ? AND answered_by IS NULL').run(id, source.id);
       // The first personal run pins the conversation to this account and its native session.
       db.prepare(`INSERT OR IGNORE INTO multiuser_personal_sessions (conversation_id, owner_account_id, personal_account_id, updated_at)
         VALUES (?, ?, ?, ?)`).run(target.conversationId, owner, account.id, createdAt);
       studioMessages.reconcile(row(id)!);
+      return persistEvent(id, 'queued', { runId: id });
     })();
     personal.audit(owner, owner, 'run_routed', 'personal_subscription', id);
-    emit(id, 'queued', { runId: id });
+    publishEvent(id, queuedFrame);
     dispatchPersonal();
     res.status(202).json({ runId: id, run: body(row(id)!) });
   };
@@ -846,7 +858,11 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
     const response: MultiUserRunsResponse = {
-      runs: page.map(body), awaitingInputProjectIds: [],
+      runs: page.map(body), awaitingInputProjectIds: (db.prepare(`SELECT DISTINCT r.project_id AS id FROM multiuser_run_questions q
+        JOIN multiuser_runs r ON r.id = q.run_id JOIN ${PROJECT_OWNERS_TABLE} o ON o.project_id = r.project_id
+        WHERE r.owner_account_id = ? AND o.owner_account_id = ? AND q.answered_by IS NULL
+        AND NOT EXISTS (SELECT 1 FROM multiuser_runs newer WHERE newer.conversation_id = r.conversation_id AND newer.queue_seq > r.queue_seq)`)
+        .all(actor(res), actor(res)) as Array<{ id: string }>).map((value) => value.id),
       nextCursor: rows.length > query.limit && last ? `${last.created_at}:${last.id}` : null,
       ...(query.conversationId === undefined ? {} : { personalPinStale: personalPinStale(owner, query.conversationId) }),
     };
@@ -887,12 +903,29 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       if (child) {
         cancelPending.add(run.id);
         child.once('close', () => res.json(body(row(run.id)!)));
-        child.kill('SIGTERM');
+        const interrupt = interrupts.get(run.id);
+        if (interrupt) {
+          interrupt();
+          const fallback = setTimeout(() => { if (children.get(run.id) === child) child.kill('SIGKILL'); }, 2000);
+          child.once('close', () => clearTimeout(fallback));
+        } else child.kill('SIGTERM');
         return;
       }
     }
     finish(run.id, 'canceled');
     res.json(body(row(run.id)!));
+  });
+  app.post('/api/runs/:id/steer', (req, res) => {
+    const run = owned(req, res);
+    if (!run) return;
+    const body = req.body as Record<string, unknown> | null;
+    if (!body || Array.isArray(body) || Object.keys(body).some((key) => key !== 'text')
+      || typeof body.text !== 'string' || !body.text.trim() || Buffer.byteLength(body.text) > 64 * 1024) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'text is required; other fields are not accepted');
+    }
+    const verdict = classifyRunSteering({ runtimeAccepts: false, terminal: !['active', 'queued'].includes(run.status), stdinOpen: false });
+    if (!verdict.ok) return sendApiError(res, 409, 'RUN_STEERING_UNSUPPORTED', 'personal Codex does not support mid-turn steering',
+      { retryable: false, details: { refusal: verdict.refusal } });
   });
   const beginShutdown = () => {
     if (shuttingDown) return;

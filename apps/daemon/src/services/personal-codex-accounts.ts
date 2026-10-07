@@ -153,7 +153,7 @@ export function runPersonalCodexTurn(input: AppServerEnvironment & {
   onAgentEvent?: (event: Json) => void;
   /** Called synchronously from the child's close event, before `done` settles. */
   onDone?: (result: PersonalTurnResult) => void;
-}): { child: ChildProcessWithoutNullStreams; done: Promise<PersonalTurnResult> } {
+}): { child: ChildProcessWithoutNullStreams; done: Promise<PersonalTurnResult>; interrupt(): void } {
   const child = spawnAppServer(input);
   let text = '';
   let textBytes = 0;
@@ -208,7 +208,7 @@ export function runPersonalCodexTurn(input: AppServerEnvironment & {
       resolve(result);
     });
   });
-  return { child, done };
+  return { child, done, interrupt: () => session.abort() };
 }
 
 type AttemptRow = {

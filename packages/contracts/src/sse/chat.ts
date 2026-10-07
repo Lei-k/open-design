@@ -1,6 +1,7 @@
 import type { LiveArtifactRefreshStatus } from '../api/live-artifacts.js';
 import type {
   AgentEventPayloadTruncation,
+  AgentEventRedaction,
   RunFailureAction,
   RunFailureCategory,
   RunFailureDetail,
@@ -168,8 +169,9 @@ export interface ChatSseEndPayload {
   strategyTask?: StrategyTaskProjectionV2;
 }
 
-export type DaemonAgentPayload =
-  | { type: 'status'; label: string; model?: string; ttftMs?: number; detail?: string }
+export type DaemonAgentPayload = DaemonAgentPayloadBody & { redacted?: AgentEventRedaction };
+type DaemonAgentPayloadBody =
+  | { type: 'status'; label: string; model?: string; ttftMs?: number; detail?: string; sessionId?: string }
   | { type: 'text_delta'; delta: string }
   /**
    * This turn's one-time done key, emitted once before any model output. See
@@ -501,6 +503,7 @@ export interface StrategyTaskContinuationDiagnostic extends ChatSseDiagnosticPay
 }
 
 export type ChatSseEvent =
+  | SseTransportEvent<'queued', { runId: string }>
   | SseTransportEvent<'start', ChatSseStartPayload>
   | SseTransportEvent<'run_retry_attempted', ChatSseRunRetryAttemptedPayload>
   | SseTransportEvent<'agent', DaemonAgentPayload>

@@ -448,7 +448,11 @@ export function runSseEventToPersistedAgentEvent(
   data: unknown,
 ): PersistedAgentEvent | null {
   const persisted = unboundedPersistedAgentEvent(event, data);
-  return persisted ? boundPersistedAgentEvent(persisted) : null;
+  if (!persisted) return null;
+  const redaction = isRecord(data) && isRecord(data.redacted) && data.redacted.policy === 'personal-subscription'
+    && Array.isArray(data.redacted.fields) && data.redacted.fields.every((field) => typeof field === 'string')
+    ? { policy: 'personal-subscription' as const, fields: data.redacted.fields as string[] } : undefined;
+  return boundPersistedAgentEvent({ ...persisted, ...(redaction ? { redacted: redaction } : {}) });
 }
 
 function unboundedPersistedAgentEvent(
@@ -485,6 +489,7 @@ function unboundedPersistedAgentEvent(
       ...(stderrTail ? { stderrTail } : {}),
     };
   }
+  if (event === 'diagnostic' && typeof record.type === 'string' && record.type.startsWith('personal_')) return { kind: 'diagnostic', name: record.type };
   if (event !== 'agent') return null;
   return unboundedAgentPayloadToPersistedAgentEvent(record);
 }
@@ -523,7 +528,11 @@ const TRANSIENT_ACP_PERSISTED_STATUS_LABELS = new Set([
 /** The persisted form of one `agent` SSE payload, within the storage budget. */
 export function daemonAgentPayloadToPersistedAgentEvent(data: unknown): PersistedAgentEvent | null {
   const persisted = unboundedAgentPayloadToPersistedAgentEvent(data);
-  return persisted ? boundPersistedAgentEvent(persisted) : null;
+  if (!persisted) return null;
+  const redaction = isRecord(data) && isRecord(data.redacted) && data.redacted.policy === 'personal-subscription'
+    && Array.isArray(data.redacted.fields) && data.redacted.fields.every((field) => typeof field === 'string')
+    ? { policy: 'personal-subscription' as const, fields: data.redacted.fields as string[] } : undefined;
+  return boundPersistedAgentEvent({ ...persisted, ...(redaction ? { redacted: redaction } : {}) });
 }
 
 function unboundedAgentPayloadToPersistedAgentEvent(data: unknown): PersistedAgentEvent | null {
@@ -634,6 +643,16 @@ function unboundedAgentPayloadToPersistedAgentEvent(data: unknown): PersistedAge
         ? { startedAt: data.startedAt }
         : {}),
     };
+  }
+  // Personal streams are a durable replay contract, including interrupted tools.
+  // Keep their safe in-flight row in the same form the web translator uses;
+  // the existing turn derivation replaces it when the settled tool arrives.
+  if (type === 'tool_in_flight' && isRecord(data.redacted)
+    && data.redacted.policy === 'personal-subscription'
+    && typeof data.id === 'string' && typeof data.name === 'string'
+    && typeof data.startedAt === 'number' && Number.isFinite(data.startedAt)) {
+    return { kind: 'tool_use', id: data.id, name: data.name,
+      input: { ...(isRecord(data.input) ? data.input : {}), od_input_streaming: true }, startedAt: data.startedAt };
   }
   if (type === 'tool_input_delta') return null;
   /*

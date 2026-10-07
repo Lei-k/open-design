@@ -988,7 +988,14 @@ export interface AgentEventPayloadTruncation {
   originalBytes: number;
 }
 
-export type PersistedAgentEvent =
+/** Multi-user events retain timing/identity but deliberately omit private tool data. */
+export interface AgentEventRedaction {
+  policy: 'personal-subscription';
+  fields: string[];
+}
+
+export type PersistedAgentEvent = PersistedAgentEventBody & { redacted?: AgentEventRedaction };
+type PersistedAgentEventBody =
   // `code` carries the structured API error code for `label: 'error'`
   // status events (e.g. AGENT_AUTH_REQUIRED, RATE_LIMITED). Clients use it to
   // decide error-specific affordances such as the hosted-AMR nudge.

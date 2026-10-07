@@ -41,6 +41,35 @@ function run(id: string, patch: Partial<StudioRunMessageInput> = {}) {
 }
 
 describe('additive Studio transcript migration (#54/#55)', () => {
+  it('projects newly durable events into an already active assistant message', () => {
+    run('active', { status: 'active', output: null });
+    db.exec('CREATE TABLE multiuser_run_events (run_id TEXT, seq INTEGER, event TEXT, data TEXT, PRIMARY KEY(run_id, seq))');
+    const store = new MultiUserStudioMessages(db);
+    db.prepare('INSERT INTO multiuser_run_events VALUES (?, ?, ?, ?)').run('active', 1, 'agent', JSON.stringify({ type: 'text_delta', delta: 'In progress' }));
+    store.reconcile(db.prepare('SELECT * FROM multiuser_runs WHERE id = ?').get('active') as StudioRunMessageInput);
+    expect(getMessage(db, store.ids('active').assistantMessageId, 'c-a')).toMatchObject({
+      runStatus: 'running', content: 'In progress', lastRunEventId: '1', events: [{ kind: 'text', text: 'In progress' }],
+    });
+  });
+  it('rebuilds standard events and the durable cursor identically after reopening twice', () => {
+    run('streamed', { output: null });
+    db.exec('CREATE TABLE multiuser_run_events (run_id TEXT, seq INTEGER, event TEXT, data TEXT, PRIMARY KEY(run_id, seq))');
+    const frames = [
+      ['start', { bin: 'codex' }],
+      ['agent', { type: 'text_delta', delta: 'Visible result' }],
+      ['agent', { type: 'tool_result', toolUseId: 'cmd', content: '[omitted]', redacted: { policy: 'personal-subscription', fields: ['content'] } }],
+      ['end', { code: 0, status: 'succeeded' }],
+    ];
+    frames.forEach(([event, data], index) => db.prepare('INSERT INTO multiuser_run_events VALUES (?, ?, ?, ?)').run('streamed', index + 1, event, JSON.stringify(data)));
+    const store = new MultiUserStudioMessages(db);
+    const before = listMessages(db, 'c-a');
+    expect(getMessage(db, store.ids('streamed').assistantMessageId, 'c-a')).toMatchObject({ content: 'Visible result', lastRunEventId: '4' });
+    for (let n = 0; n < 2; n++) {
+      closeDatabase(); db = openDatabase(root, { dataDir: root }); new MultiUserStudioMessages(db);
+      expect(listMessages(db, 'c-a')).toEqual(before);
+      expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    }
+  });
   it('can rerun after reopen and preserves user edits and immutable bindings', () => {
     run('run-a');
     const initial = new MultiUserStudioMessages(db);

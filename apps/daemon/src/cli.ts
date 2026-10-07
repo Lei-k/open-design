@@ -274,7 +274,7 @@ const PROJECT_STRING_FLAGS = new Set([
   'source', 'out',
   'execution-source',
   'tabs-json', 'active-file',
-  'last-event-id',
+  'last-event-id', 'question-answer',
 ]);
 const PROJECT_RESOURCE_STRING_FLAGS = new Set([
   ...PROJECT_STRING_FLAGS,
@@ -7899,6 +7899,7 @@ Common options:
   --daemon-url <url>         OpenDesign daemon HTTP base.
   --workspace <id>           Explicit Workspace id for a bound project.
   --workspace-member <id>    Explicit Workspace member id for a bound project.
+  --question-answer <runId>   Answer the owned pending question from that run.
   --json                     Emit raw JSON.`);
     process.exit(args.length === 0 ? 2 : 0);
   }
@@ -8157,6 +8158,7 @@ Common options:
         if (flags['execution-source'] === 'personal_subscription' && !flags.agent) body.agentId = 'codex';
       }
       if (flags.conversation) body.conversationId = flags.conversation;
+      if (flags['question-answer']) body.analyticsHints = { entryFrom: 'question_answer', sourceRunId: flags['question-answer'] };
       const message = await readRunMessageFromFlags(flags);
       if (message) body.message = message;
       if (flags.plugin) body.pluginId = flags.plugin;

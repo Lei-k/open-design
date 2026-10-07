@@ -3,7 +3,7 @@
 // never consume company-pool slots or the 30h company ledger, and never fall
 // back to the company pool.
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -131,10 +131,10 @@ describe('personal subscription run lane', () => {
     expect(firstReply.message).toContain(system.title);
     const events = await daemon.request({ path: `/api/runs/${firstRun.json.run.id}/events`, cookie: alice.cookie });
     expect(events.status, events.text).toBe(200);
-    expect(events.text).toContain('"kind":"todo"');
-    expect(events.text).toContain('"kind":"command","name":"Bash","status":"started"');
-    expect(events.text).toContain('"kind":"command","name":"Bash","status":"completed"');
-    expect(events.text).toContain('"kind":"file","path":"generated/result.html","status":"changed"');
+    expect(events.text).toContain('"name":"TodoWrite"');
+    expect(events.text).toContain('"name":"Bash"');
+    expect(events.text).toContain('"type":"tool_result"');
+    expect(events.text).toContain('"file_path":"generated/result.html"');
     expect(events.text).not.toContain('PRIVATE_COMMAND_OUTPUT');
 
     const followUpRun = await request('make the heading shorter');
@@ -155,7 +155,8 @@ describe('personal subscription run lane', () => {
       for (const [user, res, home, other] of [[alice, a, codexHome(dataRoot, alice.id), 'bob-private'], [bob, b, codexHome(dataRoot, bob.id), 'alice-private']] as const) {
         const run = await finished(user, res.json.run.id);
         expect(run.status, JSON.stringify(run)).toBe('succeeded');
-        const reply = JSON.parse(run.output.text);
+        const reply = JSON.parse(readFileSync(path.join(home, 'mock-turn-evidence.json'), 'utf8'));
+        expect(run.output.text.includes(dataRoot)).toBe(false);
         expect(reply.codexHome).toBe(home);
         expect(reply.cwd).toBe(path.join(dataRoot, 'projects', projects.get(user.id)!.id));
         expect(reply.envKeys).toEqual(['CODEX_HOME', 'HOME', 'OD_DATA_DIR', 'TEMP', 'TMP', 'TMPDIR']);
@@ -298,10 +299,15 @@ describe('personal subscription run lane', () => {
     expect(await finished(bob, limited.json.run.id)).toMatchObject({ status: 'failed', output: { reason: 'MULTIUSER_PERSONAL_USAGE_LIMIT' } });
     expect((await summary(daemon, bob)).codex.account).toMatchObject({ status: 'connected', lastProblem: 'usage_limit_reached' });
     expect(ledgerRow(limited.json.run.id)).toBeUndefined();
+    const limitedEvents = await daemon.request({ path: `/api/runs/${limited.json.run.id}/events`, cookie: bob.cookie });
+    expect(limitedEvents.text).toContain('event: error');
+    expect(limitedEvents.text).toContain('"code":"MULTIUSER_PERSONAL_USAGE_LIMIT"');
+    expect(limitedEvents.text).toContain('"reason":"usageLimitExceeded"');
     setTurnMode(dataRoot, bob, { turn: 'auth-invalid' });
     const invalid = await personal(bob, 'invalid');
     expect(await finished(bob, invalid.json.run.id)).toMatchObject({ status: 'failed', output: { reason: 'MULTIUSER_PERSONAL_REAUTH_REQUIRED' } });
     expect((await summary(daemon, bob)).codex.account).toMatchObject({ status: 'requires_reauth' });
+    expect((await daemon.request({ path: `/api/runs/${invalid.json.run.id}/events`, cookie: bob.cookie })).text).toContain('"code":"MULTIUSER_PERSONAL_REAUTH_REQUIRED"');
     const next = await personal(bob, 'after-reauth-needed');
     expect(next.status).toBe(409);
     expect(next.json.error.code).toBe('MULTIUSER_PERSONAL_UNAVAILABLE');
@@ -322,6 +328,7 @@ describe('personal subscription run lane', () => {
     expect(unlink.status, unlink.text).toBe(200);
     expect((await detail(carol, active)).status).toBe('canceled');
     expect((await detail(carol, queued)).status).toBe('canceled');
+    for (const id of [active, queued]) expect((await daemon.request({ path: `/api/runs/${id}/events`, cookie: carol.cookie })).text).toContain('"code":"MULTIUSER_PERSONAL_UNAVAILABLE"');
     expect(existsSync(codexHome(dataRoot, carol.id))).toBe(false);
     expect(existsSync(path.join(codexHome(dataRoot, alice.id), 'auth.json'))).toBe(true);
     expect((await finished(alice, alicePersonal)).status).toBe('succeeded');
@@ -396,7 +403,7 @@ describe('damaged queued run requests', () => {
     expect(run.output).toEqual({ reason: 'MULTIUSER_RUN_REQUEST_INVALID' });
     const events = await eventsOf(user, runId);
     // Never started: no start event, no worker time, no runtime home, no company ledger entry.
-    expect(events.names).toEqual(['queued', 'end']);
+    expect(events.names).toEqual(['queued', 'error', 'end']);
     expect(events.text).not.toContain(MARKER);
     expect(JSON.stringify(run)).not.toContain(MARKER);
     expect(appDb((db) => db.prepare('SELECT started_at, ended_at FROM multiuser_runs WHERE id = ?').get(runId))).toEqual({ started_at: null, ended_at: null });
@@ -474,7 +481,7 @@ describe('damaged queued run requests', () => {
       expect(personalTurn(alice)).toBe(turnBefore);
       expect(appDb((db) => db.prepare('SELECT started_at, ended_at FROM multiuser_runs WHERE id = ?').get(broken)))
         .toEqual({ started_at: null, ended_at: null });
-      expect((await eventsOf(alice, broken)).names).toEqual(['queued', 'end']);
+      expect((await eventsOf(alice, broken)).names).toEqual(['queued', 'error', 'end']);
       expect(ledgerRow(broken)).toBeUndefined();
       const next = (await personal(alice, 'after-start-throws', convo)).json.run.id;
       expect((await finished(alice, next)).status).toBe('succeeded');
@@ -498,7 +505,7 @@ describe('damaged queued run requests', () => {
       expect(personalTurn(alice)).toBe(maxBefore + 1);
       expect(appDb((db) => db.prepare('SELECT started_at, ended_at FROM multiuser_runs WHERE id = ?').get(broken)))
         .toEqual({ started_at: clock, ended_at: clock });
-      expect((await eventsOf(alice, broken)).names).toEqual(['queued', 'start', 'end']);
+      expect((await eventsOf(alice, broken)).names).toEqual(['queued', 'start', 'error', 'end']);
       expect(ledgerRow(broken)).toBeUndefined();
       const next = (await personal(alice, 'after-launcher-throws', convo)).json.run.id;
       expect((await finished(alice, next)).status).toBe('succeeded');
@@ -539,7 +546,7 @@ describe('damaged queued run requests', () => {
       await companyCapacity(1);
       expect(await finished(alice, broken)).toMatchObject({ status: 'failed', output: { reason: 'MULTIUSER_RUN_START_FAILED' } });
       expect(companyTurn(alice)).toBe(turnBefore);
-      expect((await eventsOf(alice, broken)).names).toEqual(['queued', 'end']);
+      expect((await eventsOf(alice, broken)).names).toEqual(['queued', 'error', 'end']);
       expect(ledgerRow(broken)).toMatchObject({ status: 'finished', ended_at: clock });
       const next = (await company(alice, 'after-company-start-throws')).json.run.id;
       expect((await finished(alice, next)).status).toBe('succeeded');

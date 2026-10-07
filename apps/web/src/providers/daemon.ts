@@ -2553,7 +2553,11 @@ function normalizeAgentStatusLabel(label: string): string {
 // Translate a raw `agent` SSE payload (what apps/daemon/src/claude-stream.ts emits)
 // into the UI's AgentEvent union. Keep this liberal — unknown types just
 // return null so the UI ignores them instead of rendering garbage.
-function translateAgentEvent(data: DaemonAgentPayload): AgentEvent | null {
+export function translateAgentEvent(data: DaemonAgentPayload): AgentEvent | null {
+  const event = translateAgentEventBody(data);
+  return event && data.redacted ? { ...event, redacted: data.redacted } : event;
+}
+function translateAgentEventBody(data: DaemonAgentPayload): AgentEvent | null {
   const t = data.type;
   if (t === 'status' && typeof data.label === 'string') {
     return {

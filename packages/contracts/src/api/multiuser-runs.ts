@@ -1,5 +1,7 @@
+import type { ChatSseEvent } from '../sse/chat.js';
+import type { ChatRequest } from './chat.js';
 import type { RunExecutionSource } from './personal-agent-accounts.js';
-import type { MultiUserRunOutput, MultiUserRunProgressEvent } from './multiuser-design.js';
+import type { MultiUserRunOutput } from './multiuser-design.js';
 
 /** Test-only multi-user execution plane; independent of single-user chat runs. */
 export type MultiUserRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
@@ -30,6 +32,8 @@ export interface MultiUserRunRequest {
   /** Fixed by the conversation on its first turn; later turns may omit both. */
   skillId?: string;
   designSystemId?: string;
+  /** Only question_answer + sourceRunId are accepted in this lane. */
+  analyticsHints?: Pick<NonNullable<ChatRequest['analyticsHints']>, 'entryFrom' | 'sourceRunId'>;
 }
 export interface MultiUserRunResponse { run: MultiUserRun }
 /** Standard run admission identity, additive to the legacy response. */
@@ -51,9 +55,4 @@ export interface MultiUserRunsResponse {
    */
   personalPinStale?: boolean;
 }
-export type MultiUserRunEvent =
-  | { event: 'queued'; data: { runId: string } }
-  | { event: 'start'; data: { runId: string } }
-  | { event: 'agent'; data: unknown }
-  | { event: 'progress'; data: MultiUserRunProgressEvent }
-  | { event: 'end'; data: { status: 'succeeded' | 'failed' | 'canceled'; output?: unknown } };
+export type MultiUserRunEvent = ChatSseEvent;

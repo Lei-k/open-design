@@ -358,6 +358,7 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'GET /api/runs/:id',
     'GET /api/runs/:id/events',
     'POST /api/runs/:id/cancel',
+    'POST /api/runs/:id/steer',
   ], { runParam: 'id' }),
   // Personal subscription accounts (#18): the actor's own provider link only.
   ...group('actor-scoped', 'personal subscription summary and login start; the handler keys every lookup by the actor', [
@@ -381,7 +382,6 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'GET /api/runs/by-plugin-workflow/:workflowId',
     'GET /api/runs/:id/result-package',
     'GET /api/runs/:id/agui',
-    'POST /api/runs/:id/steer',
     'POST /api/runs/:id/feedback',
     'GET /api/runs/:runId/genui',
     'POST /api/runs/:runId/genui/:surfaceId/respond',
