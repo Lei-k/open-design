@@ -943,6 +943,7 @@ import { registerChatRoutes } from './routes/chat.js';
 import { registerRunRoutes } from './routes/runs.js';
 import { registerMultiUserRunRoutes } from './routes/multiuser-runs.js';
 import { registerMultiUserDesignRoutes } from './routes/multiuser-design.js';
+import { registerStudioCatalogRoutes } from './routes/studio-catalog.js';
 import { registerMultiUserAgentAccountRoutes } from './routes/multiuser-agent-accounts.js';
 import { PersonalCodexAccounts } from './services/personal-codex-accounts.js';
 import { registerStrategyRolloutRoutes } from './routes/strategy-rollout.js';
@@ -17558,6 +17559,9 @@ export async function startServer({
     };
   });
 
+  const studioCatalog = multiUserMode ? registerStudioCatalogRoutes(app, {
+    db, listBuiltInSkills: async () => (await listSkills(SKILLS_DIR)).map((skill) => ({ ...skill, source: 'built-in' as const })),
+  }) : null;
   const multiUserDesign = multiUserMode ? registerMultiUserDesignRoutes(app, {
     db,
     dataRoot: RUNTIME_DATA_DIR,
@@ -17579,6 +17583,7 @@ export async function startServer({
     ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
     ...(personalCodex ? { personal: personalCodex } : {}),
     ...(multiUserDesign ? { design: multiUserDesign } : {}),
+    ...(studioCatalog ? { catalog: studioCatalog } : {}),
   }) : null;
   if (multiUserRuns) multiUserFront?.setCancelAccountRuns((accountId) => {
     multiUserRuns.cancelAccountRuns(accountId);

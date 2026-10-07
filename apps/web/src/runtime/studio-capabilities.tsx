@@ -1,7 +1,7 @@
 import { createContext, useContext, type ReactNode } from 'react';
 import type { AuthAccount, StudioRuntimeCapabilities, StudioParityLaneId } from '@open-design/contracts';
 import type { CookieSession } from '../multiuser/session';
-import { activateStudioTransport } from './studio-transport';
+import { activateStudioTransport, studioRequestAvailable } from './studio-transport';
 
 interface StudioCapabilities {
   actor: AuthAccount | null;
@@ -35,6 +35,11 @@ export function StudioCapabilitiesProvider({ session, generation, actor, capabil
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
 export function useStudioCapabilities() { return useContext(Context); }
+/** Partial pilot lanes expose only the operations reviewed by the transport. */
+export function useStudioRequestAvailable() {
+  const studio = useStudioCapabilities();
+  return (method: string, path: string) => studio.hostServices || studioRequestAvailable(method, path, studio.available);
+}
 export function StudioUnavailable({ lane }: { lane: StudioParityLaneId }) {
   const studio = useStudioCapabilities();
   return <p role="status" className="studio-unavailable muted">{studio.reason(lane)}</p>;

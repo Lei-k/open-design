@@ -8164,8 +8164,9 @@ Common options:
       if (flags.plugin) body.pluginId = flags.plugin;
       if (flags.skill) {
         const selectedSkillIds = splitCommaSeparatedIds(flags.skill);
-        if (selectedSkillIds.length === 1) body.skillId = selectedSkillIds[0];
-        if (selectedSkillIds.length > 1) {
+        if (remoteSessionFile) body.skillIds = selectedSkillIds;
+        else if (selectedSkillIds.length === 1) body.skillId = selectedSkillIds[0];
+        if (!remoteSessionFile && selectedSkillIds.length > 1) {
           body.skillId = selectedSkillIds[0];
           body.skillIds = selectedSkillIds;
         }
@@ -9861,6 +9862,8 @@ async function runSkills(args) {
   od skill install <https://github.com/owner/repo|github:owner/repo|https://…tar.gz|https://…tgz> [--json]
   od skill list [--workspace <id> --workspace-member <id>]
   od skill show <id> [--workspace <id> --workspace-member <id>]
+  od skill import --name <name> --prompt-file <path|-> [--description <text>] [--json]
+  od skill update <id> --prompt-file <path|-> [--description <text>] [--json]
   od skill uninstall <id>
 
 \`od skills …\` remains an alias for compatibility.`);
@@ -9868,7 +9871,29 @@ async function runSkills(args) {
   }
   if (args[0] === 'install' || args[0] === 'add') return runSkillInstall(args.slice(1));
   if (args[0] === 'uninstall' || args[0] === 'remove') return runSkillUninstall(args.slice(1));
+  if (args[0] === 'import' || args[0] === 'update') return runSkillWrite(args[0], args.slice(1));
   return runLibraryList('skills', args);
+}
+
+async function runSkillWrite(operation, rest) {
+  const stringFlags = new Set([...LIBRARY_STRING_FLAGS, 'name', 'description', 'prompt', 'prompt-file']);
+  const flags = parseFlags(rest, { string: stringFlags, boolean: LIBRARY_BOOLEAN_FLAGS });
+  const id = positionalArgs(rest, stringFlags)[0];
+  const content = await readPromptFromFlags(flags);
+  if (!content || (operation === 'import' ? typeof flags.name !== 'string' : !id)) {
+    console.error('Skill import requires --name; update requires an id; both require --prompt-file <path|-> or --prompt <text>');
+    process.exit(2);
+  }
+  const base = (await libraryDaemonUrl(flags)).replace(/\/$/, '');
+  const apiPath = operation === 'import' ? '/api/skills/import' : `/api/skills/${encodeURIComponent(id)}`;
+  const response = await fetch(`${base}${apiPath}`, { method: operation === 'import' ? 'POST' : 'PUT',
+    headers: { 'content-type': 'application/json', ...(workspaceHeadersFromExplicitFlags(flags) ?? {}) },
+    body: JSON.stringify({ body: content, ...(typeof flags.name === 'string' ? { name: flags.name } : {}),
+      ...(typeof flags.description === 'string' ? { description: flags.description } : {}) }) });
+  if (!response.ok) return structuredHttpFailure(response);
+  const result = await response.json();
+  if (flags.json) process.stdout.write(`${JSON.stringify(result)}\n`);
+  else console.log(`${result.skill.id}\t${result.skill.name}`);
 }
 
 async function runSkillInstall(rest) {

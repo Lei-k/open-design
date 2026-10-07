@@ -20,12 +20,16 @@ import { MultiUserStudioMessages } from '../storage/multiuser-studio-messages.js
 import { studioMessageIdPrefix } from '../http/studio-parity.js';
 import { WorkerQuotaLedger } from '../storage/worker-quota-ledger.js';
 import { AuthStore } from '../storage/auth-store.js';
-import { isSafeId } from '../projects.js';
+import { isSafeId, kindFor, mimeFor } from '../projects.js';
 import { diffRunArtifacts, snapshotProjectArtifacts, snapshotProjectArtifactsAsync, type ArtifactSnapshot } from '../run-artifact-fs.js';
+import { createChatArtifactBlobStore } from '../chat-artifacts/blob-store.js';
+import { captureRunChatArtifactSnapshots } from '../chat-artifacts/run-capture.js';
 import { codexResolvedSandboxMode } from '../runtimes/defs/codex.js';
 import { PROBLEM_ERRORS, runPersonalCodexTurn, type PersonalCodexAccounts } from '../services/personal-codex-accounts.js';
 import type { PersonalRunLaneControls } from './multiuser-agent-accounts.js';
 import type { MultiUserDesignRoutes } from './multiuser-design.js';
+import type { StudioCatalog } from './studio-catalog.js';
+import { composeSystemPrompt } from '../prompts/system.js';
 
 type RunRow = {
   id: string; owner_account_id: string; project_id: string; conversation_id: string;
@@ -74,6 +78,7 @@ type PersonalRunFields = {
   turnIds: { userMessageId: string; assistantMessageId: string } | null;
   clientRequestId: string | null;
   skillId: string | null;
+  skillIds: string[];
   designSystemId: string | null;
   /** Set only for `entryFrom: 'question_answer'`. */
   questionSourceRunId: string | null;
@@ -127,6 +132,10 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
     return refuse(400, 'BAD_REQUEST', 'invalid run request');
   }
   const attachments = body.attachments ?? [];
+  const skillIds = body.skillIds ?? [];
+  const validSkillIds = (value: unknown): value is string[] => Array.isArray(value) && value.length <= 12
+    && value.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 256);
+  if (!validSkillIds(skillIds)) return refuse(400, 'BAD_REQUEST', 'invalid skill selections');
   if (!Array.isArray(attachments) || attachments.length > 20 || attachments.some((value) => typeof value !== 'string' || !safeProjectRelative(value))) {
     return refuse(400, 'BAD_REQUEST', 'attachments must be project-relative paths');
   }
@@ -135,8 +144,9 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
   if (context !== undefined && context !== null) {
     if (typeof context !== 'object' || Array.isArray(context)) return refuse(400, 'BAD_REQUEST', 'invalid run context');
     const record = context as Record<string, unknown>;
-    const selections = ['skillIds', 'pluginIds', 'mcpServerIds', 'connectorIds'];
-    if (Object.keys(record).some((key) => ![...selections, 'workspaceItems'].includes(key))
+    const selections = ['pluginIds', 'mcpServerIds', 'connectorIds'];
+    if (record.skillIds !== undefined && !validSkillIds(record.skillIds)) return refuse(400, 'BAD_REQUEST', 'invalid skill selections');
+    if (Object.keys(record).some((key) => ![...selections, 'skillIds', 'workspaceItems'].includes(key))
       || selections.some((key) => record[key] !== undefined && !(Array.isArray(record[key]) && (record[key] as unknown[]).length === 0))) {
       return refuse(403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'not available for personal Studio runs: context selections');
     }
@@ -155,6 +165,8 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
         ...(typeof value.path === 'string' ? { path: value.path } : {}) });
     }
   }
+  const selectedSkillIds = [...new Set([...skillIds, ...((context as { skillIds?: string[] } | null)?.skillIds ?? [])])];
+  if (selectedSkillIds.length > 12) return refuse(400, 'BAD_REQUEST', 'too many skill selections');
   const hints = body.analyticsHints;
   if (hints !== undefined && (!hints || typeof hints !== 'object' || Array.isArray(hints) || JSON.stringify(hints).length > 4096)) {
     return refuse(400, 'BAD_REQUEST', 'invalid question answer');
@@ -166,6 +178,7 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
     text, clientRequestId: (body.clientRequestId as string | null | undefined) ?? null,
     turnIds: userMessageId === null ? null : { userMessageId: userMessageId as string, assistantMessageId: assistantMessageId as string },
     skillId: (body.skillId as string | null | undefined) ?? null, designSystemId: (body.designSystemId as string | null | undefined) ?? null,
+    skillIds: selectedSkillIds,
     questionSourceRunId: answer ? sourceRunId as string : null,
     attachments: [...new Set(attachments as string[])],
     workspaceItems,
@@ -246,11 +259,13 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   clock?: () => number;
   personal?: PersonalCodexAccounts;
   design?: MultiUserDesignRoutes;
+  catalog?: StudioCatalog;
 }): { cancelAccountRuns(accountId: string): void; isRunOwner(runId: string, accountId: string): boolean;
   cancelProjectRuns(accountId: string, projectId: string, conversationId?: string): Promise<() => void>;
   cancelPersonalRuns(accountId: string): Promise<void>; forgetNativeSessions(accountId: string): void; personalLane: PersonalRunLaneControls; listAccountIds(): string[];
   beginShutdown(): void; shutdown(): Promise<void>; companyPoolAvailable: boolean } {
   const { db, dataRoot, projectsRoot } = input;
+  const artifactBlobs = createChatArtifactBlobStore({ dataDir: dataRoot });
   // The company pool has no real provider yet (#14): it runs only the repository test mock,
   // and without one it is unavailable. A deployed image ships no mocks, so the mock is
   // resolved only when one is injected.
@@ -718,11 +733,27 @@ export function registerMultiUserRunRoutes(app: Express, input: {
               if (settled()) return;
               const baseline = artifactBaselines.get(runId);
               let files: string[] = [];
+              let producedFiles: import('@open-design/contracts').ProjectFile[] = [];
               if (baseline) {
                 try {
                   const after = await snapshotProjectArtifactsAsync(baseline.cwd);
                   files = diffRunArtifacts(baseline.before, after).touchedPaths.map((filePath) => path.relative(baseline.cwd, filePath).replaceAll('\\', '/'))
                     .filter((filePath) => filePath && filePath !== '..' && !filePath.startsWith('../') && !path.isAbsolute(filePath)).slice(0, 128);
+                  producedFiles = files.flatMap((name) => {
+                    const fingerprint = after.get(path.join(baseline.cwd, name));
+                    return fingerprint ? [{ name, path: name, type: 'file' as const, size: fingerprint.size,
+                      mtime: fingerprint.mtimeMs, kind: kindFor(name), mime: mimeFor(name) }] : [];
+                  });
+                  if (settled()) return;
+                  const messageId = studioMessages.ids(runId).assistantMessageId;
+                  // A damaged/quarantined transcript binding must never let a
+                  // capture write refs onto another conversation's message.
+                  if (getMessage(db, messageId, next.conversation_id)?.runId === runId) {
+                    await captureRunChatArtifactSnapshots({ db, blobs: artifactBlobs }, {
+                      projectId: next.project_id, projectRoot: baseline.cwd, messageId, runId,
+                      touchedPaths: files.map((file) => path.join(baseline.cwd, file)),
+                    });
+                  }
                 } catch {
                   // Artifact discovery is best-effort. A filesystem race must
                   // not leave a completed provider turn stuck as active.
@@ -735,10 +766,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                   db.prepare(`UPDATE multiuser_personal_sessions SET stable_prompt_hash = ?, updated_at = ?
                     WHERE conversation_id = ? AND personal_account_id = ?`).run(stablePromptHash, now(), next.conversation_id, accountId);
                 }
-                return finish(runId, 'succeeded', { text: projection.text, textTruncated: projection.truncated, files, threadId: result.threadId });
+                return finish(runId, 'succeeded', { text: projection.text, textTruncated: projection.truncated, files, producedFiles, threadId: result.threadId });
               }
               if (result.problem) personal.recordProblem(owner, accountId, result.problem);
-              finish(runId, 'failed', { reason: result.problem ? PROBLEM_ERRORS[result.problem].code : 'MULTIUSER_PERSONAL_RUN_FAILED', files });
+              finish(runId, 'failed', { reason: result.problem ? PROBLEM_ERRORS[result.problem].code : 'MULTIUSER_PERSONAL_RUN_FAILED', files, producedFiles });
             })().catch(() => {
               if (row(runId)?.status === 'active') finish(runId, 'failed', { reason: 'MULTIUSER_PERSONAL_RUN_FAILED' });
             }); },
@@ -919,11 +950,36 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           || (fields.designSystemId !== null && fields.designSystemId !== fixedDesign.designSystemId)))) {
       return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
     }
-    const composed = fixedDesign
+    let composed = fixedDesign
       ? await input.design?.composeStablePrompt({ conversationId: target.conversationId, ownerId: owner, projectId: target.projectId })
       : null;
     if (fixedDesign && !composed) return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
+    const questionRequest = question ? storedRequest(question.request_json) : null;
+    const inheritedSkillIds = Array.isArray(questionRequest?.skillIds) && questionRequest.skillIds.every((id) => typeof id === 'string')
+      ? questionRequest.skillIds as string[] : [];
+    const inheritsSkills = Boolean(question && inheritedSkillIds.length && (fields.skillIds.length === 0
+      || JSON.stringify(fields.skillIds) === JSON.stringify(inheritedSkillIds)));
+    if (inheritsSkills && typeof questionRequest?.stablePrompt === 'string' && typeof questionRequest.stablePromptHash === 'string') {
+      composed = { prompt: questionRequest.stablePrompt, hash: questionRequest.stablePromptHash,
+        selection: fixedDesign ?? { conversationId: target.conversationId, skillId: '', designSystemId: '', locale: 'en' } };
+    }
+    const selectedSkills = fields.skillIds.length && !inheritsSkills ? await input.catalog?.readSkills(owner, fields.skillIds) : [];
+    if (!selectedSkills || fields.skillIds.length > 12) return sendApiError(res, 404, 'NOT_FOUND', 'selected skills not found or unavailable');
+    if (selectedSkills.length) {
+      // Resolve before queueing. Later edits/deletes cannot change this turn's
+      // prompt; the run owns the immutable text, not a live catalog lookup.
+      const skillPrompt = composed ? selectedSkills.map((skill) => `\n\n---\n\n## Composed skill — ${skill.name}\n\n${skill.body.trim()}`).join('') : composeSystemPrompt({ agentId: 'codex', streamFormat: 'json-event-stream',
+        executionProfile: 'filesystem', promptCoreVariant: 'slim', sessionMode: 'design', locale: 'en',
+        metadata: getProject(db, target.projectId)?.metadata,
+        skillBody: selectedSkills.map((skill) => skill.body).join('\n\n---\n\n'),
+        skillName: selectedSkills.map((skill) => skill.name).join(', '),
+        skillMode: selectedSkills[0]?.mode });
+      const prompt = [composed?.prompt, skillPrompt].filter(Boolean).join('\n\n');
+      composed = { prompt, hash: createHash('sha256').update(prompt).digest('hex'),
+        selection: composed?.selection ?? { conversationId: target.conversationId, skillId: '', designSystemId: '', locale: 'en' } };
+    }
     const request = JSON.stringify({ message: fields.text, ...(fields.attachments.length ? { attachments: fields.attachments } : {}),
+      ...(inheritsSkills || selectedSkills.length ? { skillIds: inheritsSkills ? inheritedSkillIds : fields.skillIds } : {}),
       ...(fields.workspaceItems.length ? { workspaceItems: fields.workspaceItems } : {}),
       ...(question ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId: question.id } } : {}),
       ...(composed ? { skillId: composed.selection.skillId, designSystemId: composed.selection.designSystemId,

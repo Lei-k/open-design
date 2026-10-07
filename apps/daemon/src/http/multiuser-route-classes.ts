@@ -44,7 +44,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -334,6 +334,15 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
   ...regexGroup('owner-scoped-project', 'owner version restore', [
     ['POST', /^\/api\/projects\/([^/]+)\/files\/(.+)\/versions\/([^/]+)\/restore$/u, ['id', 'path', 'versionId']],
   ], { projectParam: 'id', bodyPolicy: 'empty' }),
+  ...group('owner-scoped-project', 'immutable artifact metadata and refs; handlers verify project, conversation and artifact lineage', [
+    'GET /api/projects/:id/conversations/:cid/messages/:mid/artifacts',
+    'GET /api/projects/:id/chat-artifact-snapshots/:sid',
+    'GET /api/projects/:id/workspace-artifacts/:aid',
+  ], { projectParam: 'id' }),
+  ...group('owner-scoped-project', 'immutable owner artifact bytes; untrusted content and no-store on the app origin', [
+    'GET /api/projects/:id/chat-artifact-snapshots/:sid/content',
+    'GET /api/projects/:id/chat-artifact-snapshots/:sid/thumbnail',
+  ], { projectParam: 'id', untrustedContent: true }),
   ...blocked(R_PROJECT_FILES, [
     'GET /api/projects/:id/archive',
     'POST /api/projects/:id/archive/batch',
@@ -349,11 +358,6 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'GET /api/projects/:id/design-system-package-audit',
     'POST /api/projects/:id/preview/:scope/renew',
     'GET /api/projects/:id/files/:name/preview',
-    'GET /api/projects/:id/conversations/:cid/messages/:mid/artifacts',
-    'GET /api/projects/:id/chat-artifact-snapshots/:sid',
-    'GET /api/projects/:id/chat-artifact-snapshots/:sid/content',
-    'GET /api/projects/:id/chat-artifact-snapshots/:sid/thumbnail',
-    'GET /api/projects/:id/workspace-artifacts/:aid',
   ]),
   ...blocked(R_RUNS, [
     'POST /api/projects/:id/media/hyperframes/scaffold',
@@ -674,6 +678,16 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
   ]),
 
   // Shared catalogs / plugins ------------------------------------------------------
+  ...['GET /api/skills', 'GET /api/skills/:id', 'GET /api/skills/:id/files',
+    'POST /api/skills/import', 'PUT /api/skills/:id', 'DELETE /api/skills/:id'].flatMap((key) => {
+    const alias = key.replace('/api/skills', '/api/multiuser/catalog/skills');
+    const rewriteTo = alias.slice(alias.indexOf(' ') + 1);
+    const bodyPolicy = key.startsWith('POST ') || key.startsWith('PUT ') ? 'skill-write' as const
+      : key.startsWith('DELETE ') ? 'empty' as const : undefined;
+    const extras = bodyPolicy ? { bodyPolicy } : {};
+    return [...group('actor-scoped', 'bundled reads and account-owned text skills; immutable revisions; no host registry access', [key], { ...extras, rewriteTo }),
+      ...group('actor-scoped', 'actor catalog alias; same cookie authority and bounded skill body', [alias], extras)];
+  }),
   ...blocked(R_SHARED_CATALOG, [
     'GET /api/asset-cache',
     'GET /api/atoms',
@@ -684,15 +698,9 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'GET /api/design-templates/:id',
     'GET /api/prompt-templates',
     'GET /api/prompt-templates/:surface/:id',
-    'GET /api/skills',
-    'GET /api/skills/:id',
-    'POST /api/skills/import',
-    'PUT /api/skills/:id',
-    'GET /api/skills/:id/files',
     'GET /api/skills/:id/example',
     'GET /api/skills/:id/assets/*splat',
     'POST /api/skills/install',
-    'DELETE /api/skills/:id',
     'GET /api/templates',
     'GET /api/templates/:id',
     'POST /api/templates',

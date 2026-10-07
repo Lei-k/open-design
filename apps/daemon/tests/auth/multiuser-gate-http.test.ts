@@ -91,6 +91,11 @@ afterAll(async () => {
 const S5_OWNER_FILE_ROUTES = [
   // S6 (#59): reviewed alias to the owner/session-bound preview capability.
   'owner-scoped-project GET /api/projects/:id/preview-url',
+  'owner-scoped-project GET /api/projects/:id/conversations/:cid/messages/:mid/artifacts',
+  'owner-scoped-project GET /api/projects/:id/chat-artifact-snapshots/:sid',
+  'owner-scoped-project GET /api/projects/:id/chat-artifact-snapshots/:sid/content',
+  'owner-scoped-project GET /api/projects/:id/chat-artifact-snapshots/:sid/thumbnail',
+  'owner-scoped-project GET /api/projects/:id/workspace-artifacts/:aid',
   'owner-scoped-project DELETE /^\\/api\\/projects\\/([^/]+)\\/raw\\/(.+)$/u',
   'owner-scoped-project DELETE /api/projects/:id/files/:name',
   'owner-scoped-project DELETE /api/projects/:id/folders',
@@ -123,6 +128,18 @@ describe('route classification covers the real inventory', () => {
       .map((entry) => `${entry.routeClass} ${entry.key}`)
       .sort();
     expect(allowed).toEqual([...S5_OWNER_FILE_ROUTES, ...[
+      'actor-scoped GET /api/skills',
+      'actor-scoped GET /api/skills/:id',
+      'actor-scoped GET /api/skills/:id/files',
+      'actor-scoped POST /api/skills/import',
+      'actor-scoped PUT /api/skills/:id',
+      'actor-scoped DELETE /api/skills/:id',
+      'actor-scoped GET /api/multiuser/catalog/skills',
+      'actor-scoped GET /api/multiuser/catalog/skills/:id',
+      'actor-scoped GET /api/multiuser/catalog/skills/:id/files',
+      'actor-scoped POST /api/multiuser/catalog/skills/import',
+      'actor-scoped PUT /api/multiuser/catalog/skills/:id',
+      'actor-scoped DELETE /api/multiuser/catalog/skills/:id',
       'actor-scoped GET /api/active',
       'actor-scoped GET /api/agent-accounts',
       'actor-scoped GET /api/multiuser/design-catalog',

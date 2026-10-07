@@ -56,6 +56,13 @@ export function studioRequestAvailable(method: string, path: string,
   if (/^\/api\/projects\/[^/]+\/conversations\/[^/]+\/messages\/[^/]+$/.test(path)) return method === 'PUT';
   if (/^\/api\/projects\/[^/]+\/tabs$/.test(path)) return ['GET', 'PUT'].includes(method);
   if (/^\/api\/projects\/[^/]+\/events$/.test(path)) return method === 'GET';
+  if (usable('catalogs')) {
+    const skillPath = path.replace(/^\/api\/multiuser\/catalog\/skills(?=\/|$)/, '/api/skills');
+    if (skillPath === '/api/skills') return method === 'GET';
+    if (skillPath === '/api/skills/import' && method === 'POST') return true;
+    if (/^\/api\/skills\/[^/]+$/.test(skillPath)) return ['GET', 'PUT', 'DELETE'].includes(method);
+    if (/^\/api\/skills\/[^/]+\/files$/.test(skillPath)) return method === 'GET';
+  }
   if (usable('files')) {
     const file = /^\/api\/projects\/[^/]+\/(files|folders|search|upload|raw|text-preview|file-content)(?:\/(.+))?$/.exec(path);
     if (file) {
@@ -76,6 +83,9 @@ export function studioRequestAvailable(method: string, path: string,
   }
   if (usable('preview')) {
     if (/^\/api\/projects\/[^/]+\/preview-url$/.test(path)) return method === 'GET';
+    if (/^\/api\/projects\/[^/]+\/chat-artifact-snapshots\/[^/]+(?:\/(?:content|thumbnail))?$/.test(path)
+      || /^\/api\/projects\/[^/]+\/workspace-artifacts\/[^/]+$/.test(path)
+      || /^\/api\/projects\/[^/]+\/conversations\/[^/]+\/messages\/[^/]+\/artifacts$/.test(path)) return method === 'GET';
     if (/^\/api\/multiuser\/projects\/[^/]+\/preview\/[^/]+\/renew$/.test(path)) return method === 'POST';
   }
   if (usable('execution')) {

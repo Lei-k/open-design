@@ -1,6 +1,6 @@
 import { bindStudioPendingWrite } from '../runtime/studio-resources';
 import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioSetInterval as setInterval, studioFetch as fetch, studioWindowLocalStorage, studioWindowSessionStorage } from '../runtime/studio-transport';
-import { StudioLane, useStudioCapabilities } from '../runtime/studio-capabilities';
+import { StudioLane, useStudioCapabilities, useStudioRequestAvailable } from '../runtime/studio-capabilities';
 import { StudioExecutionSource } from '../runtime/StudioExecutionSource';
 import { readRetriedErrorSurface, retriedErrorSurfaceKey, writeRetriedErrorSurface } from '../runtime/chat/retried-error-surface';
 import {
@@ -2155,6 +2155,7 @@ export function ProjectView({
   onCreationHandoffSettled,
 }: Props) {
   const studio = useStudioCapabilities();
+  const studioRequest = useStudioRequestAvailable();
   const { locale, t } = useI18n();
   const amrAuthRetryMountIdRef = useRef<string | null>(null);
   if (amrAuthRetryMountIdRef.current === null) {
@@ -9851,6 +9852,10 @@ export function ProjectView({
             } finally {
               clearTraceTouchedFilePaths();
               if (finalizingRunId) finalizingLocalRunIdsRef.current.delete(finalizingRunId);
+              // Local file refresh/persistence can finish after the terminal
+              // refresh and replace its immutable artifact refs. Re-read only
+              // after this finalizer has released the same conversation.
+              scheduleConversationMessageRefresh(runConversationId);
             }
           })();
           onProjectsRefresh();
@@ -13981,7 +13986,7 @@ export function ProjectView({
               backLabel={t('project.backToProjects')}
               composerFooterAccessory={executionControls}
               // The picker reads the design-system catalog; it follows that lane.
-              designSystemPicker={(studio.available('catalogs') &&
+              designSystemPicker={(studioRequest('GET', '/api/design-systems') &&
                 <DesignSystemPicker
                   variant="home"
                   designSystems={designSystems}

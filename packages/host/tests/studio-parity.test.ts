@@ -13,6 +13,11 @@ describe('Studio host parity decisions (#52)', () => {
     for (const decision of Object.values(STUDIO_HOST_PARITY)) {
       expect(decision.equivalent.length).toBeGreaterThan(30);
       expect(decision.strategy).not.toBe('not-applicable');
+      if ('nativeApplicability' in decision) {
+        expect(decision.nativeApplicability).toBe('not-applicable');
+        expect(decision.productDecision).toContain('#67');
+        expect(decision.strategy).toBe('browser');
+      }
     }
   });
 });

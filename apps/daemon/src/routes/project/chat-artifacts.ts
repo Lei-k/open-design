@@ -18,6 +18,8 @@ import type { Express, Request, Response } from 'express';
 
 import type { AuthorizeProjectRequest } from '../../collab/project-request-authority.js';
 import type { RouteDeps } from '../../server-context.js';
+import { multiUserActorOf } from '../../http/multiuser-gate.js';
+import { bindMultiUserStream, multiUserStreamAllowed } from '../../http/multiuser-stream.js';
 import { createChatArtifactBlobStore } from '../../chat-artifacts/blob-store.js';
 import {
   getChatArtifactBlob,
@@ -214,20 +216,25 @@ export function registerProjectChatArtifactRoutes(
       });
     }
 
+    // Verification yields to the event loop. Withdrawal or deletion during it
+    // must fence bytes as well as metadata; streaming bodies retain that fence.
+    if (!multiUserStreamAllowed(res)) return;
+    const actor = multiUserActorOf(res);
+    const cacheControl = actor ? 'no-store' : 'private, max-age=31536000, immutable';
     const etag = `"${digest}"`;
     // Content addressing makes this genuinely immutable: the bytes behind this
     // id can never change, so a conditional request is always answerable.
-    if (req.headers['if-none-match'] === etag) {
+    if (!actor && req.headers['if-none-match'] === etag) {
       res.status(304);
       res.set('ETag', etag);
-      res.set('Cache-Control', 'private, max-age=31536000, immutable');
+      res.set('Cache-Control', cacheControl);
       return res.end();
     }
 
     const declared = blob.mime ?? snapshot.mime ?? '';
     const inline = INLINE_SAFE_MIME.test(declared);
     res.set('ETag', etag);
-    res.set('Cache-Control', 'private, max-age=31536000, immutable');
+    res.set('Cache-Control', cacheControl);
     res.set('X-Content-Type-Options', 'nosniff');
     res.set('Content-Type', inline ? declared : 'application/octet-stream');
     res.set('Content-Length', String(blob.byteSize));
@@ -236,6 +243,8 @@ export function registerProjectChatArtifactRoutes(
       res.set('Content-Disposition', `attachment; filename="${safeFilename(snapshot)}"`);
     }
     const stream = blobs.createBlobReadStream(blob.storageKey);
+    bindMultiUserStream(res);
+    res.once('close', () => stream.destroy());
     stream.on('error', () => {
       if (!res.headersSent) {
         sendApiError(res, 500, 'INTERNAL_ERROR', 'failed to read snapshot content');

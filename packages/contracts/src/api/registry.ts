@@ -229,6 +229,8 @@ export interface SkillSummary {
   // `<runtimeData>/user-skills/` and is fully owned by the user (delete
   // / re-import allowed). New `import` endpoint always tags `user`.
   source?: SkillSource;
+  /** Actor runtime can read a catalog entry before its executable assets are supported. Missing means available. */
+  selectable?: boolean;
   previewType: string;
   designSystemRequired: boolean;
   defaultFor: string[];

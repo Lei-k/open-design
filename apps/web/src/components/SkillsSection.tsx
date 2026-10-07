@@ -26,6 +26,7 @@ import {
 } from '../collab/useWorkspaceContext';
 import { useWorkspaceInvalidation } from '../collab/workspace-events';
 import { useWorkspaceSnapshotActivation } from '../collab/workspace-snapshot-activation';
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
 
 // Functional skills only — design templates render in EntryView's
 // Templates tab and are managed under their own daemon registry. See
@@ -854,6 +855,7 @@ function SkillRow({
   onSubmitEdit,
 }: SkillRowProps) {
   const t = useT();
+  const studio = useStudioCapabilities();
   const { locale } = useI18n();
   const summaryName = localizeSkillName(locale, skill) || skill.id;
   const summaryDescription = localizeSkillDescription(locale, skill);
@@ -931,7 +933,7 @@ function SkillRow({
             </span>
           ) : (
             <>
-              {!isTeamMirror ? (
+              {!isTeamMirror && (studio.hostServices || !isBuiltIn) ? (
                 <Button
                   size="icon"
                   onClick={onStartEdit}
@@ -957,7 +959,7 @@ function SkillRow({
               ) : null}
             </>
           )}
-          <label
+          {studio.hostServices && <label
             className="toggle-switch toggle-switch-sm skills-row-enable"
             title={t('settings.libraryToggleLabel')}
           >
@@ -968,7 +970,7 @@ function SkillRow({
               aria-label={t('settings.libraryToggleLabel')}
             />
             <span className="toggle-slider" />
-          </label>
+          </label>}
         </div>
       </div>
 

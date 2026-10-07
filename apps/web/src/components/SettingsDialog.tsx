@@ -1507,7 +1507,7 @@ export function switchApiProtocolConfig(
 
 export function SettingsDialog(props: Props) {
   const studio = useStudioCapabilities();
-  return studio.hostServices ? <LocalSettingsDialog {...props} /> : <StudioAccountSettings />;
+  return studio.hostServices ? <LocalSettingsDialog {...props} /> : <StudioAccountSettings initial={props.initial} onSkillsChanged={props.onSkillsChanged} />;
 }
 
 function LocalSettingsDialog({

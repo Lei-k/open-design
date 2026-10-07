@@ -2,11 +2,11 @@
 
 本計畫實作 [Epic 51](https://github.com/Lei-k/open-design/issues/51)：多人登入後使用既有完整 `App → ProjectView → ChatPane/ChatRoot + FileViewer`，並補齊 Web 等價功能。`ConversationRuns` 與 `DesignWorkspace` 是過渡 fallback，不是完成定義。#39 的既有安全設計流程保持可用；不得藉由開放全域 API 取得畫面 parity。
 
-使用者已於 2026-10-06 確認雙帳號訂閱測試及 staging 驗收完成，這兩項不是目前的外部阻塞。新增功能仍須有對應的本地測試及 phase 需求核對；既有驗收不會自動把尚未實作的矩陣列改成完成。
+2026-10-07 使用者澄清這是個人使用的部署，沒有 staging 環境；部署後由使用者直接在自己的 EC2 驗收。交付前先完成本機真實 daemon／HTTPS 雙帳號瀏覽器測試與部署驗收指引。先前測試不會自動把尚未實作的矩陣列改成完成。
 
 資料路徑遵循根目錄 `AGENTS.md` 的 **Daemon data directory contract**，本文件不另定路徑慣例。
 
-本次交付依使用者最新指示先提交目前工作並開 draft PR。這是 foundation checkpoint，不是 Phase 0 或 Phase 1 完成宣告；不切換完整 App、不移除 fallback，也不關閉 Epic／尚未達驗收的子 issues。
+PR #71 的初始交付是 foundation checkpoint。2026-10-07 使用者要求繼續完成整個 Epic；以逐項實作與驗收推進，未完成的 lanes 維持 pilot／unavailable，最終 gate 通過前保留 fallback。
 
 ## 權威矩陣
 
@@ -84,7 +84,10 @@ ClientApp ── fresh no-store version probe
 
 Host registry 覆蓋 appearance、browser cache、capture、PDF、pet、preview diagnostics、三種 folder 操作、外部連結、openPath 與九種 updater actions。Browser upload、受限外部導覽、主題與 frame lifecycle 用 browser adapter；capture/print 用 owner snapshot 與 isolated daemon renderer。任何套件安裝、daemon shutdown、shared cache 清除或 OS shell 都不能因 UI parity 開給一般 actor。
 
-仍需產品簽核的項目為 `pet.setVisible` 的 OS overlay 等價、`shell.openPath` 的 archive／本機 handoff，以及 `updater.clear-cache/download/install` 的 browser 與 server 管理範圍。這些項目保留為 product-decision，不是已批准 Web 不適用。Workspace 的本地 account／Vela member binding 同樣須明確決策，不能重用 `x-od-*` 作身份。
+2026-10-07 使用者確認以下產品決定：
+
+- #65：使用者驗證並連結自己的 Vela 身份；服務端保存 Web account／Vela member binding，workspace membership 與角色仍向 Vela 驗證，不接受 client asserted member header。尚未實作的 binding 不授予協作能力。
+- #67：本機視窗拖曳／控制、OS desktop pet overlay 和本機 app 安裝更新逐項標為 Web 不適用。瀏覽器保留頁面內 pet、服務 build/version 與更新/reload 狀態；清快取僅清目前身份的瀏覽器快取，server 部署仍屬管理操作。`STUDIO_HOST_PARITY` 保存原生項目的不適用決定及其 Web replacement；這是產品範圍簽核，並非實作完成。`shell.openPath` 使用 owned archive 下載作本機 handoff，不開 daemon filesystem path。
 
 ## Authority 與相容遷移
 
@@ -223,3 +226,26 @@ pnpm --filter @open-design/daemon exec vitest run -c vitest.config.ts tests/auth
 - **#74.** UI locale stays a device preference in real storage (documented decision). Analytics anonymous/session ids and per-project turn counters use the Studio storage seam (generation-scoped memory for pilots), so a shared device neither links accounts nor keeps project ids.
 - **#75.** The realm-boundary test detects `x.toString()`, `String(x)`, `` `${x}` `` and `'…' + x` (mutation-checked). Studio timers throw on string handlers. Render-phase transport activation is idempotent and only the session's current generation can activate a scope.
 - **Evidence.** Daemon `studio-preview-http` (3/3, red on the S5 base): capability on the preview origin, sibling assets with CORS, host-only owner/session renewal, foreign≡missing, host separation, logout revocation. Web: capability-URL helper test, viewer suites (542). Browser harness: generated script runs inside the opaque frame, CSS loads from the preview capability, the frame can neither read cookies nor call the app API with the session; files/viewer/S4 scenarios all re-pass.
+
+## S7 — owner immutable artifacts (#59)
+
+- Personal runs now capture touched media into the existing immutable snapshot store before terminal SSE, with the standard assistant-message/run/project binding. HTML/doc cards retain the current workspace identity. Damaged transcript bindings cannot attach refs to another conversation; cancellation is rechecked before and after capture.
+- The standard message artifact refs, snapshot metadata/content/thumbnail and workspace artifact routes are reviewed `owner-scoped-project` routes. Handlers check every child id against the route's project. Foreign and missing project requests are identical for users and admins; another owned project cannot resolve the foreign snapshot id.
+- Cookie actors receive `Cache-Control: no-store`, even with a matching ETag; the local single-user immutable cache contract remains unchanged. Bytes use the untrusted-content CSP/CORP policy. Authority is rechecked after async blob verification and while streaming, and disconnect destroys the file stream. This prevents previous-account images from being served from a shared browser's long-lived private cache.
+- A cover attaches its thumbnail digest to an existing media snapshot without replacing its id. Missing covers stay unavailable, never replaced with current workspace bytes.
+- The shared Studio transport admits these exact GET routes only while the preview lane is usable. Existing `od project artifact-snapshot list|inspect|export --session-file … --json` consumes the same APIs.
+- Evidence: `studio-artifacts-http` initially failed 3/3 on the PR S6 checkpoint, then passed after capture and thumbnail fixes. The produced-file DTO regression also went red on that checkpoint and green after metadata projection. Owner artifact, gate, standard runs, CLI, preview, cancellation and adjacent capture/routes suites pass; root guard/typecheck and the production web build pass. The maintained `e2e/ui/studio-preview.test.ts` drives a real daemon over separate HTTPS app/preview hosts and real cookie sessions, mocking only the personal Codex provider. It verifies immediate immutable image rendering, workspace overwrite + reload, foreign refusal, opaque deck navigation and manual-edit persistence; screenshots show the Studio entry point and viewer. Comments (#65), renderer covers (#66), remaining artifact kinds and rollout remain pending.
+
+
+## S8 — account-owned text skills (#61, #57, #68)
+
+- Standard skill list/detail/files/import/update/delete terminate at an actor catalog adapter. Bundled inspection excludes the host-installed tree and host paths. Private skills use account-qualified SQLite lookups, independent names per actor, soft deletion and immutable revisions under the daemon data-root contract. Admins have no private-content override. Body policies reject owner/path/source injection and bound text and selections.
+- Admission resolves selected private skill text before enqueue and captures the prompt/hash in the run. Editing or deleting the catalog entry cannot replace queued content. Question answers continue with the source run’s captured text/hash and native thread even after deletion. Primary conversation skill/design-system pins retain their existing immutable selection contract.
+- The App hydrates the scoped catalog; shared SkillsSection supports private creation/edit/delete, and shared Composer sends skill IDs as turn context. Bundled entries are inspectable but cannot be selected until executable side-file staging closes. Partial catalog availability does not expose plugin or design-system operations: discovery controls consult the reviewed transport operations. Device-only enable switches remain withheld until actor preference persistence is implemented.
+- `od skill import|update --prompt-file <path|-> --session-file … --json`, existing list/show/uninstall and remote `od run start --skill …` use the same standard APIs. Local CLI primary-skill behavior is preserved.
+- Evidence: 40 HTTP/CLI tests across catalog, admission, gate and remote CLI pass; the transport oracle covers all 12 standard/alias catalog routes and blocked neighbors. A production-browser test creates a private skill through shared Settings, selects its mention in Composer, checks the admitted IDs and actual provider output, and reloads durable history. Root guard/typecheck and production build pass. Built-in execution attachments, plugins, templates, design systems and team catalogs remain pending.
+
+## Remaining provider and deployment decisions
+
+- Company pool: user confirmed OpenAI’s official API on 2026-10-07. Server-owned API credentials, provider slots, quotas, source pinning and usage accounting must close before advertising the source; no subscription fallback. Actual API-key/provider validation remains separate from mock-provider contract tests.
+- Deployment acceptance: no staging environment exists. User will deploy to their own EC2 and run final two-account real-provider acceptance there. Local acceptance uses the maintained HTTPS browser harness; #70 still requires the full matrix, mobile/accessibility/performance and rollback evidence before fallback removal.

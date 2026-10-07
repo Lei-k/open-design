@@ -1,6 +1,6 @@
 'use client';
 import { studioSetTimeout as setTimeout, studioWindowLocalStorage } from '../runtime/studio-transport';
-import { useStudioCapabilities, StudioUnavailable } from '../runtime/studio-capabilities';
+import { useStudioCapabilities, useStudioRequestAvailable, StudioUnavailable } from '../runtime/studio-capabilities';
 
 
 
@@ -632,6 +632,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
     const { locale, t } = useI18n();
     const analytics = useAnalytics();
     const studio = useStudioCapabilities();
+    const studioRequest = useStudioRequestAvailable();
     // Every plus-menu entry belongs to one of these lanes; with none usable the
     // menu would only offer dead ends.
     const plusMenuUsable = (['files', 'catalogs', 'settings', 'web-host'] as const).some((lane) => studio.available(lane));
@@ -1933,6 +1934,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
     }
 
     async function insertSkillMention(skill: SkillSummary) {
+      if (skill.selectable === false) return;
       const applied = await applyProjectSkill(skill);
       if (!applied) return;
       // Stage the skill so it rides this turn's skillIds, then insert an
@@ -3017,6 +3019,9 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
 
     async function applyProjectSkill(skill: SkillSummary): Promise<boolean> {
       if (!projectId) return false;
+      // Studio functional skills are turn context. Admission snapshots them;
+      // the project's immutable primary design selection is a separate choice.
+      if (!studio.hostServices) return skill.selectable !== false;
       const result = await patchProject(projectId, { skillId: skill.id }, workspaceContext);
       if (!result) return false;
       onProjectSkillChange?.(result.skillId ?? skill.id);
@@ -3335,6 +3340,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                   setDesignToolboxOpen(false);
                 }}
                 onPickSkill={(skill) => {
+                  if (skill.selectable === false) return;
                   trackDesignToolbox({
                     element: 'design_toolbox_resource',
                     resource_kind: 'skill',
@@ -3665,7 +3671,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 onOpenConnectors();
               } : undefined}
               plugins={pluginsForComposer}
-              onPickPlugin={!studio.available('catalogs') ? undefined : (record) => {
+              onPickPlugin={!studioRequest('GET', '/api/plugins') ? undefined : (record) => {
                 trackComposerBar({
                   element: 'plus_pick',
                   resource_kind: 'plugin',
@@ -3673,7 +3679,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 void insertPluginMention(record);
               }}
-              onAddPlugin={studio.available('catalogs') && onBrowsePlugins ? () => {
+              onAddPlugin={studioRequest('GET', '/api/plugins') && onBrowsePlugins ? () => {
                 trackComposerBar({ element: 'plus_add', resource_kind: 'plugin' });
                 onBrowsePlugins();
               } : undefined}
@@ -3750,7 +3756,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 setFigmaHelpOpen(true);
               }}
-              onOpenDesignSystems={studio.available('catalogs') && projectId && designSystemPicker ? () => {
+              onOpenDesignSystems={studioRequest('GET', '/api/design-systems') && projectId && designSystemPicker ? () => {
                 trackComposerBar({ element: 'design_system_open' });
                 openDesignSystemPicker();
               } : undefined}
@@ -5361,6 +5367,7 @@ function DesignToolboxPanel({
             return (
               <ToolboxItemRow
                 key={resource.key}
+                disabled={resource.kind === 'skill' && resource.skill.selectable === false}
                 detailKey={resource.key}
                 icon={resource.icon}
                 name={resource.title}
@@ -5445,7 +5452,9 @@ function ToolboxItemRow({
   onHover,
   onLeave,
   onPick,
+  disabled,
 }: {
+  disabled?: boolean;
   icon: IconName;
   name: string;
   active?: boolean;
@@ -5469,6 +5478,7 @@ function ToolboxItemRow({
       <button
         type="button"
         role="menuitem"
+        disabled={disabled}
         className={`plus-menu__item${active ? ' is-active' : ''}`}
         onMouseDown={(e) => e.preventDefault()}
         onClick={onPick}
@@ -5532,7 +5542,7 @@ function ToolsSkillsPanel({
                     setPendingId(null);
                   }
                 }}
-                disabled={pendingId !== null}
+                disabled={pendingId !== null || skill.selectable === false}
                 title={localizeSkillDescription(locale, skill)}
               >
                 <Icon name={active ? 'check' : 'file'} size={12} />
@@ -6612,6 +6622,7 @@ function MentionPopover({
                   role="option"
                   aria-selected={rowActive}
                   className={`mention-item${rowActive ? ' is-active' : ''}`}
+                  disabled={skill.selectable === false}
                   type="button"
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => onPickSkill(skill)}

@@ -95,3 +95,34 @@ it('opens owner file endpoints only with a usable files lane, and only where the
     expect(studioRequestAvailable(method!, path!, () => true), `${method} ${path}`).toBe(false);
   }
 });
+
+it('opens only reviewed owner artifact reads with a usable preview lane', () => {
+  for (const path of ['/api/projects/p/chat-artifact-snapshots/s', '/api/projects/p/chat-artifact-snapshots/s/content',
+    '/api/projects/p/chat-artifact-snapshots/s/thumbnail', '/api/projects/p/workspace-artifacts/a',
+    '/api/projects/p/conversations/c/messages/m/artifacts']) {
+    expect(studioRequestAvailable('GET', path, (lane) => lane === 'preview'), path).toBe(true);
+    expect(studioRequestAvailable('GET', path, () => false), path).toBe(false);
+    expect(studioRequestAvailable('POST', path, () => true), path).toBe(false);
+    const matches = matchMultiUserRoute('GET', path);
+    expect(matches.length, path).toBeGreaterThan(0);
+    expect(matches.every(({ entry }) => entry.routeClass === 'owner-scoped-project'), path).toBe(true);
+  }
+});
+
+it('opens only reviewed text skill operations with a usable catalog lane', () => {
+  for (const prefix of ['/api/skills', '/api/multiuser/catalog/skills']) {
+    for (const [method, suffix] of [['GET', ''], ['GET', '/s'], ['GET', '/s/files'],
+      ['POST', '/import'], ['PUT', '/s'], ['DELETE', '/s']] as const) {
+      const path = prefix + suffix;
+      expect(studioRequestAvailable(method, path, (lane) => lane === 'catalogs'), path).toBe(true);
+      expect(studioRequestAvailable(method, path, () => false), path).toBe(false);
+      const matches = matchMultiUserRoute(method, path);
+      expect(matches.length, path).toBeGreaterThan(0);
+      expect(matches.every(({ entry }) => entry.routeClass === 'actor-scoped'), path).toBe(true);
+    }
+  }
+  for (const [method, path] of [['POST', '/api/skills/install'], ['GET', '/api/skills/s/assets/file'],
+    ['POST', '/api/skills/s/examples'], ['GET', '/api/plugins'], ['GET', '/api/design-systems']]) {
+    expect(studioRequestAvailable(method!, path!, () => true), path).toBe(false);
+  }
+});

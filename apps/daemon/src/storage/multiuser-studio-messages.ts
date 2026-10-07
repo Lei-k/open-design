@@ -152,7 +152,10 @@ export class MultiUserStudioMessages {
       createdAt: run.created_at,
       ...(run.started_at === null ? {} : { startedAt: run.started_at }),
       ...(terminal ? { endedAt: run.ended_at ?? run.updated_at } : {}),
-      ...(Array.isArray(output.files) ? { producedFiles: output.files } : {}),
+      // `files` is the run's path summary; chat consumes the full ProjectFile
+      // DTO. Legacy summaries stay available on the run, never masquerade as
+      // file objects in a transcript (or leak absolute local paths).
+      ...(Array.isArray(output.producedFiles) ? { producedFiles: output.producedFiles } : {}),
     });
     // upsertMessage protects active daemon events from browser snapshots. This
     // is the owning daemon's durable projection, so update its active snapshot

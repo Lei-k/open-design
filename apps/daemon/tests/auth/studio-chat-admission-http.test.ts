@@ -108,7 +108,7 @@ it('accepts ids only in the actor\'s own namespace and refuses reused ids', asyn
 
 it('refuses capabilities the personal lane does not apply instead of dropping them', async () => {
   const target = await project();
-  for (const extra of [{ skillIds: ['x'] }, { model: 'gpt-5' }, { reasoning: 'high' },
+  for (const extra of [{ model: 'gpt-5' }, { reasoning: 'high' },
     { sessionMode: 'plan' }, { research: { enabled: true } }, { context: { files: [] } }, { taskExecutionId: randomUUID() },
     { byokProvider: { kind: 'openai' } }, { commentAttachments: [{ id: 'c' }] }, { appliedPluginSnapshotId: 'snap' }]) {
     const refused = await send(studioRequest(target, 'x', a, extra));

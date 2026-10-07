@@ -2103,6 +2103,14 @@ function AppInner() {
       setPromptTemplatesLoading(false); setDaemonConfigLoaded(true); setComposioConfigLoading(false);
       setWorkspaceSkills({ identity: currentWorkspaceCatalogIdentity, items: [] });
       setWorkspaceDesignSystems({ identity: currentWorkspaceCatalogIdentity, items: [] });
+      if (studio.available('catalogs')) {
+        setSkillsLoading(true);
+        void fetchSkills().then((items) => {
+          if (cancelled) return;
+          setWorkspaceSkills({ identity: currentWorkspaceCatalogIdentity, items });
+          setSkillsLoading(false);
+        });
+      }
       const request = beginProjectListRequest(workspaceProjectViewRef.current);
       void listCurrentWorkspaceProjects().then((list) => {
         if (cancelled) return;
@@ -2604,7 +2612,7 @@ function AppInner() {
   ]);
 
   const refreshSkills = useCallback(async () => {
-    if (!studio.hostServices) return;
+    if (!studio.available('catalogs')) return;
     // Always scoped. `GET /api/skills` is fail-closed on a missing
     // `x-od-workspace-id` (`skills.ts`: `if (!scopeId) return !ownerId;`), so a
     // headerless read is not the "unfiltered" list — it is the list with every

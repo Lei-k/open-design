@@ -335,6 +335,14 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   const only = (fields: readonly string[]) => Object.keys(body).every((key) => fields.includes(key));
   const optionalText = (value: unknown, max: number) => value === undefined || value === null || (typeof value === 'string' && value.length <= max);
   const sessionMode = body.sessionMode === undefined || (typeof body.sessionMode === 'string' && ['design', 'chat', 'plan'].includes(body.sessionMode));
+  if (policy === 'skill-write') {
+    return only(['name', 'description', 'body', 'triggers'])
+      && (body.name === undefined || (typeof body.name === 'string' && body.name.trim().length > 0 && body.name.length <= 120))
+      && (body.description === undefined || (typeof body.description === 'string' && body.description.length <= 16_000))
+      && typeof body.body === 'string' && body.body.trim().length > 0 && body.body.length <= 256_000
+      && (body.triggers === undefined || (Array.isArray(body.triggers) && body.triggers.length <= 32
+        && body.triggers.every((trigger) => typeof trigger === 'string' && trigger.length <= 128)));
+  }
   if (policy === 'active-context') {
     if (body.active === false) return only(['active']);
     return only(['projectId', 'fileName']) && typeof body.projectId === 'string'

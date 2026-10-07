@@ -38,6 +38,7 @@ export function studioLaneForRoute(entry: Pick<MultiUserRouteClassification, 'me
   if (parts[0] !== 'api') return null;
   const domain = parts[1];
   if (domain === 'multiuser') {
+    if (parts[2] === 'catalog') return 'catalogs';
     if (parts[2] === 'design-catalog') return 'catalogs';
     if (path.includes('/preview')) return 'preview';
     return parts[2] === 'projects' ? 'projects' : null;
@@ -88,9 +89,10 @@ export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
   projects: 'Pilot projects: artifact, upload and background-job lineage are pending (#54).',
   execution: 'Pilot execution: personal Codex only; company pool, feedback telemetry and replay are pending (#55).',
   chat: 'Pilot chat: real-provider recordings and the full state-matrix acceptance are pending (#56).',
-  composer: 'Pilot composer: text, attachments, queue, stop and question answers; skills, design systems and model choice are pending (#57).',
-  preview: 'Pilot preview: HTML/deck/media previews in opaque srcDoc frames with assets from the preview-origin capability, manual edit and inspect; comments, artifact snapshots, thumbnails and live reload bridges are pending (#59).',
+  composer: 'Pilot composer: text, attachments, private text skills, queue, stop and question answers; bundled skill attachments, design systems and model choice are pending (#57).',
+  preview: 'Pilot preview: opaque HTML/deck/media previews, manual edit, inspect and owner-only immutable artifact snapshots/thumbnails; comments, renderer covers and complete browser acceptance are pending (#59).',
   files: 'Pilot files: owner file list, read, write, upload, rename, delete, folders, search and versions; archive, public publish and resumable large uploads are pending (#58).',
+  catalogs: 'Pilot catalogs: bundled and account-owned text skills; skill attachments, templates, design systems, plugins and team catalogs are pending (#61).',
 };
 
 /** Advertise a lane only after its entire acceptance closes. The public

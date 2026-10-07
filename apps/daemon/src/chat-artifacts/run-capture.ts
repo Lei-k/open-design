@@ -221,7 +221,8 @@ export async function attachChatArtifactThumbnail(
   if (existing && existing.captureState === 'ready') {
     // The ref already owns a snapshot (an image original). Fold the cover into
     // that same row so one ref never needs two snapshot ids.
-    const blobDigest = getChatArtifactSnapshot(deps.db, captured.snapshotId)?.contentDigest;
+    const cover = getChatArtifactSnapshot(deps.db, captured.snapshotId);
+    const blobDigest = cover?.thumbnailDigest ?? cover?.contentDigest;
     if (blobDigest) {
       markSnapshotReady(deps.db, { id: existing.id, thumbnailDigest: blobDigest });
       deps.db
