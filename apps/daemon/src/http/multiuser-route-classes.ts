@@ -727,6 +727,10 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     return [...group('actor-scoped', 'bundled reads and account-owned text skills; immutable revisions; no host registry access', [key], { ...extras, rewriteTo }),
       ...group('actor-scoped', 'actor catalog alias; same cookie authority and bounded skill body', [alias], extras)];
   }),
+  ...group('actor-scoped', 'bounded browser skill folder upload to an account-private immutable package; relative files only', ['POST /api/skills/import-files'],
+    { bodyPolicy: 'multipart', maxBodyBytes: 8 * 1024 * 1024 + 65536 * 4 }),
+  ...group('actor-scoped', 'skill folder upload alias; no host paths or registry access', ['POST /api/multiuser/catalog/skills/import-files'],
+    { bodyPolicy: 'multipart', maxBodyBytes: 8 * 1024 * 1024 + 65536 * 4 }),
   ...['GET /api/craft', 'GET /api/craft/:id', 'GET /api/design-templates', 'GET /api/design-templates/:id', 'GET /api/prompt-templates', 'GET /api/prompt-templates/:surface/:id', 'GET /api/design-systems', 'POST /api/design-systems', 'PATCH /api/design-systems/:id', 'DELETE /api/design-systems/:id', 'GET /api/design-systems/:id', 'GET /api/design-systems/:id/revisions', 'GET /api/design-systems/:id/files', 'GET /api/design-systems/:id/file', 'GET /api/design-systems/:id/preview', 'GET /api/design-systems/:id/showcase'].flatMap((key) => {
     const alias = key.replace('/api/', '/api/multiuser/catalog/');
     const bodyPolicy = key.startsWith('POST ') || key.startsWith('PATCH ') ? 'design-system-document' as const

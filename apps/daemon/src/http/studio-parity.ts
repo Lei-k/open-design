@@ -98,7 +98,7 @@ export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
   delivery: 'Pilot delivery: owned project/folder/batch ZIP downloads with captured bytes and design handoff; PDF, PPTX, image, public publish and cloud delivery are pending (#66).',
   home: 'Pilot Home: Prototype, Deck, Other, immutable saved templates, project copies and browser ZIP/directory imports; live artifacts, media and Figma import are pending (#60).',
   settings: 'Pilot settings: account appearance/notification preferences, instructions, manual memory and profile injection; full navigation, providers, automatic extraction, verification, connectors, MCP and library are pending (#62).',
-  catalogs: 'Pilot catalogs: bundled templates/craft, account text skills, captured bundled skill files and versioned design documents; company script/binary asset tools, generation, plugins and team catalogs are pending (#61).',
+  catalogs: 'Pilot catalogs: bundled templates/craft, account text and folder skills, captured skill packages with company script/binary tools, and versioned design documents; design generation/asset packages, plugins and team catalogs are pending (#61).',
 };
 
 /** Advertise a lane only after its entire acceptance closes. The public

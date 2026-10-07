@@ -166,3 +166,58 @@ it('rejects another actor’s selection and bounds the combined top-level and co
   const tooMany = await run(target, 'too many', { skillIds: Array.from({ length: 12 }, (_, i) => `a${i}`), context: { skillIds: ['b'] } });
   expect(tooMany.status).toBe(400);
 });
+
+async function folder(entries: Array<[string, string | Buffer]>, user: Principal | null = a) {
+  const boundary = 'studio-skill-folder-boundary';
+  const body = Buffer.concat(entries.flatMap(([name, content]) => [
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="${name}"\r\nContent-Type: application/octet-stream\r\n\r\n`),
+    Buffer.isBuffer(content) ? content : Buffer.from(content), Buffer.from('\r\n')]).concat(Buffer.from(`--${boundary}--\r\n`)));
+  return daemon.request({ method: 'POST', path: '/api/skills/import-files', ...(user ? { cookie: user.cookie } : {}),
+    headers: { 'content-type': `multipart/form-data; boundary=${boundary}` }, rawBody: body });
+}
+
+it('imports a private skill folder as an immutable package that runs with its side files', async () => {
+  const logo = Buffer.from([0, 159, 146, 150, 255]);
+  const made = await folder([
+    ['brand-kit/SKILL.md', '---\nname: Brand kit folder\ndescription: Folder import\n---\nUse assets/logo.bin and FOLDER_SKILL_MARKER.'],
+    ['brand-kit/assets/logo.bin', logo],
+    ['brand-kit/scripts/build.py', 'print("ok")'],
+  ]);
+  expect(made.status, made.text).toBe(201);
+  expect(made.json.skill).toMatchObject({ name: 'Brand kit folder', description: 'Folder import', source: 'user' });
+  const id = made.json.skill.id as string;
+  const files = await daemon.request({ path: `/api/skills/${encodeURIComponent(id)}/files`, cookie: a.cookie });
+  expect(files.json.files.map((file: { path: string }) => file.path).sort()).toEqual(['SKILL.md', 'assets/logo.bin', 'scripts/build.py']);
+  expect((await daemon.request({ path: `/api/skills/${encodeURIComponent(id)}`, cookie: b.cookie })).status).toBe(404);
+  expect((await daemon.request({ path: `/api/skills/${encodeURIComponent(id)}/files`, cookie: b.cookie })).status).toBe(404);
+  expect(JSON.stringify((await daemon.request({ path: '/api/skills', cookie: b.cookie })).json)).not.toContain('Brand kit folder');
+
+  const target = await project();
+  const started = await run(target, 'use the folder skill', { skillIds: [id] });
+  expect(started.status, started.text).toBe(202);
+  await finish(started.json.runId);
+  const evidence = JSON.parse(readFileSync(path.join(codexHome(root, a.id), 'mock-turn-evidence.json'), 'utf8'));
+  expect(evidence.message).toContain('FOLDER_SKILL_MARKER');
+  expect(evidence.message).toMatch(new RegExp(`- ${id}: /\\S+/skill-packages/[0-9a-f]{32}`));
+
+  // A text edit keeps side files and rewrites the package's SKILL.md; the earlier revision is unchanged.
+  expect((await daemon.request({ method: 'PUT', path: `/api/skills/${encodeURIComponent(id)}`, cookie: a.cookie, body: { body: 'EDITED_FOLDER_BODY' } })).status).toBe(200);
+  const db = new Database(path.join(root, 'app.sqlite'));
+  try {
+    const revisions = (db.prepare('SELECT package_json FROM studio_skill_revisions WHERE skill_id = ? ORDER BY revision').all(id) as Array<{ package_json: string }>)
+      .map((row) => JSON.parse(row.package_json) as { files: Array<{ path: string; data: string }> });
+    const document = (index: number) => Buffer.from(revisions[index]!.files.find((file) => file.path === 'SKILL.md')!.data, 'base64').toString();
+    expect(document(0)).toContain('FOLDER_SKILL_MARKER');
+    expect(document(1)).toContain('EDITED_FOLDER_BODY');
+    expect(Buffer.from(revisions[1]!.files.find((file) => file.path === 'assets/logo.bin')!.data, 'base64')).toEqual(logo);
+  } finally { db.close(); }
+  expect((await folder([['again/SKILL.md', '---\nname: Brand kit folder\n---\nduplicate']])).status).toBe(409);
+}, 20_000);
+
+it('refuses skill folders without SKILL.md, with hidden or traversal paths, or without a session', async () => {
+  expect((await folder([['kit/readme.md', 'no skill']])).status).toBe(400);
+  expect((await folder([['kit/SKILL.md', 'body'], ['kit/.env', 'SECRET=1']])).status).toBe(400);
+  expect((await folder([['kit/SKILL.md', 'body'], ['kit/../escape.md', 'x']])).status).toBe(400);
+  expect((await folder([['kit/SKILL.md', '---\nname: Empty\n---\n']])).status).toBe(400);
+  expect((await folder([['kit/SKILL.md', 'body']], null)).status).toBe(401);
+});

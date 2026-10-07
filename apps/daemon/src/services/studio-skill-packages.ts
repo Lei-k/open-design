@@ -22,9 +22,15 @@ export function captureStudioSkill(root: string, directory: string, id: string):
   if (!source) throw new Error('skill document missing');
   const raw = new TextDecoder('utf-8', { fatal: true }).decode(source.bytes);
   const { body } = parseFrontmatter(raw);
-  const captured = { id, key: studioSkillKey(id), files: files.map((file) => ({ path: file.name,
-    data: file.bytes.toString('base64'), executable: Boolean(file.executable), sha256: digest(file.bytes) })) };
-  return { body, package: { ...captured, hash: packageHash(captured) } };
+  return { body, package: buildStudioSkillPackage(id, files.map((file) => ({ path: file.name, bytes: file.bytes, executable: Boolean(file.executable) }))) };
+}
+
+/** Content-addressed package for an id. Callers validate with
+ * `readStudioSkillPackages` before persisting or staging it. */
+export function buildStudioSkillPackage(id: string, files: ReadonlyArray<{ path: string; bytes: Buffer; executable: boolean }>): StudioSkillPackage {
+  const captured = { id, key: studioSkillKey(id), files: files.map((file) => ({ path: file.path,
+    data: file.bytes.toString('base64'), executable: file.executable, sha256: digest(file.bytes) })) };
+  return { ...captured, hash: packageHash(captured) };
 }
 
 /** Validate persisted packages before any path or allocation is used. There

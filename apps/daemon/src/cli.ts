@@ -9947,11 +9947,13 @@ async function runSkills(args) {
   od skill show <id> [--workspace <id> --workspace-member <id>]
   od skill import --name <name> --prompt-file <path|-> [--description <text>] [--json]
   od skill update <id> --prompt-file <path|-> [--description <text>] [--json]
+  od skill import-folder <path> [--json]   (remote Studio session: SKILL.md plus side files as a private package)
   od skill uninstall <id>
 
 \`od skills …\` remains an alias for compatibility.`);
     process.exit(args[0] ? 0 : 2);
   }
+  if (args[0] === 'import-folder') return runSkillImportFolder(args.slice(1));
   if (args[0] === 'install' || args[0] === 'add') return runSkillInstall(args.slice(1));
   if (args[0] === 'uninstall' || args[0] === 'remove') return runSkillUninstall(args.slice(1));
   if (args[0] === 'import' || args[0] === 'update') return runSkillWrite(args[0], args.slice(1));
@@ -9973,6 +9975,32 @@ async function runSkillWrite(operation, rest) {
     headers: { 'content-type': 'application/json', ...(workspaceHeadersFromExplicitFlags(flags) ?? {}) },
     body: JSON.stringify({ body: content, ...(typeof flags.name === 'string' ? { name: flags.name } : {}),
       ...(typeof flags.description === 'string' ? { description: flags.description } : {}) }) });
+  if (!response.ok) return structuredHttpFailure(response);
+  const result = await response.json();
+  if (flags.json) process.stdout.write(`${JSON.stringify(result)}\n`);
+  else console.log(`${result.skill.id}\t${result.skill.name}`);
+}
+
+// Same endpoint as the Studio Settings folder picker. Hidden and dependency
+// entries are omitted locally; the daemon refuses anything else unsafe.
+async function runSkillImportFolder(rest) {
+  const flags = parseFlags(rest, { string: LIBRARY_STRING_FLAGS, boolean: LIBRARY_BOOLEAN_FLAGS });
+  const folderArg = positionalArgs(rest, LIBRARY_STRING_FLAGS)[0];
+  if (!folderArg) {
+    console.error('Usage: od skill import-folder <path> [--json]');
+    process.exit(2);
+  }
+  if (!remoteSessionFile) {
+    console.error('od skill import-folder requires a Studio session (--session-file); local daemons import skills with `od skill install` or `od skill import`.');
+    process.exit(2);
+  }
+  const folderPath = await resolveFolderPathForCli(folderArg);
+  const { captureCliFolder } = await import('./http/cli-folder-upload.js');
+  const root = await basenameForCli(folderPath);
+  const form = new FormData();
+  for (const file of captureCliFolder(folderPath)) form.append('files', new Blob([file.bytes]), `${root}/${file.name}`);
+  const base = (await libraryDaemonUrl(flags)).replace(/\/$/, '');
+  const response = await fetch(`${base}/api/skills/import-files`, { method: 'POST', body: form });
   if (!response.ok) return structuredHttpFailure(response);
   const result = await response.json();
   if (flags.json) process.stdout.write(`${JSON.stringify(result)}\n`);

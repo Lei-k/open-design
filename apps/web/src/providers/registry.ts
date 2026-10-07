@@ -473,6 +473,23 @@ export async function importSkill(
   }
 }
 
+// Studio: upload a selected folder (SKILL.md plus side files) as one
+// account-private package. Paths are folder-relative; the daemon refuses
+// hidden, dependency, traversal and oversized entries as a whole.
+export async function importSkillFolder(
+  files: readonly File[],
+): Promise<{ skill: SkillSummary } | { error: SkillImportError }> {
+  const form = new FormData();
+  for (const file of files) form.append('files', file, file.webkitRelativePath || file.name);
+  try {
+    const resp = await fetch('/api/skills/import-files', { method: 'POST', body: form });
+    if (!resp.ok) return { error: await readSkillOperationError(resp) };
+    return (await resp.json()) as { skill: SkillSummary };
+  } catch (err) {
+    return { error: { code: 'network_error', message: err instanceof Error ? err.message : 'Import request failed.' } };
+  }
+}
+
 // Update an existing skill's body. For built-in skills the daemon writes
 // a "shadow" copy under the user-skills root; the next listSkills() pass
 // surfaces it in place of the bundled copy. The id passed here must

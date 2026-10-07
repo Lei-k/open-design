@@ -1,3 +1,5 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import { clusterTest as base, expect } from '@/playwright/suite';
 import { activeArtifactPreview, activeArtifactPreviewFrame } from '@/playwright/artifact-preview';
 import { clickDeckNextSlide, clickPreviewToolbarAction } from '@/playwright/workspace';
@@ -186,6 +188,23 @@ test('[P1] Studio saves private skills, instructions and memory in shared Settin
   expect(response.status()).toBe(201);
   const id = (await response.json()).skill.id;
   await expect(form).toHaveCount(0);
+  // Folder import: SKILL.md plus a binary side file become one private package.
+  const skillFolder = path.join(info.outputPath('skill-folder'), 'browser-folder-skill');
+  mkdirSync(path.join(skillFolder, 'assets'), { recursive: true });
+  writeFileSync(path.join(skillFolder, 'SKILL.md'), '---\nname: Browser folder skill\n---\nBrowser folder skill body');
+  writeFileSync(path.join(skillFolder, 'assets', 'mark.bin'), Buffer.from([0, 255, 3]));
+  const folderImported = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/skills/import-files');
+  await page.getByTestId('skills-import-folder-input').setInputFiles(skillFolder);
+  const folderResponse = await folderImported;
+  expect(folderResponse.status()).toBe(201);
+  const folderSkillId = (await folderResponse.json()).skill.id as string;
+  await expect(page.locator('.settings-skills')).toContainText('Browser folder skill');
+  await expect(page.locator('.settings-skills')).toContainText('assets');
+  await expect(page.locator('.settings-skills')).toContainText('Browser folder skill body');
+  expect((await studio.request('GET', `/api/skills/${encodeURIComponent(folderSkillId)}/files`, studio.a.cookie)).json.files
+    .map((file: { path: string }) => file.path).sort()).toEqual(['SKILL.md', 'assets/mark.bin']);
+  expect((await studio.request('GET', `/api/skills/${encodeURIComponent(folderSkillId)}`, studio.b.cookie)).status).toBe(404);
+  await page.screenshot({ path: info.outputPath('studio-skill-folder-entry.png'), animations: 'disabled' });
   await page.getByTestId('studio-settings-nav-general').click();
   await page.getByTestId('settings-accent-color').fill('#1a74ff');
   const notification = page.getByRole('group', { name: 'Completion sound', exact: true });

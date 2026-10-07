@@ -76,7 +76,7 @@ export function studioRequestAvailable(method: string, path: string,
     if (catalogPath === '/api/prompt-templates' || /^\/api\/prompt-templates\/[^/]+\/[^/]+$/.test(catalogPath)) return method === 'GET';
     const skillPath = path.replace(/^\/api\/multiuser\/catalog\/skills(?=\/|$)/, '/api/skills');
     if (skillPath === '/api/skills') return method === 'GET';
-    if (skillPath === '/api/skills/import' && method === 'POST') return true;
+    if ((skillPath === '/api/skills/import' || skillPath === '/api/skills/import-files') && method === 'POST') return true;
     if (/^\/api\/skills\/[^/]+$/.test(skillPath)) return ['GET', 'PUT', 'DELETE'].includes(method);
     if (/^\/api\/skills\/[^/]+\/files$/.test(skillPath)) return method === 'GET';
   }

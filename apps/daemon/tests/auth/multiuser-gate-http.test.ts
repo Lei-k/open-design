@@ -198,6 +198,8 @@ describe('route classification covers the real inventory', () => {
       'actor-scoped POST /api/multiuser/catalog/skills/import',
       'actor-scoped PUT /api/multiuser/catalog/skills/:id',
       'actor-scoped DELETE /api/multiuser/catalog/skills/:id',
+      'actor-scoped POST /api/skills/import-files',
+      'actor-scoped POST /api/multiuser/catalog/skills/import-files',
       'actor-scoped GET /api/active',
       'actor-scoped GET /api/agent-accounts',
       'actor-scoped GET /api/multiuser/design-catalog',

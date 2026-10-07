@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { readFileSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts, startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
@@ -230,6 +230,21 @@ describe('same Studio APIs through remote od sessions', () => {
     expect((await cli(['skill', 'uninstall', id, '--session-file', bFile, '--json'])).code).not.toBe(0);
     success(await cli(['skill', 'uninstall', id, '--session-file', aFile, '--json']));
     expect((await cli(['skill', 'show', id, '--session-file', aFile, '--json'])).code).not.toBe(0);
+  }, 40_000);
+
+  it('imports a skill folder with side files into the actor catalog only', async () => {
+    const folder = path.join(root, 'cli-folder-skill');
+    mkdirSync(path.join(folder, 'assets'), { recursive: true });
+    writeFileSync(path.join(folder, 'SKILL.md'), '---\nname: CLI folder skill\n---\nCLI_FOLDER_SKILL_BODY');
+    writeFileSync(path.join(folder, 'assets', 'mark.bin'), Buffer.from([0, 255, 7]));
+    writeFileSync(path.join(folder, '.env'), 'NOT_UPLOADED=1');
+    const made = success(await cli(['skill', 'import-folder', folder, '--session-file', aFile, '--json']));
+    const id = made.skill.id;
+    expect(made.skill.name).toBe('CLI folder skill');
+    const files = await daemon.request({ path: `/api/skills/${encodeURIComponent(id)}/files`, cookie: alice.cookie });
+    expect(files.json.files.map((file: { path: string }) => file.path).sort()).toEqual(['SKILL.md', 'assets/mark.bin']);
+    expect((await cli(['skill', 'show', id, '--session-file', bFile, '--json'])).code).not.toBe(0);
+    success(await cli(['skill', 'uninstall', id, '--session-file', aFile, '--json']));
   }, 40_000);
 
   it('honors server revocation and logs B out without printing or retaining credentials', async () => {

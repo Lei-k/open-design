@@ -15,6 +15,7 @@ import {
   fetchSkillFiles,
   fetchSkills,
   importSkill,
+  importSkillFolder,
   updateSkill,
   type SkillFileEntry,
 } from '../providers/registry';
@@ -136,6 +137,12 @@ export function SkillsSection({ cfg, setCfg, onSkillsRefresh, onSkillsChanged }:
   const skills = skillsCatalog.identity === workspaceCatalogIdentity
     ? skillsCatalog.items
     : [];
+  const studioCatalog = useStudioCapabilities();
+  // Studio accounts upload a folder as a private package; the desktop keeps its
+  // folder import in the Plugins view.
+  const folderImportAvailable = !studioCatalog.hostServices;
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const [folderImport, setFolderImport] = useState<{ busy: boolean; error: string | null }>({ busy: false, error: null });
   const [search, setSearch] = useState('');
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [modeFilter, setModeFilter] = useState<string>('all');
@@ -675,7 +682,48 @@ export function SkillsSection({ cfg, setCfg, onSkillsRefresh, onSkillsChanged }:
             <Icon name="plus" size={14} />
             <span>{t('settings.skillsNew')}</span>
           </button>
+          {folderImportAvailable ? (
+            <>
+              <button
+                type="button"
+                className="ghost skills-add-btn"
+                onClick={() => folderInputRef.current?.click()}
+                disabled={workspaceWriteBlocked || folderImport.busy}
+                data-testid="skills-import-folder"
+              >
+                <Icon name="upload" size={14} />
+                <span>{t('pluginsView.uploadFolder')}</span>
+              </button>
+              <input
+                ref={folderInputRef}
+                type="file"
+                multiple
+                hidden
+                data-testid="skills-import-folder-input"
+                {...{ webkitdirectory: '' }}
+                onChange={(event) => {
+                  const files = Array.from(event.currentTarget.files ?? []);
+                  event.currentTarget.value = '';
+                  if (!files.length) return;
+                  setFolderImport({ busy: true, error: null });
+                  void importSkillFolder(files).then(async (result) => {
+                    if ('error' in result) {
+                      setFolderImport({ busy: false, error: result.error.message || t('pluginsView.uploadFailed') });
+                      return;
+                    }
+                    setFolderImport({ busy: false, error: null });
+                    await refresh();
+                    await onSkillsRefresh?.();
+                    setExpandedId(result.skill.id);
+                    void ensureBody(result.skill.id);
+                    void ensureFiles(result.skill.id);
+                  });
+                }}
+              />
+            </>
+          ) : null}
         </div>
+        {folderImport.error ? <div className="library-import-error" role="alert">{folderImport.error}</div> : null}
         {/* Row 2: filter dropdowns */}
         <div className="library-filter-selects">
           <label className="library-filter-select">
