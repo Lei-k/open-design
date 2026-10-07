@@ -680,8 +680,6 @@ describe('fail-closed classification', () => {
       { projectLocationId: 'some-location' },
       { metadata: { kind: 'template', templateId: 'tpl' } },
       { pluginId: 'some-plugin' },
-      { skillId: 'some-skill' },
-      { designSystemId: 'some-design-system' },
     ]) {
       const res = await daemon.request({
         method: 'POST',
@@ -690,6 +688,11 @@ describe('fail-closed classification', () => {
         body: { id: randomUUID(), name: 'refused', ...body },
       });
       expect(res.status, JSON.stringify(body)).toBe(400);
+    }
+    for (const body of [{ skillId: 'some-skill' }, { designSystemId: 'some-design-system' }]) {
+      const result = await daemon.request({ method: 'POST', path: '/api/projects', cookie: alice.cookie,
+        body: { id: randomUUID(), name: 'unavailable resource', ...body } });
+      expect(result.status, JSON.stringify(body)).toBe(404);
     }
     expect(await listProjectIds(alice)).toEqual(before);
 

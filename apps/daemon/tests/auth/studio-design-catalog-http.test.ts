@@ -147,3 +147,75 @@ it('company admission captures the same design version while queued and after de
   expect(next.status, next.text).toBe(202); await finish(next.json.runId);
   expect(JSON.stringify(companyRequests.at(-1)?.input)).toContain('DESIGN ORIGINAL MARKER');
 });
+
+
+it('creates an owned project with formal setup and captures its default private skill and design system', async () => {
+  const designSystemId = await create();
+  const imported = await daemon.request({ method: 'POST', path: '/api/skills/import', cookie: a.cookie,
+    body: { name: 'project-default-' + randomUUID(), body: 'PROJECT DEFAULT SKILL ORIGINAL' } });
+  expect(imported.status, imported.text).toBe(201); const skillId = imported.json.skill.id as string;
+  const metadata = { kind: 'prototype', fidelity: 'wireframe', platform: 'responsive',
+    platformTargets: ['responsive', 'mobile-ios'], includeLandingPage: true, nameSource: 'user', slideCount: '8–12' };
+  const projectId = randomUUID();
+  const made = await daemon.request({ method: 'POST', path: '/api/projects', cookie: a.cookie,
+    body: { id: projectId, name: 'Formal setup', skillId, designSystemId, metadata, pendingPrompt: 'Project brief' } });
+  expect(made.status, made.text).toBe(200);
+  expect(made.json.project).toMatchObject({ skillId, designSystemId, metadata, pendingPrompt: 'Project brief' });
+  const context = { projectId, conversationId: made.json.conversationId as string };
+  const first = await run(context); expect(first.status, first.text).toBe(202); await finish(first.json.runId);
+  const evidence = JSON.parse(readFileSync(path.join(codexHome(root, a.id), 'mock-turn-evidence.json'), 'utf8'));
+  expect(evidence.message).toContain('PROJECT DEFAULT SKILL ORIGINAL');
+  expect(evidence.message).toContain('DESIGN ORIGINAL MARKER');
+  await daemon.request({ method: 'PUT', path: '/api/skills/' + encodeURIComponent(skillId), cookie: a.cookie,
+    body: { body: 'PROJECT DEFAULT SKILL REPLACEMENT' } });
+  await daemon.request({ method: 'DELETE', path: '/api/skills/' + encodeURIComponent(skillId), cookie: a.cookie, body: {} });
+  const continued = await run(context); expect(continued.status, continued.text).toBe(202); await finish(continued.json.runId);
+  const db = new Database(path.join(root, 'app.sqlite'));
+  try {
+    const rows = db.prepare('SELECT request_json FROM multiuser_runs WHERE conversation_id = ? ORDER BY queue_seq').all(context.conversationId) as Array<{ request_json: string }>;
+    const initial = JSON.parse(rows[0]!.request_json); const continuation = JSON.parse(rows[1]!.request_json);
+    expect(continuation.skillSnapshots).toEqual(initial.skillSnapshots);
+    expect(continuation.stablePrompt).toBe(initial.stablePrompt);
+    expect(continuation.stablePrompt).toContain('PROJECT DEFAULT SKILL ORIGINAL');
+    expect(continuation.stablePrompt).not.toContain('PROJECT DEFAULT SKILL REPLACEMENT');
+  } finally { db.close(); }
+  expect((await run(await target(), { skillId })).status).toBe(404);
+});
+it('refuses foreign or missing project resources before creation and validates descriptive metadata types', async () => {
+  const foreign = await create('B private', b);
+  const foreignSkill = await daemon.request({ method: 'POST', path: '/api/skills/import', cookie: b.cookie,
+    body: { name: 'foreign-' + randomUUID(), body: 'B private' } });
+  const createProject = (body: Record<string, unknown>) => daemon.request({ method: 'POST', path: '/api/projects', cookie: a.cookie,
+    body: { id: randomUUID(), name: 'Rejected setup', ...body } });
+  expect((await createProject({ designSystemId: foreign })).json).toEqual((await createProject({ designSystemId: 'user:studio_missing' })).json);
+  expect((await createProject({ skillId: foreignSkill.json.skill.id })).json).toEqual((await createProject({ skillId: 'studio-skill:missing' })).json);
+  expect((await createProject({ skillId: foreignSkill.json.skill.id })).status).toBe(404);
+  for (const metadata of [{ platformTargets: ['/host'] }, { speakerNotes: 'true' }, { slideCount: 8 },
+    { nameSource: {} }, { fidelity: [] }, { platform: {} }, { platformTargets: Array(9).fill('responsive') }]) {
+    expect((await createProject({ metadata })).status).toBe(400);
+  }
+  for (const kind of ['prototype', 'deck', 'other']) {
+    const made = await createProject({ metadata: { kind, nameSource: 'user', speakerNotes: kind === 'deck' } });
+    expect(made.status, made.text).toBe(200); expect(made.json.project.metadata.kind).toBe(kind);
+  }
+});
+
+it('inherits a default skill plus mentions on question answers without rereading deleted resources', async () => {
+  const ids: string[] = [];
+  for (const name of ['Default', 'Mention']) {
+    const imported = await daemon.request({ method: 'POST', path: '/api/skills/import', cookie: a.cookie,
+      body: { name: name + '-' + randomUUID(), body: name + ' question capture' } });
+    expect(imported.status, imported.text).toBe(201); ids.push(imported.json.skill.id);
+  }
+  const projectId = randomUUID();
+  const made = await daemon.request({ method: 'POST', path: '/api/projects', cookie: a.cookie,
+    body: { id: projectId, name: 'Default question', skillId: ids[0] } });
+  expect(made.status, made.text).toBe(200); const context = { projectId, conversationId: made.json.conversationId as string };
+  setTurnMode(root, a, { reply: '<question-form id="brief">{"questions":[{"id":"color","label":"Color","type":"text"}]}</question-form>' });
+  const source = await run(context, { skillIds: [ids[1]] }); expect(source.status, source.text).toBe(202); await finish(source.json.runId);
+  for (const id of ids) await daemon.request({ method: 'DELETE', path: '/api/skills/' + encodeURIComponent(id), cookie: a.cookie, body: {} });
+  const hints = { analyticsHints: { entryFrom: 'question_answer', sourceRunId: source.json.runId } };
+  expect((await run(context, { ...hints, skillId: 'studio-skill:changed' })).status).toBe(409);
+  setTurnMode(root, a, {});
+  const answer = await run(context, { ...hints, skillId: ids[0] }); expect(answer.status, answer.text).toBe(202); await finish(answer.json.runId);
+});

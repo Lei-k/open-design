@@ -1,5 +1,5 @@
 import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioFetch as fetch, studioWindowLocalStorage } from '../runtime/studio-transport';
-import { StudioLane } from '../runtime/studio-capabilities';
+import { StudioLane, useStudioCapabilities } from '../runtime/studio-capabilities';
 // EntryShell — the centered-hero entry layout.
 //
 // This component owns the entire JSX render and local UI state for
@@ -685,6 +685,7 @@ export function EntryShell({
   onAmrLoginStatusChange,
   artifactUpgradeSlot,
 }: Props) {
+  const studio = useStudioCapabilities();
   const { t } = useI18n();
   // Each entry sub-view (home / projects / design-systems) is its own
   // URL now, so the browser back/forward buttons work and a deep link
@@ -1392,6 +1393,7 @@ export function EntryShell({
     const pluginId = defaultPluginIdForMetadata(input.metadata);
     const pluginInputs = defaultPluginInputsForCreate(input, pluginId);
     const { skillSelectionProvenance, ...projectInput } = input;
+    if (!studio.hostServices) return onCreateProject(projectInput);
     const automaticStrategyRoute = skillSelectionProvenance === 'explicit-user'
       ? null
       : automaticStrategyTaskProfileForProjectMetadata(input.metadata);
@@ -1766,7 +1768,7 @@ export function EntryShell({
     onBrowseRegistry: () => changeView('plugins'),
     onOpenIntegrations: () => openIntegrationTab('connectors'),
     onOpenMcp: () => openIntegrationTab('mcp'),
-    onOpenNewProject: (tab: 'template') => {
+    onOpenNewProject: (tab: 'template' | 'prototype') => {
       openNewProject(tab);
     },
     onStartBlankProject: startBlankProjectFromRail,

@@ -109,7 +109,9 @@ it('executes the admitted skill text even when a queued skill is edited and dele
       .toEqual([{ body: 'QUEUED_ORIGINAL_MARKER' }, { body: 'QUEUED_REPLACEMENT_MARKER' }]);
     expect(() => db.prepare('UPDATE studio_skill_revisions SET body = ? WHERE skill_id = ?').run('tamper', id)).toThrow('immutable');
   } finally { db.close(); }
-  expect((await run(target, 'deleted skill', { skillIds: [id] })).status).toBe(404);
+  const continued = await run(target, 'captured deleted skill', { skillIds: [id] });
+  expect(continued.status, continued.text).toBe(202); await finish(continued.json.runId);
+  expect((await run(await project(), 'deleted skill in a new conversation', { skillIds: [id] })).status).toBe(404);
 }, 20_000);
 
 it('continues a question on its captured skill and native thread after the skill is deleted', async () => {

@@ -286,7 +286,7 @@ interface Props {
   // Stage B: optional callbacks the rail's migration chips need.
   // HomeView itself never imports them; EntryShell threads them
   // through so the dispatcher can stay declarative.
-  onOpenNewProject?: (tab: 'template') => void;
+  onOpenNewProject?: (tab: 'template' | 'prototype') => void;
   onStartBlankProject?: () => Promise<void> | void;
   promptHandoff?: HomePromptHandoff | null;
   /** Dock only, straight through to HomeHero: bump to fold the docked composer
@@ -3152,7 +3152,7 @@ export function HomeView({
           installationId={deepSeekV4FlashCampaignInstallationId}
         />
       )}
-      {!studio.hostServices && <button type="button" onClick={() => onOpenNewProject?.('template')}>{t('multiuser.createProject')}</button>}
+      {!studio.hostServices && <button type="button" data-testid="home-new-project" onClick={() => onOpenNewProject?.('prototype')}>{t('multiuser.createProject')}</button>}
       <StudioLane lane="execution"><HomeHero
         variant={variant}
         collapseSignal={collapseSignal}

@@ -172,7 +172,9 @@ describe('same Studio APIs through remote od sessions', () => {
     expect(success(await cli(['skill', 'show', id, '--session-file', aFile, '--json'])).body).toBe('CLI_SKILL_ORIGINAL');
     expect((await cli(['skill', 'show', id, '--session-file', bFile, '--json'])).code).not.toBe(0);
     success(await cli(['skill', 'update', id, '--prompt-file', '-', '--session-file', aFile, '--json'], 'CLI_SKILL_UPDATED'));
-    const target = success(await cli(['project', 'create', '--name', 'CLI skill turn', '--session-file', aFile, '--json']));
+    const target = success(await cli(['project', 'create', '--name', 'CLI skill turn', '--skill', id,
+      '--prompt-file', '-', '--session-file', aFile, '--json'], 'CLI initial project brief'));
+    expect(target.project).toMatchObject({ skillId: id, pendingPrompt: 'CLI initial project brief' });
     const started = success(await cli(['run', 'start', '--project', target.project.id, '--conversation', target.conversationId,
       '--execution-source', 'personal_subscription', '--skill', id, '--prompt-file', '-', '--session-file', aFile, '--json'], 'use my skill'));
     expect((await cli(['run', 'watch', started.runId, '--session-file', aFile, '--json'])).code).toBe(0);

@@ -296,6 +296,35 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     return { id: system.id, hash: createHash('sha256').update(JSON.stringify(prompt)).digest('hex'), prompt };
   };
 
+  type SkillSnapshot = { id: string; name: string; body: string; mode?: Parameters<typeof composeSystemPrompt>[0]['skillMode']; hash: string };
+  const captureSkills = async (owner: string, conversationId: string, ids: readonly string[]): Promise<SkillSnapshot[] | null> => {
+    if (ids.length > 12) return null;
+    const snapshots: SkillSnapshot[] = [];
+    for (const id of ids) {
+      const previous = db.prepare(`SELECT request_json FROM multiuser_runs
+        WHERE owner_account_id = ? AND conversation_id = ? AND json_valid(request_json)
+          AND EXISTS (SELECT 1 FROM json_each(request_json, '$.skillSnapshots') item
+            WHERE json_extract(item.value, '$.id') = ?) ORDER BY queue_seq DESC LIMIT 1`)
+        .get(owner, conversationId, id) as { request_json: string } | undefined;
+      const captured = previous ? storedRequest(previous.request_json)?.skillSnapshots : undefined;
+      const snapshot = Array.isArray(captured) ? captured.find((item: SkillSnapshot) => item?.id === id) as SkillSnapshot | undefined : undefined;
+      if (snapshot && typeof snapshot.body === 'string' && typeof snapshot.name === 'string' && typeof snapshot.hash === 'string') {
+        snapshots.push(snapshot); continue;
+      }
+      const skills = await input.catalog?.readSkills(owner, [id]);
+      if (!skills?.[0]) return null;
+      const skill = skills[0];
+      const text = { id: skill.id, name: skill.name, body: skill.body, mode: skill.mode };
+      snapshots.push({ ...text, hash: createHash('sha256').update(JSON.stringify(text)).digest('hex') });
+    }
+    return snapshots;
+  };
+  const selectSkills = (fields: PersonalRunFields, projectId: string, fixed: boolean, question: boolean): string[] => {
+    if (question) return fields.skillIds;
+    const primary = fixed ? null : fields.skillId ?? getProject(db, projectId)?.skillId ?? null;
+    return [...new Set([...(primary ? [primary] : []), ...fields.skillIds])];
+  };
+
   const artifactBlobs = createChatArtifactBlobStore({ dataDir: dataRoot });
   const companyOpenAI = new CompanyOpenAIStore(db, dataRoot);
   db.exec(`CREATE TABLE IF NOT EXISTS multiuser_company_sessions (
@@ -1076,9 +1105,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (!answerReady()) return sendApiError(res, 409, 'CONFLICT', 'question is stale or already answered');
     const fixedDesign = input.design?.selection(target.conversationId, owner) ?? null;
     // null means "the conversation's pinned selection"; a named one must match it.
-    if ((!fixedDesign && fields.skillId !== null)
-        || (fixedDesign && ((fields.skillId !== null && fields.skillId !== fixedDesign.skillId)
-          || (fields.designSystemId !== null && fields.designSystemId !== fixedDesign.designSystemId)))) {
+    if (fixedDesign && ((fields.skillId !== null && fields.skillId !== fixedDesign.skillId)
+          || (fields.designSystemId !== null && fields.designSystemId !== fixedDesign.designSystemId))) {
       return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
     }
     const designSnapshot = fixedDesign ? null : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? getProject(db, target.projectId)?.designSystemId ?? null, question);
@@ -1091,6 +1119,11 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const questionRequest = question ? storedRequest(question.request_json) : null;
     const inheritedSkillIds = Array.isArray(questionRequest?.skillIds) && questionRequest.skillIds.every((id) => typeof id === 'string')
       ? questionRequest.skillIds as string[] : [];
+    fields.skillIds = selectSkills(fields, target.projectId, Boolean(fixedDesign), Boolean(question));
+    if (question && ((!fixedDesign && fields.skillId !== null && !inheritedSkillIds.includes(fields.skillId))
+      || fields.skillIds.length && JSON.stringify(fields.skillIds) !== JSON.stringify(inheritedSkillIds))) {
+      return sendApiError(res, 409, 'CONFLICT', 'question skills changed');
+    }
     const inheritsSkills = Boolean(question && (fields.skillIds.length === 0
       || JSON.stringify(fields.skillIds) === JSON.stringify(inheritedSkillIds)));
     if (inheritsSkills && typeof questionRequest?.stablePrompt === 'string' && typeof questionRequest.stablePromptHash === 'string') {
@@ -1108,7 +1141,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       composed = { prompt, hash: createHash('sha256').update(prompt).digest('hex'),
         selection: { conversationId: target.conversationId, skillId: '', designSystemId: '', locale: 'en' } };
     }
-    const selectedSkills = fields.skillIds.length && !inheritsSkills ? await input.catalog?.readSkills(owner, fields.skillIds) : [];
+    const selectedSkills = fields.skillIds.length && !inheritsSkills ? await captureSkills(owner, target.conversationId, fields.skillIds) : [];
     if (!selectedSkills || fields.skillIds.length > 12) return sendApiError(res, 404, 'NOT_FOUND', 'selected skills not found or unavailable');
     if (selectedSkills.length) {
       // Resolve before queueing. Later edits/deletes cannot change this turn's
@@ -1124,7 +1157,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         selection: composed?.selection ?? { conversationId: target.conversationId, skillId: '', designSystemId: '', locale: 'en' } };
     }
     const request = JSON.stringify({ message: fields.text, ...(fields.attachments.length ? { attachments: fields.attachments } : {}),
-      ...(inheritsSkills || selectedSkills.length ? { skillIds: inheritsSkills ? inheritedSkillIds : fields.skillIds } : {}),
+      ...(inheritsSkills || selectedSkills.length ? { skillIds: inheritsSkills ? inheritedSkillIds : fields.skillIds,
+        skillSnapshots: inheritsSkills ? questionRequest?.skillSnapshots ?? [] : selectedSkills } : {}),
       ...(fields.workspaceItems.length ? { workspaceItems: fields.workspaceItems } : {}),
       ...(question ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId: question.id } } : {}),
       ...(designSnapshot ? { designSnapshot } : {}),
@@ -1211,17 +1245,19 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (!answerReady()) return sendApiError(res, 409, 'CONFLICT', 'question is stale or already answered');
     const previousRequest = question ? storedRequest(question.request_json) : null;
     const capturedSkillIds = Array.isArray(previousRequest?.skillIds) ? previousRequest.skillIds : [];
-    if (question && fields.skillIds.length && JSON.stringify(fields.skillIds) !== JSON.stringify(capturedSkillIds)) {
+    const fixed = input.design?.selection(target.conversationId, owner) ?? null;
+    fields.skillIds = selectSkills(fields, target.projectId, Boolean(fixed), Boolean(question));
+    if (question && ((!fixed && fields.skillId !== null && !capturedSkillIds.includes(fields.skillId))
+      || fields.skillIds.length && JSON.stringify(fields.skillIds) !== JSON.stringify(capturedSkillIds))) {
       return sendApiError(res, 409, 'CONFLICT', 'question skills changed');
     }
-    const fixed = input.design?.selection(target.conversationId, owner) ?? null;
-    if ((!fixed && fields.skillId !== null) || fixed &&
+    if (fixed &&
       (fields.skillId !== null && fields.skillId !== fixed.skillId || fields.designSystemId !== null && fields.designSystemId !== fixed.designSystemId)) {
       return sendApiError(res, 400, 'BAD_REQUEST', 'design selection mismatch');
     }
     const designSnapshot = fixed ? null : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? getProject(db, target.projectId)?.designSystemId ?? null, question);
     if (designSnapshot === false) return sendApiError(res, 404, 'NOT_FOUND', 'selected design system not found or unavailable');
-    const selected = !question && fields.skillIds.length ? await input.catalog?.readSkills(owner, fields.skillIds) : [];
+    const selected = !question && fields.skillIds.length ? await captureSkills(owner, target.conversationId, fields.skillIds) : [];
     if (!selected) return sendApiError(res, 404, 'NOT_FOUND', 'selected skills not found or unavailable');
     const actorContext = await input.settings?.capture(owner) ?? { userInstructions: '', memoryBody: '' };
     const design = fixed ? await input.design?.composeStablePrompt({ ...target, ownerId: owner, ...actorContext }) : null;
@@ -1250,6 +1286,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const request = JSON.stringify({ message: fields.text, companyProvider: 'openai', companyModel: config.model,
       companyCredentialRevision: config.credentialRevision, stablePrompt: prompt, stablePromptHash: createHash('sha256').update(prompt).digest('hex'),
       skillIds: question ? capturedSkillIds : fields.skillIds,
+      skillSnapshots: question ? previousRequest?.skillSnapshots ?? [] : selected,
       ...(designSnapshot ? { designSnapshot, designSystemId: designSnapshot.id } : {}),
       ...(question ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId: question.id } } : {}),
       attachments: fields.attachments, workspaceItems: fields.workspaceItems });

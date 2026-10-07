@@ -110,3 +110,5 @@ export * from './api/amr-continuation.js';
 export * from './api/multiuser-runs.js';
 export * from './api/company-openai.js';
 export * from './api/multiuser-design.js';
+
+export type { StudioProjectMetadata, StudioProjectCreateRequest } from './api/studio-projects.js';

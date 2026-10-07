@@ -340,6 +340,7 @@ export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | '
    * the `OD_PROJECT_CREATE_PREPARATION_TIMEOUT_MS` env seam may shorten it.
    */
   projectCreatePreparationTimeoutMs?: number;
+  readActorSkill?: (owner: string, id: string) => Promise<boolean>;
   readActorDesignSystem?: (owner: string, id: string) => Promise<boolean>;
   /**
    * Multi-user mode only (#3): scopes `GET /api/projects` to the actor and
@@ -3958,7 +3959,13 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       // snapshot while a Workspace switch is loading. Use the partition that
       // produced that exact selection for local lookup only. It does not bind
       // this local project to that Workspace or prove current membership.
-      const designSystemValidation = await awaitProjectCreatePreparation<
+      const actor = multiUserActorOf(res);
+      if (actor && designSystemId != null && !await ctx.readActorDesignSystem?.(actor.accountId, designSystemId))
+        return sendApiError(res, 404, 'NOT_FOUND', 'design system not found');
+      if (actor && skillId != null && !await ctx.readActorSkill?.(actor.accountId, skillId))
+        return sendApiError(res, 404, 'NOT_FOUND', 'skill not found');
+      if (actor && !multiUserStreamAllowed(res)) return;
+      const designSystemValidation = actor ? { ok: true as const, id: designSystemId ?? null } : await awaitProjectCreatePreparation<
         Awaited<ReturnType<typeof validateProjectDesignSystemId>>
       >(
         validateProjectDesignSystemId(
@@ -3977,7 +3984,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         );
       }
       const normalizedDesignSystemId = designSystemValidation.id;
-      const skillValidation = await awaitProjectCreatePreparation<
+      const skillValidation = actor ? { ok: true as const, id: skillId ?? null } : await awaitProjectCreatePreparation<
         Awaited<ReturnType<typeof validateProjectSkillId>>
       >(
         validateProjectSkillId(

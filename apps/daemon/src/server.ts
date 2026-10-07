@@ -8797,6 +8797,7 @@ export async function startServer({
   registerSocialShareRoutes(app, { http: httpDeps });
   const projectCreatePreparationTimeoutMs = projectCreatePreparationTimeoutMsFromEnv();
   registerProjectRoutes(app, {
+    ...(multiUserMode ? { readActorSkill: async (owner: string, id: string) => Boolean(await studioCatalog?.readSkills(owner, [id])) } : {}),
     ...(multiUserMode ? { readActorDesignSystem: async (owner: string, id: string) => Boolean(await studioDesignCatalog?.readSystem(owner, id)) } : {}),
     db,
     design,

@@ -7039,7 +7039,7 @@ async function runProject(args) {
     console.log(`Usage:
   od project create [--name "<title>"] [--skill <id>] [--design-system <id>]
                     [--plugin <id>] [--inputs <json>] [--metadata-json <path|->]
-                    [--mode design|chat|plan]
+                    [--mode design|chat|plan] [--prompt "<text>" | --prompt-file <path|->] [--json]
   od project create-design-system <id> [--name "<title>"]
                     [--prompt "<text>" | --prompt-file <path|->] [--json]
                     Duplicate a project as a design-system workspace and seed
@@ -7282,7 +7282,9 @@ Common options:
       };
       const conversationMode = normalizeChatSessionModeFlag(flags.mode);
       if (conversationMode) body.conversationMode = conversationMode;
-      if (flags['pending-prompt']) body.pendingPrompt = flags['pending-prompt'];
+      const pendingPrompt = await readPromptFromFlags(flags);
+      if (pendingPrompt !== null) body.pendingPrompt = pendingPrompt;
+      else if (flags['pending-prompt']) body.pendingPrompt = flags['pending-prompt'];
       if (flags['metadata-json']) {
         const mj = safeReadJsonFile(flags['metadata-json']);
         if (mj && typeof mj === 'object') body.metadata = mj;

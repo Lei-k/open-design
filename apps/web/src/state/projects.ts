@@ -798,7 +798,10 @@ export async function createProject(
           'Content-Type': 'application/json',
           ...(input.workspaceContext ? workspaceProjectHeaders(input.workspaceContext) : {}),
         },
-        body: JSON.stringify(studioUsesLocalServices() ? { id, ...omitWorkspaceContext(input) } : { id, name: input.name }),
+        body: JSON.stringify(studioUsesLocalServices() ? { id, ...omitWorkspaceContext(input) } : {
+          id, name: input.name, skillId: input.skillId, designSystemId: input.designSystemId,
+          metadata: input.metadata, pendingPrompt: input.pendingPrompt, conversationMode: input.conversationMode,
+        } satisfies import('@open-design/contracts').StudioProjectCreateRequest),
       });
       if (resp.ok) {
         const created = (await resp.json()) as {

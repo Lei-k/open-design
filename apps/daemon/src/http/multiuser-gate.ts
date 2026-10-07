@@ -285,6 +285,8 @@ export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
 const PROJECT_CREATE_FIELDS = new Set([
   'id',
   'name',
+  'skillId',
+  'designSystemId',
   'metadata',
   'pendingPrompt',
   'customInstructions',
@@ -311,6 +313,7 @@ const PROJECT_METADATA_FIELDS = new Set([
   'includeLandingPage',
   'includeOsWidgets',
   'platform',
+  'platformTargets',
   'nameSource',
 ]);
 const PROJECT_KINDS = new Set(['prototype', 'deck', 'other', 'image', 'video', 'audio']);
@@ -326,7 +329,16 @@ function metadataAllowed(value: unknown, allowNull: boolean): boolean {
   for (const key of Object.keys(value)) {
     if (!PROJECT_METADATA_FIELDS.has(key)) return false;
   }
-  return value.kind === undefined || (typeof value.kind === 'string' && PROJECT_KINDS.has(value.kind));
+  const platforms = ['auto', 'responsive', 'web-desktop', 'mobile-ios', 'mobile-android', 'tablet', 'desktop-app'];
+  return (value.kind === undefined || typeof value.kind === 'string' && PROJECT_KINDS.has(value.kind))
+    && (value.fidelity === undefined || typeof value.fidelity === 'string' && ['wireframe', 'high-fidelity'].includes(value.fidelity))
+    && (value.platform === undefined || typeof value.platform === 'string' && platforms.includes(value.platform))
+    && (value.platformTargets === undefined || Array.isArray(value.platformTargets) && value.platformTargets.length <= 8
+      && value.platformTargets.every((platform) => typeof platform === 'string' && platforms.includes(platform)))
+    && ['speakerNotes', 'animations', 'includeLandingPage', 'includeOsWidgets'].every((key) => value[key] === undefined || typeof value[key] === 'boolean')
+    && (value.slideCount === undefined || typeof value.slideCount === 'string' && value.slideCount.length <= 128 && !value.slideCount.includes('\0'))
+    && (value.intent === undefined || typeof value.intent === 'string' && ['live-artifact', 'web-clone', 'document', 'webgl-experience', 'worker-visualizer', 'marketing', 'hyperframes'].includes(value.intent))
+    && (value.nameSource === undefined || typeof value.nameSource === 'string' && ['user', 'generated', 'prompt', 'agent'].includes(value.nameSource));
 }
 
 const FILE_NAME_MAX = 1024;
@@ -420,6 +432,8 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   for (const key of Object.keys(body)) {
     if (!fields.has(key)) return false;
   }
+  if (body.skillId !== undefined && body.skillId !== null
+    && (typeof body.skillId !== 'string' || body.skillId.length === 0 || body.skillId.length > 256)) return false;
   if (body.designSystemId !== undefined && body.designSystemId !== null
     && (typeof body.designSystemId !== 'string' || body.designSystemId.length === 0 || body.designSystemId.length > 256)) return false;
   if (body.updatedAt !== undefined && (typeof body.updatedAt !== 'number' || !Number.isFinite(body.updatedAt))) return false;
