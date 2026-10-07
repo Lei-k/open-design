@@ -4,6 +4,8 @@ export const esES: Dict = {
   "studio.manualMemoryHint": "Saved manual memories and profile facts are included in future runs. Automatic extraction, brief rewriting and verification are not available yet.",
 
   "studio.settingsReload": "Reload saved settings",
+  "studio.aboutDeployed": "Version {version} is deployed. Reload this page to use it.",
+  "studio.aboutReloadPage": "Reload page",
   "studio.settingsSaved": "Account instructions saved.",
   "studio.settingsError": "Could not load or save account instructions.",
   "studio.settingsConflict": "Settings changed in another tab. Reload saved settings before saving again.",

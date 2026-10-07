@@ -4,6 +4,8 @@ export const zhCN: Dict = {
   "studio.manualMemoryHint": "手动保存的记忆与个人档案会带入后续执行。目前尚未开放自动提取、需求改写与验证。",
 
   "studio.settingsReload": "重新加载设置",
+  "studio.aboutDeployed": "服务器已部署版本 {version}，重新加载页面后生效。",
+  "studio.aboutReloadPage": "重新加载页面",
   "studio.settingsSaved": "已保存个人指令。",
   "studio.settingsError": "无法加载或保存个人指令。",
   "studio.settingsConflict": "另一个标签页已修改设置。请重新加载后再保存。",

@@ -190,6 +190,11 @@ test('[P1] Studio saves private skills, instructions and memory in shared Settin
     await page.getByTestId(`studio-settings-nav-${pending}`).click();
     await expect(page.locator('.settings-content .studio-unavailable')).toBeVisible();
   }
+  // About: the deployed version and a no-store check for a newer deployment (#67 Web equivalent).
+  await page.getByTestId('studio-settings-nav-about').click();
+  await expect(page.getByTestId('studio-about-version')).not.toHaveText('—');
+  await page.getByTestId('studio-about-check').click();
+  await expect(page.getByTestId('studio-about').getByRole('status')).toHaveText('You are already on the latest version.');
   await page.getByTestId('studio-settings-nav-skills').click();
   await page.getByTestId('skills-new').click();
   const form = page.getByTestId('skills-create-form');

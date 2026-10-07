@@ -7,6 +7,7 @@ import { Button } from '@open-design/components';
 import { useT } from '../../src/i18n';
 import { MultiUserApp } from '../../src/multiuser/MultiUserApp';
 import styles from '../../src/multiuser/MultiUserApp.module.css';
+import { recordBootVersion } from '../../src/runtime/studio-boot-version';
 
 // Neither single-user modules nor their analytics/workspace effects load until
 // a fresh, valid version response has established that boundary.
@@ -47,6 +48,7 @@ export function ClientApp() {
         if (controller.signal.aborted) return;
         const version = body?.version;
         if (!version || typeof version.version !== 'string' || !version.version) throw new Error('Invalid version');
+        recordBootVersion(version);
         const capabilities = version.capabilities;
         if (capabilities !== undefined && (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities))) throw new Error('Invalid capabilities');
         const multi = capabilities?.multiUser;

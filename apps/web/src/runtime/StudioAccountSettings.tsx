@@ -1,6 +1,7 @@
 import { AgentAccountsPage } from '../multiuser/AgentAccountsPage';
+import { Button } from '@open-design/components';
 import { useEffect, useState } from 'react';
-import type { StudioParityLaneId, StudioSettingsResponse } from '@open-design/contracts';
+import type { AppVersionInfo, AppVersionResponse, StudioParityLaneId, StudioSettingsResponse } from '@open-design/contracts';
 import { useT } from '../i18n';
 import { SkillsSection } from '../components/SkillsSection';
 import { MemorySection } from '../components/MemorySection';
@@ -12,26 +13,27 @@ import { SettingsFrame, SettingsNavItem, SettingsSectionHeader } from '../compon
 import type { SettingsSection } from '../components/SettingsDialog';
 import { studioFetch, studioRequestAvailable } from './studio-transport';
 import { withStudioAccountConfig } from './studio-account-preferences';
+import { bootVersion } from './studio-boot-version';
 import type { AppConfig } from '../types';
 import { useStudioCapabilities, StudioUnavailable } from './studio-capabilities';
 
 /** Account sections, plus the desktop sections whose lane is still open: those
  * stay in the navigation with the server's reason instead of disappearing. */
-type StudioSettingsSection = 'agentAccounts' | 'skills' | 'general' | 'instructions' | 'memory' | 'media' | 'integrations' | 'privacy';
+type StudioSettingsSection = 'agentAccounts' | 'skills' | 'general' | 'instructions' | 'memory' | 'media' | 'integrations' | 'privacy' | 'about';
 const PENDING: Partial<Record<StudioSettingsSection, StudioParityLaneId>> = { media: 'generation', integrations: 'settings', privacy: 'settings' };
 
 function studioSection(section: SettingsSection): StudioSettingsSection {
   switch (section) {
     case 'execution': case 'agentAccounts': return 'agentAccounts';
     case 'designSystems': return 'skills';
-    case 'instructions': case 'memory': case 'media': case 'privacy': return section;
+    case 'instructions': case 'memory': case 'media': case 'privacy': case 'about': return section;
     case 'integrations': case 'mcpClient': case 'composio': return 'integrations';
     default: return 'general';
   }
 }
 
-export function StudioAccountSettings({ presentation, initialSection, onClose, initial, onSkillsChanged, onPersist }: {
-  presentation: 'modal' | 'page'; initialSection: SettingsSection; onClose: () => void;
+export function StudioAccountSettings({ presentation, initialSection, onClose, initial, onSkillsChanged, onPersist, appVersionInfo }: {
+  presentation: 'modal' | 'page'; initialSection: SettingsSection; onClose: () => void; appVersionInfo?: AppVersionInfo | null;
   initial: AppConfig; onSkillsChanged?: (id?: string) => void; onPersist: (config: AppConfig) => Promise<void> | void }) {
   const studio = useStudioCapabilities();
   const t = useT();
@@ -78,6 +80,7 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
     media: { title: t('settings.mediaProviders'), subtitle: 'Image / video / audio' },
     integrations: { title: t('settings.mcpServerTitle'), subtitle: t('settings.mcpServerHint') },
     privacy: { title: t('settings.privacy'), subtitle: t('settings.privacyHint') },
+    about: { title: t('settings.about'), subtitle: t('settings.aboutHint') },
   };
   const item = (id: StudioSettingsSection, icon: Parameters<typeof SettingsNavItem>[0]['icon']) =>
     <SettingsNavItem active={section === id} onClick={() => setSection(id)} icon={icon} title={headers[id].title}
@@ -99,6 +102,7 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
       {item('media', 'image')}
       {item('integrations', 'puzzle')}
       {item('privacy', 'eye')}
+      {item('about', 'settings')}
     </>}>
     {section === 'agentAccounts' && <AgentAccountsPage session={studio.session} generation={studio.generation} />}
     {section === 'skills' && (studio.available('catalogs')
@@ -125,5 +129,37 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
     </>}
     {usable && section === 'memory' && <MemorySection />}
     {pending && <StudioUnavailable lane={pending} />}
+    {section === 'about' && <StudioAbout loaded={appVersionInfo ?? null} />}
   </SettingsFrame>;
+}
+
+/** Web equivalent of the desktop About/update row: the deployed server
+ * version, a no-store check for a newer deployment and a page reload. Server
+ * deployment itself stays an operator action. */
+function StudioAbout({ loaded: provided }: { loaded: AppVersionInfo | null }) {
+  const t = useT();
+  const loaded = provided ?? bootVersion();
+  const [state, setState] = useState<{ status: 'idle' | 'checking' | 'current' | 'deployed' | 'failed'; version?: string }>({ status: 'idle' });
+  const check = async () => {
+    setState({ status: 'checking' });
+    try {
+      const response = await studioFetch('/api/version', { cache: 'no-store' });
+      if (!response.ok) throw new Error('version unavailable');
+      const { version } = await response.json() as AppVersionResponse;
+      setState(loaded && version.version !== loaded.version ? { status: 'deployed', version: version.version } : { status: 'current' });
+    } catch (error) { if (!(error instanceof DOMException && error.name === 'AbortError')) setState({ status: 'failed' }); }
+  };
+  return <section className="settings-section" data-testid="studio-about">
+    <dl className="settings-about-list">
+      <div><dt>{t('settings.appVersion')}</dt><dd data-testid="studio-about-version">{loaded ? `${loaded.version} · ${loaded.channel}` : '—'}</dd></div>
+    </dl>
+    <p role="status" aria-live="polite">{state.status === 'checking' ? t('settings.updateStatusChecking')
+      : state.status === 'current' ? t('settings.updateStatusUpToDate')
+      : state.status === 'deployed' ? t('studio.aboutDeployed', { version: state.version ?? '' })
+      : state.status === 'failed' ? t('settings.updateStatusFailed') : t('settings.updateStatusNotChecked')}</p>
+    <Button variant="ghost" data-testid="studio-about-check" disabled={state.status === 'checking'} onClick={() => void check()}>
+      {t(state.status === 'idle' ? 'settings.updateCheck' : 'settings.updateRecheck')}</Button>
+    {state.status === 'deployed' ? <Button variant="primary" data-testid="studio-about-reload"
+      onClick={() => window.location.reload()}>{t('studio.aboutReloadPage')}</Button> : null}
+  </section>;
 }

@@ -1503,7 +1503,7 @@ export function SettingsDialog(props: Props) {
   const studio = useStudioCapabilities();
   return studio.hostServices ? <LocalSettingsDialog {...props} /> : <StudioAccountSettings presentation={props.presentation ?? 'modal'}
     initialSection={normalizeSettingsSection(props.initialSection ?? 'general')} onClose={props.onClose}
-    initial={props.initial} onSkillsChanged={props.onSkillsChanged} onPersist={props.onPersist} />;
+    initial={props.initial} onSkillsChanged={props.onSkillsChanged} onPersist={props.onPersist} appVersionInfo={props.appVersionInfo} />;
 }
 
 function LocalSettingsDialog({

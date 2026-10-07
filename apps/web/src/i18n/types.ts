@@ -31,6 +31,8 @@ export const LOCALE_LABEL: Record<Locale, string> = {
 // offending string instead of a generic object mismatch.
 export interface Dict {
   'studio.settingsReload': string;
+  'studio.aboutDeployed': string;
+  'studio.aboutReloadPage': string;
   'studio.settingsSaved': string;
   'studio.settingsError': string;
   'studio.settingsConflict': string;

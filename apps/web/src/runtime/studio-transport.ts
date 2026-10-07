@@ -47,6 +47,8 @@ const RUN_ACTION = /^\/api\/runs\/[^/]+\/(?:events|cancel|steer|feedback)$/;
 export function studioRequestAvailable(method: string, path: string,
   usable: (lane: StudioParityLaneId) => boolean = (lane) => scope?.usable(lane) ?? false): boolean {
   if (/^\/api\/(?:version|health)$/.test(path)) return method === 'GET';
+  // Public, no-store deployment version (About → check for a newer deployment).
+  if (path === '/api/version') return method === 'GET';
   if (path === '/api/active') return method === 'GET' || method === 'POST';
   if (path === '/api/projects') return method === 'GET' || method === 'POST';
   if (/^\/api\/projects\/[^/]+$/.test(path)) return ['GET', 'PATCH', 'DELETE'].includes(method);

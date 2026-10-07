@@ -390,6 +390,8 @@ export const ko: Dict = {
   'libraryPicker.add': '가져오기',
   'libraryPicker.loading': '불러오는 중…',
   'studio.settingsReload': 'Reload saved settings',
+  'studio.aboutDeployed': '버전 {version}이(가) 배포되었습니다. 페이지를 새로고침하면 적용됩니다.',
+  'studio.aboutReloadPage': '페이지 새로고침',
   'studio.settingsSaved': 'Account instructions saved.',
   'studio.settingsError': 'Could not load or save account instructions.',
   'studio.settingsConflict': 'Settings changed in another tab. Reload saved settings before saving again.',

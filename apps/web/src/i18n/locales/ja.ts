@@ -390,6 +390,8 @@ export const ja: Dict = {
   'libraryPicker.add': 'インポート',
   'libraryPicker.loading': '読み込み中…',
   'studio.settingsReload': 'Reload saved settings',
+  'studio.aboutDeployed': 'バージョン {version} がデプロイされました。ページを再読み込みすると反映されます。',
+  'studio.aboutReloadPage': 'ページを再読み込み',
   'studio.settingsSaved': 'Account instructions saved.',
   'studio.settingsError': 'Could not load or save account instructions.',
   'studio.settingsConflict': 'Settings changed in another tab. Reload saved settings before saving again.',
