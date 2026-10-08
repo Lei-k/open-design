@@ -111,6 +111,7 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
     {section === 'agentAccounts' && <>
       <AgentAccountsPage session={studio.session} generation={studio.generation} />
       <StudioProviderKeys />
+      {studio.capabilities?.researchSearch ? <StudioProviderKeys provider="tavily" /> : null}
     </>}
     {section === 'skills' && (studio.available('catalogs')
       ? <SkillsSection cfg={config} setCfg={setConfig} onSkillsChanged={onSkillsChanged} />

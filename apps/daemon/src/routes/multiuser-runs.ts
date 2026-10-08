@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
-import { API_ERROR_CODES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
+import { API_ERROR_CODES, STUDIO_RESEARCH_MAX_SOURCES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
 import { PersonalRunEvents } from '../runtimes/personal-run-events.js';
 import { formatProjectAttachmentHint, normalizeCommentAttachments, renderCommentAttachmentHint, resolveSafeProjectAttachments } from '../runtimes/chat-prompt-inputs.js';
 import { renderRunContextPrompt } from '../runtimes/chat-run-context.js';
@@ -33,6 +33,8 @@ import { CompanyOpenAIConfigError, CompanyOpenAIStore } from '../storage/company
 import { CompanyOpenAIWorker, runCompanyOpenAITurn } from '../runtimes/company-openai.js';
 import { STUDIO_MEDIA_PROMPT } from '../runtimes/studio-media.js';
 import { PersonalProviderKeyError, PersonalProviderKeyStore } from '../storage/personal-provider-keys.js';
+import { createStudioResearch, StudioResearchError, type StudioResearch } from '../research/studio-research.js';
+import { renderStudioResearchFindings } from '../prompts/research-contract.js';
 import type { StudioDesignCatalog } from './studio-design-catalog.js';
 import type { StudioSettings } from '../storage/studio-settings.js';
 import type { StudioCatalog } from './studio-catalog.js';
@@ -108,6 +110,8 @@ type PersonalRunFields = {
   /** This turn's Codex model/effort; null leaves the choice to the user's Codex account. */
   model: string | null;
   reasoning: string | null;
+  /** `research.enabled` (#63): one search on the account's own key at admission; null when not asked. */
+  research: { query: string | null; maxSources: number | undefined } | null;
 };
 type FieldRefusal = { status: number; code: ApiErrorCode; message: string };
 /** A project-relative path: no root, drive, backslash, NUL, empty, `.` or `..` segment. */
@@ -214,6 +218,24 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
   if (hints !== undefined && (!hints || typeof hints !== 'object' || Array.isArray(hints) || JSON.stringify(hints).length > 4096)) {
     return refuse(400, 'BAD_REQUEST', 'invalid question answer');
   }
+  const rawResearch = body.research;
+  let research: PersonalRunFields['research'] = null;
+  if (rawResearch !== undefined && rawResearch !== null) {
+    if (typeof rawResearch !== 'object' || Array.isArray(rawResearch)) return refuse(400, 'BAD_REQUEST', 'invalid research options');
+    const options = rawResearch as Record<string, unknown>;
+    if (Object.keys(options).some((key) => !['enabled', 'query', 'maxSources', 'depth', 'providers'].includes(key))
+      || typeof options.enabled !== 'boolean' || options.query !== undefined && typeof options.query !== 'string'
+      || options.maxSources !== undefined && !(Number.isInteger(options.maxSources) && Number(options.maxSources) >= 1 && Number(options.maxSources) <= STUDIO_RESEARCH_MAX_SOURCES)) {
+      return refuse(400, 'BAD_REQUEST', 'invalid research options');
+    }
+    // Shallow Tavily search is the only research Studio runs.
+    if (options.depth !== undefined && options.depth !== 'shallow' || options.providers !== undefined
+      && !(Array.isArray(options.providers) && options.providers.every((provider) => provider === 'tavily'))) {
+      return refuse(403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'not available for Studio runs: research provider or depth');
+    }
+    if (options.enabled) research = { query: typeof options.query === 'string' && options.query.trim() ? options.query.trim().slice(0, 1000) : null,
+      maxSources: options.maxSources as number | undefined };
+  }
   const answer = (hints as Record<string, unknown> | undefined)?.entryFrom === 'question_answer';
   const sourceRunId = (hints as Record<string, unknown> | undefined)?.sourceRunId;
   if (answer && typeof sourceRunId !== 'string') return refuse(400, 'BAD_REQUEST', 'invalid question answer');
@@ -224,7 +246,7 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
     skillIds: selectedSkillIds,
     questionSourceRunId: answer ? sourceRunId as string : null,
     attachments: [...new Set(attachments as string[])],
-    workspaceItems, commentAttachments, model, reasoning,
+    workspaceItems, commentAttachments, model, reasoning, research,
   };
 }
 
@@ -310,6 +332,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   designCatalog?: StudioDesignCatalog;
   /** Account-private provider keys (#62/#63); `false` turns the source off for this deployment. */
   personalProviderKeys?: boolean;
+  /** Programmatic Tavily fixture for tests; production calls the fixed provider endpoint. */
+  researchFetch?: typeof fetch;
 }): { cancelAccountRuns(accountId: string): void; isRunOwner(runId: string, accountId: string): boolean;
   /** `accountId: null` stops every account's runs in the project. */
   cancelProjectRuns(accountId: string | null, projectId: string, conversationId?: string): Promise<() => void>;
@@ -317,7 +341,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   /** Admit a run for a background actor through the same policy as POST /api/runs. */
   admitInternal(actor: AuthActor, request: Record<string, unknown>, allowed: () => boolean, instruction?: string): Promise<InternalMultiUserResult>;
   runState(runId: string, accountId: string): { status: string; text: string | null; reason: string | null } | null;
-  beginShutdown(): void; shutdown(): Promise<void>; companyPoolAvailable: boolean; openaiPoolAvailable: boolean } {
+  beginShutdown(): void; shutdown(): Promise<void>; companyPoolAvailable: boolean; openaiPoolAvailable: boolean;
+  /** Account research on the account's own Tavily key (#63); shared with the research route. */
+  research: StudioResearch } {
   const { db, dataRoot, projectsRoot } = input;
   type DesignSnapshot = { id: string; hash: string; prompt: Pick<Parameters<typeof composeSystemPrompt>[0],
     'designSystemBody' | 'designSystemTitle' | 'designSystemUsageMd' | 'designSystemTokensCss' |
@@ -412,6 +438,23 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   const ledger = new WorkerQuotaLedger({ dataRoot, ...(input.clock ? { clock: input.clock } : {}) });
   const accounts = AuthStore.open({ dataRoot });
   const now = input.clock ?? Date.now;
+  const research = createStudioResearch({ db, keys: providerKeys, clock: now, ...(input.researchFetch ? { fetch: input.researchFetch } : {}) });
+  /**
+   * The turn's research (#63): one search on the account's own key, rendered
+   * as daemon-authored evidence that precedes the turn for the agent only.
+   * A refusal answers the admission with its typed code; nothing is queued.
+   */
+  const researchInstruction = async (owner: string, fields: PersonalRunFields, res: Response): Promise<string | null | false> => {
+    if (!fields.research) return null;
+    try {
+      const findings = await research.search(owner, fields.research.query ?? fields.text, fields.research.maxSources);
+      return renderStudioResearchFindings(findings);
+    } catch (error) {
+      if (error instanceof StudioResearchError) sendApiError(res, error.status, error.code, error.message);
+      else sendApiError(res, 502, 'UPSTREAM_UNAVAILABLE', 'research failed');
+      return false;
+    }
+  };
   const legacy = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { sql: string } | undefined;
   if (legacy && !legacy.sql.includes("'queued'")) {
     db.pragma('foreign_keys = OFF');
@@ -1130,12 +1173,14 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   });
   app.put('/api/multiuser/settings/provider-keys/:provider', (req, res) => {
     if (!providerKeys) return sendApiError(res, 403, 'MULTIUSER_PROVIDER_DISABLED', 'personal API keys are not enabled on this server');
-    if (req.params.provider !== 'openai') return sendApiError(res, 404, 'NOT_FOUND', 'unknown provider');
+    const provider = req.params.provider;
+    if (provider !== 'openai' && provider !== 'tavily') return sendApiError(res, 404, 'NOT_FOUND', 'unknown provider');
     const owner = actor(res);
     try {
-      const { summary, credentialChanged } = providerKeys.update(owner, 'openai', req.body as UpdateStudioProviderKeyRequest, now());
-      // A replaced or removed key stops the turns that ran on the old one; nothing moves to the company pool.
-      if (credentialChanged) {
+      const { summary, credentialChanged } = providerKeys.update(owner, provider, req.body as UpdateStudioProviderKeyRequest, now());
+      // A replaced or removed OpenAI key stops the turns that ran on the old one; nothing moves to the company pool.
+      // Research keys are read per search, so a change applies to the next search.
+      if (credentialChanged && provider === 'openai') {
         const pending = db.prepare(`SELECT id FROM ${table} WHERE owner_account_id = ? AND status IN ('active','queued') AND ${byokRows}`).all(owner) as Array<{ id: string }>;
         suspendDispatch = true;
         try { for (const run of pending) {
@@ -1345,11 +1390,19 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         selection: composed?.selection ?? { conversationId: target.conversationId, skillId: '', designSystemId: '', locale: 'en' } };
     }
     const skillSnapshots = inheritsSkills ? questionRequest?.skillSnapshots ?? [] : withFixedSkill(fixedCapture?.skill, selectedSkills);
+    // No research is billed for a turn this account cannot run on its Codex link.
+    if (fields.research && !personal.usableAccount(owner)) {
+      return sendApiError(res, 409, 'MULTIUSER_PERSONAL_UNAVAILABLE', 'no usable personal Codex account; link or re-authorize it');
+    }
+    const findings = await researchInstruction(owner, fields, res);
+    if (findings === false) return;
+    if (findings) instruction = [instruction, findings].filter(Boolean).join('\n\n');
     const request = JSON.stringify({ message: fields.text, ...(instruction ? { instruction } : {}), ...(fields.attachments.length ? { attachments: fields.attachments } : {}),
       ...(inheritsSkills || withFixedSkill(fixedCapture?.skill, selectedSkills).length ? { skillIds: inheritsSkills ? inheritedSkillIds : fields.skillIds, skillSnapshots } : {}),
       ...(fields.workspaceItems.length ? { workspaceItems: fields.workspaceItems } : {}),
       ...(fields.commentAttachments.length ? { commentAttachments: fields.commentAttachments } : {}),
       ...(fields.model ? { model: fields.model } : {}), ...(fields.reasoning ? { reasoning: fields.reasoning } : {}),
+      ...(findings ? { research: { provider: 'tavily' } } : {}),
       ...(question ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId: question.id } } : {}),
       ...(designSnapshot ? { designSnapshot } : {}),
       ...(composed ? { skillId: composed.selection.skillId, designSystemId: designSnapshot?.id ?? composed.selection.designSystemId,
@@ -1476,6 +1529,11 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const stablePrompt = design?.prompt ?? composeSystemPrompt({ agentId: 'codex', streamFormat: 'json-event-stream',
       executionProfile: 'filesystem', promptCoreVariant: 'slim', sessionMode: 'design', locale: 'en', metadata: getProject(db, target.projectId)?.metadata, ...actorContext, ...designSnapshot?.prompt });
     const prompt = question && typeof previousRequest?.stablePrompt === 'string' ? previousRequest.stablePrompt : stablePrompt + selected.map((skill) => `\n\n---\n\n## Composed skill — ${skill.name}\n\n${skill.body.trim()}`).join('');
+    // Research bills the account's own Tavily key whatever the turn's source; the recheck below covers this I/O.
+    if (fields.research && !own && ledger.balance(owner).remainingMs === 0) return sendApiError(res, 429, 'MULTIUSER_QUOTA_EXHAUSTED', 'worker quota exhausted');
+    const findings = await researchInstruction(owner, fields, res);
+    if (findings === false) return;
+    if (findings) instruction = [instruction, findings].filter(Boolean).join('\n\n');
     if (!multiUserStreamAllowed(res) || !managedTarget(inputBody, res)) return;
     if (personalSession(target.conversationId)) return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation uses a personal subscription');
     if (!answerReady()) return sendApiError(res, 409, 'CONFLICT', 'question is stale or already answered');
@@ -1499,6 +1557,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (queued >= 3) return sendApiError(res, 409, 'MULTIUSER_QUEUE_LIMIT', 'queue limit reached');
     const id = randomUUID(); const createdAt = now();
     const request = JSON.stringify({ message: fields.text, ...(instruction ? { instruction } : {}),
+      ...(findings ? { research: { provider: 'tavily' } } : {}),
       ...(own ? { personalProvider: 'openai', personalModel: currentKey!.model, personalCredentialRevision: currentKey!.credentialRevision }
         : { companyProvider: 'openai', companyModel: config.model, companyCredentialRevision: config.credentialRevision }), stablePrompt: prompt, stablePromptHash: createHash('sha256').update(prompt).digest('hex'),
       skillIds: question ? capturedSkillIds : fields.skillIds,
@@ -1740,6 +1799,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     return shutdownPromise;
   };
   return {
+    research,
     async admitInternal(actorRecord, request, allowed, instruction) {
       const { res, result } = internalMultiUserResponse(actorRecord, allowed);
       if (request.executionSource === 'company_pool') await createOpenAIRun({ ...request, agentId: 'openai' }, res, instruction);

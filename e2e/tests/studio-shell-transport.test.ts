@@ -4,7 +4,7 @@ import { expect, it } from 'vitest';
 import { MULTIUSER_ROUTE_CLASSIFICATION, matchMultiUserRoute } from '../../apps/daemon/src/http/multiuser-route-classes.js';
 const runtime = fileURLToPath(new URL('../../apps/web/src/runtime/studio-transport.ts', import.meta.url));
 const { studioRequestAvailable } = await import(runtime) as {
-  studioRequestAvailable(method: string, path: string, usable?: (lane: string) => boolean, renderedExports?: boolean): boolean;
+  studioRequestAvailable(method: string, path: string, usable?: (lane: string) => boolean, renderedExports?: boolean, researchSearch?: boolean): boolean;
 };
 
 it('classifies every observed request from the real App and cookie entry lifecycle', () => {
@@ -306,5 +306,22 @@ it('opens account automation templates, packets, proposals and crystallize only 
   for (const [method, path] of [['DELETE', '/api/automation-proposals/p'], ['PUT', '/api/automation-templates/t'], ['POST', '/api/automation-templates'],
     ['GET', '/api/routines/r/runs/x/crystallize'], ['POST', '/api/orbit/run'], ['GET', '/api/connectors']] as const) {
     expect(studioRequestAvailable(method, path, () => true), `${method} ${path}`).toBe(false);
+  }
+});
+
+it('opens account research and the Tavily key only where the server advertises account research', () => {
+  const lanes = (lane: string) => lane === 'generation' || lane === 'execution';
+  for (const path of ['/api/research/search', '/api/multiuser/research/search']) {
+    expect(studioRequestAvailable('POST', path, lanes, false, true), path).toBe(true);
+    expect(studioRequestAvailable('POST', path, lanes, false, false), path).toBe(false);
+    expect(studioRequestAvailable('POST', path, (lane) => lane === 'execution', false, true), path).toBe(false);
+    const matches = matchMultiUserRoute('POST', path);
+    expect(matches.length, path).toBeGreaterThan(0);
+    expect(matches.every(({ entry }) => entry.routeClass === 'actor-scoped'), path).toBe(true);
+  }
+  expect(studioRequestAvailable('PUT', '/api/multiuser/settings/provider-keys/tavily', lanes, false, true)).toBe(true);
+  expect(studioRequestAvailable('PUT', '/api/multiuser/settings/provider-keys/tavily', lanes, false, false)).toBe(false);
+  for (const [method, path] of [['GET', '/api/research/search'], ['POST', '/api/xai/search'], ['PUT', '/api/media/config']] as const) {
+    expect(studioRequestAvailable(method, path, () => true, true, true), `${method} ${path}`).toBe(false);
   }
 });

@@ -26,7 +26,8 @@ export function StudioCapabilitiesProvider({ session, generation, actor, capabil
   const usable = (lane: StudioParityLaneId) => ['supported', 'pilot'].includes(capabilities.features[lane].status);
   // The session owns this lifetime (including StrictMode remounts). It releases
   // the transport and module registry before publishing another generation.
-  activateStudioTransport(session, generation, { messageIdPrefix, usable, renderedExports: capabilities.renderedExports === true });
+  activateStudioTransport(session, generation, { messageIdPrefix, usable, renderedExports: capabilities.renderedExports === true,
+    researchSearch: capabilities.researchSearch === true });
   const value: StudioCapabilities = { actor, session, generation, capabilities, hostServices: false,
     // Choices are advertised by the authenticated daemon, never inferred from host configuration.
     executionAgentId: usable('execution') ? (capabilities.executionSources?.[0]?.agentId ?? (capabilities.executionSources === undefined ? 'codex' : null)) : null,
@@ -39,8 +40,9 @@ export function useStudioCapabilities() { return useContext(Context); }
 export function useStudioRequestAvailable() {
   const studio = useStudioCapabilities();
   const renderedExports = studio.capabilities?.renderedExports === true;
-  return useCallback((method: string, path: string) => studio.hostServices || studioRequestAvailable(method, path, studio.available, renderedExports),
-    [studio.hostServices, studio.available, renderedExports]);
+  const researchSearch = studio.capabilities?.researchSearch === true;
+  return useCallback((method: string, path: string) => studio.hostServices || studioRequestAvailable(method, path, studio.available, renderedExports, researchSearch),
+    [studio.hostServices, studio.available, renderedExports, researchSearch]);
 }
 export function StudioUnavailable({ lane }: { lane: StudioParityLaneId }) {
   const studio = useStudioCapabilities();

@@ -80,6 +80,8 @@ export interface MultiUserModeOptions {
   testMockAgentScript?: string;
   /** Programmatic provider-fixture injection only; deployment config cannot supply it. */
   testCompanyOpenAIFetch?: typeof fetch;
+  /** Programmatic Tavily fixture for account research (#63); deployment config cannot supply it. */
+  testTavilyFetch?: typeof fetch;
   /** Test harness clock for pool accounting. */
   poolClock?: () => number;
   /**
@@ -155,6 +157,7 @@ export interface ResolvedMultiUserMode {
   testMockAgentScript?: string;
   /** Programmatic provider-fixture injection only; deployment config cannot supply it. */
   testCompanyOpenAIFetch?: typeof fetch;
+  testTavilyFetch?: typeof fetch;
   poolClock?: () => number;
   /** How personal app-server children start; absent means the feature is off. */
   personalCodex?: ResolvedPersonalCodex;
@@ -246,6 +249,7 @@ export function resolveMultiUserMode(input: {
   return { allowedOrigins, previewOrigin, bootstrapSecret, auth: { ...(options.auth ?? {}) },
     ...(options.testMockAgentScript ? { testMockAgentScript: options.testMockAgentScript } : {}),
     ...(options.testCompanyOpenAIFetch ? { testCompanyOpenAIFetch: options.testCompanyOpenAIFetch } : {}),
+    ...(options.testTavilyFetch ? { testTavilyFetch: options.testTavilyFetch } : {}),
     ...(options.poolClock ? { poolClock: options.poolClock } : {}),
     ...(personalCodex ? { personalCodex } : {}),
     ...(options.studioRenderer ? { studioRenderer: resolveStudioRenderer(options.studioRenderer) } : {}),

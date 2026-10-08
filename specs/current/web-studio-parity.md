@@ -138,7 +138,8 @@ Remote origin 只接受 HTTPS，HTTP 只准 numeric loopback 的本地測試／�
 | #56 / #57 / S4 | Pilot actors send through the shared `ProjectView → ChatPane → ChatComposer`；question-form、reload reattach、stop、retry、queue、feedback 與 typed failure copy 由真實 browser harness 驗證 | S5 attachments, S8 private skills, S11 design documents and S21 per-turn personal Codex model/effort are implemented; real-provider recordings and full chat state matrix remain | `pilot`，非 `supported` |
 | #60 / S13–S14 | shared project setup and Home prompt → exactly one run; actor-owned immutable templates, duplicate and browser ZIP/directory imports; matching CLI commands | Live Artifact/Media/Figma, complete carousel/type parity and remaining Home acceptance | `pilot`，非 `supported` |
 | #61 / S11/S13/S17/S18/S20 | bundled design/prompt templates and craft; actor design documents, revisions, safe previews and captured execution versions; immutable actor template snapshots; captured skill packages (bundled and private folder imports) with personal read-only mounts and company copy/offline-script tools; fixed-design conversations capture their packages; shared create/editor/catalog/composer and CLI | design generation, design asset packages, plugin/community management and Vela team catalogs | `pilot`，非 `supported` |
-| #62 / S10/S16/S19/S21/S25 | shared Settings frame and section navigation; instructions, manual memory, appearance/notification and personal Codex model preferences, About/version; HTTP A/B/admin negatives, CLI and shared Settings browser workflow | encrypted personal provider credentials, automatic memory extraction/rewrite/verification, connectors, MCP, privacy and library | `pilot`，非 `supported` |
+| #62 / S10/S16/S19/S21/S25 | shared Settings frame and section navigation; instructions, manual memory, appearance/notification and personal Codex model preferences, About/version; HTTP A/B/admin negatives, CLI and shared Settings browser workflow | automatic memory extraction/rewrite/verification, connectors, MCP and library (encrypted OpenAI/Tavily account keys landed in S33/S37; privacy in S30) | `pilot`，非 `supported` |
+| #63 / S33/S34/S37 | OpenAI turns on the company pool or the account's own key carry image/speech/video functions billed to the turn's source; research search on each account's own encrypted Tavily key (standalone and with a turn), usage recorded per account; shared Home/Settings/composer and CLI | Live Artifacts, GenUI, critique and real-provider/EC2 acceptance | `pilot`，非 `supported` |
 | #66 / S15/S23 | captured owned project/folder/batch ZIP, SHA-256 receipt and standard design handoff metadata; one-file HTML export bundled from captured owner bytes; shared viewer/file download and CLI | isolated PDF/PPTX/image renderers, historical-version export binding, public share, cloud deploy/finalize/handoff | `pilot`，非 `supported` |
 | #64 / S24/S36 | account-owned routines on the standard `/api/routines` aliases: CRUD, schedules via the shared `RoutineService`, slot claims, manual runs, history; every dispatch re-resolves owner/pilot/project/source (and the bundled template); bundled templates, account source packets/ingestion, proposals applied into account memory/skills/design documents, crystallize into a private skill package; TasksView and `od automation` | plugin/MCP/connector context, the account's own OpenAI key as a routine source, real timer-fired and real-provider scheduled acceptance | `pilot`，非 `supported` |
 | #53 / #69 / S22 | account control (Settings, admin Users/Audit, sign-out) in the shared rail, workspace chrome and in-App admin header; the separate multi-user top bar is removed | full admin presentation inside the Studio shell navigation and #70 mobile/a11y matrix | `pilot`，非 `supported` |
@@ -502,7 +503,7 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
 - OpenAI turns (company pool or the account's own key) carry `generate_image` (gpt-image-1, PNG), `generate_speech` (gpt-4o-mini-tts, MP3) and `generate_video` (sora-2, MP4, polled within the turn) functions (`runtimes/studio-media.ts`). Each calls the provider with the turn's own key, so the bill follows the turn's source. Output is written only into the run's project through the descriptor-checked writer (64 MiB ceiling, hidden and traversal paths refused, magic bytes checked). Usage lands on the run as `output.media`. Failures reach the model as secret-free codes.
 - Studio Home enables Image, Video and Audio project types when the `generation` lane is usable (an OpenAI source exists). Media projects default to an OpenAI source and hide personal Codex, which the server also refuses there (Codex has no media functions). Settings → Media describes models and billing. CLI: `od project create --kind image|video|audio`.
 - Evidence: `studio-media-http` (image/speech/video on the account key, project-only writes, refusals, provider auth error not echoed), CLI case, browser case (Home → Image → generated file opens in the workspace with an immutable chat card).
-- Remaining for #63: Live Artifacts (connector credentials), GenUI (no web mount upstream), research (Tavily key custody) and critique theater.
+- Remaining for #63: Live Artifacts (connector credentials), GenUI (no web mount upstream) and critique theater; research closed in S37.
 
 ## S35 — deployment-local public links (#66; decision 2026-10-08)
 
@@ -539,9 +540,28 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
 
 ![Crystallize and proposal review](../../docs/design/studio-parity/automation-proposals.png)
 
+## S37 — research on each account's own Tavily key (#63, #62, #57, #68)
+
+- **Custody.** The S33 store (`storage/personal-provider-keys.ts`) gains provider `tavily`. The same per-account AES-GCM sealing, write-only summaries and value-free audit apply, and no admin route reads it. A one-time table rebuild widens the provider CHECK and keeps every row (migration test). Tavily keys have no model, and account reads list both providers.
+- **Search.** `research/studio-research.ts` calls the fixed `https://api.tavily.com/search` with `redirect: 'error'`, a 30 s timeout and only the account's own key, never a daemon/host key (`TAVILY_API_KEY` is planted as a negative control).
+  - **Refusals:** a missing key is `MULTIUSER_PROVIDER_KEY_MISSING`; 401/403 is `MULTIUSER_PROVIDER_KEY_REJECTED`; 429 is `MULTIUSER_PROVIDER_RATE_LIMITED`. Provider bodies are never echoed.
+  - **Results:** only http(s) sources, with bounded text.
+  - **Usage:** every provider call adds an immutable `multiuser_research_usage` row for the account (outcome, source count, credential revision), never the query or the key.
+- **Routes.** The standard `POST /api/research/search` is an `actor-scoped` rewrite to `/api/multiuser/research/search` (body policy `research-search`: `query`, `maxSources` ≤ 10). The host research handler never runs for a cookie actor. `PUT /api/multiuser/settings/provider-keys/tavily` reuses the S33 route.
+- **Turns.** `ChatRequest.research` moves to `honored` in `MULTIUSER_PERSONAL_RUN_FIELD_POLICY`. When enabled, admission runs one search on the account key (query defaults to the turn text) for personal Codex, the company pool and the account's OpenAI key alike. The findings become a daemon-authored instruction (`renderStudioResearchFindings`) that precedes the turn for the agent only, with the untrusted-evidence and report rules of the single-user research contract. The visible user turn stays the user's text. A refusal answers the admission and queues nothing; a personal turn without a usable Codex link is refused before any search.
+- **Capability.** `StudioRuntimeCapabilities.researchSearch` (additive) is advertised to pilots when account keys are enabled. The `generation` pilot reason lists research.
+- **Web.** Settings → Agent accounts reuses the shared `StudioProviderKeys` section as "Your Tavily research key" (no model field). The composer offers `/search` only when the capability is on **and** the account saved a key (`useStudioResearchReady`, refreshed on save). In Studio, `/search <query>` sends `Search for: <query>` with `research: { enabled, query }`. The transport opens the research route and the Tavily key write only with that capability. The own-key failure copy is now provider-neutral in all locales.
+- **CLI.** `od account key get|set|remove --provider tavily` (key from a private file or stdin; `--model` refused) and `od research search --query … --session-file … --json` on the same endpoints.
+- **Evidence.** `studio-research-http` (3): write-only per-account key and capability; fixed endpoint, actor key only, no host key, B/admin refusals, rejected/rate-limited codes without echo, value-free usage rows and sealed storage; a turn's research reaching the agent as evidence, typed refusal without a queued run, unsupported provider refused, disabled research a no-op. Also the migration case, S33/S4 tests updated for the honored field and both key rows, the CLI case, Web `studio-research`, the transport oracle, and the browser case: no `/search` before a key → save in Settings → `/search` → findings in the turn; B refused.
+- **Remaining for #63.** Live Artifacts (connector credentials), GenUI, critique theater, and real Tavily/EC2 acceptance. Deeper research modes (`depth` other than shallow, other providers) stay refused.
+
+![Tavily research key in Settings](../../docs/design/studio-parity/research-key-settings.png)
+
+![/search in the Studio composer](../../docs/design/studio-parity/research-composer.png)
+
 ## 目前進度與續作順序 — 2026-10-07（S25 後）
 
-[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S36 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
+[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S37 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
 
 - 分支：`feat/studio-parity-foundation`；以 PR 最新 head 為準。先核對 git status/log 和 GitHub 最新 review，避免重做已交付項目。S18–S25 的實作、測試、限制與入口截圖見上文；本次依使用者要求階段性收尾並交接，並非 Epic 完成。
 - 已確認產品決定：公司池使用 OpenAI 官方 API；Vela 採使用者驗證的本人身份與服務端 Web account/member binding；native window、OS overlay 與 app installer/updater 的 Web 不適用決定，和 in-page pet 仍需交付項目保持分開。
@@ -551,7 +571,7 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
   - #64：S36 完成 templates/ingestion/proposals/crystallize；剩餘 connector/MCP/plugin context、帳號自有 key 作 routine 來源，以及排程觸發的真實驗收。
   - #65：S32 完成同部署帳號間專案分享（view/comment/edit、presence、共享評論、撤銷即時生效）；剩餘 team catalogs（design systems/skills/plugins 共享，併 #61）與他人執行中 turn 的即時鏡像；依決定不接 Vela。
   - #66：PDF/PPTX/PNG 由 S31 伺服器 renderer 完成；S35 完成部署內公開連結；剩餘雲端 deploy（每帳號 token）與 finalize/handoff。
-  - #63：S33 每帳號加密 OpenAI key、S34 媒體生成（圖片/旁白/影片）完成；剩餘 Live Artifacts、GenUI、research、critique。
+  - #63：S33 每帳號加密 OpenAI key、S34 媒體生成（圖片/旁白/影片）、S37 每帳號 Tavily research 完成；剩餘 Live Artifacts、GenUI、critique。
   - #61：design generation、asset packages、plugin/community/team catalogs。
   - #62：S33 完成 encrypted personal provider credentials；剩餘自動記憶、connectors/MCP、library。
   - #67：in-page pet 與清除本瀏覽器資料已於 S27 完成；剩餘逐項 host bridge 的 mobile/permission-denied/headless UX 驗收（#70）。

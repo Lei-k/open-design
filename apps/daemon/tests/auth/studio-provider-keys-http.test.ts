@@ -60,7 +60,8 @@ it('stores each account key write-only, encrypted per account, and never shows i
   const me = await daemon.request({ path: '/api/auth/me', cookie: a.cookie });
   expect(me.json.studio.executionSources).toContainEqual({ source: 'personal_api_key', agentId: 'openai-byok' });
   expect(me.json.studio.features.execution.status).toBe('pilot');
-  expect((await keys(a)).json.keys).toEqual([expect.objectContaining({ provider: 'openai', configured: false, last4: null, revision: 0 })]);
+  expect((await keys(a)).json.keys).toEqual([expect.objectContaining({ provider: 'openai', configured: false, last4: null, revision: 0 }),
+    expect.objectContaining({ provider: 'tavily', configured: false, last4: null, revision: 0 })]);
   expect((await save(a, { revision: 0, apiKey: 'short' })).status).toBe(400);
   expect((await save(a, { revision: 0, apiKey: keyA, baseUrl: 'http://evil.invalid' })).status).toBe(400);
   expect((await save(a, { revision: 0, apiKey: keyA, model: 'bad model name' })).status).toBe(400);

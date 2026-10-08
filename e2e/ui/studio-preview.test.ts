@@ -607,6 +607,57 @@ test('[P1] Studio account saves its own OpenAI key write-only and runs a convers
   await page.screenshot({ path: info.outputPath('studio-own-key-run.png') });
 });
 
+test('[P1] Studio account saves its own Tavily key and /search runs research on it with the turn', async ({ page, studio }, info) => {
+  await studio.linkCodex(studio.a);
+  await studio.configureTurn(studio.a, { reply: 'Wrote research/calm-palettes.md with [1].' });
+  const projectId = studioProjectId();
+  expect((await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Research browser acceptance' })).status).toBe(200);
+  await page.goto(`${studio.origin}/projects/${projectId}`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  // Without a saved key the composer offers no /search.
+  const input = page.getByTestId('chat-composer-input');
+  await expect(input).toBeVisible({ timeout: T.long });
+  await input.fill('/sea');
+  await expect(page.getByTestId('slash-popover').getByText('/search')).toHaveCount(0);
+  await input.fill('');
+  await page.goto(`${studio.origin}/settings`);
+  const keys = page.getByTestId('studio-provider-keys-tavily');
+  await expect(keys).toBeVisible({ timeout: T.long });
+  const key = 'tvly-browser-account-research-key-7Hq2';
+  await page.getByTestId('studio-provider-key-input-tavily').fill(key);
+  const saved = page.waitForResponse((response) => response.request().method() === 'PUT'
+    && new URL(response.url()).pathname === '/api/multiuser/settings/provider-keys/tavily');
+  await page.getByTestId('studio-provider-key-save-tavily').click();
+  const response = await saved;
+  expect(response.status()).toBe(200);
+  expect(await response.text()).not.toContain(key);
+  await expect(page.getByTestId('studio-provider-key-state-tavily')).toHaveText('Saved key ending in 7Hq2.');
+  await keys.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: info.outputPath('studio-research-key-settings.png'), animations: 'disabled' });
+  // B has no key: research is refused with the typed code, never run on another key.
+  const refused = await studio.request('POST', '/api/research/search', studio.b.cookie, { query: 'calm palettes' });
+  expect([refused.status, refused.json.error.code]).toEqual([403, 'MULTIUSER_PROVIDER_KEY_MISSING']);
+
+  await page.goto(`${studio.origin}/projects/${projectId}`);
+  await expect(input).toBeVisible({ timeout: T.long });
+  await input.fill('/sea');
+  await expect(page.getByTestId('slash-popover').getByText('/search')).toBeVisible({ timeout: T.long });
+  await page.screenshot({ path: info.outputPath('studio-research-composer.png'), animations: 'disabled' });
+  await input.fill('/search calm palettes');
+  const admitted = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/runs');
+  await page.getByTestId('chat-send').click();
+  const run = await admitted;
+  expect(run.status(), await run.text()).toBe(202);
+  expect(run.request().postDataJSON().research).toEqual({ enabled: true, query: 'calm palettes' });
+  await expect(page.locator('body')).toContainText('Wrote research/calm-palettes.md', { timeout: T.long });
+  const evidence = await studio.turnEvidence(studio.a);
+  expect(String(evidence.message)).toContain('## Research findings');
+  expect(String(evidence.message)).toContain('https://example.test/palette-trends');
+  await expect(page.getByTestId('user-message').last()).toContainText('Search for: calm palettes');
+});
+
 test('[P1] Studio account control lives in the shared rail, workspace chrome and admin pages at desktop and phone widths', async ({ page, studio }, info) => {
   const projectId = studioProjectId();
   expect((await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Account chrome' })).status).toBe(200);

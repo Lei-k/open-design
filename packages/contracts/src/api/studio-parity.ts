@@ -45,6 +45,12 @@ export interface StudioRuntimeCapabilities {
   executionSources?: StudioExecutionSource[];
   /** The deployment renders PDF/PPTX/PNG exports server-side (#66); absent means not configured. */
   renderedExports?: boolean;
+  /**
+   * Research search (#63) runs for this account on its own Tavily key; the
+   * composer's `/search` and `POST /api/research/search` depend on it. Absent
+   * means unavailable. A key still has to be saved before a search succeeds.
+   */
+  researchSearch?: boolean;
 }
 
 export interface StudioRouteParity {
@@ -140,7 +146,9 @@ export function parseStudioRuntimeCapabilities(value: unknown): StudioRuntimeCap
       || choice.source === 'personal_api_key' && choice.agentId === 'openai-byok'))
     || new Set(choices.map((choice) => choice.source)).size !== choices.length)) return null;
   if (studio.renderedExports !== undefined && typeof studio.renderedExports !== 'boolean') return null;
+  if (studio.researchSearch !== undefined && typeof studio.researchSearch !== 'boolean') return null;
   return { schemaVersion: 1, shell: studio.shell!, features,
     ...(choices !== undefined ? { executionSources: choices.map((choice) => ({ ...choice })) } : {}),
-    ...(studio.renderedExports !== undefined ? { renderedExports: studio.renderedExports } : {}) };
+    ...(studio.renderedExports !== undefined ? { renderedExports: studio.renderedExports } : {}),
+    ...(studio.researchSearch !== undefined ? { researchSearch: studio.researchSearch } : {}) };
 }

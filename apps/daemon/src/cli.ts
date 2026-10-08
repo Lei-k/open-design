@@ -158,6 +158,8 @@ const RESEARCH_SEARCH_STRING_FLAGS = new Set([
 const RESEARCH_SEARCH_BOOLEAN_FLAGS = new Set([
   'help',
   'h',
+  // Output is always one JSON object; accepted for the --json contract.
+  'json',
 ]);
 
 const PLUGIN_STRING_FLAGS = new Set([
@@ -1774,7 +1776,11 @@ Output is JSON only on stdout:
 Flags:
   --query        Required search query.
   --max-sources  Optional source cap. Defaults to 5, clamped to Tavily's max.
-  --daemon-url   Local daemon URL. Defaults to OD_DAEMON_URL, inherited sidecar discovery, or http://127.0.0.1:7456.`);
+  --daemon-url   Local daemon URL. Defaults to OD_DAEMON_URL, inherited sidecar discovery, or http://127.0.0.1:7456.
+  --session-file Multi-user Studio session: the search runs on that account's own
+                 Tavily key (od account key set --provider tavily), never a
+                 daemon key; a missing key is MULTIUSER_PROVIDER_KEY_MISSING.
+  --json         Accepted; output is always JSON.`);
 }
 
 // ---------------------------------------------------------------------------

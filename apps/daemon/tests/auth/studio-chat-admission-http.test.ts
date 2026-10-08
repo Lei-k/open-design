@@ -111,12 +111,15 @@ it('refuses capabilities the personal lane does not apply instead of dropping th
   // Model/effort are honored per turn (validated in studio-catalog-http); an unlisted model is a bad request.
   expect((await send(studioRequest(target, 'x', a, { model: 'gpt-unlisted' }))).status).toBe(400);
   for (const extra of [{ serviceTier: 'fast' },
-    { sessionMode: 'plan' }, { research: { enabled: true } }, { context: { files: [] } }, { taskExecutionId: randomUUID() },
+    { sessionMode: 'plan' }, { research: { enabled: true, providers: ['bing'] } }, { context: { files: [] } }, { taskExecutionId: randomUUID() },
     { byokProvider: { kind: 'openai' } }, { appliedPluginSnapshotId: 'snap' }]) {
     const refused = await send(studioRequest(target, 'x', a, extra));
     expect([Object.keys(extra)[0], refused.status, refused.json.error.code])
       .toEqual([Object.keys(extra)[0], 403, 'MULTIUSER_CAPABILITY_UNAVAILABLE']);
   }
+  // Research is honored since #63: it runs on the account's own Tavily key, so without one it is refused, never dropped.
+  const research = await send(studioRequest(target, 'x', a, { research: { enabled: true } }));
+  expect([research.status, research.json.error.code]).toEqual([403, 'MULTIUSER_PROVIDER_KEY_MISSING']);
   const named = await send(studioRequest(target, 'x', a, { designSystemId: 'some-system' }));
   expect(named.status).toBe(404);
   expect(await runCount(target)).toBe(0);

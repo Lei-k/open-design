@@ -43,6 +43,9 @@ process.once('message', async (input: { dataRoot: string; appOrigin: string; pre
       bootstrapSecret: 'studio-browser-fixture-bootstrap-secret',
       auth: { passwordParams: { logN: 14, r: 8, p: 1 } },
       testCompanyOpenAIFetch: companyFetch,
+      // Account research (#63): a fixed Tavily answer; accounts still need their own key.
+      testTavilyFetch: async () => Response.json({ answer: 'Calm, muted palettes lead this season.',
+        results: [{ title: 'Palette trends', url: 'https://example.test/palette-trends', content: 'Muted greens and warm greys.' }] }),
       testPersonalCodexAppServer: path.join(input.workspaceRoot, 'mocks/personal-codex-app-server.ts'),
       // Server-rendered exports through Playwright's managed Chromium; no external asset hosts in tests.
       studioRenderer: { assetHosts: [],

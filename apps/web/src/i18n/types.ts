@@ -57,6 +57,9 @@ export interface Dict {
   'studio.keys.invalid': string;
   'studio.keys.conflict': string;
   'studio.keys.error': string;
+  'studio.keys.tavilyTitle': string;
+  'studio.keys.tavilyHint': string;
+  'studio.keys.tavilyRemoved': string;
   'chat.runError.title.personalKey': string;
   'chat.runError.personalKeyMessage': string;
   'chat.runError.title.personalKeyLimited': string;

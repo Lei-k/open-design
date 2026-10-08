@@ -43,6 +43,7 @@ export function studioLaneForRoute(entry: Pick<MultiUserRouteClassification, 'me
     if (parts[2] === 'catalog') return parts[3] === 'codex-pets' ? 'settings' : 'catalogs';
     if (parts[2] === 'design-catalog') return 'catalogs';
     if (parts[2] === 'routines' || parts[2]?.startsWith('automation-')) return 'automations';
+    if (parts[2] === 'research') return 'generation';
     if (path.includes('/archive') || path.includes('/export/') || path.includes('/public-links') || parts[2] === 'public') return 'delivery';
     if (/\/(?:shares|access|presence)(?:\/|$)/.test(path)) return 'collaboration';
     if (path.includes('/preview') || path.includes('/comments')) return 'preview';
@@ -104,7 +105,7 @@ export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
   home: 'Pilot Home: Prototype, Deck, Other, Image/Video/Audio on an OpenAI source, immutable saved templates, project copies and browser ZIP/directory imports; live artifacts, HyperFrames and Figma import are pending (#60).',
   settings: 'Pilot settings: account appearance/notification preferences, in-page pet (bundled catalog), instructions, manual memory and profile injection; full navigation, providers, automatic extraction, verification, connectors, MCP and library are pending (#62).',
   collaboration: 'Pilot collaboration: owner-managed view/comment/edit sharing with other accounts of this deployment, members, presence and shared comments with server-stamped authors; revocation closes open streams and stops turns. Shared design systems/skills/plugins and live chat mirroring are pending (#65).',
-  generation: 'Pilot generation: image (gpt-image-1), narration (gpt-4o-mini-tts) and short video (sora-2) inside OpenAI turns, billed to the turn\'s own source (company pool or the account\'s key) and saved in the project; live artifacts, GenUI, research and critique are pending (#63).',
+  generation: 'Pilot generation: image (gpt-image-1), narration (gpt-4o-mini-tts) and short video (sora-2) inside OpenAI turns, billed to the turn\'s own source (company pool or the account\'s key) and saved in the project, and research search on each account\'s own Tavily key (standalone or with a turn); live artifacts, GenUI, critique and real-provider research acceptance are pending (#63).',
   catalogs: 'Pilot catalogs: bundled templates/craft, account text and folder skills, captured skill packages with company script/binary tools, and versioned design documents; design generation/asset packages, plugins and team catalogs are pending (#61).',
 };
 
@@ -136,7 +137,9 @@ export function multiUserStudioCapabilities(studioPilot = false, policy: { perso
       ...(policy.companyEnabled ? [{ source: 'company_pool' as const, agentId: 'openai' as const }] : []),
       // Listed last so it is never the default; the account adds its own key in Settings.
       ...(policy.personalKeysEnabled ? [{ source: 'personal_api_key' as const, agentId: 'openai-byok' as const }] : []),
-    ], renderedExports: policy.renderedExports === true } : {}) };
+    ], renderedExports: policy.renderedExports === true,
+    // Research runs on each account's own Tavily key, which needs account key custody (#63).
+    researchSearch: policy.personalKeysEnabled === true } : {}) };
 }
 
 /** The actor's private transcript-id namespace (see `isStudioMessageIdInNamespace`).

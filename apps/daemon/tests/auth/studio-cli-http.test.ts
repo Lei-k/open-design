@@ -17,7 +17,8 @@ beforeAll(async () => {
   daemon = await startMultiUserDaemon(multiUserOptions({ testMockAgentScript: path.resolve('../..', 'mocks/run-isolation-agent.ts'), testPersonalCodexAppServer: PERSONAL_CODEX_MOCK, studioRenderer: { assetHosts: [] },
     testCompanyOpenAIFetch: async () => new Response('data: ' + JSON.stringify({ type: 'response.output_text.delta', delta: 'CLI company completed.\n' })
       + '\n\ndata: ' + JSON.stringify({ type: 'response.completed', response: { output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'CLI company completed.' }] }] } }) + '\n\n',
-      { headers: { 'content-type': 'text/event-stream' } }) }));
+      { headers: { 'content-type': 'text/event-stream' } }),
+    testTavilyFetch: async () => Response.json({ answer: 'CLI research summary', results: [{ title: 'CLI source', url: 'https://example.test/cli', content: 'CLI snippet' }] }) }));
   const accounts = await provisionAccounts(daemon, ['cli-alice', 'cli-bob']);
   admin = accounts.admin;
   [alice, bob] = accounts.users as [Principal, Principal];
@@ -448,6 +449,28 @@ it('stores the account\'s own OpenAI key through stdin, runs on it with --execut
   const current = success(await cli(['account', 'key', 'get', '--session-file', sessionA, '--json'])).key;
   expect(success(await cli(['account', 'key', 'remove', '--revision', String(current.revision), '--session-file', sessionA, '--json'])).key)
     .toMatchObject({ configured: false, last4: null });
+}, 40_000);
+
+it('stores the account Tavily key through stdin and runs od research search on it only (#63)', async () => {
+  const sessionA = path.join(root, 'cli-key-a-session'); const sessionB = path.join(root, 'cli-key-b-session');
+  const key = 'tvly-cli-account-research-key-0123ABCD';
+  const missing = await cli(['research', 'search', '--query', 'cli query', '--session-file', sessionB, '--json']);
+  expect(missing.code).not.toBe(0);
+  expect(missing.stderr).toContain('MULTIUSER_PROVIDER_KEY_MISSING');
+  const initial = success(await cli(['account', 'key', 'get', '--provider', 'tavily', '--session-file', sessionA, '--json'])).key;
+  expect(initial).toMatchObject({ provider: 'tavily', configured: false, model: '' });
+  expect((await cli(['account', 'key', 'set', '--provider', 'tavily', '--model', 'x', '--revision', '0', '--api-key-file', '-',
+    '--session-file', sessionA, '--json'], key + '\n')).code).not.toBe(0);
+  const written = await cli(['account', 'key', 'set', '--provider', 'tavily', '--revision', String(initial.revision), '--api-key-file', '-',
+    '--session-file', sessionA, '--json'], key + '\n');
+  expect(success(written).key).toMatchObject({ provider: 'tavily', configured: true, last4: 'ABCD' });
+  expect(written.stdout + written.stderr).not.toContain(key);
+  const found = await cli(['research', 'search', '--query', 'cli query', '--max-sources', '3', '--session-file', sessionA, '--json']);
+  expect(found.code, found.stderr).toBe(0);
+  expect(JSON.parse(found.stdout)).toMatchObject({ query: 'cli query', provider: 'tavily', summary: 'CLI research summary',
+    sources: [{ url: 'https://example.test/cli' }] });
+  expect(found.stdout).not.toContain(key);
+  expect(success(await cli(['account', 'key', 'get', '--provider', 'tavily', '--session-file', sessionB, '--json'])).key.configured).toBe(false);
 }, 40_000);
 
 it('publishes, lists and revokes a deployment-local public link through od project', async () => {

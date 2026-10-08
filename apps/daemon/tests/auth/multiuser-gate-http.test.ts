@@ -337,6 +337,8 @@ describe('route classification covers the real inventory', () => {
       'owner-scoped-project PATCH /api/multiuser/projects/:id/conversations/:cid/comments/:commentId/reorder',
       'owner-scoped-project DELETE /api/projects/:id/conversations/:cid/comments/:commentId',
       'owner-scoped-project DELETE /api/multiuser/projects/:id/conversations/:cid/comments/:commentId',
+      'actor-scoped POST /api/research/search',
+      'actor-scoped POST /api/multiuser/research/search',
       'actor-scoped GET /api/multiuser/settings/provider-keys',
       'actor-scoped PUT /api/multiuser/settings/provider-keys/:provider',
       'owner-scoped-project PUT /api/multiuser/projects/:id/shares',

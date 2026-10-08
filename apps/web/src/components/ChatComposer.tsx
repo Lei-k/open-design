@@ -1,5 +1,5 @@
 'use client';
-import { studioSetTimeout as setTimeout, studioWindowLocalStorage } from '../runtime/studio-transport';
+import { studioSetTimeout as setTimeout, studioUsesLocalServices, studioWindowLocalStorage } from '../runtime/studio-transport';
 import { useStudioCapabilities, useStudioRequestAvailable, StudioUnavailable } from '../runtime/studio-capabilities';
 
 
@@ -1376,6 +1376,10 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
       if (!m) return null;
       const query = m[1]?.trim() ?? '';
       if (!query) return null;
+      // A Studio account's agent cannot run the local OD command: the server
+      // searches on the account's own key at admission and sends the findings
+      // with this turn (#63), so the visible turn is just the request.
+      if (!studioUsesLocalServices()) return { query, prompt: `Search for: ${query}` };
       return {
         query,
         prompt: [

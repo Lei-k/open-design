@@ -1,6 +1,7 @@
 import { bindStudioPendingWrite } from '../runtime/studio-resources';
 import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioSetInterval as setInterval, studioFetch as fetch, studioWindowLocalStorage, studioWindowSessionStorage } from '../runtime/studio-transport';
 import { StudioLane, useStudioCapabilities, useStudioRequestAvailable } from '../runtime/studio-capabilities';
+import { useStudioResearchReady } from '../runtime/studio-research';
 import { StudioExecutionSource } from '../runtime/StudioExecutionSource';
 import { readRetriedErrorSurface, retriedErrorSurfaceKey, writeRetriedErrorSurface } from '../runtime/chat/retried-error-surface';
 import {
@@ -2157,6 +2158,8 @@ export function ProjectView({
   onCreationHandoffSettled,
 }: Props) {
   const studio = useStudioCapabilities();
+  // Studio research runs on the account's own Tavily key (#63); offered only once one is saved.
+  const studioResearchReady = useStudioResearchReady();
   const studioRequest = useStudioRequestAvailable();
   const { locale, t } = useI18n();
   const amrAuthRetryMountIdRef = useRef<string | null>(null);
@@ -13988,7 +13991,7 @@ export function ProjectView({
               onAdoptPet={onAdoptPetInline}
               onTogglePet={onTogglePet}
               onOpenPetSettings={onOpenPetSettings}
-              researchAvailable={config.mode === 'daemon'}
+              researchAvailable={studio.hostServices ? config.mode === 'daemon' : studioResearchReady}
               byokApiProtocol={config.apiProtocol}
               byokImageModel={byokImageModelOverride}
               onChangeByokImageModel={setByokImageModelOverride}

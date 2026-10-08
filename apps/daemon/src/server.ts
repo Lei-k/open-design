@@ -957,6 +957,7 @@ import { createChromiumCaptureHost } from './render/chromium-capture-runtime.js'
 import { setArtifactCaptureRuntime } from '@open-design/artifact-capture';
 import { registerStudioRoutineRoutes } from './routes/studio-routines.js';
 import { registerStudioAutomationRoutes } from './routes/studio-automations.js';
+import { registerStudioResearchRoutes } from './routes/studio-research.js';
 import { registerStudioProjectCreationRoutes } from './routes/studio-project-creation.js';
 import { registerMultiUserAgentAccountRoutes } from './routes/multiuser-agent-accounts.js';
 import { PersonalCodexAccounts } from './services/personal-codex-accounts.js';
@@ -17676,6 +17677,7 @@ export async function startServer({
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
     ...(multiUserMode.testMockAgentScript ? { mockAgentScript: multiUserMode.testMockAgentScript } : {}),
     ...(multiUserMode.testCompanyOpenAIFetch ? { companyFetch: multiUserMode.testCompanyOpenAIFetch } : {}),
+    ...(multiUserMode.testTavilyFetch ? { researchFetch: multiUserMode.testTavilyFetch } : {}),
     personalProviderKeys: multiUserMode.personalProviderKeys,
     ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
     ...(personalCodex ? { personal: personalCodex } : {}),
@@ -17685,6 +17687,8 @@ export async function startServer({
     ...(studioSettings ? { settings: studioSettings } : {}),
     ...(studioDesignCatalog ? { designCatalog: studioDesignCatalog } : {}),
   }) : null;
+  // Account research on each account's own Tavily key (#63); never the host research key.
+  if (multiUserRuns) registerStudioResearchRoutes(app, { research: multiUserRuns.research });
   // Account-owned automation packets/proposals (#64); apply writes only into account stores.
   const studioAutomations = studioSettings ? registerStudioAutomationRoutes(app, { db, settings: studioSettings }) : null;
   // Account-owned Automations dispatch through the same run admission policy.

@@ -429,6 +429,9 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   if (policy === 'automation-ingestion') return only(STUDIO_AUTOMATION_INGESTION_FIELDS) && typeof body.sourceKind === 'string';
   if (policy === 'automation-proposal') return only(STUDIO_AUTOMATION_PROPOSAL_FIELDS);
   if (policy === 'automation-proposal-reject') return only(['reason']) && optionalText(body.reason, 2000);
+  // #63: a query and a bounded source count; the provider, depth and key are fixed by the server.
+  if (policy === 'research-search') return only(['query', 'maxSources']) && typeof body.query === 'string' && body.query.length <= 1000
+    && (body.maxSources === undefined || Number.isInteger(body.maxSources));
   // A historical versionId bundles that version's HTML with the project's current
   // same-project assets, exactly like the single-user export.
   if (policy === 'export-render') {

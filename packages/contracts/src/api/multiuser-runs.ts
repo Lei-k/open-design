@@ -58,7 +58,9 @@ export interface MultiUserRunRequest {
  *   `file`/`folder`/`design-files` workspace items with project-relative
  *   paths and private text skills; plugin/MCP/connector selections must be empty.
  *   `model`/`reasoning` must be null, `default` or one of `STUDIO_CODEX_MODELS`
- *   / `STUDIO_CODEX_REASONING`, and apply to this turn only.
+ *   / `STUDIO_CODEX_REASONING`, and apply to this turn only. `research`
+ *   (`{ enabled, query?, maxSources? }`) runs the account's own Tavily search
+ *   at admission (see `studio-research.ts`); disabled research is a no-op.
  * - `defaultOnly`: accepted only at the value the Studio sends when the
  *   capability is not used (empty list, null, `false`, or `design` mode).
  * - `notApplied`: accepted for request-shape compatibility and not applied:
@@ -70,7 +72,7 @@ export interface MultiUserRunRequest {
 export const MULTIUSER_PERSONAL_RUN_FIELD_POLICY = {
   honored: ['projectId', 'conversationId', 'agentId', 'executionSource', 'message', 'currentPrompt', 'userMessageId',
     'assistantMessageId', 'clientRequestId', 'skillId', 'skillIds', 'designSystemId', 'analyticsHints', 'attachments', 'context',
-    'model', 'reasoning', 'commentAttachments'],
+    'model', 'reasoning', 'commentAttachments', 'research'],
   defaultOnly: ['serviceTier',
     'appliedPluginSnapshotId', 'sessionMode'],
   notApplied: ['priorTranscript', 'locale', 'titleGeneration', 'mediaExecution'],

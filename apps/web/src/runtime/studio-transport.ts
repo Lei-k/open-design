@@ -5,13 +5,13 @@ import { withdrawStudioResources } from './studio-resources';
 type Scope = {
   session: CookieSession; generation: number; abort: AbortController; storage: Map<string, string>;
   messageIdPrefix: string | null; usable: (lane: StudioParityLaneId) => boolean; lastRecheck: number;
-  renderedExports: boolean;
+  renderedExports: boolean; researchSearch: boolean;
 };
 // undefined is the original local runtime; null is a withdrawn cookie runtime.
 let scope: Scope | null | undefined;
 
 export function activateStudioTransport(session: CookieSession, generation: number,
-  options: { messageIdPrefix?: string | undefined; usable?: (lane: StudioParityLaneId) => boolean; renderedExports?: boolean } = {}): void {
+  options: { messageIdPrefix?: string | undefined; usable?: (lane: StudioParityLaneId) => boolean; renderedExports?: boolean; researchSearch?: boolean } = {}): void {
   if (scope?.session === session && scope.generation === generation && !scope.abort.signal.aborted) return;
   // Called during render so children never fetch before activation (their
   // effects run first). Only the session's current generation may activate:
@@ -22,7 +22,7 @@ export function activateStudioTransport(session: CookieSession, generation: numb
   withdrawStudioResources();
   const next: Scope = { session, generation, abort: new AbortController(), storage: new Map(),
     messageIdPrefix: options.messageIdPrefix ?? null, usable: options.usable ?? (() => false), lastRecheck: 0,
-    renderedExports: options.renderedExports === true };
+    renderedExports: options.renderedExports === true, researchSearch: options.researchSearch === true };
   scope = next;
   session.bindResource(() => {
     next.abort.abort(); next.storage.clear();
@@ -48,7 +48,8 @@ const RUN_ACTION = /^\/api\/runs\/[^/]+\/(?:events|cancel|steer|feedback)$/;
  * endpoints open only while the execution lane is usable for this actor. */
 export function studioRequestAvailable(method: string, path: string,
   usable: (lane: StudioParityLaneId) => boolean = (lane) => scope?.usable(lane) ?? false,
-  renderedExports: boolean = scope?.renderedExports ?? false): boolean {
+  renderedExports: boolean = scope?.renderedExports ?? false,
+  researchSearch: boolean = scope?.researchSearch ?? false): boolean {
   if (/^\/api\/(?:version|health)$/.test(path)) return method === 'GET';
   // Public, no-store deployment version (About → check for a newer deployment).
   if (path === '/api/version') return method === 'GET';
@@ -111,7 +112,11 @@ export function studioRequestAvailable(method: string, path: string,
   if (usable('execution')) {
     if (path === '/api/multiuser/settings/provider-keys') return method === 'GET';
     if (path === '/api/multiuser/settings/provider-keys/openai') return method === 'PUT';
+    // Research keys (#63) exist only where the server advertises account research.
+    if (path === '/api/multiuser/settings/provider-keys/tavily') return researchSearch && method === 'PUT';
   }
+  // Account research (#63) on the account's own Tavily key.
+  if (usable('generation') && researchSearch && /^\/api\/(?:multiuser\/)?research\/search$/.test(path)) return method === 'POST';
   if (usable('settings')) {
     const settingsPath = path.replace(/^\/api\/multiuser\/settings\/config$/, '/api/app-config')
       .replace(/^\/api\/multiuser\/settings\/memory(?=\/|$)/, '/api/memory');

@@ -45,7 +45,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'project-duplicate' | 'template-save' | 'project-share' | 'provider-key' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'provider-key' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -589,7 +589,6 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'POST /api/runs/:runId/replay',
     'GET /api/orbit/status',
     'POST /api/orbit/run',
-    'POST /api/research/search',
     'GET /api/critique/conformance',
     'POST /api/media/tasks/:id/wait',
     'POST /api/plugins/share-tasks/:id/wait',
@@ -783,6 +782,11 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'GET /api/brands/:id/logo',
   ]),
 
+  // Account research (#63): the actor's own Tavily key only; the host research key never answers a Web account.
+  ...group('actor-scoped', 'research search on the account\'s own encrypted Tavily key at a fixed provider endpoint; usage recorded against the account',
+    ['POST /api/research/search'], { bodyPolicy: 'research-search', maxBodyBytes: 8 * 1024, rewriteTo: '/api/multiuser/research/search' }),
+  ...group('actor-scoped', 'account research alias; same cookie authority and closed fields', ['POST /api/multiuser/research/search'],
+    { bodyPolicy: 'research-search', maxBodyBytes: 8 * 1024 }),
   // Account-private provider keys (#62/#63): write-only, encrypted per account; reads show only last4.
   ...group('actor-scoped', 'the actor\'s own provider key summaries; never the key, never another account', ['GET /api/multiuser/settings/provider-keys']),
   ...group('actor-scoped', 'write-only account provider key sealed with the deployment master key; revision-checked; no admin read path',

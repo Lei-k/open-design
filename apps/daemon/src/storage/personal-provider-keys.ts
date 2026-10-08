@@ -3,7 +3,7 @@ import { chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, openS
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import {
-  STUDIO_PROVIDER_KEY_MODEL_PATTERN, type StudioProviderKeyProvider, type StudioProviderKeySummary, type UpdateStudioProviderKeyRequest,
+  STUDIO_PROVIDER_KEY_MODEL_PATTERN, STUDIO_PROVIDER_KEY_PROVIDERS, type StudioProviderKeyProvider, type StudioProviderKeySummary, type UpdateStudioProviderKeyRequest,
 } from '@open-design/contracts';
 
 export const PERSONAL_PROVIDER_KEYS_TABLE = 'multiuser_personal_provider_keys';
@@ -62,12 +62,21 @@ export class PersonalProviderKeyStore {
   private readonly master: Buffer;
   constructor(private readonly db: Database.Database, dataRoot: string, configuredMasterKey = process.env.OD_CREDENTIAL_MASTER_KEY) {
     this.master = masterKey(dataRoot, configuredMasterKey);
-    db.exec(`CREATE TABLE IF NOT EXISTS ${PERSONAL_PROVIDER_KEYS_TABLE} (
-      account_id TEXT NOT NULL, provider TEXT NOT NULL CHECK (provider IN ('openai')),
+    const columns = `account_id TEXT NOT NULL, provider TEXT NOT NULL CHECK (provider IN ('openai', 'tavily')),
       credential TEXT, last4 TEXT, model TEXT NOT NULL, revision INTEGER NOT NULL,
       credential_revision INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-      PRIMARY KEY (account_id, provider)
-    );
+      PRIMARY KEY (account_id, provider)`;
+    // One-time widening of the S33 provider CHECK (#63 research keys); rows, ciphertext and revisions are kept.
+    const existing = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(PERSONAL_PROVIDER_KEYS_TABLE) as { sql: string } | undefined;
+    if (existing && !existing.sql.includes("'tavily'")) {
+      db.transaction(() => {
+        db.exec(`CREATE TABLE ${PERSONAL_PROVIDER_KEYS_TABLE}_next (${columns});
+          INSERT INTO ${PERSONAL_PROVIDER_KEYS_TABLE}_next SELECT account_id, provider, credential, last4, model, revision, credential_revision, updated_at FROM ${PERSONAL_PROVIDER_KEYS_TABLE};
+          DROP TABLE ${PERSONAL_PROVIDER_KEYS_TABLE};
+          ALTER TABLE ${PERSONAL_PROVIDER_KEYS_TABLE}_next RENAME TO ${PERSONAL_PROVIDER_KEYS_TABLE};`);
+      }).immediate();
+    }
+    db.exec(`CREATE TABLE IF NOT EXISTS ${PERSONAL_PROVIDER_KEYS_TABLE} (${columns});
     CREATE TABLE IF NOT EXISTS multiuser_personal_provider_audit (
       id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, provider TEXT NOT NULL,
       action TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL
@@ -84,13 +93,13 @@ export class PersonalProviderKeyStore {
   }
   private summary(provider: StudioProviderKeyProvider, row: Row | undefined): StudioProviderKeySummary {
     return { provider, configured: Boolean(row?.credential), last4: row?.credential ? row.last4 : null,
-      model: row?.model ?? PERSONAL_PROVIDER_DEFAULT_MODEL, revision: row?.revision ?? 0,
+      model: provider === 'openai' ? row?.model ?? PERSONAL_PROVIDER_DEFAULT_MODEL : '', revision: row?.revision ?? 0,
       credentialRevision: row?.credential_revision ?? 0, updatedAt: row?.updated_at ?? null };
   }
   read(accountId: string, provider: StudioProviderKeyProvider = 'openai'): StudioProviderKeySummary {
     return this.summary(provider, this.row(accountId, provider));
   }
-  list(accountId: string): StudioProviderKeySummary[] { return [this.read(accountId, 'openai')]; }
+  list(accountId: string): StudioProviderKeySummary[] { return STUDIO_PROVIDER_KEY_PROVIDERS.map((provider) => this.read(accountId, provider)); }
   configured(accountId: string, provider: StudioProviderKeyProvider = 'openai'): boolean { return Boolean(this.row(accountId, provider)?.credential); }
 
   /** The decrypted key, for a worker the account itself admitted. Null when absent or unreadable. */
@@ -107,8 +116,10 @@ export class PersonalProviderKeyStore {
   }
 
   update(accountId: string, provider: StudioProviderKeyProvider, input: UpdateStudioProviderKeyRequest, at = Date.now()): { summary: StudioProviderKeySummary; credentialChanged: boolean } {
-    if (!input || typeof input !== 'object' || Array.isArray(input) || !Number.isSafeInteger(input.revision) || input.revision < 0
-      || input.model !== undefined && (typeof input.model !== 'string' || !STUDIO_PROVIDER_KEY_MODEL_PATTERN.test(input.model))
+    if (!(STUDIO_PROVIDER_KEY_PROVIDERS as readonly string[]).includes(provider)
+      || !input || typeof input !== 'object' || Array.isArray(input) || !Number.isSafeInteger(input.revision) || input.revision < 0
+      // Only the OpenAI key has a model choice.
+      || input.model !== undefined && (provider !== 'openai' || typeof input.model !== 'string' || !STUDIO_PROVIDER_KEY_MODEL_PATTERN.test(input.model))
       || input.apiKey !== undefined && input.apiKey !== null && (typeof input.apiKey !== 'string' || input.apiKey.trim().length < 16
         || input.apiKey.length > 4096 || /\s/.test(input.apiKey.trim()))
       || Object.keys(input).some((key) => !['revision', 'apiKey', 'model'].includes(key))) throw new PersonalProviderKeyError(400);
@@ -132,7 +143,7 @@ export class PersonalProviderKeyStore {
       this.db.prepare(`INSERT INTO ${PERSONAL_PROVIDER_KEYS_TABLE} (account_id, provider, credential, last4, model, revision, credential_revision, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(account_id, provider) DO UPDATE SET credential = excluded.credential, last4 = excluded.last4,
         model = excluded.model, revision = excluded.revision, credential_revision = excluded.credential_revision, updated_at = excluded.updated_at`)
-        .run(accountId, provider, credential, last4, input.model ?? previous?.model ?? PERSONAL_PROVIDER_DEFAULT_MODEL, revision, credentialRevision, at);
+        .run(accountId, provider, credential, last4, provider === 'openai' ? input.model ?? previous?.model ?? PERSONAL_PROVIDER_DEFAULT_MODEL : '', revision, credentialRevision, at);
       const action = input.apiKey === null ? 'key_removed' : credentialChanged ? (previous?.credential ? 'key_replaced' : 'key_added') : 'model_changed';
       this.db.prepare('INSERT INTO multiuser_personal_provider_audit (account_id, provider, action, revision, created_at) VALUES (?, ?, ?, ?, ?)')
         .run(accountId, provider, action, revision, at);
