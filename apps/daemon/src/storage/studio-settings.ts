@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events';
 import { STUDIO_DEFAULT_ACCENT_COLOR, STUDIO_DEFAULT_CODEX_MODEL, STUDIO_DEFAULT_NOTIFICATIONS, STUDIO_DEFAULT_PET, isStudioCodexModel, isStudioCodexReasoning, isStudioPetPreference,
   MEMORY_TYPES, STUDIO_MEMORY_MAX_ENTRIES, STUDIO_MEMORY_MAX_ENTRY_BYTES, STUDIO_MEMORY_MAX_TOTAL_BYTES,
   type MemoryEntry, type MemoryEntrySource, type StudioSettingsResponse, type StudioSettingsWrite, type UpsertMemoryRequest } from '@open-design/contracts';
-import { composeMemoryBody, deriveMemoryId, listMemoryEntries, readMemoryConfig, readMemoryEntry, upsertMemoryEntry, type MemoryChangeEvent } from '../memory.js';
+import { MemoryCommitRefused, composeMemoryBody, deriveMemoryId, listMemoryEntries, readMemoryConfig, readMemoryEntry, upsertMemoryEntry, type MemoryChangeEvent } from '../memory.js';
 
 const reservedMemoryIds = new Set(['tree', 'index', 'config', 'events', 'extract', 'extractions', 'verifications', 'rules', 'connectors']);
 /** An account memory id: the standard slug shape, never a reserved route segment. */
@@ -129,9 +129,18 @@ export async function readStudioMemoryEntry(root: string, id: string): Promise<M
  * Write one entry into an account memory root within the account limits
  * (entry size, entry count and total body bytes). Callers hold the account's
  * memory lock (`StudioSettings.withMemory`). `source` records who wrote it.
+ *
+ * Background writers pass `commit`, their live authority/cancellation check.
+ * It runs before any I/O and again after all of it, synchronously right before
+ * the entry is written; `false` at either point writes nothing (`'revoked'`).
  */
 export async function saveStudioMemoryEntry(root: string, draft: UpsertMemoryRequest,
-  source: MemoryEntrySource = 'manual'): Promise<MemoryEntry | 'invalid' | 'limit'> {
+  source?: MemoryEntrySource): Promise<MemoryEntry | 'invalid' | 'limit'>;
+export async function saveStudioMemoryEntry(root: string, draft: UpsertMemoryRequest,
+  source: MemoryEntrySource, commit: () => boolean): Promise<MemoryEntry | 'invalid' | 'limit' | 'revoked'>;
+export async function saveStudioMemoryEntry(root: string, draft: UpsertMemoryRequest,
+  source: MemoryEntrySource = 'manual', commit?: () => boolean): Promise<MemoryEntry | 'invalid' | 'limit' | 'revoked'> {
+  if (commit && !commit()) return 'revoked';
   if (!validEntry(draft)) return 'invalid';
   const id = draft.id ?? deriveMemoryId(draft.type, draft.name);
   if (!validId(id)) return 'invalid';
@@ -140,5 +149,10 @@ export async function saveStudioMemoryEntry(root: string, draft: UpsertMemoryReq
   const current = await Promise.all(entries.filter((entry) => entry.id !== id).map((entry) => readStudioMemoryEntry(root, entry.id)));
   const total = current.reduce((bytes, entry) => bytes + Buffer.byteLength(entry?.body ?? ''), Buffer.byteLength(draft.body));
   if (total > STUDIO_MEMORY_MAX_TOTAL_BYTES) return 'limit';
-  return await upsertMemoryEntry(root, { ...draft, id }, { source, silent: true }) as MemoryEntry;
+  try {
+    return await upsertMemoryEntry(root, { ...draft, id }, { source, silent: true, ...(commit ? { commit } : {}) }) as MemoryEntry;
+  } catch (error) {
+    if (error instanceof MemoryCommitRefused) return 'revoked';
+    throw error;
+  }
 }

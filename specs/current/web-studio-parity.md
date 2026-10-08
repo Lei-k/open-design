@@ -540,6 +540,7 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
   - **Shared helper:** the binding lives in the pure `memoryProposalEntryId`, so the host store follows it too.
   - **Skills and design documents:** Studio skill/design updates already write to `targetRef` only. Host skill/design updates and deletes now also require a path-shaped `targetRef`, with no `metadata.slug` or title fallback.
   - **Evidence:** `studio-automations-http` and `automation-proposals`. Both entries are unchanged on refusal.
+  - **Legacy targets (closure C2):** `targetRef` stays optional. An unambiguous legacy target (the embedded memory id, or `metadata.slug` for desktop skills and design systems) becomes `targetRef` when a proposal is loaded or created. A conflicting explicit target or a title-only guess is refused, and the Studio request validation accepts the same shapes.
 
 ![Automation templates for Web accounts](../../docs/design/studio-parity/automation-templates.png)
 
@@ -563,6 +564,7 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
   - **One admission per turn:** admission of one logical turn (owner + conversation + `clientRequestId`) is serialized before any paid work, on the personal path, the OpenAI path and routine dispatch alike. A concurrent retry waits, then replays the run the first admission created.
   - **Paid findings:** if an admission fails after its search, a retry of the same turn and query reuses the findings it already paid for (bounded, 10 minutes).
   - **Evidence:** `studio-research-http`. Two concurrent identical requests produce one Tavily call, one usage row and one run, on personal Codex and on the company pool.
+  - **Queued sessions (closure C3):** an admission leaving the per-turn queue first rechecks its session (for routines, the owner's authority) and shutdown, and then rechecks again right before the paid search. A session revoked while queued gets no run data and causes no search.
 
 ![Tavily research key in Settings](../../docs/design/studio-parity/research-key-settings.png)
 
@@ -599,6 +601,7 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
   - **Verification:** it uses only the active, index-linked rules (`listActiveRuleEntries`) under the account memory lock.
   - **Fixed-design turns:** `composeStablePrompt` now forwards the account's memory hooks, so these turns honor the rewrite/verify switches on every source.
   - **Evidence:** `studio-memory-automation` (delayed memory read and delayed provider, with key removal, key replacement, pilot withdrawal, switch-off and close) and `studio-memory-automation-http` (key removed during a real extraction, unlinked rule neither injected nor enforced, hooks off in fixed-design company/own-key/Codex turns).
+  - **Write commit point (closure C1):** the memory save carries the authority/cancellation check through its own reads and runs it right before the entry file is written, so key removal, pilot withdrawal or `close()` during the save writes nothing.
   - **Open (S10, not repaired here):** the Studio `PUT /api/memory/index` alias is refused by the gate, because the overlapping `PUT /api/memory/:id` entry body policy also applies. Editing the memory index from Studio therefore fails today.
 
 ![Automatic memory switch for Web accounts](../../docs/design/studio-parity/memory-auto-settings.png)

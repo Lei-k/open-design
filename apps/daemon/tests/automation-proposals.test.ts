@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   applyAutomationProposal,
   createAutomationProposal,
+  getAutomationProposal,
   listAutomationProposals,
   rejectAutomationProposal,
 } from '../src/automation-proposals.js';
@@ -15,6 +16,17 @@ import { readMemoryEntry, upsertMemoryEntry } from '../src/memory.js';
 import { listSkills } from '../src/skills.js';
 
 let dataDir = '';
+
+/** Appends a proposal to the store as an older daemon would have saved it (no create-time checks). */
+async function storeDirectly(input: Record<string, unknown> & { id: string }): Promise<{ id: string }> {
+  const at = new Date().toISOString();
+  const file = path.join(dataDir, 'automation-proposals', 'proposals.json');
+  const current = await fsp.readFile(file, 'utf8').then((text) => JSON.parse(text).proposals as unknown[]).catch(() => []);
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(file, JSON.stringify({ proposals: [...current, { status: 'pending-review', reviewPolicy: 'always', createdAt: at, updatedAt: at,
+    sourcePacketIds: [], ...input }] }));
+  return { id: input.id };
+}
 
 beforeEach(async () => {
   dataDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'od-automation-proposals-'));
@@ -67,10 +79,13 @@ describe('automation evolution proposals', () => {
     }
     const original = { a: (await readMemoryEntry(dataDir, 'entry_a'))?.body, b: (await readMemoryEntry(dataDir, 'entry_b'))?.body };
     expect(original.a).toContain('entry_a original body');
-    const mismatched = await createAutomationProposal(dataDir, {
-      id: 'proposal-memory-mismatch', title: 'Update A', summary: 'Targets A', targetKind: 'memory-node', action: 'update',
-      targetRef: 'entry_a', patch: { format: 'json', after: JSON.stringify({ id: 'entry_b', body: 'replacement' }) },
-    });
+    const mismatchedInput = {
+      id: 'proposal-memory-mismatch', title: 'Update A', summary: 'Targets A', targetKind: 'memory-node' as const, action: 'update' as const,
+      targetRef: 'entry_a', patch: { format: 'json' as const, after: JSON.stringify({ id: 'entry_b', body: 'replacement' }) },
+    };
+    // Refused when created, and refused at apply when such a proposal is already stored.
+    await expect(createAutomationProposal(dataDir, mismatchedInput)).rejects.toThrow(/targetRef/);
+    const mismatched = await storeDirectly(mismatchedInput);
     await expect(applyAutomationProposal(dataDir, mismatched.id)).rejects.toThrow(/targetRef/);
     expect((await readMemoryEntry(dataDir, 'entry_a'))?.body).toBe(original.a);
     expect((await readMemoryEntry(dataDir, 'entry_b'))?.body).toBe(original.b);
@@ -90,10 +105,12 @@ describe('automation evolution proposals', () => {
     for (const [kind, file] of [['design-system', 'design-systems/other/DESIGN.md'], ['skill', 'skills/other/SKILL.md']] as const) {
       await fsp.mkdir(path.dirname(path.join(dataDir, file)), { recursive: true });
       await fsp.writeFile(path.join(dataDir, file), 'ORIGINAL\n');
-      const proposal = await createAutomationProposal(dataDir, {
-        id: `proposal-${kind}-unbound`, title: 'other', summary: 'Retarget by metadata', targetKind: kind, action: 'update',
-        targetRef: 'not-a-target-path', metadata: { slug: 'other' }, patch: { format: 'markdown', after: '# Replaced\n' },
-      });
+      const unbound = {
+        id: `proposal-${kind}-unbound`, title: 'other', summary: 'Retarget by metadata', targetKind: kind, action: 'update' as const,
+        targetRef: 'not-a-target-path', metadata: { slug: 'other' }, patch: { format: 'markdown' as const, after: '# Replaced\n' },
+      };
+      await expect(createAutomationProposal(dataDir, unbound)).rejects.toThrow(/targetRef/);
+      const proposal = await storeDirectly(unbound);
       await expect(applyAutomationProposal(dataDir, proposal.id)).rejects.toThrow(/targetRef/);
       expect(await fsp.readFile(path.join(dataDir, file), 'utf8')).toBe('ORIGINAL\n');
     }
@@ -248,5 +265,98 @@ describe('automation evolution proposals', () => {
     await expect(applyAutomationProposal(dataDir, proposal.id)).rejects.toThrow(
       'cannot overwrite built-in automation template',
     );
+  });
+});
+
+// Desktop proposals persisted (or posted) before targets were canonical: the
+// contract keeps targetRef optional, so an unambiguous legacy target (the
+// embedded memory id, or metadata.slug for skills and design systems) is
+// converted into targetRef on load and on creation. Conflicts and title-only
+// guesses are refused and change nothing.
+describe('legacy desktop proposal targets', () => {
+  const at = '2026-01-01T00:00:00.000Z';
+  const persist = async (proposals: Array<Record<string, unknown>>) => {
+    await fsp.mkdir(path.join(dataDir, 'automation-proposals'), { recursive: true });
+    await fsp.writeFile(path.join(dataDir, 'automation-proposals', 'proposals.json'), JSON.stringify({ proposals: proposals.map((proposal) => ({
+      title: 'Legacy', summary: 'Legacy desktop proposal', status: 'pending-review', reviewPolicy: 'always', createdAt: at, updatedAt: at,
+      sourcePacketIds: [], ...proposal })) }));
+  };
+  const seedMemory = async () => {
+    for (const id of ['entry_a', 'entry_b']) {
+      await upsertMemoryEntry(dataDir, { id, name: id, description: id, type: 'project', body: `${id} original body` }, {});
+    }
+    return { a: (await readMemoryEntry(dataDir, 'entry_a'))?.body, b: (await readMemoryEntry(dataDir, 'entry_b'))?.body };
+  };
+  const seedFiles = async () => {
+    const files = ['skills/alpha/SKILL.md', 'skills/beta/SKILL.md', 'design-systems/alpha/DESIGN.md', 'design-systems/beta/DESIGN.md'];
+    for (const file of files) {
+      await fsp.mkdir(path.dirname(path.join(dataDir, file)), { recursive: true });
+      await fsp.writeFile(path.join(dataDir, file), 'ORIGINAL\n');
+    }
+  };
+  const read = (file: string) => fsp.readFile(path.join(dataDir, file), 'utf8').catch(() => null);
+
+  it('applies a persisted memory update keyed only by its embedded id to that entry', async () => {
+    const original = await seedMemory();
+    await persist([{ id: 'legacy-memory', targetKind: 'memory-node', action: 'update',
+      patch: { format: 'json', after: JSON.stringify({ id: 'entry_a', body: 'LEGACY_MEMORY_MARKER' }) } }]);
+    expect((await getAutomationProposal(dataDir, 'legacy-memory'))?.targetRef).toBe('entry_a');
+    const applied = await applyAutomationProposal(dataDir, 'legacy-memory');
+    expect(applied.result).toMatchObject({ memoryId: 'entry_a', action: 'update' });
+    expect((await readMemoryEntry(dataDir, 'entry_a'))?.body).toContain('LEGACY_MEMORY_MARKER');
+    expect((await readMemoryEntry(dataDir, 'entry_b'))?.body).toBe(original.b);
+  });
+
+  it('applies persisted skill and design-system updates and deletes keyed by metadata.slug', async () => {
+    await seedFiles();
+    await persist([
+      { id: 'legacy-skill', targetKind: 'skill', action: 'update', metadata: { slug: 'alpha' }, patch: { format: 'markdown', after: '# Alpha v2' } },
+      { id: 'legacy-design', targetKind: 'design-system', action: 'delete', metadata: { slug: 'alpha' }, patch: { format: 'markdown' } },
+    ]);
+    expect((await getAutomationProposal(dataDir, 'legacy-skill'))?.targetRef).toBe('skills/alpha/SKILL.md');
+    expect((await getAutomationProposal(dataDir, 'legacy-design'))?.targetRef).toBe('design-systems/alpha/DESIGN.md');
+    expect((await applyAutomationProposal(dataDir, 'legacy-skill')).result).toMatchObject({ skillSlug: 'alpha', action: 'update' });
+    expect((await applyAutomationProposal(dataDir, 'legacy-design')).result).toMatchObject({ designSystemId: 'alpha', action: 'delete' });
+    expect(await read('skills/alpha/SKILL.md')).toBe('# Alpha v2\n');
+    expect(await read('skills/beta/SKILL.md')).toBe('ORIGINAL\n');
+    expect(await read('design-systems/alpha/DESIGN.md')).toBeNull();
+    expect(await read('design-systems/beta/DESIGN.md')).toBe('ORIGINAL\n');
+  });
+
+  it('refuses conflicting and title-only legacy targets and changes nothing', async () => {
+    const original = await seedMemory();
+    await seedFiles();
+    await persist([
+      { id: 'conflict-skill', targetKind: 'skill', action: 'update', targetRef: 'skills/alpha/SKILL.md', metadata: { slug: 'beta' },
+        patch: { format: 'markdown', after: '# Replaced' } },
+      { id: 'conflict-memory', targetKind: 'memory-node', action: 'update', targetRef: 'entry_a',
+        patch: { format: 'json', after: JSON.stringify({ id: 'entry_b', body: 'replacement' }) } },
+      { id: 'title-memory', title: 'entry_a', targetKind: 'memory-node', action: 'update', patch: { format: 'json', after: JSON.stringify({ name: 'entry_a', type: 'project', body: 'guessed' }) } },
+      { id: 'title-design', title: 'beta', targetKind: 'design-system', action: 'update', patch: { format: 'markdown', after: '# Guessed' } },
+    ]);
+    for (const id of ['conflict-skill', 'conflict-memory', 'title-memory', 'title-design']) {
+      await expect(applyAutomationProposal(dataDir, id), id).rejects.toThrow(/target/i);
+    }
+    expect(await read('skills/alpha/SKILL.md')).toBe('ORIGINAL\n');
+    expect(await read('skills/beta/SKILL.md')).toBe('ORIGINAL\n');
+    expect(await read('design-systems/beta/DESIGN.md')).toBe('ORIGINAL\n');
+    expect((await readMemoryEntry(dataDir, 'entry_a'))?.body).toBe(original.a);
+    expect((await readMemoryEntry(dataDir, 'entry_b'))?.body).toBe(original.b);
+    expect((await listAutomationProposals(dataDir, { status: 'pending-review' })).map((item) => item.id).sort())
+      .toEqual(['conflict-memory', 'conflict-skill', 'title-design', 'title-memory']);
+  });
+
+  it('canonicalizes legacy targets when a proposal is created and refuses conflicts there', async () => {
+    const memory = await createAutomationProposal(dataDir, { title: 'Update A', summary: 'Legacy shape', targetKind: 'memory-node', action: 'update',
+      patch: { format: 'json', after: JSON.stringify({ id: 'entry_a', body: 'x' }) } });
+    expect(memory.targetRef).toBe('entry_a');
+    const skill = await createAutomationProposal(dataDir, { title: 'Alpha', summary: 'Legacy shape', targetKind: 'skill', action: 'update',
+      metadata: { slug: 'alpha' }, patch: { format: 'markdown', after: '# Alpha' } });
+    expect(skill.targetRef).toBe('skills/alpha/SKILL.md');
+    await expect(createAutomationProposal(dataDir, { title: 'x', summary: 'y', targetKind: 'memory-node', action: 'update', targetRef: 'entry_a',
+      patch: { format: 'json', after: JSON.stringify({ id: 'entry_b', body: 'x' }) } })).rejects.toThrow(/target/i);
+    await expect(createAutomationProposal(dataDir, { title: 'x', summary: 'y', targetKind: 'skill', action: 'update', targetRef: 'skills/alpha/SKILL.md',
+      metadata: { slug: 'beta' }, patch: { format: 'markdown', after: '# x' } })).rejects.toThrow(/target/i);
+    expect((await listAutomationProposals(dataDir)).map((item) => item.id).sort()).toEqual([memory.id, skill.id].sort());
   });
 });

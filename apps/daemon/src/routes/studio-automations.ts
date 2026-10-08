@@ -13,7 +13,7 @@ import { multiUserStreamAllowed } from '../http/multiuser-stream.js';
 import { sendApiError } from '../http/api-errors.js';
 import { BUILT_IN_AUTOMATION_TEMPLATES } from '../automation-templates.js';
 import { planAutomationIngestion } from '../automation-ingestions.js';
-import { assertReviewable, buildAutomationProposal, MemoryProposalTargetMismatch, memoryEntryFromProposal, memoryProposalEntryId } from '../automation-proposals.js';
+import { assertReviewable, buildAutomationProposal, ProposalTargetConflict, memoryEntryFromProposal, memoryProposalEntryId } from '../automation-proposals.js';
 import { parseFrontmatter } from '../design-systems/frontmatter.js';
 import { ProjectOwnershipStore } from '../storage/project-ownership.js';
 import { StudioSkills } from '../storage/studio-skills.js';
@@ -173,11 +173,21 @@ export function registerStudioAutomationRoutes(app: Express, input: {
     for (const packetId of body.sourcePacketIds ?? []) if (!packetRow(owner, packetId)) throw notFound();
     if (body.automationRunId !== undefined && body.automationRunId !== null
       && (typeof body.automationRunId !== 'string' || !routineRunOwned(owner, body.automationRunId))) throw notFound();
+    // targetRef is optional in the contract: a memory update or delete may name its
+    // entry by the id embedded in the patch instead. Both must agree when present.
+    let targetRef: unknown = body.targetRef;
+    if (body.targetKind === 'memory-node') {
+      try {
+        const id = memoryProposalEntryId({ ...body, targetRef: typeof targetRef === 'string' ? targetRef : undefined } as AutomationEvolutionProposal);
+        if (body.action !== 'create') targetRef = id;
+      } catch (error) { throw new AutomationRefusal(400, error instanceof ProposalTargetConflict ? error.message : 'invalid proposal'); }
+    }
     // Updates and deletes name an existing resource of the owner; creates name none.
     if (body.action === 'create') {
       if (body.targetRef !== undefined && body.targetRef !== null) throw new AutomationRefusal(400, 'create proposals carry no target');
       if (body.patch.after === undefined || !String(body.patch.after).trim()) throw new AutomationRefusal(400, 'proposal patch.after is required');
-    } else if (!targetExists(owner, body.targetKind, body.targetRef)) throw notFound();
+    } else if (!targetExists(owner, body.targetKind, targetRef)) throw notFound();
+    return typeof targetRef === 'string' ? targetRef : undefined;
   };
   const targetExists = (owner: string, kind: string, ref: unknown): boolean => {
     if (typeof ref !== 'string') return false;
@@ -248,21 +258,23 @@ export function registerStudioAutomationRoutes(app: Express, input: {
     return { designSystemId: document.id, action: proposal.action };
   };
   const applyMemory = (owner: string, proposal: AutomationEvolutionProposal) => input.settings.withMemory(owner, async (root): Promise<Record<string, JsonValue>> => {
+    // The target is resolved before anything is read or written: an update or
+    // delete writes only the entry it names, and a conflicting id is refused.
+    let target: string | undefined;
+    try { target = memoryProposalEntryId(proposal); } catch (error) {
+      throw error instanceof ProposalTargetConflict ? new AutomationRefusal(400, error.message) : error;
+    }
     if (proposal.action === 'delete') {
-      const id = String(proposal.targetRef);
+      const id = String(target);
       if (!await readStudioMemoryEntry(root, id)) throw notFound();
       await deleteMemoryEntry(root, id);
       input.settings.publish(owner, { kind: 'delete', id });
       return { memoryId: id, action: 'delete' };
     }
-    // An update writes only its declared target: a different embedded id is refused before anything is read or written.
-    try { memoryProposalEntryId(proposal); } catch (error) {
-      throw error instanceof MemoryProposalTargetMismatch ? new AutomationRefusal(400, 'memory proposal id must match its targetRef') : error;
-    }
-    const before = proposal.targetRef ? await readStudioMemoryEntry(root, String(proposal.targetRef)) : null;
+    const before = proposal.action === 'update' ? await readStudioMemoryEntry(root, String(target)) : null;
     if (proposal.action === 'update' && !before) throw notFound();
     const draft = memoryEntryFromProposal(proposal, before);
-    const id = proposal.action === 'update' ? String(proposal.targetRef) : draft.id ?? deriveMemoryId(draft.type, draft.name);
+    const id = proposal.action === 'update' ? String(target) : draft.id ?? deriveMemoryId(draft.type, draft.name);
     if (!MEMORY_ID.test(id)) throw new AutomationRefusal(400, 'invalid memory proposal');
     // A create never overwrites an existing entry of the account.
     if (proposal.action === 'create' && await readStudioMemoryEntry(root, id)) throw new AutomationRefusal(409, 'memory entry already exists');
@@ -316,8 +328,8 @@ export function registerStudioAutomationRoutes(app: Express, input: {
   }));
   app.post('/api/multiuser/automation-proposals', handle((req, res, owner) => {
     const body = (req.body ?? {}) as CreateAutomationEvolutionProposalRequest & { status?: AutomationProposalStatus };
-    checkProposal(owner, body);
-    const proposal = buildAutomationProposal({ ...body, sourcePacketIds: body.sourcePacketIds ?? [] });
+    const targetRef = checkProposal(owner, body);
+    const proposal = buildAutomationProposal({ ...body, ...(targetRef === undefined ? {} : { targetRef }), sourcePacketIds: body.sourcePacketIds ?? [] });
     db.transaction(() => {
       if (count('studio_automation_proposals', owner) >= STUDIO_AUTOMATION_LIMITS.proposals) throw new AutomationRefusal(409, 'automation storage limit reached');
       insertProposal(owner, proposal);

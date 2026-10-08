@@ -259,9 +259,10 @@ export class StudioMemoryAutomation {
       const out: string[] = [];
       for (const candidate of proposed) {
         if (memoryCandidateKnown(known, candidate)) continue;
-        // Rechecked per write: each save is I/O the revocation may overtake.
-        if (!this.stillPinned(turn, key)) return out.length ? out : 'source-unavailable';
-        const entry = await saveStudioMemoryEntry(root, memoryDraftFromCandidate(candidate), 'llm');
+        // The save re-checks the pin after its own reads, immediately before it
+        // writes: revocation or shutdown during that I/O writes nothing.
+        const entry = await saveStudioMemoryEntry(root, memoryDraftFromCandidate(candidate), 'llm', () => this.stillPinned(turn, key));
+        if (entry === 'revoked') return out.length ? out : 'source-unavailable';
         if (entry === 'limit') break;
         if (entry !== 'invalid') out.push(entry.id);
       }

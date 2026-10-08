@@ -49,7 +49,7 @@ export async function listAutomationProposals(
     return [];
   }
   const proposals = Array.isArray((parsed as { proposals?: unknown }).proposals)
-    ? ((parsed as { proposals: AutomationEvolutionProposal[] }).proposals)
+    ? ((parsed as { proposals: AutomationEvolutionProposal[] }).proposals).map(loadedProposal)
     : [];
   const filtered =
     opts.status && opts.status !== 'all'
@@ -123,7 +123,8 @@ export async function createAutomationProposal(
     status?: AutomationProposalStatus;
   },
 ): Promise<AutomationEvolutionProposal> {
-  const proposal = buildAutomationProposal(input);
+  // Legacy targets become targetRef; a conflicting or title-only target is refused here.
+  const proposal = canonicalProposalTarget(buildAutomationProposal(input));
   const proposals = await listAutomationProposals(dataDir, { status: 'all' });
   const next = proposals.filter((existing) => existing.id !== proposal.id);
   next.push(proposal);
@@ -172,24 +173,38 @@ function withMemoryProvenance(body: string, proposal: AutomationEvolutionProposa
   return [text, '', ...provenance].join('\n');
 }
 
-/** A memory proposal that names one entry as its target but carries another. */
-export class MemoryProposalTargetMismatch extends Error {
-  constructor() { super('memory update proposal id must match its targetRef'); }
-}
+/**
+ * A proposal whose target is contradictory (an explicit `targetRef` that
+ * disagrees with the embedded id or slug) or can only be guessed (a title).
+ * Refused before anything is read or written.
+ */
+export class ProposalTargetConflict extends Error {}
+
+const MEMORY_ENTRY_ID = /^[a-z0-9_]{1,128}$/;
+const explicitTargetRef = (proposal: AutomationEvolutionProposal) =>
+  typeof proposal.targetRef === 'string' && proposal.targetRef ? proposal.targetRef : undefined;
 
 /**
- * The entry id a memory proposal writes. An update is bound to its declared
- * `targetRef`: an id embedded in the patch may only repeat it, otherwise the
- * proposal is refused (before any write) instead of retargeted. A create
- * keeps its embedded id or `targetRef`, if any. Pure; both runtimes use it.
+ * The entry id a memory proposal writes. `targetRef` is optional in the
+ * contract, so a legacy desktop proposal may name its entry only by the id
+ * embedded in the patch; either one identifies the target, and when both are
+ * present they must agree. An update or delete needs one of them (never a
+ * name-derived guess); a create keeps its embedded id or `targetRef`, if any.
+ * Pure; both runtimes use it.
  */
 export function memoryProposalEntryId(proposal: AutomationEvolutionProposal): string | undefined {
-  const embedded = parseJsonPatchAfter(proposal).id;
-  if (proposal.action === 'update') {
-    if (!proposal.targetRef || (embedded !== undefined && embedded !== proposal.targetRef)) throw new MemoryProposalTargetMismatch();
-    return proposal.targetRef;
+  const raw = parseJsonPatchAfter(proposal).id;
+  const embedded = typeof raw === 'string' ? raw : undefined;
+  const explicit = explicitTargetRef(proposal);
+  if (explicit !== undefined && embedded !== undefined && explicit !== embedded) {
+    throw new ProposalTargetConflict('memory proposal id conflicts with its targetRef');
   }
-  return typeof embedded === 'string' ? embedded : proposal.targetRef;
+  if (proposal.action === 'create') return embedded ?? explicit;
+  const target = explicit ?? embedded;
+  if (!target || !MEMORY_ENTRY_ID.test(target)) {
+    throw new ProposalTargetConflict(`memory ${proposal.action} proposal needs a target: targetRef or the entry id`);
+  }
+  return target;
 }
 
 /**
@@ -230,17 +245,13 @@ export function memoryEntryFromProposal(
 }
 
 async function applyMemoryProposal(dataDir: string, proposal: AutomationEvolutionProposal) {
+  // Resolved before reading or writing anything: a conflicting or unnamed target changes nothing.
+  const target = memoryProposalEntryId(proposal);
   if (proposal.action === 'delete') {
-    if (!proposal.targetRef) throw new Error('delete proposal requires targetRef');
-    await deleteMemoryEntry(dataDir, proposal.targetRef);
-    return { memoryId: proposal.targetRef, action: 'delete' };
+    await deleteMemoryEntry(dataDir, target);
+    return { memoryId: target, action: 'delete' };
   }
-
-  // Resolved before reading or writing anything: a mismatched update changes nothing.
-  memoryProposalEntryId(proposal);
-  const before = proposal.targetRef
-    ? await readMemoryEntry(dataDir, proposal.targetRef)
-    : null;
+  const before = target ? await readMemoryEntry(dataDir, target) : null;
   const { id, ...fields } = memoryEntryFromProposal(proposal, before);
   const payload: Record<string, unknown> = { ...fields };
   if (id) payload.id = id;
@@ -264,17 +275,60 @@ function metadataRecord(proposal: AutomationEvolutionProposal): Record<string, u
     : {};
 }
 
+const targetPath = (kind: 'design-system' | 'skill', slug: string) =>
+  kind === 'design-system' ? `design-systems/${slug}/DESIGN.md` : `skills/${slug}/SKILL.md`;
+
+/**
+ * The slug a desktop skill/design-system proposal writes. The canonical
+ * target is a path `targetRef`; a legacy proposal may name it by
+ * `metadata.slug` instead (the contract keeps `targetRef` optional). When both
+ * are present they must agree, and a non-path `targetRef` counts only if it
+ * equals the slug. An update or delete must name its target one of those ways;
+ * only a create may fall back to a slug of its title.
+ */
 function targetSlugFor(proposal: AutomationEvolutionProposal, kind: 'design-system' | 'skill'): string {
   const expected = kind === 'design-system'
     ? /^design-systems\/([^/]+)\/DESIGN\.md$/
     : /^skills\/([^/]+)\/SKILL\.md$/;
-  const fromRef = typeof proposal.targetRef === 'string' ? expected.exec(proposal.targetRef)?.[1] : '';
-  if (fromRef && SAFE_SLUG.test(fromRef)) return fromRef;
-  // An update or delete is bound to its declared target; only a create may name its own slug.
-  if (proposal.action !== 'create') throw new Error(`${kind} ${proposal.action} proposal requires a ${kind} targetRef`);
+  const explicit = explicitTargetRef(proposal);
+  const fromPath = explicit ? expected.exec(explicit)?.[1] : undefined;
+  const refSlug = fromPath && SAFE_SLUG.test(fromPath) ? fromPath : undefined;
   const metadata = metadataRecord(proposal);
-  if (typeof metadata.slug === 'string' && SAFE_SLUG.test(metadata.slug)) return metadata.slug;
+  const metaSlug = typeof metadata.slug === 'string' && SAFE_SLUG.test(metadata.slug) ? metadata.slug : undefined;
+  if (refSlug && metaSlug && refSlug !== metaSlug) throw new ProposalTargetConflict(`${kind} proposal targetRef conflicts with metadata.slug`);
+  // A create ignored a non-path targetRef before; an update or delete may not.
+  if (explicit !== undefined && !refSlug && explicit !== metaSlug && proposal.action !== 'create') {
+    throw new ProposalTargetConflict(`${kind} ${proposal.action} proposal targetRef must be ${targetPath(kind, '<slug>')}`);
+  }
+  const slug = refSlug ?? metaSlug;
+  if (slug) return slug;
+  if (proposal.action !== 'create') throw new ProposalTargetConflict(`${kind} ${proposal.action} proposal needs a target: targetRef or metadata.slug`);
   return slugifyTarget(proposal.title);
+}
+
+/**
+ * The desktop store's canonical form of a proposal: an unambiguous legacy
+ * target (the embedded memory id, or `metadata.slug`) becomes `targetRef`.
+ * Throws `ProposalTargetConflict` for a conflicting or title-only target.
+ * Automation templates keep their embedded identity.
+ */
+export function canonicalProposalTarget(proposal: AutomationEvolutionProposal): AutomationEvolutionProposal {
+  let targetRef: string | undefined;
+  if (proposal.targetKind === 'memory-node') {
+    const id = memoryProposalEntryId(proposal);
+    targetRef = proposal.action === 'create' ? explicitTargetRef(proposal) : id;
+  } else if (proposal.targetKind === 'skill' || proposal.targetKind === 'design-system') {
+    const slug = targetSlugFor(proposal, proposal.targetKind);
+    targetRef = proposal.action === 'create' ? explicitTargetRef(proposal) : targetPath(proposal.targetKind, slug);
+  } else {
+    return proposal;
+  }
+  return targetRef === undefined || targetRef === proposal.targetRef ? proposal : { ...proposal, targetRef };
+}
+
+/** Canonical on load; a stored proposal whose target is contradictory stays as stored and is refused at apply. */
+function loadedProposal(proposal: AutomationEvolutionProposal): AutomationEvolutionProposal {
+  try { return canonicalProposalTarget(proposal); } catch { return proposal; }
 }
 
 function proposalAfterMarkdown(proposal: AutomationEvolutionProposal): string {

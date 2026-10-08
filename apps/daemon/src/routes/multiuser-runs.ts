@@ -462,6 +462,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       : JSON.stringify([owner, conversationId, fields.clientRequestId, query, fields.research.maxSources ?? null]);
     const paid = paidKey === null ? undefined : paidFindings.get(paidKey);
     if (paid && now() - paid.at < PAID_FINDINGS_TTL_MS) return paid.findings;
+    // Admission yielded for prompt, catalog and memory I/O: the session and the
+    // daemon must still be live immediately before the account is billed.
+    if (!admissionStillAllowed(res)) return false;
     try {
       const findings = renderStudioResearchFindings(await research.search(owner, query, fields.research.maxSources));
       if (paidKey !== null) {
@@ -1365,13 +1368,23 @@ export function registerMultiUserRunRoutes(app: Express, input: {
    * therefore waits, then meets the replay check and answers with the run the
    * first admission created instead of paying for a second search. The key
    * only orders work; each admission still validates its own body and authority.
+   *
+   * Waiting is a yield: the session (or, for routines, the owner's authority)
+   * may have been revoked and the daemon may be shutting down by the time an
+   * admission leaves the lane, so both are rechecked first, before any replay
+   * can return another admission's run.
    */
   const admissionLanes = new Map<string, Promise<unknown>>();
+  const admissionStillAllowed = (res: Response): boolean => {
+    if (shuttingDown) { if (!res.headersSent) sendApiError(res, 503, 'UPSTREAM_UNAVAILABLE', 'the server is shutting down'); return false; }
+    return multiUserStreamAllowed(res);
+  };
   const admitOnce = async (inputBody: Record<string, unknown>, res: Response, admit: () => Promise<unknown>): Promise<void> => {
     const { conversationId, clientRequestId } = inputBody;
     if (typeof conversationId !== 'string' || typeof clientRequestId !== 'string') { await admit(); return; }
     const key = JSON.stringify([actor(res), conversationId, clientRequestId]);
-    const current = (admissionLanes.get(key) ?? Promise.resolve()).catch(() => {}).then(admit);
+    const current = (admissionLanes.get(key) ?? Promise.resolve()).catch(() => {})
+      .then(() => admissionStillAllowed(res) ? admit() : undefined);
     admissionLanes.set(key, current);
     try { await current; } finally { if (admissionLanes.get(key) === current) admissionLanes.delete(key); }
   };

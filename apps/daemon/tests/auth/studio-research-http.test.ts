@@ -8,7 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts,
+import { cleanupIsolatedDataRoot, loadIsolatedServerModule, login, multiUserOptions, provisionAccounts,
   startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
 import { PERSONAL_CODEX_MOCK, codexHome, linkCodex, until } from './personal-codex-helpers.js';
 
@@ -225,4 +225,32 @@ it('reuses the paid findings when a retry follows an admission refused after its
   expect(other.status, other.text).toBe(202);
   expect(calls).toHaveLength(2);
   await until(() => daemon.request({ path: `/api/runs/${other.json.runId}`, cookie: a.cookie }), (r) => ['succeeded', 'failed'].includes(r.json.status), 'other turn');
+}, 60_000);
+
+it('refuses a queued retry whose session was revoked while it waited, with no run data and no second search', async () => {
+  mode = 'ok'; calls.length = 0;
+  const second = await login(daemon, a.username, a.password);
+  const projectId = randomUUID();
+  const made = await daemon.request({ method: 'POST', path: '/api/projects', cookie: a.cookie, body: { id: projectId, name: 'Revoked while queued' } });
+  const conversationId = made.json.conversationId as string;
+  let release!: () => void;
+  tavilyGate = new Promise<void>((resolve) => { release = resolve; });
+  const send = (cookie: string) => daemon.request({ method: 'POST', path: '/api/runs', cookie, body: { projectId, conversationId, agentId: 'codex',
+    executionSource: 'personal_subscription', clientRequestId: 'revoked-while-queued', message: 'Search for: calm palettes', research: { enabled: true, query: 'calm palettes' } } });
+  try {
+    const first = send(a.cookie);
+    await until(async () => calls.length, (count) => count === 1, 'first search');
+    const queued = send(second);
+    // The second admission is waiting in the lane behind the held search.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect([200, 204]).toContain((await daemon.request({ method: 'POST', path: '/api/auth/logout', cookie: second, body: {} })).status);
+    release(); tavilyGate = null;
+    const [granted, revoked] = await Promise.all([first, queued]);
+    expect(granted.status, granted.text).toBe(202);
+    const runId = granted.json.runId as string;
+    expect(revoked.json?.runId).toBeUndefined();
+    expect(revoked.text).not.toContain(runId);
+    expect(calls).toHaveLength(1);
+    await until(() => daemon.request({ path: `/api/runs/${runId}`, cookie: a.cookie }), (r) => ['succeeded', 'failed'].includes(r.json.status), 'granted turn');
+  } finally { release(); tavilyGate = null; }
 }, 60_000);

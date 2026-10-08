@@ -504,6 +504,11 @@ export async function updateMemoryTreeNode(dataDir, id, patch) {
   });
 }
 
+/** `upsertMemoryEntry`'s `commit` check refused the write; nothing was written. */
+export class MemoryCommitRefused extends Error {
+  constructor() { super('memory write refused at commit'); }
+}
+
 export async function upsertMemoryEntry(dataDir, input, options) {
   const { name, description, type, body } = input || {};
   if (!name || !isValidType(type)) {
@@ -513,6 +518,11 @@ export async function upsertMemoryEntry(dataDir, input, options) {
     ? input.id
     : deriveMemoryId(type, name);
   await ensureDir(memoryDir(dataDir));
+  // `options.commit` lets a background caller re-check its authority after
+  // all preparatory I/O: it runs synchronously right before the entry file is
+  // written (the commit point); `false` writes nothing and throws
+  // `MemoryCommitRefused`.
+  if (options?.commit && !options.commit()) throw new MemoryCommitRefused();
   await fsp.writeFile(
     entryPath(dataDir, id),
     renderEntryFile(name, description, type, body, options?.source ?? 'manual'),
