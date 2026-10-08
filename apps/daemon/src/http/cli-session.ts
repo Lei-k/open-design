@@ -1,6 +1,7 @@
 import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { parseStudioRuntimeCapabilities, type AuthAccount, type AuthSessionResponse, type StudioPilotState, type CompanyOpenAIConfigResponse } from '@open-design/contracts';
+import { parseStudioRuntimeCapabilities, type AuthAccount, type AuthSessionResponse, type StudioPilotState, type CompanyOpenAIConfigResponse,
+  type StudioProviderKeyResponse, type StudioProviderKeySummary, type StudioProviderKeysResponse } from '@open-design/contracts';
 
 export interface CliSessionCredential {
   schemaVersion: 1;
@@ -277,4 +278,51 @@ async function runCompanyOpenAICli(args: string[], sessionFile: string | null): 
   // Project only the public contract even if a server response gains fields.
   process.stdout.write(`${JSON.stringify({ provider: { providerId: 'openai', enabled: result.enabled, configured: result.configured,
     model: result.model, capacity: result.capacity, revision: result.revision, credentialRevision: result.credentialRevision } })}\n`);
+}
+
+/**
+ * The account's own OpenAI API key (#62/#63), the CLI twin of Settings →
+ * Agent accounts. The key comes from a private file or stdin, never argv, and
+ * no response carries it: output is the same last-four summary the UI shows.
+ */
+export async function runAccountCli(args: string[], sessionFile: string | null): Promise<void> {
+  if (args.includes('--help') || args.length === 0) {
+    process.stdout.write('Usage: od account key get --session-file <path> [--json]\n'
+      + '       od account key set --revision <integer> [--api-key-file <path|->] [--model <id>] --session-file <path> [--json]\n'
+      + '       od account key remove --revision <integer> --session-file <path> [--json]\n');
+    return;
+  }
+  const [domain, command, ...rest] = args;
+  if (domain !== 'key' || !['get', 'set', 'remove'].includes(command ?? '') || !sessionFile) throw new Error('Invalid account command; use account --help');
+  const flags: Record<string, string> = {};
+  for (let i = 0; i < rest.length; i++) {
+    const key = rest[i]!;
+    if (key === '--json') continue;
+    const allowed = command === 'set' ? ['--revision', '--api-key-file', '--model'] : command === 'remove' ? ['--revision'] : [];
+    if (!allowed.includes(key) || flags[key] !== undefined || !rest[i + 1] || rest[i + 1]!.startsWith('--')) throw new Error('Invalid account key options; keys require --api-key-file');
+    flags[key] = rest[++i]!;
+  }
+  let body: Record<string, unknown> | undefined;
+  if (command !== 'get') {
+    if (!/^(0|[1-9][0-9]*)$/.test(flags['--revision'] ?? '') || !Number.isSafeInteger(Number(flags['--revision']))
+      || command === 'set' && !flags['--api-key-file'] && !flags['--model']) throw new Error('Invalid account key update');
+    body = { revision: Number(flags['--revision']), ...(command === 'remove' ? { apiKey: null } : {}),
+      ...(flags['--model'] ? { model: flags['--model'] } : {}),
+      ...(flags['--api-key-file'] ? { apiKey: await secretInput(flags['--api-key-file'], 'API key') } : {}) };
+  }
+  if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') throw new Error('TLS verification must not be disabled');
+  const credential = readCliSession(sessionFile);
+  const base = `${credential.origin}/api/multiuser/settings/provider-keys`;
+  const response = await cliSessionFetch(credential)(body ? `${base}/openai` : base, body ? {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  } : undefined);
+  if (!response.ok) throw new Error(`Account key request refused (${response.status})`);
+  const json = await response.json() as Partial<StudioProviderKeyResponse & StudioProviderKeysResponse>;
+  const summary = body ? json.key : json.keys?.find((key) => key.provider === 'openai');
+  const valid = (key: StudioProviderKeySummary | undefined): key is StudioProviderKeySummary => !!key && key.provider === 'openai'
+    && typeof key.configured === 'boolean' && (key.last4 === null || typeof key.last4 === 'string' && key.last4.length <= 4)
+    && typeof key.model === 'string' && Number.isSafeInteger(key.revision) && Number.isSafeInteger(key.credentialRevision);
+  if (!valid(summary)) throw new Error('Invalid account key response');
+  process.stdout.write(`${JSON.stringify({ key: { provider: 'openai', configured: summary.configured, last4: summary.last4, model: summary.model,
+    revision: summary.revision, credentialRevision: summary.credentialRevision, updatedAt: summary.updatedAt ?? null } })}\n`);
 }

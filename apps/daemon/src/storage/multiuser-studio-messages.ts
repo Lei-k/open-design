@@ -17,7 +17,7 @@ export interface StudioRunMessageInput {
   updated_at: number;
   started_at: number | null;
   ended_at: number | null;
-  execution_source: 'personal_subscription' | 'company_pool';
+  execution_source: 'personal_subscription' | 'company_pool' | 'personal_api_key';
   request_json: string | null;
   output: string | null;
 }
@@ -145,7 +145,7 @@ export class MultiUserStudioMessages {
     upsertMessage(this.db, run.conversation_id, {
       ...stored,
       id: ids.assistantMessageId, role: 'assistant', runId: run.id,
-      agentId: run.execution_source === 'personal_subscription' ? 'codex' : request?.companyProvider === 'openai' ? 'openai' : 'test-mock',
+      agentId: run.execution_source === 'personal_subscription' ? 'codex' : run.execution_source === 'personal_api_key' ? 'openai-byok' : request?.companyProvider === 'openai' ? 'openai' : 'test-mock',
       content: frames.some((frame) => frame.event === 'agent' && parse(frame.data).type === 'text_delta') ? text : typeof output.text === 'string' ? output.text : stored?.content ?? '',
       ...(frames.length ? { events, lastRunEventId: String(frames.at(-1)!.seq) } : {}),
       runStatus: run.status === 'active' ? 'running' : run.status,

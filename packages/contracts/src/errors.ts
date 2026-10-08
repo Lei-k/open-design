@@ -194,6 +194,12 @@ export const API_ERROR_CODES = [
   'MULTIUSER_QUEUE_LIMIT',
   'MULTIUSER_QUOTA_EXHAUSTED',
   'MULTIUSER_PROVIDER_DISABLED',
+  // The account's own provider key (#62/#63): none stored, the provider
+  // refused it (401/403), or the provider rate-limited the account (429).
+  // Never answered by falling back to the company pool.
+  'MULTIUSER_PROVIDER_KEY_MISSING',
+  'MULTIUSER_PROVIDER_KEY_REJECTED',
+  'MULTIUSER_PROVIDER_RATE_LIMITED',
   // Multi-user terminal run errors that are not personal-lane specific (#79):
   // a company/test-mock run that failed without a public reason, its launcher
   // failing before a child owned the run, a worker that outlived the shutdown

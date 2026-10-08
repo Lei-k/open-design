@@ -32,7 +32,9 @@ export type StudioAvailability =
   | { status: 'supported' }
   | { status: 'pilot' | 'unavailable' | 'admin-disabled'; reason: string };
 
-export type StudioExecutionSource = { source: 'personal_subscription'; agentId: 'codex' } | { source: 'company_pool'; agentId: 'openai' };
+export type StudioExecutionSource = { source: 'personal_subscription'; agentId: 'codex' } | { source: 'company_pool'; agentId: 'openai' }
+  /** The actor's own OpenAI API key, stored encrypted per account (#62/#63). */
+  | { source: 'personal_api_key'; agentId: 'openai-byok' };
 
 export interface StudioRuntimeCapabilities {
   schemaVersion: 1;
@@ -131,10 +133,11 @@ export function parseStudioRuntimeCapabilities(value: unknown): StudioRuntimeCap
     } else return null;
   }
   const choices = studio.executionSources;
-  if (choices !== undefined && (!Array.isArray(choices) || choices.length > 2 || choices.some((choice) =>
+  if (choices !== undefined && (!Array.isArray(choices) || choices.length > 3 || choices.some((choice) =>
     !choice || typeof choice !== 'object' || Object.keys(choice).some((key) => !['source', 'agentId'].includes(key))
     || !(choice.source === 'personal_subscription' && choice.agentId === 'codex'
-      || choice.source === 'company_pool' && choice.agentId === 'openai'))
+      || choice.source === 'company_pool' && choice.agentId === 'openai'
+      || choice.source === 'personal_api_key' && choice.agentId === 'openai-byok'))
     || new Set(choices.map((choice) => choice.source)).size !== choices.length)) return null;
   if (studio.renderedExports !== undefined && typeof studio.renderedExports !== 'boolean') return null;
   return { schemaVersion: 1, shell: studio.shell!, features,

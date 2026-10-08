@@ -10,7 +10,7 @@ import { formatProjectAttachmentHint, normalizeCommentAttachments, renderComment
 import { renderRunContextPrompt } from '../runtimes/chat-run-context.js';
 import { classifyRunSteering } from '../runtimes/run-steering.js';
 import { RESTART_ERROR_CODE } from '../runtimes/run-restart-recovery.js';
-import type { MultiUserRun, MultiUserRunEvent, MultiUserRunStatus, MultiUserRunsResponse } from '@open-design/contracts';
+import type { MultiUserRun, MultiUserRunEvent, MultiUserRunStatus, MultiUserRunsResponse, StudioProviderKeyResponse, StudioProviderKeysResponse, UpdateStudioProviderKeyRequest } from '@open-design/contracts';
 import { getConversation, getMessage, getProject, updateProject } from '../db.js';
 import { sendApiError } from '../http/api-errors.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
@@ -31,6 +31,7 @@ import type { PersonalRunLaneControls } from './multiuser-agent-accounts.js';
 import type { MultiUserDesignRoutes } from './multiuser-design.js';
 import { CompanyOpenAIConfigError, CompanyOpenAIStore } from '../storage/company-openai.js';
 import { CompanyOpenAIWorker, runCompanyOpenAITurn } from '../runtimes/company-openai.js';
+import { PersonalProviderKeyError, PersonalProviderKeyStore } from '../storage/personal-provider-keys.js';
 import type { StudioDesignCatalog } from './studio-design-catalog.js';
 import type { StudioSettings } from '../storage/studio-settings.js';
 import type { StudioCatalog } from './studio-catalog.js';
@@ -45,7 +46,7 @@ type RunRow = {
   id: string; owner_account_id: string; project_id: string; conversation_id: string;
   status: 'queued' | 'active' | 'succeeded' | 'failed' | 'canceled'; created_at: number; updated_at: number; output: string | null;
   request_json: string | null; queue_seq: number | null;
-  execution_source: 'company_pool' | 'personal_subscription'; personal_account_id: string | null;
+  execution_source: 'company_pool' | 'personal_subscription' | 'personal_api_key'; personal_account_id: string | null;
   credential_version: number | null; started_at: number | null; ended_at: number | null;
 };
 type RunEventData<E extends MultiUserRunEvent['event']> = Extract<MultiUserRunEvent, { event: E }>['data'];
@@ -277,7 +278,7 @@ const ENGINE_REASON_CODES: Record<string, ApiErrorCode> = {
  * becomes the generic failure of the run's own execution source. Stored
  * reasons are never echoed otherwise, so no provider prose or secret leaks.
  */
-export function multiUserTerminalErrorCode(source: 'company_pool' | 'personal_subscription', reason: unknown): ApiErrorCode {
+export function multiUserTerminalErrorCode(source: 'company_pool' | 'personal_subscription' | 'personal_api_key', reason: unknown): ApiErrorCode {
   const personal = source === 'personal_subscription';
   if (typeof reason === 'string' && Object.hasOwn(ENGINE_REASON_CODES, reason)) return ENGINE_REASON_CODES[reason]!;
   if (typeof reason === 'string' && (API_ERROR_CODES as readonly string[]).includes(reason)
@@ -306,6 +307,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   catalog?: StudioCatalog;
   settings?: StudioSettings;
   designCatalog?: StudioDesignCatalog;
+  /** Account-private provider keys (#62/#63); `false` turns the source off for this deployment. */
+  personalProviderKeys?: boolean;
 }): { cancelAccountRuns(accountId: string): void; isRunOwner(runId: string, accountId: string): boolean;
   /** `accountId: null` stops every account's runs in the project. */
   cancelProjectRuns(accountId: string | null, projectId: string, conversationId?: string): Promise<() => void>;
@@ -389,7 +392,14 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
     owner_account_id TEXT NOT NULL, provider_id TEXT NOT NULL, model TEXT NOT NULL,
     credential_revision INTEGER NOT NULL, history_json TEXT NOT NULL DEFAULT '[]'
-  )`);
+  );
+  CREATE TABLE IF NOT EXISTS multiuser_byok_sessions (
+    conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+    owner_account_id TEXT NOT NULL, provider_id TEXT NOT NULL, history_json TEXT NOT NULL DEFAULT '[]'
+  );
+  CREATE TRIGGER IF NOT EXISTS multiuser_byok_sessions_binding_immutable BEFORE UPDATE OF owner_account_id, provider_id ON multiuser_byok_sessions
+    BEGIN SELECT RAISE(ABORT, 'personal key session binding is immutable'); END;`);
+  const providerKeys = input.personalProviderKeys === false ? null : new PersonalProviderKeyStore(db, dataRoot);
   // A deployed image ships no mocks. Only explicit programmatic fixtures
   // resolve this test worker; it is never a fallback for OpenAI.
   const mockAgentScript = input.mockAgentScript ? fs.realpathSync(input.mockAgentScript) : null;
@@ -463,10 +473,31 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   `);
   const runColumns = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name));
   for (const [name, ddl] of [
-    ['execution_source', "TEXT NOT NULL DEFAULT 'company_pool' CHECK (execution_source IN ('company_pool','personal_subscription'))"],
+    ['execution_source', "TEXT NOT NULL DEFAULT 'company_pool' CHECK (execution_source IN ('company_pool','personal_subscription','personal_api_key'))"],
     ['personal_account_id', 'TEXT'], ['credential_version', 'INTEGER'], ['started_at', 'INTEGER'], ['ended_at', 'INTEGER'],
   ] as const) {
     if (!runColumns.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${ddl}`);
+  }
+  // #62/#63: widen the source CHECK for the account's own provider key. SQLite
+  // cannot alter a CHECK, so the table is rebuilt once with every row intact.
+  const runSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { sql: string }).sql;
+  if (!runSql.includes("'personal_api_key'")) {
+    const widened = runSql.replace("('company_pool','personal_subscription')", "('company_pool','personal_subscription','personal_api_key')");
+    if (widened === runSql) throw new Error('multiuser_runs: unexpected execution_source constraint');
+    const columns = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => `"${column.name}"`).join(', ');
+    db.pragma('foreign_keys = OFF');
+    try {
+      db.transaction(() => {
+        db.exec(widened.replace(/^CREATE TABLE\s+(?:"?multiuser_runs"?)/, 'CREATE TABLE multiuser_runs_next'));
+        db.exec(`INSERT INTO multiuser_runs_next (${columns}) SELECT ${columns} FROM ${table};
+          DROP TABLE ${table};
+          ALTER TABLE multiuser_runs_next RENAME TO ${table};
+          CREATE INDEX IF NOT EXISTS idx_${table}_owner ON ${table}(owner_account_id, created_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_${table}_queue ON ${table}(status, queue_seq);
+          CREATE TRIGGER IF NOT EXISTS ${table}_binding_immutable BEFORE UPDATE OF owner_account_id, project_id, conversation_id ON ${table}
+            BEGIN SELECT RAISE(ABORT, 'run binding is immutable'); END;`);
+      }).immediate();
+    } finally { db.pragma('foreign_keys = ON'); }
   }
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS ${table}_source_immutable BEFORE UPDATE OF execution_source, personal_account_id, credential_version ON ${table}
@@ -487,6 +518,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   const personal = input.personal ?? null;
   const company = "execution_source = 'company_pool'";
   const personalRows = "execution_source = 'personal_subscription'";
+  const byokRows = "execution_source = 'personal_api_key'";
+  /** Rows the in-process worker dispatcher drains: company turns and turns on an account's own key. */
+  const workerRows = "execution_source IN ('company_pool','personal_api_key')";
   const recovery = db.prepare(`SELECT * FROM ${table} WHERE status = 'active'`).all() as RunRow[];
   const ledgerActive = ledger.activeRuns();
   const reconciled = new Set<string>();
@@ -553,8 +587,12 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     WHERE status = 'queued' AND owner_account_id = ? AND queue_seq <= ? AND execution_source = ?`)
     .get(run.owner_account_id, run.queue_seq, run.execution_source) as { n: number }).n : null;
   const isPersonal = (run: RunRow) => run.execution_source === 'personal_subscription';
-  const isOpenAI = (run: RunRow) => !isPersonal(run) && storedRequest(run.request_json)?.companyProvider === 'openai';
-  const agentOf = (run: RunRow): 'codex' | 'openai' | 'test-mock' => isPersonal(run) ? 'codex' : isOpenAI(run) ? 'openai' : 'test-mock';
+  /** The account's own provider key (#62/#63): no company quota, no company credential. */
+  const isByok = (run: RunRow) => run.execution_source === 'personal_api_key';
+  const isCompany = (run: RunRow) => run.execution_source === 'company_pool';
+  /** Runs the OpenAI worker, on the company key or the account's own. */
+  const isOpenAI = (run: RunRow) => isByok(run) || isCompany(run) && storedRequest(run.request_json)?.companyProvider === 'openai';
+  const agentOf = (run: RunRow): MultiUserRun['agentId'] => isPersonal(run) ? 'codex' : isByok(run) ? 'openai-byok' : isOpenAI(run) ? 'openai' : 'test-mock';
   const body = (run: RunRow): MultiUserRun => ({
     id: run.id, projectId: run.project_id, conversationId: run.conversation_id,
     agentId: agentOf(run), status: run.status === 'active' ? 'running' : run.status,
@@ -565,7 +603,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     })(),
     message: storedMessage(run.request_json),
     ...studioMessages.ids(run.id),
-    ...(isPersonal(run) ? { executionSource: 'personal_subscription' as const } : isOpenAI(run) ? { executionSource: 'company_pool' as const } : {}),
+    ...(isPersonal(run) || isByok(run) ? { executionSource: run.execution_source } : isOpenAI(run) ? { executionSource: 'company_pool' as const } : {}),
   });
   /**
    * Persist before publishing; start events participate in the row/turn transaction.
@@ -630,7 +668,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (storesClosed) return;
     const existing = row(id);
     if (!existing || (existing.status !== 'active' && existing.status !== 'queued')) return;
-    if (existing.status === 'active' && !isPersonal(existing)) closeLedgerSpan(existing, status);
+    if (existing.status === 'active' && isCompany(existing)) closeLedgerSpan(existing, status);
     const projection = projections.get(id);
     projection?.flush();
     const result = { ...(projection ? { text: projection.text, textTruncated: projection.truncated } : {}),
@@ -668,20 +706,26 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   for (const run of recovery) finish(run.id, 'failed', { reason: RESTART_ERROR_CODE });
   for (const run of replayed) finish(run.id, 'failed', { reason: 'ledger_admission_replayed' });
   const capacity = () => mockAgentScript ? Number((db.prepare("SELECT value FROM multiuser_pool_config WHERE key = 'test-mock-capacity'").get() as { value: string } | undefined)?.value ?? '2') : 0;
-  const providerCapacity = (run: RunRow) => isOpenAI(run) ? companyOpenAI.available() ? companyOpenAI.read().capacity : 0 : capacity();
+  /** Host worker slots for turns on accounts' own keys; the provider bill is the account's. */
+  const byokCapacity = () => providerKeys ? Number((db.prepare("SELECT value FROM multiuser_pool_config WHERE key = 'personal-api-key-capacity'")
+    .get() as { value: string } | undefined)?.value ?? '4') : 0;
+  const providerCapacity = (run: RunRow) => isByok(run) ? byokCapacity()
+    : isOpenAI(run) ? companyOpenAI.available() ? companyOpenAI.read().capacity : 0 : capacity();
+  const lane = (run: RunRow) => isByok(run) ? 'byok' : isOpenAI(run) ? 'openai' : 'mock';
   dispatch = () => {
-    if (dispatching || shuttingDown || !(mockAgentScript || companyOpenAI.available())) return;
+    if (dispatching || shuttingDown || !(mockAgentScript || companyOpenAI.available() || providerKeys)) return;
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     dispatching = true;
     try {
       for (;;) {
-        const active = db.prepare(`SELECT * FROM ${table} WHERE status = 'active' AND ${company}`).all() as RunRow[];
-        const queued = db.prepare(`SELECT * FROM ${table} WHERE status = 'queued' AND ${company} ORDER BY queue_seq`).all() as RunRow[];
+        const active = db.prepare(`SELECT * FROM ${table} WHERE status = 'active' AND ${workerRows}`).all() as RunRow[];
+        const queued = db.prepare(`SELECT * FROM ${table} WHERE status = 'queued' AND ${workerRows} ORDER BY queue_seq`).all() as RunRow[];
         const turns = new Map((db.prepare('SELECT account_id, last_seq FROM multiuser_pool_turns').all() as Array<{ account_id: string; last_seq: number }>)
           .map((turn) => [turn.account_id, turn.last_seq]));
-        const eligible = queued.filter((run) => active.filter((other) => isOpenAI(other) === isOpenAI(run)).length < providerCapacity(run)
-          && ledger.balance(run.owner_account_id).remainingMs > 0 &&
-          !(db.prepare(`SELECT 1 FROM ${table} WHERE owner_account_id = ? AND status = 'active' AND ${company}`).get(run.owner_account_id)));
+        // One active turn per account and lane; company quota binds company turns only.
+        const eligible = queued.filter((run) => active.filter((other) => lane(other) === lane(run)).length < providerCapacity(run)
+          && (isByok(run) || ledger.balance(run.owner_account_id).remainingMs > 0)
+          && !active.some((other) => other.owner_account_id === run.owner_account_id && isByok(other) === isByok(run)));
         const next = eligible.sort((a, b) => (turns.get(a.owner_account_id) ?? 0) - (turns.get(b.owner_account_id) ?? 0)
           || Number(a.queue_seq) - Number(b.queue_seq))[0];
         if (!next) break;
@@ -712,38 +756,62 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         fs.chmodSync(path.dirname(runHome), 0o700);
         fs.chmodSync(runHome, 0o700);
         fs.chmodSync(temp, 0o700);
-        const admission = ledger.start({ actorId: next.owner_account_id, runId: next.id, projectId: next.project_id, providerId: agentOf(next) });
-        if (admission.status === 'replayed') {
-          if (admission.run.status === 'active') ledger.finish(next.owner_account_id, next.id);
-          finish(next.id, 'failed', { reason: 'ledger_admission_replayed' });
-          continue;
+        if (!isByok(next)) {
+          const admission = ledger.start({ actorId: next.owner_account_id, runId: next.id, projectId: next.project_id, providerId: agentOf(next) });
+          if (admission.status === 'replayed') {
+            if (admission.run.status === 'active') ledger.finish(next.owner_account_id, next.id);
+            finish(next.id, 'failed', { reason: 'ledger_admission_replayed' });
+            continue;
+          }
+          if (admission.status !== 'started') break;
         }
-        if (admission.status !== 'started') break;
         if (isOpenAI(next)) {
-          let execution: ReturnType<CompanyOpenAIStore['execution']>;
-          try { execution = companyOpenAI.execution(); }
-          catch { closeLedgerSpan(next, 'failed'); finish(next.id, 'failed', { reason: 'MULTIUSER_PROVIDER_DISABLED' }); continue; }
           const request = storedRequest(next.request_json)!;
-          const session = db.prepare('SELECT * FROM multiuser_company_sessions WHERE conversation_id = ? AND owner_account_id = ?')
-            .get(next.conversation_id, next.owner_account_id) as { model: string; credential_revision: number; history_json: string } | undefined;
-          if (!execution || !session || execution.config.credentialRevision !== request.companyCredentialRevision
-            || execution.config.model !== request.companyModel || session.model !== execution.config.model
-            || session.credential_revision !== execution.config.credentialRevision) {
-            closeLedgerSpan(next, 'failed'); finish(next.id, 'failed', { reason: 'MULTIUSER_PROVIDER_DISABLED' }); continue;
+          // The key a turn runs on: the company credential, or the account's own (#62/#63). Each
+          // stays authorized only while its revision is unchanged; neither falls back to the other.
+          let key: { apiKey: string; model: string; current: () => boolean; saveHistory: (json: string) => void; history: string };
+          if (isByok(next)) {
+            const own = providerKeys?.execution(next.owner_account_id) ?? null;
+            const session = db.prepare('SELECT * FROM multiuser_byok_sessions WHERE conversation_id = ? AND owner_account_id = ?')
+              .get(next.conversation_id, next.owner_account_id) as { history_json: string } | undefined;
+            if (!own || !session || own.credentialRevision !== request.personalCredentialRevision) {
+              finish(next.id, 'failed', { reason: 'MULTIUSER_PROVIDER_KEY_MISSING' }); continue;
+            }
+            key = { apiKey: own.apiKey, model: own.model, history: session.history_json,
+              current: () => providerKeys?.read(next.owner_account_id).credentialRevision === own.credentialRevision,
+              saveHistory: (json) => db.prepare('UPDATE multiuser_byok_sessions SET history_json = ? WHERE conversation_id = ? AND owner_account_id = ?')
+                .run(json, next.conversation_id, next.owner_account_id) };
+          } else {
+            let execution: ReturnType<CompanyOpenAIStore['execution']>;
+            try { execution = companyOpenAI.execution(); }
+            catch { closeLedgerSpan(next, 'failed'); finish(next.id, 'failed', { reason: 'MULTIUSER_PROVIDER_DISABLED' }); continue; }
+            const session = db.prepare('SELECT * FROM multiuser_company_sessions WHERE conversation_id = ? AND owner_account_id = ?')
+              .get(next.conversation_id, next.owner_account_id) as { model: string; credential_revision: number; history_json: string } | undefined;
+            if (!execution || !session || execution.config.credentialRevision !== request.companyCredentialRevision
+              || execution.config.model !== request.companyModel || session.model !== execution.config.model
+              || session.credential_revision !== execution.config.credentialRevision) {
+              closeLedgerSpan(next, 'failed'); finish(next.id, 'failed', { reason: 'MULTIUSER_PROVIDER_DISABLED' }); continue;
+            }
+            const pinned = execution.config;
+            key = { apiKey: execution.apiKey, model: pinned.model, history: session.history_json,
+              current: () => { const config = companyOpenAI.read();
+                return config.enabled && config.configured && config.model === pinned.model && config.credentialRevision === pinned.credentialRevision; },
+              saveHistory: (json) => db.prepare('UPDATE multiuser_company_sessions SET history_json = ? WHERE conversation_id = ? AND owner_account_id = ? AND credential_revision = ?')
+                .run(json, next.conversation_id, next.owner_account_id, pinned.credentialRevision) };
           }
           const worker = new CompanyOpenAIWorker();
           const projection = new PersonalRunEvents(realCwd, [dataRoot, realCwd, runHome],
             (event) => emit(next.id, event.event, event.data), undefined, 'company-pool');
           startRun(next); children.set(next.id, worker); projections.set(next.id, projection);
           const quotaWatch = setInterval(() => {
-            if (!storesClosed && row(next.id)?.status === 'active' && ledger.balance(next.owner_account_id).remainingMs === 0) {
+            if (!storesClosed && isCompany(next) && row(next.id)?.status === 'active' && ledger.balance(next.owner_account_id).remainingMs === 0) {
               failurePending.add(next.id); worker.kill('SIGTERM');
             }
           }, 1000);
           quotaWatch.unref();
           worker.once('close', () => clearInterval(quotaWatch));
           try {
-            const history = JSON.parse(session.history_json) as Record<string, unknown>[];
+            const history = JSON.parse(key.history) as Record<string, unknown>[];
             if (!Array.isArray(history)) throw new Error('invalid company history');
             const userPrompt = withInstruction(next.request_json, storedMessage(next.request_json)!);
             const stablePrompt = typeof request.stablePrompt === 'string' ? request.stablePrompt : '';
@@ -756,13 +824,11 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             artifactBaselines.set(next.id, { cwd: realCwd, before: snapshotProjectArtifacts(realCwd) });
             const authorized = () => {
               if (storesClosed) return false;
-              const config = companyOpenAI.read();
               return !storesClosed && !shuttingDown && !cancelPending.has(next.id) && row(next.id)?.status === 'active'
                 && accounts.getAccountById(next.owner_account_id)?.active === true && projects.canWrite(next.project_id, next.owner_account_id)
-                && config.enabled && config.configured && config.model === execution.config.model
-                && config.credentialRevision === execution.config.credentialRevision;
+                && key.current();
             };
-            void runCompanyOpenAITurn({ apiKey: execution.apiKey, model: execution.config.model,
+            void runCompanyOpenAITurn({ apiKey: key.apiKey, model: key.model,
               systemPrompt: stablePrompt, prompt: `${userPrompt}${attached}${renderCommentAttachmentHint(normalizeCommentAttachments(Array.isArray(request.commentAttachments) ? request.commentAttachments : []))}${focused}`,
               history, skillPackages, projectsRoot, projectId: next.project_id, worker, authorized,
               ...(skillRoot && input.scriptSandbox ? { runSkillScript: createStudioSkillScriptRunner({ sandbox: input.scriptSandbox,
@@ -782,10 +848,14 @@ export function registerMultiUserRunRoutes(app: Express, input: {
               if (getMessage(db, messageId)?.runId === next.id) await captureRunChatArtifactSnapshots({ db, blobs: artifactBlobs },
                 { projectId: next.project_id, messageId, runId: next.id, projectRoot: realCwd, touchedPaths: files.map((file) => path.join(realCwd, file)) });
               if (!authorized()) { finish(next.id, 'canceled'); return; }
-              db.prepare('UPDATE multiuser_company_sessions SET history_json = ? WHERE conversation_id = ? AND owner_account_id = ? AND credential_revision = ?')
-                .run(JSON.stringify(result.input), next.conversation_id, next.owner_account_id, execution.config.credentialRevision);
+              key.saveHistory(JSON.stringify(result.input));
               finish(next.id, 'succeeded', { files, producedFiles, usage: result.usage });
-            }).catch(() => { finish(next.id, cancelPending.has(next.id) || shuttingDown ? 'canceled' : 'failed', { reason: failurePending.has(next.id) ? 'MULTIUSER_QUOTA_EXHAUSTED' : 'MULTIUSER_RUN_FAILED' }); })
+            }).catch((error: unknown) => {
+              const cause = error instanceof Error ? error.message : '';
+              finish(next.id, cancelPending.has(next.id) || shuttingDown ? 'canceled' : 'failed', { reason: failurePending.has(next.id) ? 'MULTIUSER_QUOTA_EXHAUSTED'
+                : isByok(next) && cause === 'provider_auth_rejected' ? 'MULTIUSER_PROVIDER_KEY_REJECTED'
+                : isByok(next) && cause === 'provider_rate_limited' ? 'MULTIUSER_PROVIDER_RATE_LIMITED' : 'MULTIUSER_RUN_FAILED' });
+            })
               .finally(() => worker.close(!storesClosed && row(next.id)?.status === 'succeeded'));
           } catch { finish(next.id, cancelPending.has(next.id) ? 'canceled' : 'failed', { reason: 'MULTIUSER_RUN_START_FAILED' }); worker.close(false); }
           continue;
@@ -827,9 +897,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       }
     } finally {
       dispatching = false;
-      const waiting = db.prepare(`SELECT 1 FROM ${table} WHERE status = 'queued' AND ${company} LIMIT 1`).get();
-      const active = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE status = 'active' AND ${company}`).get() as { n: number }).n;
-      if (waiting && active < capacity() + (companyOpenAI.available() ? companyOpenAI.read().capacity : 0)) {
+      const waiting = db.prepare(`SELECT 1 FROM ${table} WHERE status = 'queued' AND ${workerRows} LIMIT 1`).get();
+      const active = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE status = 'active' AND ${workerRows}`).get() as { n: number }).n;
+      if (waiting && active < capacity() + byokCapacity() + (companyOpenAI.available() ? companyOpenAI.read().capacity : 0)) {
         retryTimer = setTimeout(() => { retryTimer = null; dispatch(); }, 60_000);
         retryTimer.unref();
       }
@@ -1049,6 +1119,37 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     res.json({ providers: { 'test-mock': { capacity: capacity(), active: counts(false, 'active'), queued: counts(false, 'queued') },
       openai: { ...companyOpenAI.read(), active: counts(true, 'active'), queued: counts(true, 'queued') }, claude: { capacity: 0, active: 0, queued: 0 }, codex: { capacity: 0, active: 0, queued: 0 } }, users });
   });
+  // Account-private provider keys (#62/#63). Write-only: no response carries the key.
+  app.get('/api/multiuser/settings/provider-keys', (_req, res) => {
+    if (!providerKeys) return sendApiError(res, 403, 'MULTIUSER_PROVIDER_DISABLED', 'personal API keys are not enabled on this server');
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ keys: providerKeys.list(actor(res)) } satisfies StudioProviderKeysResponse);
+  });
+  app.put('/api/multiuser/settings/provider-keys/:provider', (req, res) => {
+    if (!providerKeys) return sendApiError(res, 403, 'MULTIUSER_PROVIDER_DISABLED', 'personal API keys are not enabled on this server');
+    if (req.params.provider !== 'openai') return sendApiError(res, 404, 'NOT_FOUND', 'unknown provider');
+    const owner = actor(res);
+    try {
+      const { summary, credentialChanged } = providerKeys.update(owner, 'openai', req.body as UpdateStudioProviderKeyRequest, now());
+      // A replaced or removed key stops the turns that ran on the old one; nothing moves to the company pool.
+      if (credentialChanged) {
+        const pending = db.prepare(`SELECT id FROM ${table} WHERE owner_account_id = ? AND status IN ('active','queued') AND ${byokRows}`).all(owner) as Array<{ id: string }>;
+        suspendDispatch = true;
+        try { for (const run of pending) {
+          const child = children.get(run.id);
+          if (child && running(child)) { cancelPending.add(run.id); child.kill('SIGTERM'); }
+          else finish(run.id, 'canceled', { reason: 'MULTIUSER_PROVIDER_KEY_MISSING' });
+        } } finally { suspendDispatch = false; }
+        dispatch();
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ key: summary } satisfies StudioProviderKeyResponse);
+    } catch (error) {
+      if (error instanceof PersonalProviderKeyError) sendApiError(res, error.status, error.status === 409 ? 'CONFLICT' : 'BAD_REQUEST',
+        error.status === 409 ? 'the key changed; reload before saving' : 'invalid API key or model');
+      else sendApiError(res, 500, 'INTERNAL_ERROR', 'provider key update failed');
+    }
+  });
   app.get('/api/admin/pool/openai', (_req, res) => res.json({ provider: companyOpenAI.read() }));
   app.put('/api/admin/pool/openai', (req, res) => {
     try {
@@ -1257,7 +1358,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       return sendApiError(res, 409, 'MULTIUSER_PERSONAL_UNAVAILABLE', 'no usable personal Codex account; link or re-authorize it');
     }
     const session = personalSession(target.conversationId);
-    const companyHistory = db.prepare(`SELECT 1 FROM ${table} WHERE conversation_id = ? AND ${company} LIMIT 1`).get(target.conversationId);
+    const companyHistory = db.prepare(`SELECT 1 FROM ${table} WHERE conversation_id = ? AND ${workerRows} LIMIT 1`).get(target.conversationId);
     if ((session && session.personal_account_id !== account.id) || companyHistory) {
       personal.audit(owner, owner, 'run_rejected', 'MULTIUSER_EXECUTION_SOURCE_MISMATCH');
       return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation continues on another execution source or account');
@@ -1298,7 +1399,14 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     dispatchPersonal();
     res.status(202).json({ runId: id, run: body(row(id)!) });
   };
-  const createOpenAIRun = async (inputBody: Record<string, unknown>, res: Response, instruction?: string) => {
+  /**
+   * OpenAI turns on the company key, or on the account's own key (`personal_api_key`,
+   * #62/#63). A conversation is pinned to the first source it ran on; the
+   * other source is a mismatch, never a fallback.
+   */
+  const createOpenAIRun = async (inputBody: Record<string, unknown>, res: Response, instruction?: string,
+    executionSource: 'company_pool' | 'personal_api_key' = 'company_pool') => {
+    const own = executionSource === 'personal_api_key';
     const target = managedTarget(inputBody, res); if (!target) return;
     const owner = actor(res);
     const hints = inputBody.analyticsHints;
@@ -1310,13 +1418,21 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const fields = parsePersonalRunFields({ ...inputBody, agentId: 'codex', executionSource: 'personal_subscription' }, studioMessageIdPrefix(owner));
     if ('code' in fields) return sendApiError(res, fields.status, fields.code, fields.message);
     // The company model is admin-owned; a per-turn choice applies only to personal Codex.
-    if (fields.model || fields.reasoning) return sendApiError(res, 403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'not available for company pool runs: model, reasoning');
+    if (fields.model || fields.reasoning) return sendApiError(res, 403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'not available for OpenAI runs: model, reasoning');
     const replay = requestedRun(owner, target.conversationId, fields.clientRequestId);
     if (replay) { res.status(200).json({ runId: replay.id, run: body(replay) }); return; }
     if (personalSession(target.conversationId)) return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation uses a personal subscription');
+    const otherSource = () => db.prepare(`SELECT 1 FROM ${table} WHERE conversation_id = ? AND execution_source = ? LIMIT 1`)
+      .get(target.conversationId, own ? 'company_pool' : 'personal_api_key');
+    if (otherSource()) return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation continues on another execution source');
+    if (own && !providerKeys) return sendApiError(res, 403, 'MULTIUSER_PROVIDER_DISABLED', 'personal API keys are not enabled on this server');
+    const ownKey = own ? providerKeys!.read(owner) : null;
+    if (ownKey && !ownKey.configured) return sendApiError(res, 403, 'MULTIUSER_PROVIDER_KEY_MISSING', 'add your OpenAI API key in Settings first');
     const config = companyOpenAI.read();
-    if (!config.enabled || !config.configured) return sendApiError(res, 403, 'MULTIUSER_PROVIDER_DISABLED', 'company OpenAI provider is not configured');
-    const session = db.prepare('SELECT * FROM multiuser_company_sessions WHERE conversation_id = ?').get(target.conversationId) as { owner_account_id: string; model: string; credential_revision: number } | undefined;
+    if (!own && (!config.enabled || !config.configured)) return sendApiError(res, 403, 'MULTIUSER_PROVIDER_DISABLED', 'company OpenAI provider is not configured');
+    const ownSession = () => db.prepare('SELECT owner_account_id FROM multiuser_byok_sessions WHERE conversation_id = ?').get(target.conversationId) as { owner_account_id: string } | undefined;
+    if (own && ownSession() && ownSession()!.owner_account_id !== owner) return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation belongs to another account');
+    const session = own ? undefined : db.prepare('SELECT * FROM multiuser_company_sessions WHERE conversation_id = ?').get(target.conversationId) as { owner_account_id: string; model: string; credential_revision: number } | undefined;
     if (session && (session.owner_account_id !== owner || session.model !== config.model || session.credential_revision !== config.credentialRevision)) {
       return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'company provider binding changed; create a new conversation');
     }
@@ -1355,23 +1471,28 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (!multiUserStreamAllowed(res) || !managedTarget(inputBody, res)) return;
     if (personalSession(target.conversationId)) return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation uses a personal subscription');
     if (!answerReady()) return sendApiError(res, 409, 'CONFLICT', 'question is stale or already answered');
-    const currentSession = db.prepare('SELECT * FROM multiuser_company_sessions WHERE conversation_id = ?').get(target.conversationId) as typeof session;
+    if (otherSource()) return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation continues on another execution source');
+    const currentSession = own ? undefined : db.prepare('SELECT * FROM multiuser_company_sessions WHERE conversation_id = ?').get(target.conversationId) as typeof session;
     if (currentSession && (currentSession.owner_account_id !== owner || currentSession.model !== config.model || currentSession.credential_revision !== config.credentialRevision)) {
       return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'company provider binding changed');
     }
+    if (own && ownSession() && ownSession()!.owner_account_id !== owner) return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation belongs to another account');
     const oldCompany = db.prepare(`SELECT * FROM ${table} WHERE conversation_id = ? AND ${company} LIMIT 1`).get(target.conversationId) as RunRow | undefined;
     if (oldCompany && !isOpenAI(oldCompany)) return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation uses another company provider');
     const current = companyOpenAI.read();
-    if (!current.enabled || current.model !== config.model || current.credentialRevision !== config.credentialRevision) return sendApiError(res, 409, 'CONFLICT', 'company provider changed');
+    if (!own && (!current.enabled || current.model !== config.model || current.credentialRevision !== config.credentialRevision)) return sendApiError(res, 409, 'CONFLICT', 'company provider changed');
+    const currentKey = own ? providerKeys!.read(owner) : null;
+    if (currentKey && (!currentKey.configured || currentKey.credentialRevision !== ownKey!.credentialRevision)) return sendApiError(res, 409, 'CONFLICT', 'your API key changed');
     const raced = requestedRun(owner, target.conversationId, fields.clientRequestId);
     if (raced) { res.status(200).json({ runId: raced.id, run: body(raced) }); return; }
     if (fields.turnIds && !turnIdsUsable(target.conversationId, fields.turnIds)) return sendApiError(res, 409, 'CONFLICT', 'message ids already used');
-    if (ledger.balance(owner).remainingMs === 0) return sendApiError(res, 429, 'MULTIUSER_QUOTA_EXHAUSTED', 'worker quota exhausted');
-    const queued = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE owner_account_id = ? AND status = 'queued' AND ${company}`).get(owner) as { n: number }).n;
+    if (!own && ledger.balance(owner).remainingMs === 0) return sendApiError(res, 429, 'MULTIUSER_QUOTA_EXHAUSTED', 'worker quota exhausted');
+    const queued = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE owner_account_id = ? AND status = 'queued' AND ${own ? byokRows : company}`).get(owner) as { n: number }).n;
     if (queued >= 3) return sendApiError(res, 409, 'MULTIUSER_QUEUE_LIMIT', 'queue limit reached');
     const id = randomUUID(); const createdAt = now();
-    const request = JSON.stringify({ message: fields.text, ...(instruction ? { instruction } : {}), companyProvider: 'openai', companyModel: config.model,
-      companyCredentialRevision: config.credentialRevision, stablePrompt: prompt, stablePromptHash: createHash('sha256').update(prompt).digest('hex'),
+    const request = JSON.stringify({ message: fields.text, ...(instruction ? { instruction } : {}),
+      ...(own ? { personalProvider: 'openai', personalModel: currentKey!.model, personalCredentialRevision: currentKey!.credentialRevision }
+        : { companyProvider: 'openai', companyModel: config.model, companyCredentialRevision: config.credentialRevision }), stablePrompt: prompt, stablePromptHash: createHash('sha256').update(prompt).digest('hex'),
       skillIds: question ? capturedSkillIds : fields.skillIds,
       skillSnapshots: question ? previousRequest?.skillSnapshots ?? [] : withFixedSkill(fixedCapture?.skill, selected),
       ...(designSnapshot ? { designSnapshot, designSystemId: designSnapshot.id } : {}),
@@ -1379,11 +1500,13 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       attachments: fields.attachments, workspaceItems: fields.workspaceItems,
       ...(fields.commentAttachments.length ? { commentAttachments: fields.commentAttachments } : {}) });
     const frame = db.transaction(() => {
-      db.prepare(`INSERT OR IGNORE INTO multiuser_company_sessions (conversation_id, owner_account_id, provider_id, model, credential_revision) VALUES (?, ?, 'openai', ?, ?)`)
+      if (own) db.prepare(`INSERT OR IGNORE INTO multiuser_byok_sessions (conversation_id, owner_account_id, provider_id) VALUES (?, ?, 'openai')`)
+        .run(target.conversationId, owner);
+      else db.prepare(`INSERT OR IGNORE INTO multiuser_company_sessions (conversation_id, owner_account_id, provider_id, model, credential_revision) VALUES (?, ?, 'openai', ?, ?)`)
         .run(target.conversationId, owner, config.model, config.credentialRevision);
-      db.prepare(`INSERT INTO ${table} (id, owner_account_id, project_id, conversation_id, status, created_at, updated_at, request_json, queue_seq)
-        VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM ${table}))`)
-        .run(id, owner, target.projectId, target.conversationId, createdAt, createdAt, request);
+      db.prepare(`INSERT INTO ${table} (id, owner_account_id, project_id, conversation_id, status, created_at, updated_at, request_json, queue_seq, execution_source)
+        VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM ${table}), ?)`)
+        .run(id, owner, target.projectId, target.conversationId, createdAt, createdAt, request, executionSource);
       if (fields.clientRequestId !== null) db.prepare('INSERT INTO multiuser_run_requests (owner_account_id, conversation_id, client_request_id, run_id) VALUES (?, ?, ?, ?)')
         .run(owner, target.conversationId, fields.clientRequestId, id);
       if (question) db.prepare('UPDATE multiuser_run_questions SET answered_by = ? WHERE run_id = ? AND answered_by IS NULL').run(id, question.id);
@@ -1397,8 +1520,12 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const inputBody = req.body as Record<string, unknown> | null;
     if (!inputBody || typeof inputBody !== 'object' || Array.isArray(inputBody)) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid run request');
     const source = inputBody.executionSource;
-    if (source !== undefined && source !== 'company_pool' && source !== 'personal_subscription') {
+    if (source !== undefined && source !== 'company_pool' && source !== 'personal_subscription' && source !== 'personal_api_key') {
       return sendApiError(res, 400, 'BAD_REQUEST', 'invalid execution source');
+    }
+    if (source === 'personal_api_key' || inputBody.agentId === 'openai-byok') {
+      if (inputBody.agentId !== 'openai-byok' || (source !== undefined && source !== 'personal_api_key')) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid execution source');
+      return createOpenAIRun(inputBody, res, undefined, 'personal_api_key');
     }
     // The shared Studio sends the standard request without a source: codex is personal-only here.
     if (inputBody.agentId === 'openai' && (source === undefined || source === 'company_pool')) return createOpenAIRun(inputBody, res);
@@ -1608,6 +1735,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     async admitInternal(actorRecord, request, allowed, instruction) {
       const { res, result } = internalMultiUserResponse(actorRecord, allowed);
       if (request.executionSource === 'company_pool') await createOpenAIRun({ ...request, agentId: 'openai' }, res, instruction);
+      else if (request.executionSource === 'personal_api_key') await createOpenAIRun({ ...request, agentId: 'openai-byok' }, res, instruction, 'personal_api_key');
       else await createPersonalRun({ ...request, agentId: 'codex', executionSource: 'personal_subscription' }, res, instruction);
       return result() ?? { status: 499, body: null };
     },

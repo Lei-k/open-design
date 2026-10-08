@@ -2671,7 +2671,7 @@ export function ProjectView({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   // Durable run rows pin the conversation. Reload and retry retain its source.
   const studioPinnedAgentId = !studio.hostServices ? messages.find((message) => message.runId
-    && (message.agentId === 'codex' || message.agentId === 'openai'))?.agentId : undefined;
+    && (message.agentId === 'codex' || message.agentId === 'openai' || message.agentId === 'openai-byok'))?.agentId : undefined;
   const executionAgentId = studioPinnedAgentId ?? config.agentId;
   const [forkingMessageId, setForkingMessageId] = useState<string | null>(null);
   const [activePluginActionPaths, setActivePluginActionPaths] = useState<Set<string>>(() => new Set());

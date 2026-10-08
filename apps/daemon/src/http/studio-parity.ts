@@ -94,7 +94,7 @@ export function studioRouteParityInventory(): StudioRouteParity[] {
 export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
   shell: 'Pilot shell: deployment rollout, legacy shell removal and the remaining provider closures are pending (#53, #70).',
   projects: 'Pilot projects: artifact, upload and background-job lineage are pending (#54).',
-  execution: 'Pilot execution: personal Codex and the OpenAI company pool; real-provider acceptance, feedback telemetry and replay are pending (#55).',
+  execution: 'Pilot execution: personal Codex, the OpenAI company pool and each account\'s own encrypted OpenAI API key; real-provider acceptance, feedback telemetry and replay are pending (#55).',
   chat: 'Pilot chat: real-provider recordings and the full state-matrix acceptance are pending (#56).',
   composer: 'Pilot composer: text, attachments, private and bundled skills, design systems, queue, stop, question answers, preview comment attachments and personal Codex model/effort; rich media inputs and plugins are pending (#57).',
   preview: 'Pilot preview: opaque HTML/deck/media previews, manual edit, inspect, comments shared with project members and immutable artifact snapshots/thumbnails; renderer covers and complete browser acceptance are pending (#59).',
@@ -113,7 +113,7 @@ export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
  * lanes: it marks the pilot-usable ones `pilot`, never `supported`, and a lane
  * whose server policy is off is `admin-disabled` for the pilot as well.
  */
-export function multiUserStudioCapabilities(studioPilot = false, policy: { personalEnabled?: boolean; companyEnabled?: boolean; renderedExports?: boolean } = {}): StudioRuntimeCapabilities {
+export function multiUserStudioCapabilities(studioPilot = false, policy: { personalEnabled?: boolean; companyEnabled?: boolean; personalKeysEnabled?: boolean; renderedExports?: boolean } = {}): StudioRuntimeCapabilities {
   const unavailable = (issue: number): StudioAvailability => ({
     status: 'unavailable', reason: `Studio integration #${issue} has not passed its complete parity gate; the legacy fallback remains active.`,
   });
@@ -123,13 +123,15 @@ export function multiUserStudioCapabilities(studioPilot = false, policy: { perso
     if (lane.id === 'baseline') return [lane.id, { status: 'supported' }];
     const pilot = studioPilot ? STUDIO_PILOT_LANES[lane.id] : undefined;
     if (!pilot) return [lane.id, unavailable(lane.issue)];
-    if ((lane.id === 'execution' || lane.id === 'composer') && !policy.personalEnabled && !policy.companyEnabled) return [lane.id, executionOff];
+    if ((lane.id === 'execution' || lane.id === 'composer') && !policy.personalEnabled && !policy.companyEnabled && !policy.personalKeysEnabled) return [lane.id, executionOff];
     return [lane.id, { status: 'pilot', reason: pilot }];
   })) as StudioRuntimeCapabilities['features'];
   return { schemaVersion: 1, shell: studioPilot ? 'studio' : 'legacy-multiuser', features,
     ...(studioPilot ? { executionSources: [
       ...(policy.personalEnabled ? [{ source: 'personal_subscription' as const, agentId: 'codex' as const }] : []),
       ...(policy.companyEnabled ? [{ source: 'company_pool' as const, agentId: 'openai' as const }] : []),
+      // Listed last so it is never the default; the account adds its own key in Settings.
+      ...(policy.personalKeysEnabled ? [{ source: 'personal_api_key' as const, agentId: 'openai-byok' as const }] : []),
     ], renderedExports: policy.renderedExports === true } : {}) };
 }
 

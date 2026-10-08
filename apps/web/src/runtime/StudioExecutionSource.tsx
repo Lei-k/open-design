@@ -17,7 +17,8 @@ export function StudioExecutionSource({ agentId, onChange, modelChoice, onModelC
     ? [{ source: 'personal_subscription' as const, agentId: 'codex' as const }] : []);
   if (!choices.length) return null;
   const selected = agentId ?? studio.executionAgentId;
-  const label = (id: string) => t(id === 'openai' ? 'multiuser.executionSourceCompanyOpenAI' : 'multiuser.executionSourcePersonalCodex');
+  const label = (id: string) => t(id === 'openai' ? 'multiuser.executionSourceCompanyOpenAI'
+    : id === 'openai-byok' ? 'multiuser.executionSourcePersonalKey' : 'multiuser.executionSourcePersonalCodex');
   const codex = studioCodexModelChoice(modelChoice);
   const option = (value: string) => value === 'default' ? t('common.default') : value;
   return <span className={styles.source} data-testid="studio-execution-source">

@@ -2,14 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { matchMultiUserRoute } from '../../src/http/multiuser-route-classes.js';
 import { STUDIO_PILOT_LANES, studioMessageIdPrefix } from '../../src/http/studio-parity.js';
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { cleanupIsolatedDataRoot, provisionAccounts, startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
+import { cleanupIsolatedDataRoot, multiUserOptions, provisionAccounts, startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
 
 let daemon: StartedMultiUserDaemon;
 let admin: Principal;
 let alice: Principal;
 let bob: Principal;
 beforeAll(async () => {
-  daemon = await startMultiUserDaemon();
+  // No execution source at all, including accounts' own keys: execution is admin-disabled.
+  daemon = await startMultiUserDaemon(multiUserOptions({ personalProviderKeys: false }));
   const accounts = await provisionAccounts(daemon, ['pilot-alice', 'pilot-bob']);
   admin = accounts.admin;
   [alice, bob] = accounts.users as [Principal, Principal];

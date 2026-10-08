@@ -107,6 +107,12 @@ export interface MultiUserModeOptions {
    * managed Chromium (development and tests).
    */
   studioRenderer?: StudioRendererOptions;
+  /**
+   * Accounts may store their own OpenAI API key and run on it (#62/#63).
+   * Default on; `false` hides the source. Keys are sealed with
+   * `OD_CREDENTIAL_MASTER_KEY` when set, else a generated data-root key file.
+   */
+  personalProviderKeys?: boolean;
 }
 
 export interface StudioRendererOptions {
@@ -153,6 +159,7 @@ export interface ResolvedMultiUserMode {
   /** How personal app-server children start; absent means the feature is off. */
   personalCodex?: ResolvedPersonalCodex;
   studioRenderer?: StudioRendererOptions;
+  personalProviderKeys: boolean;
 }
 
 export class MultiUserModeRefusal extends Error {
@@ -241,7 +248,8 @@ export function resolveMultiUserMode(input: {
     ...(options.testCompanyOpenAIFetch ? { testCompanyOpenAIFetch: options.testCompanyOpenAIFetch } : {}),
     ...(options.poolClock ? { poolClock: options.poolClock } : {}),
     ...(personalCodex ? { personalCodex } : {}),
-    ...(options.studioRenderer ? { studioRenderer: resolveStudioRenderer(options.studioRenderer) } : {}) };
+    ...(options.studioRenderer ? { studioRenderer: resolveStudioRenderer(options.studioRenderer) } : {}),
+    personalProviderKeys: options.personalProviderKeys !== false };
 }
 
 function resolveStudioRenderer(options: StudioRendererOptions): StudioRendererOptions {

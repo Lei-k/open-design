@@ -460,6 +460,9 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
     && Buffer.byteLength(body.index) <= 64 * 1024 && !body.index.includes('\0');
   if (policy === 'studio-memory-config') return only(['enabled', 'profileEnabled'])
     && Object.values(body).every((value) => typeof value === 'boolean');
+  if (policy === 'provider-key') return only(['revision', 'apiKey', 'model']) && Number.isSafeInteger(body.revision)
+    && (body.apiKey === undefined || body.apiKey === null || typeof body.apiKey === 'string' && body.apiKey.length <= 4096)
+    && (body.model === undefined || typeof body.model === 'string' && body.model.length <= 128);
   if (policy === 'company-openai') return only(['revision', 'enabled', 'model', 'capacity', 'apiKey'])
     && Number.isSafeInteger(body.revision) && Number(body.revision) >= 0 && typeof body.enabled === 'boolean'
     && typeof body.model === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(body.model)
@@ -637,6 +640,7 @@ export function installMultiUserFront(
     allowedOrigins: mode.allowedOrigins,
     onAccountSessionsRevoked: (accountId) => cancelAccountRuns?.(accountId),
     personalRunsEnabled: Boolean(mode.personalCodex),
+    personalApiKeysEnabled: mode.personalProviderKeys !== false,
     companyPoolAvailable: () => companyPoolAvailable(),
     renderedExportsAvailable: () => renderedExportsAvailable(),
   });

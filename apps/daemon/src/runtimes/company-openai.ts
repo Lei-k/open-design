@@ -78,7 +78,10 @@ export async function runCompanyOpenAITurn(input: {
     });
     check();
     if (!response.ok || !response.body || !response.headers.get('content-type')?.includes('text/event-stream')) {
-      await response.body?.cancel(); throw new Error('company_provider_failed');
+      await response.body?.cancel();
+      // Coarse, secret-free classes; the provider's own message is never kept.
+      throw new Error(response.status === 401 || response.status === 403 ? 'provider_auth_rejected'
+        : response.status === 429 ? 'provider_rate_limited' : 'company_provider_failed');
     }
     const reader = response.body.getReader(); const decoder = new TextDecoder();
     let bytes = 0; let buffer = ''; let completed: Json | null = null;

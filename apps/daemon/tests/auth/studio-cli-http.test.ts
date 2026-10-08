@@ -390,6 +390,35 @@ it('administers the OpenAI company pool through write-only stdin credentials and
   expect(revoked.provider.configured).toBe(false);
 }, 40_000);
 
+it('stores the account\'s own OpenAI key through stdin, runs on it with --execution-source personal_api_key and never prints it', async () => {
+  const sessionA = path.join(root, 'cli-key-a-session'); const sessionB = path.join(root, 'cli-key-b-session');
+  for (const [user, sessionFile] of [[alice, sessionA], [bob, sessionB]] as const) {
+    success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', user.username,
+      '--password-file', '-', '--session-file', sessionFile, '--json'], user.password + '\n'));
+  }
+  const key = 'sk-cli-account-own-key-1234567890abcdefWXYZ';
+  const initial = success(await cli(['account', 'key', 'get', '--session-file', sessionA, '--json'])).key;
+  expect(initial).toMatchObject({ provider: 'openai', configured: false, last4: null });
+  expect((await cli(['account', 'key', 'set', '--api-key', key, '--revision', '0', '--session-file', sessionA, '--json'])).code).not.toBe(0);
+  const written = await cli(['account', 'key', 'set', '--revision', String(initial.revision), '--api-key-file', '-', '--model', 'gpt-cli',
+    '--session-file', sessionA, '--json'], key + '\n');
+  expect(success(written).key).toMatchObject({ configured: true, last4: 'WXYZ', model: 'gpt-cli' });
+  expect(written.stdout + written.stderr).not.toContain(key);
+  expect(success(await cli(['account', 'key', 'get', '--session-file', sessionB, '--json'])).key.configured).toBe(false);
+  const made = success(await cli(['project', 'create', '--name', 'CLI own key', '--session-file', sessionA, '--json']));
+  const admitted = success(await cli(['run', 'start', '--project', made.project.id, '--conversation', made.conversationId,
+    '--execution-source', 'personal_api_key', '--prompt-file', '-', '--session-file', sessionA, '--json'], 'Own key CLI prompt'));
+  const watched = await cli(['run', 'watch', admitted.runId, '--session-file', sessionA, '--json']);
+  expect(watched.code, watched.stderr).toBe(0);
+  expect(watched.stdout).toContain('CLI company completed.');
+  expect(watched.stdout).not.toContain(key);
+  const info = success(await cli(['run', 'info', admitted.runId, '--session-file', sessionA, '--json']));
+  expect(JSON.stringify(info)).toContain('personal_api_key');
+  const current = success(await cli(['account', 'key', 'get', '--session-file', sessionA, '--json'])).key;
+  expect(success(await cli(['account', 'key', 'remove', '--revision', String(current.revision), '--session-file', sessionA, '--json'])).key)
+    .toMatchObject({ configured: false, last4: null });
+}, 40_000);
+
 it('edits account instructions and manual profile through stdin and isolates B', async () => {
   const first = path.join(root, 'cli-settings-a'); const second = path.join(root, 'cli-settings-b');
   for (const [user, file] of [[alice, first], [bob, second]] as const) {

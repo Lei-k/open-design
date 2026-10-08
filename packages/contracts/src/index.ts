@@ -6,6 +6,7 @@ export * from './tasks.js';
 export * from './api/app-config.js';
 export * from './api/studio-settings.js';
 export * from './api/studio-sharing.js';
+export * from './api/studio-provider-keys.js';
 export * from './api/design-system-document.js';
 export * from './api/strategy-rollout.js';
 export * from './api/agent-sessions.js';

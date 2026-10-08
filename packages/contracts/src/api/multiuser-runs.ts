@@ -9,7 +9,7 @@ export interface MultiUserRun {
   id: string;
   projectId: string;
   conversationId: string;
-  agentId: 'test-mock' | 'codex' | 'openai';
+  agentId: 'test-mock' | 'codex' | 'openai' | 'openai-byok';
   status: MultiUserRunStatus;
   queuePosition: number | null;
   createdAt: number;
@@ -26,7 +26,7 @@ export interface MultiUserRun {
 export interface MultiUserRunRequest {
   projectId: string;
   conversationId: string;
-  agentId: 'test-mock' | 'codex' | 'openai';
+  agentId: 'test-mock' | 'codex' | 'openai' | 'openai-byok';
   message: string;
   executionSource: RunExecutionSource;
   /** Fixed by the conversation on its first turn; later turns may omit both. */

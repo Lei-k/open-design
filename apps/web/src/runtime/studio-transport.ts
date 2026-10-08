@@ -95,6 +95,11 @@ export function studioRequestAvailable(method: string, path: string,
     if (/^\/api\/routines\/[^/]+\/run$/.test(routinePath)) return method === 'POST';
     if (/^\/api\/routines\/[^/]+\/runs$/.test(routinePath)) return method === 'GET';
   }
+  // Account-private provider keys (#62/#63): write-only; reads carry last4 only.
+  if (usable('execution')) {
+    if (path === '/api/multiuser/settings/provider-keys') return method === 'GET';
+    if (path === '/api/multiuser/settings/provider-keys/openai') return method === 'PUT';
+  }
   if (usable('settings')) {
     const settingsPath = path.replace(/^\/api\/multiuser\/settings\/config$/, '/api/app-config')
       .replace(/^\/api\/multiuser\/settings\/memory(?=\/|$)/, '/api/memory');

@@ -66,7 +66,7 @@ it('keeps company configuration admin-only, revision checked and credential read
   expect((await daemon.request({ method: 'PUT', path: `/api/admin/users/${a.id}/studio-pilot`, cookie: admin.cookie,
     body: { studioPilot: true, revision: 0 } })).status).toBe(200);
   const capabilities = await daemon.request({ path: '/api/auth/me', cookie: a.cookie });
-  expect(capabilities.json.studio.executionSources).toEqual([{ source: 'company_pool', agentId: 'openai' }]);
+  expect(capabilities.json.studio.executionSources).toEqual([{ source: 'company_pool', agentId: 'openai' }, { source: 'personal_api_key', agentId: 'openai-byok' }]);
   expect(capabilities.json.studio.features.execution.status).toBe('pilot');
   expect((await daemon.request({ method: 'PUT', path: '/api/admin/pool/openai', cookie: admin.cookie, body: {
     enabled: true, model: 'fixture-model', capacity: 1, revision: 0,
@@ -121,7 +121,7 @@ it('cancels active HTTP inference, charges one worker span, and never echoes a p
 
 it('captures private skills before queueing and answers company questions once using the captured prompt', async () => {
   expect((await config({ capacity: 0 })).status).toBe(200);
-  expect((await daemon.request({ path: '/api/auth/me', cookie: a.cookie })).json.studio.executionSources).toEqual([{ source: 'company_pool', agentId: 'openai' }]);
+  expect((await daemon.request({ path: '/api/auth/me', cookie: a.cookie })).json.studio.executionSources).toEqual([{ source: 'company_pool', agentId: 'openai' }, { source: 'personal_api_key', agentId: 'openai-byok' }]);
   const skill = await daemon.request({ method: 'POST', path: '/api/skills/import', cookie: a.cookie,
     body: { name: 'Company private skill', body: 'COMPANY_PRIVATE_SKILL_MARKER' } });
   expect(skill.status, skill.text).toBe(201);

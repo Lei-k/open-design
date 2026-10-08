@@ -237,6 +237,18 @@ it('opens project sharing and presence only with a usable collaboration lane, ne
   }
 });
 
+it('opens the account provider key only with a usable execution lane and never any admin or host credential path', () => {
+  for (const [method, path] of [['GET', '/api/multiuser/settings/provider-keys'], ['PUT', '/api/multiuser/settings/provider-keys/openai']] as const) {
+    expect(studioRequestAvailable(method, path, (lane) => lane === 'execution'), `${method} ${path}`).toBe(true);
+    expect(studioRequestAvailable(method, path, (lane) => lane !== 'execution'), `${method} ${path}`).toBe(false);
+    expect(matchMultiUserRoute(method, path).every(({ entry }) => entry.routeClass === 'actor-scoped'), path).toBe(true);
+  }
+  for (const [method, path] of [['PUT', '/api/multiuser/settings/provider-keys/anthropic'], ['DELETE', '/api/multiuser/settings/provider-keys/openai'],
+    ['GET', '/api/multiuser/settings/provider-keys/openai'], ['GET', '/api/admin/pool/openai'], ['PUT', '/api/media/config'], ['GET', '/api/provider/models']] as const) {
+    expect(studioRequestAvailable(method, path, () => true), `${method} ${path}`).toBe(false);
+  }
+});
+
 it('opens only the bundled pet catalog with a usable settings lane; community sync stays closed', () => {
   for (const path of ['/api/codex-pets', '/api/codex-pets/tux/spritesheet', '/api/multiuser/catalog/codex-pets', '/api/multiuser/catalog/codex-pets/tux/spritesheet']) {
     expect(studioRequestAvailable('GET', path, (lane) => lane === 'settings'), path).toBe(true);

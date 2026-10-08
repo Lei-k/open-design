@@ -9,7 +9,8 @@
  */
 
 /** Where a run's provider capacity comes from. Omitted means `company_pool`. */
-export type RunExecutionSource = 'company_pool' | 'personal_subscription';
+/** `personal_api_key` runs on the actor's own encrypted provider key (#62/#63). */
+export type RunExecutionSource = 'company_pool' | 'personal_subscription' | 'personal_api_key';
 
 export type PersonalAgentProvider = 'codex';
 

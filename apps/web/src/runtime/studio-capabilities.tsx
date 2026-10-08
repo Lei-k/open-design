@@ -12,7 +12,7 @@ interface StudioCapabilities {
   available(lane: StudioParityLaneId): boolean;
   reason(lane: StudioParityLaneId): string;
   /** The agent this actor's usable execution source runs; null when it cannot run. */
-  executionAgentId: 'codex' | 'openai' | null;
+  executionAgentId: 'codex' | 'openai' | 'openai-byok' | null;
 }
 const local: StudioCapabilities = { actor: null, hostServices: true, capabilities: null, session: null, generation: 0,
   available: () => true, reason: () => '', executionAgentId: null };

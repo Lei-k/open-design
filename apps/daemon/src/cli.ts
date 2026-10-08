@@ -31,7 +31,7 @@ import {
   removeJsonInstall,
 } from './mcp-agent-install.js';
 import { resolveMcpWorkspaceContext } from './mcp-workspace-context.js';
-import { cliSessionFetch, extractCliSessionFile, pinCliServerOrigin, readCliSession, runSessionCli, runStudioPilotCli } from './http/cli-session.js';
+import { cliSessionFetch, extractCliSessionFile, pinCliServerOrigin, readCliSession, runAccountCli, runSessionCli, runStudioPilotCli } from './http/cli-session.js';
 
 let argv;
 let remoteSessionFile = null;
@@ -416,6 +416,7 @@ const PLUGIN_LIST_BOOLEAN_FLAGS = new Set([
 
 const SUBCOMMAND_MAP = {
   admin: (args) => runStudioPilotCli(args, remoteSessionFile),
+  account: (args) => runAccountCli(args, remoteSessionFile),
   session: async (args) => {
     try { await runSessionCli(args, remoteSessionFile); }
     catch {
@@ -8038,7 +8039,7 @@ async function runRun(args) {
                [--client-request-id <id>]
                [--skill <id>[,<id>]] [--plugin <id>] [--inputs <json>] [--grant-caps a,b]
                [--agent claude|codex|opencode] [--model <id>] [--reasoning <effort>] [--service-tier <id>]
-               [--execution-source personal_subscription|company_pool] [--session-file <path>]
+               [--execution-source personal_subscription|company_pool|personal_api_key] [--session-file <path>]
                [--workspace <id> --workspace-member <id>] [--follow] [--json]
   od run redesign [--path <folder>] [--message "<text>" | --prompt-file <path|->]
                [--agent claude] [--model <id>] [--service-tier <id>] [--follow] [--json]
@@ -8318,6 +8319,8 @@ Common options:
       if (flags['execution-source']) {
         body.executionSource = flags['execution-source'];
         if (flags['execution-source'] === 'personal_subscription' && !flags.agent) body.agentId = 'codex';
+        if (flags['execution-source'] === 'personal_api_key' && !flags.agent) body.agentId = 'openai-byok';
+        if (flags['execution-source'] === 'company_pool' && !flags.agent) body.agentId = 'openai';
       }
       if (flags.conversation) body.conversationId = flags.conversation;
       if (flags['question-answer']) body.analyticsHints = { entryFrom: 'question_answer', sourceRunId: flags['question-answer'] };

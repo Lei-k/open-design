@@ -17666,6 +17666,7 @@ export async function startServer({
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
     ...(multiUserMode.testMockAgentScript ? { mockAgentScript: multiUserMode.testMockAgentScript } : {}),
     ...(multiUserMode.testCompanyOpenAIFetch ? { companyFetch: multiUserMode.testCompanyOpenAIFetch } : {}),
+    personalProviderKeys: multiUserMode.personalProviderKeys,
     ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
     ...(personalCodex ? { personal: personalCodex } : {}),
     ...(multiUserMode.personalCodex?.sandbox ? { scriptSandbox: multiUserMode.personalCodex.sandbox } : {}),

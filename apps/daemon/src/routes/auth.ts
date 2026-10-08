@@ -116,6 +116,8 @@ export interface RegisterAuthRoutesDeps {
   /** Server policy: whether personal-subscription runs can start at all. */
   personalRunsEnabled?: boolean;
   companyPoolAvailable?: () => boolean;
+  /** Accounts may run on their own encrypted provider key (#62/#63). */
+  personalApiKeysEnabled?: boolean;
   renderedExportsAvailable?: () => boolean;
 }
 
@@ -460,7 +462,7 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
     const pilot = auth.getOwnStudioPilot(actor);
     res.status(200).json({ account: auth.getOwnAccount(actor), session: { expiresAt: actor.sessionExpiresAt },
       studio: multiUserStudioCapabilities(pilot.studioPilot, { personalEnabled: deps.personalRunsEnabled === true, companyEnabled: deps.companyPoolAvailable?.() === true,
-        renderedExports: deps.renderedExportsAvailable?.() === true }),
+        personalKeysEnabled: deps.personalApiKeysEnabled === true, renderedExports: deps.renderedExportsAvailable?.() === true }),
       studioRevision: pilot.revision,
       ...(pilot.studioPilot ? { studioMessageIdPrefix: studioMessageIdPrefix(actor.accountId) } : {}) } satisfies AuthSessionResponse);
   }));

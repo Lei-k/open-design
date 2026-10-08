@@ -491,6 +491,51 @@ test('[P1] admin configures the company pool and Studio runs and reloads on its 
   await page.screenshot({ path: info.outputPath('studio-company-run.png') });
 });
 
+test('[P1] Studio account saves its own OpenAI key write-only and runs a conversation pinned to it', async ({ page, studio }, info) => {
+  await page.goto(`${studio.origin}/settings`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  const keys = page.getByTestId('studio-provider-keys');
+  await expect(keys).toBeVisible({ timeout: T.long });
+  await expect(page.getByTestId('studio-provider-key-state')).toHaveText('No key saved.');
+  const key = 'sk-browser-own-account-key-0123456789Qz9K';
+  await page.getByTestId('studio-provider-key-input').fill(key);
+  await page.getByTestId('studio-provider-key-model').fill('gpt-own-browser');
+  const saved = page.waitForResponse((response) => response.request().method() === 'PUT'
+    && new URL(response.url()).pathname === '/api/multiuser/settings/provider-keys/openai');
+  await page.getByTestId('studio-provider-key-save').click();
+  const response = await saved;
+  expect(response.status()).toBe(200);
+  expect(await response.text()).not.toContain(key);
+  await expect(page.getByTestId('studio-provider-key-state')).toHaveText('Saved key ending in Qz9K.');
+  await expect(page.getByTestId('studio-provider-key-input')).toHaveValue('');
+  await keys.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: info.outputPath('studio-own-key-settings.png'), animations: 'disabled' });
+  // Another account never sees it; there is no read path that returns the key.
+  expect((await studio.request('GET', '/api/multiuser/settings/provider-keys', studio.b.cookie)).json.keys[0].configured).toBe(false);
+  const projectId = studioProjectId();
+  expect((await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Own key browser acceptance' })).status).toBe(200);
+  await page.goto(`${studio.origin}/projects/${projectId}`);
+  const source = page.getByTestId('studio-execution-source');
+  const picker = source.getByRole('combobox', { name: 'Execution source', exact: true });
+  await expect(picker).toBeVisible({ timeout: T.long });
+  await picker.selectOption('openai-byok');
+  await page.getByTestId('chat-composer-input').fill('Create a design on my own key.');
+  const admitted = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/runs');
+  await page.getByTestId('chat-send').click();
+  const run = await admitted;
+  expect(run.status(), await run.text()).toBe(202);
+  expect(run.request().postDataJSON().agentId).toBe('openai-byok');
+  await expect(page.locator('body')).toContainText('Company browser design complete.', { timeout: T.long });
+  expect((await studio.request('GET', `/api/runs/${(await run.json()).runId}`, studio.a.cookie)).json.executionSource).toBe('personal_api_key');
+  await page.reload();
+  await expect(source).toContainText('OpenAI · your API key', { timeout: T.long });
+  await expect(source.locator('select')).toHaveCount(0);
+  await expect(page.getByTestId('assistant-role').first()).toContainText('OpenAI');
+  await page.screenshot({ path: info.outputPath('studio-own-key-run.png') });
+});
+
 test('[P1] Studio account control lives in the shared rail, workspace chrome and admin pages at desktop and phone widths', async ({ page, studio }, info) => {
   const projectId = studioProjectId();
   expect((await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Account chrome' })).status).toBe(200);

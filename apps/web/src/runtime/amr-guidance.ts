@@ -322,6 +322,8 @@ export type RunFailureMessageKey =
   | 'chat.runError.personalQueueLimitMessage'
   | 'chat.runError.personalUnavailableMessage'
   | 'chat.runError.personalRunFailedMessage'
+  | 'chat.runError.personalKeyMessage'
+  | 'chat.runError.personalKeyLimitedMessage'
   | 'chat.runError.outputInvalidMessage'
   | 'chat.runError.runtimeConfigMessage'
   | 'chat.runError.apiKeyInvalidMessage'
@@ -506,6 +508,8 @@ export type RunFailureTitleKey =
   | 'chat.runError.title.personalQueueLimit'
   | 'chat.runError.title.personalUnavailable'
   | 'chat.runError.title.personalRunFailed'
+  | 'chat.runError.title.personalKey'
+  | 'chat.runError.title.personalKeyLimited'
   | 'chat.runError.title.outputInvalid'
   | 'chat.runError.title.runtimeConfig'
   | 'chat.runError.title.apiKeyInvalid'
@@ -1042,6 +1046,10 @@ const PERSONAL_SUBSCRIPTION_FAILURE_UI: Record<string, RunFailureUi> = {
   MULTIUSER_AGENT_FORBIDDEN: personalUnavailableFailure,
   MULTIUSER_RUN_REQUEST_INVALID: personalUnavailableFailure,
   MULTIUSER_PERSONAL_RUN_FAILED: personalRunFailure,
+  // The account's own provider key (#62/#63): fixed in Settings, never by switching payer.
+  MULTIUSER_PROVIDER_KEY_MISSING: failureCard({}, 'chat.runError.title.personalKey', 'chat.runError.personalKeyMessage'),
+  MULTIUSER_PROVIDER_KEY_REJECTED: failureCard({}, 'chat.runError.title.personalKey', 'chat.runError.personalKeyMessage'),
+  MULTIUSER_PROVIDER_RATE_LIMITED: retryWithGuidance('chat.runError.title.personalKeyLimited', 'chat.runError.personalKeyLimitedMessage'),
   // Source-neutral terminal codes (#79): the run stopped on the server side.
   MULTIUSER_RUN_FAILED: personalRunFailure,
   MULTIUSER_RUN_START_FAILED: personalRunFailure,

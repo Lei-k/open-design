@@ -18,6 +18,7 @@ import { bootVersion } from './studio-boot-version';
 import { clearStudioBrowserData } from './studio-browser-data';
 import type { AppConfig } from '../types';
 import { useStudioCapabilities, StudioUnavailable } from './studio-capabilities';
+import { StudioProviderKeys } from './StudioProviderKeys';
 
 /** Account sections, plus the desktop sections whose lane is still open: those
  * stay in the navigation with the server's reason instead of disappearing. */
@@ -106,7 +107,10 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
       {item('privacy', 'eye')}
       {item('about', 'settings')}
     </>}>
-    {section === 'agentAccounts' && <AgentAccountsPage session={studio.session} generation={studio.generation} />}
+    {section === 'agentAccounts' && <>
+      <AgentAccountsPage session={studio.session} generation={studio.generation} />
+      <StudioProviderKeys />
+    </>}
     {section === 'skills' && (studio.available('catalogs')
       ? <SkillsSection cfg={config} setCfg={setConfig} onSkillsChanged={onSkillsChanged} />
       : <StudioUnavailable lane="catalogs" />)}
