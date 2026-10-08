@@ -760,6 +760,7 @@ import {
   detectEntryFile,
   ensureProject,
   ensureProjectSubdir,
+  withPinnedProjectDir,
   isRunTouchedProjectFile,
   isSafeId,
   listFiles,
@@ -2926,7 +2927,7 @@ const pluginShareTaskStore = createPluginShareTaskStore({
 let projectMetadataLookup: ((id: string) => Record<string, unknown> | null) | null = null;
 
 const projectUpload = multer({
-  storage: multer.diskStorage({
+  storage: exclusiveDiskStorage({
     destination: async (req, _file, cb) => {
       try {
         // Route uploads into the project's actual root: for folder-imported
@@ -2942,7 +2943,7 @@ const projectUpload = multer({
         // sanitized relative dir is stashed on the request so the route can
         // report each file's true project-relative path.
         const subdir = typeof req.body?.dir === 'string' ? req.body.dir : '';
-        const { absDir, relDir } = await ensureProjectSubdir(
+        const { absDir, relDir, rootDir } = await ensureProjectSubdir(
           PROJECTS_DIR,
           req.params.id,
           subdir,
@@ -2950,6 +2951,7 @@ const projectUpload = multer({
         );
         (req as any)._uploadRelDir = relDir;
         (req as any)._uploadAbsDir = absDir;
+        (req as any)._uploadRootDir = rootDir;
         cb(null, absDir);
       } catch (err) {
         cb(err, '');
@@ -2973,6 +2975,49 @@ const projectUpload = multer({
   limits: { fileSize: 200 * 1024 * 1024 },  // 200MB — covers the largest design assets we expect (PPTX/PDF/raw images)
 });
 
+function lstatExists(target: string): boolean {
+  try { fs.lstatSync(target); return true; } catch { return false; }
+}
+
+/**
+ * multer's disk storage with exclusive creation. Project directories are
+ * agent-writable; `wx` (O_CREAT|O_EXCL) never opens an existing path or
+ * follows a planted link, so an upload can only create a new regular file
+ * in the validated directory. Same destination/filename callbacks as
+ * multer.diskStorage.
+ */
+function exclusiveDiskStorage(options: {
+  destination: (req: any, file: any, cb: (error: any, destination: string) => void) => void;
+  filename: (req: any, file: any, cb: (error: any, filename: string) => void) => void;
+}) {
+  return {
+    _handleFile(req: any, file: any, cb: (error: any, info?: Record<string, unknown>) => void) {
+      options.destination(req, file, (destinationError, destination) => {
+        if (destinationError) return cb(destinationError);
+        options.filename(req, file, (filenameError, filename) => {
+          if (filenameError) return cb(filenameError);
+          const finalPath = path.join(destination, filename);
+          if (path.dirname(finalPath) !== path.resolve(destination)) return cb(new Error('invalid upload name'));
+          const rootDir = typeof req._uploadRootDir === 'string' ? req._uploadRootDir : destination;
+          // The destination is pinned by descriptor for the whole write.
+          withPinnedProjectDir(rootDir, destination, (pinned: string) => new Promise<void>((resolve, reject) => {
+            const out = fs.createWriteStream(path.join(pinned, filename), { flags: 'wx' });
+            file.stream.on('error', (error: unknown) => { out.destroy(); reject(error); });
+            out.on('error', reject);
+            out.on('finish', () => { cb(null, { destination, filename, path: finalPath, size: out.bytesWritten }); resolve(); });
+            file.stream.pipe(out);
+          })).catch((error: unknown) => { file.stream.resume(); cb(error); });
+        });
+      });
+    },
+    _removeFile(_req: any, file: any, cb: (error: Error | null) => void) {
+      const target = file.path;
+      delete file.destination; delete file.filename; delete file.path;
+      fs.unlink(target, () => cb(null));
+    },
+  };
+}
+
 function uniqueUploadFileName(uploadDir, safeName, reserved) {
   const parsed = path.parse(safeName);
   const base = parsed.name || parsed.base || 'file';
@@ -2980,7 +3025,8 @@ function uniqueUploadFileName(uploadDir, safeName, reserved) {
   for (let index = 0; index < 10_000; index += 1) {
     const candidate = index === 0 ? safeName : `${base}-${index}${ext}`;
     if (reserved.has(candidate)) continue;
-    if (uploadDir && fs.existsSync(path.join(uploadDir, candidate))) continue;
+    // lstat semantics: a dangling link planted under this name is taken, not free.
+    if (uploadDir && lstatExists(path.join(uploadDir, candidate))) continue;
     reserved.add(candidate);
     return candidate;
   }

@@ -8,10 +8,10 @@ import type {
 } from '@open-design/contracts';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants, lstatSync } from 'node:fs';
-import { mkdir, open, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-import { isSafeId, kindFor, mimeFor, resolveProjectDir, validateProjectPath } from './projects.js';
+import { isSafeId, kindFor, mimeFor, resolveProjectDir, validateProjectPath, writeProjectFileNoFollow } from './projects.js';
 
 const VERSION_ROOT = '.file-versions';
 const VERSION_MANIFEST = 'manifest.json';
@@ -112,6 +112,11 @@ function versionRootFor(projectsRoot: string, projectId: string, fileName: strin
 }
 
 const VERSION_STORE_FILE_MAX_BYTES = 64 * 1024 * 1024;
+/** Write one store file inside the store pinned by descriptor (link-safe, see versionRootFor). */
+async function writeVersionStoreFile(projectsRoot: string, projectId: string, root: string, name: string, body: string): Promise<void> {
+  if (path.dirname(path.join(root, name)) !== root) throw codedError('version store refused', 'EACCES');
+  await writeProjectFileNoFollow(path.join(projectsRoot, projectId), path.join(root, name), body);
+}
 /** Read one store file without following a link, refusing devices, hard
  * links and (on Linux) a descriptor that resolves outside the store. */
 async function readVersionStoreFile(root: string, name: string): Promise<string> {
@@ -427,7 +432,7 @@ async function writeVersionManifest(
   if (typeof options.deletedAt === 'number' && Number.isFinite(options.deletedAt)) {
     manifest.deletedAt = options.deletedAt;
   }
-  await writeFile(path.join(root, VERSION_MANIFEST), JSON.stringify(manifest, null, 2));
+  await writeVersionStoreFile(projectsRoot, projectId, root, VERSION_MANIFEST, JSON.stringify(manifest, null, 2));
 }
 
 function publicVersion(entry: VersionEntry, currentId: string | null): ProjectFileVersion {
@@ -588,7 +593,7 @@ async function createProjectFileVersionUnlocked(
     const origin = normalizeArtifactOrigin(options.origin);
     if (origin) entry.origin = origin;
   }
-  await writeFile(path.join(root, contentPath), text);
+  await writeVersionStoreFile(projectsRoot, projectId, root, contentPath, text);
   const nextEntries = [...entries, entry];
   await writeVersionManifest(projectsRoot, projectId, safeName, nextEntries, {
     currentVersionId: id,

@@ -11,7 +11,8 @@ export function setMultiUserStreamAuthority(res: Response, check: () => boolean)
 
 /** Single-user streams have no cookie authority; multi-user streams fail closed. */
 export function multiUserStreamAllowed(res: Response): boolean {
-  const check = res.locals[AUTHORITY] as (() => boolean) | undefined;
+  // A response without Express locals never passed the multi-user gate.
+  const check = res.locals?.[AUTHORITY] as (() => boolean) | undefined;
   if (!check) return true;
   let allowed = false;
   try { allowed = check(); } catch { /* unavailable persistence is not authority */ }
@@ -20,7 +21,7 @@ export function multiUserStreamAllowed(res: Response): boolean {
 }
 
 export function bindMultiUserStream(res: Response): void {
-  if (!res.locals[AUTHORITY] || res.locals[BOUND]) return;
+  if (!res.locals?.[AUTHORITY] || res.locals[BOUND]) return;
   res.locals[BOUND] = true;
   const timer = setInterval(() => { multiUserStreamAllowed(res); }, MULTIUSER_STREAM_RECHECK_MS);
   timer.unref();

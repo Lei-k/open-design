@@ -256,3 +256,44 @@ it('never follows worker-planted links inside the version store (cross-tenant re
   expect(viaRoot.text).not.toContain('OTHER_TENANT_SECRET');
   expect(viaRoot.status).toBeGreaterThanOrEqual(400);
 });
+
+it('never writes through or reads through links a run planted in the project tree', async () => {
+  const { existsSync, readFileSync: read } = await import('node:fs');
+  const { projectId } = await project();
+  const dir = path.join(root, 'projects', projectId);
+  mkdirSync(dir, { recursive: true });
+  // F1: a dangling link at a write target would create a daemon-side file with owner bytes.
+  const created = path.join(root, `created-by-link-${randomUUID()}.txt`);
+  symlinkSync(created, path.join(dir, 'evil.txt'));
+  const written = await write(projectId, 'evil.txt', 'OWNER_BYTES');
+  expect(written.status).toBeGreaterThanOrEqual(400);
+  expect(existsSync(created)).toBe(false);
+  // Same through a dangling directory link in the middle of the path.
+  const createdDir = path.join(root, `created-dir-${randomUUID()}`);
+  symlinkSync(createdDir, path.join(dir, 'nested'));
+  expect((await write(projectId, 'nested/x.txt', 'OWNER_BYTES')).status).toBeGreaterThanOrEqual(400);
+  expect(existsSync(createdDir)).toBe(false);
+  // F2: an upload named like a planted dangling link must not create its target.
+  const uploadTarget = path.join(root, `upload-target-${randomUUID()}.txt`);
+  symlinkSync(uploadTarget, path.join(dir, 'up.txt'));
+  const upload = multipart([{ name: 'up.txt', body: 'UPLOADED_BYTES' }]);
+  const uploaded = await daemon.request({ method: 'POST', path: `/api/projects/${projectId}/upload`, cookie: a.cookie, rawBody: upload.body, headers: { 'content-type': upload.type } });
+  expect(existsSync(uploadTarget)).toBe(false);
+  if (uploaded.status === 200) {
+    const [file] = uploaded.json.files as Array<{ path: string }>;
+    expect(file!.path).not.toBe('up.txt');
+    expect(read(path.join(dir, file!.path), 'utf8')).toBe('UPLOADED_BYTES');
+  }
+  // F4: an artifact manifest sidecar linked to JSON outside the project is never returned.
+  const foreignManifest = path.join(root, `foreign-${randomUUID()}.json`);
+  writeFileSync(foreignManifest, JSON.stringify({ version: 1, kind: 'html', title: 'FOREIGN_MANIFEST_TITLE', entry: 'page.html', renderer: 'html', exports: ['html'] }));
+  expect((await write(projectId, 'page.html', '<p>owner</p>')).status).toBe(200);
+  const { rmSync } = await import('node:fs');
+  rmSync(path.join(dir, 'page.html.artifact.json'), { force: true });
+  symlinkSync(foreignManifest, path.join(dir, 'page.html.artifact.json'));
+  const listed = await daemon.request({ path: `/api/projects/${projectId}/files`, cookie: a.cookie });
+  expect(listed.status).toBe(200);
+  expect(listed.text).not.toContain('FOREIGN_MANIFEST_TITLE');
+  const rewritten = await write(projectId, 'page.html', '<p>owner 2</p>');
+  expect(rewritten.text).not.toContain('FOREIGN_MANIFEST_TITLE');
+});

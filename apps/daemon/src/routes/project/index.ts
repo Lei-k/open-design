@@ -104,7 +104,7 @@ import {
 import { connectorService } from '../../connectors/service.js';
 import type { RouteDeps } from '../../server-context.js';
 import { listSkills } from '../../skills.js';
-import { isSafeId } from '../../projects.js';
+import { isSafeId, openProjectReadStreamNoFollow } from '../../projects.js';
 import {
   ensureTeamProjectCommentConversations,
   getFirstProjectConversation,
@@ -6302,8 +6302,11 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         res.setHeader('Content-Length', String(meta.size));
       }
 
+      // Reopen through a verified no-follow descriptor: the project tree is
+      // agent-writable, so the path checked above may have been swapped.
+      const stream = await openProjectReadStreamNoFollow(
+        resolveProjectDir(PROJECTS_DIR, projectId, metadata), meta.filePath, { start, end });
       res.status(statusCode);
-      const stream = fs.createReadStream(meta.filePath, { start, end });
       stream.on('error', (streamErr: any) => {
         if (!res.headersSent) {
           sendApiError(res, 500, 'STREAM_ERROR', String(streamErr));

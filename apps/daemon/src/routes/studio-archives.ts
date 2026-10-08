@@ -96,7 +96,7 @@ export function registerStudioArchiveRoutes(app: Express, input: { db: Database.
       if (versionId) {
         // The version store refuses planted links; assets still come from the bounded capture.
         const version = await readProjectFileVersion(input.projectsRoot, id, entryPath, versionId).catch(() => null);
-        if (!version) return sendApiError(res, 404, 'VERSION_NOT_FOUND', 'version not found');
+        if (!version) return sendApiError(res, 404, 'NOT_FOUND', 'version not found');
         entry = Buffer.from(version.content, 'utf8');
       }
       if (!entry) return sendApiError(res, 404, 'FILE_NOT_FOUND', 'HTML entry not found');

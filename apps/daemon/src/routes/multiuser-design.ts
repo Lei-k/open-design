@@ -1,5 +1,4 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
@@ -14,7 +13,7 @@ import { getConversation, getProject, insertConversation } from '../db.js';
 import { sendApiError } from '../http/api-errors.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { composeSystemPrompt } from '../prompts/system.js';
-import { listFiles, resolveProjectFilePath } from '../projects.js';
+import { listFiles, openProjectReadStreamNoFollow, resolveProjectDir, resolveProjectFilePath } from '../projects.js';
 import { AuthStore } from '../storage/auth-store.js';
 import { ProjectOwnershipStore } from '../storage/project-ownership.js';
 import type { SkillInfo } from '../skills.js';
@@ -267,8 +266,10 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
       const forcedDownload = req.query.download === '1' || EXECUTABLE_MIME_RE.test(meta.mime);
       res.setHeader('Content-Type', forcedDownload ? 'application/octet-stream' : meta.mime);
       res.setHeader('Content-Disposition', `${forcedDownload ? 'attachment' : 'inline'}; filename="${safeDispositionName(meta.name)}"`);
-      fs.createReadStream(meta.filePath).on('error', () => res.destroy()).pipe(res);
+      const stream = await openProjectReadStreamNoFollow(resolveProjectDir(projectsRoot, project.id, project.metadata), meta.filePath);
+      stream.on('error', () => res.destroy()).pipe(res);
     } catch {
+      if (res.headersSent) return void res.destroy();
       sendApiError(res, 404, 'FILE_NOT_FOUND', 'not found');
     }
   });
@@ -356,10 +357,12 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
     if (!project) return sendApiError(res, 404, 'NOT_FOUND', 'not found');
     try {
       const meta = await resolveProjectFilePath(projectsRoot, project.id, relativePath, project.metadata);
+      const stream = await openProjectReadStreamNoFollow(resolveProjectDir(projectsRoot, project.id, project.metadata), meta.filePath);
       setPreviewHeaders(res);
       res.setHeader('Content-Type', meta.mime);
-      fs.createReadStream(meta.filePath).on('error', () => res.destroy()).pipe(res);
+      stream.on('error', () => res.destroy()).pipe(res);
     } catch {
+      if (res.headersSent) return void res.destroy();
       sendApiError(res, 404, 'NOT_FOUND', 'not found');
     }
   });
