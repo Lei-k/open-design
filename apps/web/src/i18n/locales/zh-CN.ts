@@ -4868,6 +4868,7 @@ export const zhCN: Dict = {
   "automations.templatesEmptyTitle": "此分类下还没有模板。",
   "automations.templatesEmptyBody": "换一个筛选条件，或从空白自动化开始。",
   "automations.useTemplate": "使用模板",
+  "automations.templateNeedsConnectors": "需要连接器，Web 账号暂不可用。",
   "automations.promptPlaceholder":
     "告诉代理按此计划运行什么，或用 @ 提及上下文...",
   "automations.runHistoryLoading": "正在加载运行历史…",

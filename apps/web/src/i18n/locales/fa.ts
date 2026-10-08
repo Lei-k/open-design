@@ -4494,6 +4494,7 @@ export const fa: Dict = {
   'automations.templatesEmptyTitle': 'هنوز قالبی در این دسته وجود ندارد.',
   'automations.templatesEmptyBody': 'فیلتر دیگری را امتحان کنید، یا از یک خودکارسازی خالی شروع کنید.',
   'automations.useTemplate': 'استفاده از قالب',
+  'automations.templateNeedsConnectors': 'به اتصال‌دهنده‌هایی نیاز دارد که هنوز برای حساب‌های وب در دسترس نیستند.',
   'automations.runHistoryLoading': 'در حال بارگذاری تاریخچه اجرا...',
   'automations.runHistoryEmpty': 'هنوز اجرایی وجود ندارد.',
   'automations.runHistoryTitle': 'تاریخچه اجرا',

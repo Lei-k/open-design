@@ -4500,6 +4500,7 @@ export const uk: Dict = {
   'automations.templatesEmptyTitle': 'У цій категорії ще немає шаблонів.',
   'automations.templatesEmptyBody': 'Спробуйте інший фільтр або почніть із порожньої автоматизації.',
   'automations.useTemplate': 'Використати шаблон',
+  'automations.templateNeedsConnectors': 'Потрібні конектори, які ще недоступні для вебакаунтів.',
   'automations.runHistoryLoading': 'Завантаження історії запусків...',
   'automations.runHistoryEmpty': 'Запусків ще немає.',
   'automations.runHistoryTitle': 'Історія запусків',

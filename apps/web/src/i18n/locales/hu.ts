@@ -4500,6 +4500,7 @@ export const hu: Dict = {
   'automations.templatesEmptyTitle': 'Ebben a kategóriában még nincs sablon.',
   'automations.templatesEmptyBody': 'Próbálj másik szűrőt, vagy kezdj üres automatizálással.',
   'automations.useTemplate': 'Sablon használata',
+  'automations.templateNeedsConnectors': 'Csatlakozókat igényel, amelyek webes fiókokhoz még nem érhetők el.',
   'automations.runHistoryLoading': 'Futási előzmények betöltése...',
   'automations.runHistoryEmpty': 'Még nincs futás.',
   'automations.runHistoryTitle': 'Futási előzmények',

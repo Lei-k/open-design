@@ -29,7 +29,7 @@
 
 import type Database from 'better-sqlite3';
 import type { Express, Request, RequestHandler, Response } from 'express';
-import { parseStudioMessageFeedback, parseStudioSettingsWrite, type StudioProjectShareSummary } from '@open-design/contracts';
+import { STUDIO_AUTOMATION_INGESTION_FIELDS, STUDIO_AUTOMATION_PROPOSAL_FIELDS, parseStudioMessageFeedback, parseStudioSettingsWrite, type StudioProjectShareSummary } from '@open-design/contracts';
 import { sendApiError } from './api-errors.js';
 import { setMultiUserStreamAuthority } from './multiuser-stream.js';
 import { clearedSessionCookie, readSessionCookie, registerAuthRoutes } from '../routes/auth.js';
@@ -423,7 +423,12 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   if (policy === 'archive-batch') return only(['files']) && Array.isArray(body.files) && body.files.length > 0
     && body.files.length <= 500 && body.files.every(projectPathText);
   // Field-level routine validation needs ownership checks and lives in the route.
-  if (policy === 'studio-routine') return only(['name', 'prompt', 'schedule', 'target', 'skillId', 'agentId', 'context', 'enabled']);
+  if (policy === 'studio-routine') return only(['name', 'prompt', 'schedule', 'target', 'skillId', 'agentId', 'context', 'enabled', 'templateId'])
+    && (body.templateId === undefined || body.templateId === null || typeof body.templateId === 'string' && /^[a-z0-9][a-z0-9._-]{1,95}$/.test(body.templateId));
+  // #64: closed automation fields; ownership and connector refusals live in the route.
+  if (policy === 'automation-ingestion') return only(STUDIO_AUTOMATION_INGESTION_FIELDS) && typeof body.sourceKind === 'string';
+  if (policy === 'automation-proposal') return only(STUDIO_AUTOMATION_PROPOSAL_FIELDS);
+  if (policy === 'automation-proposal-reject') return only(['reason']) && optionalText(body.reason, 2000);
   // A historical versionId bundles that version's HTML with the project's current
   // same-project assets, exactly like the single-user export.
   if (policy === 'export-render') {

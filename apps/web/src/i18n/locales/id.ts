@@ -4500,6 +4500,7 @@ export const id: Dict = {
   'automations.templatesEmptyTitle': 'Belum ada templat di kategori ini.',
   'automations.templatesEmptyBody': 'Coba filter lain, atau mulai dari automasi kosong.',
   'automations.useTemplate': 'Gunakan templat',
+  'automations.templateNeedsConnectors': 'Memerlukan konektor, yang belum tersedia untuk akun Web.',
   'automations.runHistoryLoading': 'Memuat riwayat proses...',
   'automations.runHistoryEmpty': 'Belum ada proses.',
   'automations.runHistoryTitle': 'Riwayat proses',

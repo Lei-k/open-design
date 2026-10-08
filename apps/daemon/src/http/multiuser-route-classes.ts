@@ -45,7 +45,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'project-duplicate' | 'template-save' | 'project-share' | 'provider-key' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'project-duplicate' | 'template-save' | 'project-share' | 'provider-key' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -465,6 +465,32 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
       { ...extras, rewriteTo: alias.slice(alias.indexOf(' ') + 1) }),
       ...group('actor-scoped', 'account Automations alias; same cookie authority and closed fields', [alias], extras)];
   }),
+  // Account automation self-evolution (#64): bundled templates (the same read for
+  // every account), the owner's source packets, ingestions and proposals, and
+  // crystallize of the owner's own succeeded routine run. Apply writes only into
+  // the owner's memory, private skills and design documents.
+  ...([
+    ['GET /api/automation-templates', undefined],
+    ['GET /api/automation-templates/:id', undefined],
+    ['GET /api/automation-source-packets', undefined],
+    ['GET /api/automation-source-packets/:id', undefined],
+    ['POST /api/automation-ingestions', 'automation-ingestion'],
+    ['GET /api/automation-proposals', undefined],
+    ['POST /api/automation-proposals', 'automation-proposal'],
+    ['GET /api/automation-proposals/:id', undefined],
+    ['POST /api/automation-proposals/:id/apply', 'empty'],
+    ['POST /api/automation-proposals/:id/reject', 'automation-proposal-reject'],
+    ['POST /api/routines/:id/runs/:runId/crystallize', 'empty'],
+  ] as const).flatMap(([key, bodyPolicy]) => {
+    const alias = key.replace('/api/routines', '/api/multiuser/routines').replace(/\/api\/automation-/, '/api/multiuser/automation-');
+    const extras = bodyPolicy === 'automation-ingestion' || bodyPolicy === 'automation-proposal'
+      ? { bodyPolicy, maxBodyBytes: 300 * 1024 } : bodyPolicy === 'automation-proposal-reject' ? { bodyPolicy, maxBodyBytes: 4 * 1024 }
+        : bodyPolicy ? { bodyPolicy } : {};
+    const reason = key.includes('automation-templates') ? 'bundled automation templates, identical for every account; no host user templates'
+      : 'account-owned automation packets and proposals; apply writes only into the owner\'s memory, private skills and design documents';
+    return [...group('actor-scoped', reason, [key], { ...extras, rewriteTo: alias.slice(alias.indexOf(' ') + 1) }),
+      ...group('actor-scoped', 'account automation alias; same cookie authority and closed fields', [alias], extras)];
+  }),
   ...blocked(R_RUNS, [
     'POST /api/projects/:id/media/hyperframes/scaffold',
     'POST /api/projects/:id/media/generate',
@@ -561,17 +587,6 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'GET /api/runs/:runId/genui/:surfaceId',
     'GET /api/runs/:runId/devloop-iterations',
     'POST /api/runs/:runId/replay',
-    'GET /api/automation-source-packets',
-    'GET /api/automation-source-packets/:id',
-    'POST /api/automation-ingestions',
-    'GET /api/automation-proposals',
-    'POST /api/automation-proposals',
-    'GET /api/automation-proposals/:id',
-    'POST /api/automation-proposals/:id/apply',
-    'POST /api/automation-proposals/:id/reject',
-    'GET /api/automation-templates',
-    'GET /api/automation-templates/:id',
-    'POST /api/routines/:id/runs/:runId/crystallize',
     'GET /api/orbit/status',
     'POST /api/orbit/run',
     'POST /api/research/search',

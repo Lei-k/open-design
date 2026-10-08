@@ -4874,6 +4874,7 @@ export const zhTW: Dict = {
   "automations.templatesEmptyTitle": "此分類下還沒有範本。",
   "automations.templatesEmptyBody": "換一個篩選條件，或從空白自動化開始。",
   "automations.useTemplate": "使用範本",
+  "automations.templateNeedsConnectors": "需要連接器，Web 帳號暫不可用。",
   "automations.promptPlaceholder": "輸入此自動化要執行的任務說明。",
   "automations.runHistoryLoading": "正在載入執行歷史…",
   "automations.runHistoryEmpty": "還沒有執行記錄。",

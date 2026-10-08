@@ -4499,6 +4499,7 @@ export const ja: Dict = {
   'automations.templatesEmptyTitle': 'このカテゴリにはまだテンプレートがありません。',
   'automations.templatesEmptyBody': '別のフィルターを試すか、空のオートメーションから始めましょう。',
   'automations.useTemplate': 'テンプレートを使う',
+  'automations.templateNeedsConnectors': 'コネクタが必要ですが、Web アカウントではまだ利用できません。',
   'automations.runHistoryLoading': '実行履歴を読み込み中…',
   'automations.runHistoryEmpty': 'まだ実行はありません。',
   'automations.runHistoryTitle': '実行履歴',

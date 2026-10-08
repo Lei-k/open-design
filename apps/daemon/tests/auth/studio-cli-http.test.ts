@@ -341,8 +341,32 @@ describe('same Studio APIs through remote od sessions', () => {
       if (history.runs[0]?.status !== 'succeeded') await new Promise((resolve) => setTimeout(resolve, 50));
     }
     expect(history.runs[0]).toMatchObject({ status: 'succeeded', trigger: 'manual' });
+    // #64: crystallize, templates, ingestion and proposal review on the same account APIs.
+    const runId = (history.runs[0] as unknown as { id: string }).id;
+    expect((await cli(['automation', 'crystallize-run', id, runId, '--session-file', bFile, '--json'])).code).not.toBe(0);
+    const crystal = success(await cli(['automation', 'crystallize-run', id, runId, '--session-file', aFile, '--json']));
+    const skillProposal = crystal.proposals.find((item: { targetKind: string }) => item.targetKind === 'skill');
+    expect(success(await cli(['automation', 'proposal', 'list', '--status', 'pending-review', '--session-file', bFile, '--json'])).proposals).toEqual([]);
+    expect((await cli(['automation', 'proposal', 'apply', skillProposal.id, '--session-file', bFile, '--json'])).code).not.toBe(0);
+    const applied = success(await cli(['automation', 'proposal', 'apply', skillProposal.id, '--session-file', aFile, '--json']));
+    expect(applied.result.skillId).toMatch(/^studio-skill:/);
+    const templates = success(await cli(['automation', 'template', 'list', '--session-file', aFile, '--json'])).templates;
+    expect(templates.find((item: { id: string }) => item.id === 'connector-digest-design-context').unavailable.code).toBe('MULTIUSER_CAPABILITY_UNAVAILABLE');
+    const fromTemplate = success(await cli(['automation', 'create', '--template', 'compress-project-context', '--schedule', 'daily:07:00',
+      '--session-file', aFile, '--json']));
+    expect(fromTemplate.routine).toMatchObject({ templateId: 'compress-project-context', name: 'Compress project context' });
+    expect((await cli(['automation', 'create', '--template', 'connector-digest-design-context', '--schedule', 'daily:07:00',
+      '--session-file', aFile, '--json'])).code).not.toBe(0);
+    const ingested = success(await cli(['automation', 'source', 'ingest', '--source-kind', 'upload', '--title', 'CLI notes', '--body-file', '-',
+      '--candidate-sinks', 'memory', '--session-file', aFile, '--json'], 'CLI_INGEST_MARKER prefer calm palettes'));
+    expect(success(await cli(['automation', 'source', 'list', '--session-file', bFile, '--json'])).packets).toEqual([]);
+    expect((await cli(['automation', 'source', 'get', ingested.packet.id, '--session-file', bFile, '--json'])).code).not.toBe(0);
+    const rejected = success(await cli(['automation', 'proposal', 'reject', ingested.proposals[0].id, '--reason', 'later', '--session-file', aFile, '--json']));
+    expect(rejected.proposal.status).toBe('rejected');
+    expect((await cli(['automation', 'source', 'ingest', '--source-kind', 'connector', '--body', 'x', '--session-file', aFile, '--json'])).code).not.toBe(0);
+    success(await cli(['automation', 'delete', fromTemplate.routine.id, '--session-file', aFile, '--json']));
     success(await cli(['automation', 'delete', id, '--session-file', aFile, '--json']));
-  }, 40_000);
+  }, 60_000);
 
   it('honors server revocation and logs B out without printing or retaining credentials', async () => {
     const revoked = await daemon.request({ method: 'POST', path: `/api/auth/users/${alice.id}/sessions/revoke`, cookie: admin.cookie, body: {} });

@@ -4500,6 +4500,7 @@ export const tr: Dict = {
   'automations.templatesEmptyTitle': 'Bu kategoride henüz şablon yok.',
   'automations.templatesEmptyBody': 'Farklı bir filtre deneyin veya boş bir otomasyondan başlayın.',
   'automations.useTemplate': 'Şablonu kullan',
+  'automations.templateNeedsConnectors': 'Web hesapları için henüz kullanılamayan bağlayıcılar gerektirir.',
   'automations.runHistoryLoading': 'Çalıştırma geçmişi yükleniyor...',
   'automations.runHistoryEmpty': 'Henüz çalıştırma yok.',
   'automations.runHistoryTitle': 'Çalıştırma geçmişi',

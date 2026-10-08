@@ -1,4 +1,4 @@
-import { studioWindowSetTimeout, studioFetch as fetch } from '../runtime/studio-transport';
+import { studioUsesLocalServices, studioWindowSetTimeout, studioFetch as fetch } from '../runtime/studio-transport';
 // New / edit automation modal. The persistence layer is /api/routines; the
 // user-facing model is a scheduled agent conversation that can start in a new
 // project or append a new conversation to an existing project.
@@ -225,6 +225,10 @@ export type AutomationTemplate = {
   prompt: string;
   defaultName?: string;
   skillId?: string | null;
+  /** The bundled automation template this card came from (recorded by Studio, #64). */
+  catalogTemplateId?: string;
+  /** Set when this account cannot run the template; the card is shown disabled with this text. */
+  unavailableReason?: string;
 };
 
 interface Props {
@@ -481,6 +485,8 @@ export function NewAutomationModal({
             : {}),
         },
         enabled: true,
+        // Studio records and re-checks the bundled template on the account's routine.
+        ...(!studioUsesLocalServices() && selectedTemplate?.catalogTemplateId ? { templateId: selectedTemplate.catalogTemplateId } : {}),
       };
       const isEdit = editingId !== null;
       const url = isEdit ? `/api/routines/${editingId}` : '/api/routines';
@@ -504,7 +510,8 @@ export function NewAutomationModal({
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        throw new Error(j.error || `${isEdit ? 'update' : 'create'} failed: ${res.status}`);
+        const message = typeof j.error === 'string' ? j.error : typeof j.error?.message === 'string' ? j.error.message : '';
+        throw new Error(message || `${isEdit ? 'update' : 'create'} failed: ${res.status}`);
       }
       const json = await res.json();
       onSaved(json.routine);

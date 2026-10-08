@@ -4500,6 +4500,7 @@ export const ar: Dict = {
   'automations.templatesEmptyTitle': 'لا توجد قوالب في هذه الفئة بعد.',
   'automations.templatesEmptyBody': 'جرّب عامل تصفية مختلفًا، أو ابدأ من أتمتة فارغة.',
   'automations.useTemplate': 'استخدام القالب',
+  'automations.templateNeedsConnectors': 'يتطلب موصلات غير متاحة لحسابات الويب بعد.',
   'automations.runHistoryLoading': 'جارٍ تحميل سجل التشغيل...',
   'automations.runHistoryEmpty': 'لا توجد عمليات تشغيل بعد.',
   'automations.runHistoryTitle': 'سجل التشغيل',

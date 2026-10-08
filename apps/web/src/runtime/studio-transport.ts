@@ -97,6 +97,15 @@ export function studioRequestAvailable(method: string, path: string,
     if (/^\/api\/routines\/[^/]+$/.test(routinePath)) return ['GET', 'PATCH', 'DELETE'].includes(method);
     if (/^\/api\/routines\/[^/]+\/run$/.test(routinePath)) return method === 'POST';
     if (/^\/api\/routines\/[^/]+\/runs$/.test(routinePath)) return method === 'GET';
+    // #64: bundled templates, the account's packets/proposals and crystallize of its own runs.
+    if (/^\/api\/routines\/[^/]+\/runs\/[^/]+\/crystallize$/.test(routinePath)) return method === 'POST';
+    const automationPath = path.replace(/^\/api\/multiuser\/automation-/, '/api/automation-');
+    if (/^\/api\/automation-templates(?:\/[^/]+)?$/.test(automationPath)) return method === 'GET';
+    if (/^\/api\/automation-source-packets(?:\/[^/]+)?$/.test(automationPath)) return method === 'GET';
+    if (automationPath === '/api/automation-ingestions') return method === 'POST';
+    if (automationPath === '/api/automation-proposals') return method === 'GET' || method === 'POST';
+    if (/^\/api\/automation-proposals\/[^/]+$/.test(automationPath)) return method === 'GET';
+    if (/^\/api\/automation-proposals\/[^/]+\/(?:apply|reject)$/.test(automationPath)) return method === 'POST';
   }
   // Account-private provider keys (#62/#63): write-only; reads carry last4 only.
   if (usable('execution')) {

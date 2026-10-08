@@ -4499,6 +4499,7 @@ export const fr: Dict = {
   'automations.templatesEmptyTitle': 'Aucun modèle dans cette catégorie pour l\'instant.',
   'automations.templatesEmptyBody': 'Essayez un autre filtre, ou partez d\'une automatisation vierge.',
   'automations.useTemplate': 'Utiliser le modèle',
+  'automations.templateNeedsConnectors': 'Nécessite des connecteurs, qui ne sont pas encore disponibles pour les comptes Web.',
   'automations.runHistoryLoading': 'Chargement de l\'historique d\'exécution...',
   'automations.runHistoryEmpty': 'Aucune exécution pour l\'instant.',
   'automations.runHistoryTitle': 'Historique d\'exécution',

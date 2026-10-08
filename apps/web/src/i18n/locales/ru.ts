@@ -4500,6 +4500,7 @@ export const ru: Dict = {
   'automations.templatesEmptyTitle': 'В этой категории пока нет шаблонов.',
   'automations.templatesEmptyBody': 'Попробуйте другой фильтр или начните с пустой автоматизации.',
   'automations.useTemplate': 'Использовать шаблон',
+  'automations.templateNeedsConnectors': 'Нужны коннекторы, которые пока недоступны для веб-аккаунтов.',
   'automations.runHistoryLoading': 'Загрузка истории запусков...',
   'automations.runHistoryEmpty': 'Запусков пока нет.',
   'automations.runHistoryTitle': 'История запусков',

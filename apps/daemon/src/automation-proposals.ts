@@ -66,14 +66,17 @@ export async function getAutomationProposal(
   return proposals.find((proposal) => proposal.id === id) ?? null;
 }
 
-export async function createAutomationProposal(
-  dataDir: string,
+/**
+ * Normalize one proposal request into a stored proposal. Pure: the host JSON
+ * store and the Studio account store share it.
+ */
+export function buildAutomationProposal(
   input: CreateAutomationEvolutionProposalRequest & {
     id?: string;
     status?: AutomationProposalStatus;
   },
-): Promise<AutomationEvolutionProposal> {
-  const now = new Date().toISOString();
+  now = new Date().toISOString(),
+): AutomationEvolutionProposal {
   if (!input || typeof input !== 'object') throw new Error('proposal body is required');
   if (typeof input.title !== 'string' || !input.title.trim()) {
     throw new Error('proposal title is required');
@@ -88,7 +91,7 @@ export async function createAutomationProposal(
     input.status && VALID_STATUSES.has(input.status)
       ? input.status
       : 'pending-review';
-  const proposal: AutomationEvolutionProposal = {
+  return {
     id:
       typeof input.id === 'string' && input.id.trim()
         ? input.id.trim()
@@ -111,6 +114,16 @@ export async function createAutomationProposal(
     ...(input.compressionReport ? { compressionReport: input.compressionReport } : {}),
     ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
   };
+}
+
+export async function createAutomationProposal(
+  dataDir: string,
+  input: CreateAutomationEvolutionProposalRequest & {
+    id?: string;
+    status?: AutomationProposalStatus;
+  },
+): Promise<AutomationEvolutionProposal> {
+  const proposal = buildAutomationProposal(input);
   const proposals = await listAutomationProposals(dataDir, { status: 'all' });
   const next = proposals.filter((existing) => existing.id !== proposal.id);
   next.push(proposal);
@@ -118,7 +131,7 @@ export async function createAutomationProposal(
   return proposal;
 }
 
-function assertReviewable(proposal: AutomationEvolutionProposal): void {
+export function assertReviewable(proposal: AutomationEvolutionProposal): void {
   if (proposal.status === 'pending-review' || proposal.status === 'draft') return;
   throw new Error(`proposal ${proposal.id} is ${proposal.status}, not reviewable`);
 }
@@ -159,16 +172,14 @@ function withMemoryProvenance(body: string, proposal: AutomationEvolutionProposa
   return [text, '', ...provenance].join('\n');
 }
 
-async function applyMemoryProposal(dataDir: string, proposal: AutomationEvolutionProposal) {
-  if (proposal.action === 'delete') {
-    if (!proposal.targetRef) throw new Error('delete proposal requires targetRef');
-    await deleteMemoryEntry(dataDir, proposal.targetRef);
-    return { memoryId: proposal.targetRef, action: 'delete' };
-  }
-
-  const before = proposal.targetRef
-    ? await readMemoryEntry(dataDir, proposal.targetRef)
-    : null;
+/**
+ * The memory entry a create/update proposal writes, given the entry it
+ * replaces (if any). Pure: the host store and Studio account memory share it.
+ */
+export function memoryEntryFromProposal(
+  proposal: AutomationEvolutionProposal,
+  before: { name?: unknown; description?: unknown; type?: unknown; body?: unknown } | null,
+): { id?: string; name: string; description: string; type: MemoryType; body: string } {
   const json = parseJsonPatchAfter(proposal);
   const metadata =
     proposal.metadata && typeof proposal.metadata === 'object' && !Array.isArray(proposal.metadata)
@@ -180,20 +191,35 @@ async function applyMemoryProposal(dataDir: string, proposal: AutomationEvolutio
       ? json.body
       : typeof json.markdown === 'string'
         ? json.markdown
-        : proposal.patch.after ?? before?.body ?? '';
-  const payload: Record<string, unknown> = {
+        : proposal.patch.after ?? (typeof before?.body === 'string' ? before.body : '');
+  const id = typeof json.id === 'string' ? json.id : proposal.targetRef;
+  return {
+    ...(id ? { id } : {}),
     name:
       typeof json.name === 'string' && json.name.trim()
         ? json.name
-        : before?.name ?? proposal.title,
+        : typeof before?.name === 'string' ? before.name : proposal.title,
     description:
       typeof json.description === 'string'
         ? json.description
-        : before?.description ?? proposal.summary,
+        : typeof before?.description === 'string' ? before.description : proposal.summary,
     type,
     body: withMemoryProvenance(body, proposal),
   };
-  const id = typeof json.id === 'string' ? json.id : proposal.targetRef;
+}
+
+async function applyMemoryProposal(dataDir: string, proposal: AutomationEvolutionProposal) {
+  if (proposal.action === 'delete') {
+    if (!proposal.targetRef) throw new Error('delete proposal requires targetRef');
+    await deleteMemoryEntry(dataDir, proposal.targetRef);
+    return { memoryId: proposal.targetRef, action: 'delete' };
+  }
+
+  const before = proposal.targetRef
+    ? await readMemoryEntry(dataDir, proposal.targetRef)
+    : null;
+  const { id, ...fields } = memoryEntryFromProposal(proposal, before);
+  const payload: Record<string, unknown> = { ...fields };
   if (id) payload.id = id;
   const entry = await upsertMemoryEntry(dataDir, payload, {});
   return { memoryId: entry.id, action: proposal.action };

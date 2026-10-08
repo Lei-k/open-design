@@ -2303,6 +2303,7 @@ export interface Dict {
   'automations.templatesEmptyTitle': string;
   'automations.templatesEmptyBody': string;
   'automations.useTemplate': string;
+  'automations.templateNeedsConnectors': string;
   'automations.runHistoryLoading': string;
   'automations.runHistoryEmpty': string;
   'automations.runHistoryTitle': string;

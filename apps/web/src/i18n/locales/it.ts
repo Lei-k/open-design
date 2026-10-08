@@ -4500,6 +4500,7 @@ export const it: Dict = {
   'automations.templatesEmptyTitle': 'Nessun template in questa categoria.',
   'automations.templatesEmptyBody': 'Prova un filtro diverso o parti da un\'automazione vuota.',
   'automations.useTemplate': 'Usa template',
+  'automations.templateNeedsConnectors': 'Richiede connettori, non ancora disponibili per gli account Web.',
   'automations.runHistoryLoading': 'Caricamento cronologia esecuzioni...',
   'automations.runHistoryEmpty': 'Nessuna esecuzione.',
   'automations.runHistoryTitle': 'Cronologia esecuzioni',

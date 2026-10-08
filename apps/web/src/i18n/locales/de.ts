@@ -4500,6 +4500,7 @@ export const de: Dict = {
   'automations.templatesEmptyTitle': 'Noch keine Vorlagen in dieser Kategorie.',
   'automations.templatesEmptyBody': 'Versuchen Sie einen anderen Filter oder beginnen Sie mit einer leeren Automatisierung.',
   'automations.useTemplate': 'Vorlage verwenden',
+  'automations.templateNeedsConnectors': 'Benötigt Konnektoren, die für Web-Konten noch nicht verfügbar sind.',
   'automations.runHistoryLoading': 'Ausführungsverlauf wird geladen ...',
   'automations.runHistoryEmpty': 'Noch keine Ausführungen.',
   'automations.runHistoryTitle': 'Ausführungsverlauf',

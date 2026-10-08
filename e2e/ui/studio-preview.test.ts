@@ -684,6 +684,56 @@ test('[P1] Studio account automations create, run as the owner and stay private'
   expect((await studio.request('GET', `/api/routines/${routineId}`, studio.b.cookie)).status).toBe(404);
 });
 
+test('[P1] Studio automation templates, crystallize and proposal review stay on the account', async ({ page, studio }, info) => {
+  await studio.linkCodex(studio.a);
+  await studio.configureTurn(studio.a, { reply: 'Compressed the project context.' });
+  await page.goto(`${studio.origin}/automations`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  // Connector-only templates stay visible but disabled with the reason.
+  const connector = page.getByTestId('automation-template-connector-digest-design-context');
+  await expect(connector).toBeDisabled({ timeout: T.long });
+  await expect(connector).toContainText('Needs connectors');
+  const template = page.getByTestId('automation-template-compress-project-context');
+  await template.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: info.outputPath('studio-automation-templates.png'), animations: 'disabled' });
+  await template.click();
+  const modal = page.getByTestId('automation-modal');
+  await expect(modal.getByTestId('automation-modal-title')).toHaveValue('Compress project context');
+  const created = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/routines');
+  await modal.locator('button[type="submit"]').click();
+  const made = await created;
+  expect(made.status(), await made.text()).toBe(201);
+  const routine = (await made.json()).routine as { id: string; templateId: string };
+  expect(routine.templateId).toBe('compress-project-context');
+  const started = await studio.request('POST', `/api/routines/${routine.id}/run`, studio.a.cookie, {});
+  expect(started.status, started.text).toBe(202);
+  await expect.poll(async () => (await studio.request('GET', `/api/routines/${routine.id}/runs`, studio.a.cookie)).json.runs[0]?.status,
+    { timeout: T.long }).toBe('succeeded');
+  // History → Crystallize creates reviewable proposals in the shared Automations tab.
+  await page.reload();
+  const row = page.getByTestId(`automation-row-${routine.id}`);
+  await row.getByRole('button', { name: 'History' }).click({ timeout: T.long });
+  const crystallized = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/crystallize'));
+  await row.getByRole('button', { name: 'Crystallize' }).click({ timeout: T.long });
+  expect((await crystallized).status()).toBe(200);
+  const proposals = page.getByRole('region', { name: /proposal/i });
+  const skillProposal = proposals.locator('li', { hasText: 'Skill: Compress project context run' });
+  await expect(skillProposal).toBeVisible({ timeout: T.long });
+  await page.screenshot({ path: info.outputPath('studio-automation-proposals.png'), animations: 'disabled' });
+  const applied = page.waitForResponse((response) => response.request().method() === 'POST' && /\/api\/automation-proposals\/[^/]+\/apply$/.test(new URL(response.url()).pathname));
+  await skillProposal.getByRole('button', { name: 'Apply' }).click();
+  const result = await applied;
+  expect(result.status(), await result.text()).toBe(200);
+  const skillId = (await result.json()).result.skillId as string;
+  await expect(skillProposal).toHaveCount(0, { timeout: T.long });
+  const skills = (await studio.request('GET', '/api/skills', studio.a.cookie)).json.skills as Array<{ id: string; name: string }>;
+  expect(skills.find((skill) => skill.id === skillId)?.name).toBe('Compress project context run skill');
+  expect((await studio.request('GET', `/api/skills/${encodeURIComponent(skillId)}`, studio.b.cookie)).status).toBe(404);
+  expect((await studio.request('GET', '/api/automation-proposals', studio.b.cookie)).json.proposals).toEqual([]);
+});
+
 test('[P1] Studio owner comments on a preview element, sends it to the agent and keeps it private', async ({ page, studio }, info) => {
   await studio.linkCodex(studio.a);
   await studio.configureTurn(studio.a, { reply: 'Applied the comment.' });

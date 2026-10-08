@@ -4499,6 +4499,7 @@ export const pl: Dict = {
   'automations.templatesEmptyTitle': 'Brak szablonów w tej kategorii.',
   'automations.templatesEmptyBody': 'Wypróbuj inny filtr lub zacznij od pustej automatyzacji.',
   'automations.useTemplate': 'Użyj szablonu',
+  'automations.templateNeedsConnectors': 'Wymaga konektorów, które nie są jeszcze dostępne dla kont internetowych.',
   'automations.runHistoryLoading': 'Ładowanie historii uruchomień...',
   'automations.runHistoryEmpty': 'Brak uruchomień.',
   'automations.runHistoryTitle': 'Historia uruchomień',

@@ -956,6 +956,7 @@ import { registerStudioRenderRoutes } from './routes/studio-render.js';
 import { createChromiumCaptureHost } from './render/chromium-capture-runtime.js';
 import { setArtifactCaptureRuntime } from '@open-design/artifact-capture';
 import { registerStudioRoutineRoutes } from './routes/studio-routines.js';
+import { registerStudioAutomationRoutes } from './routes/studio-automations.js';
 import { registerStudioProjectCreationRoutes } from './routes/studio-project-creation.js';
 import { registerMultiUserAgentAccountRoutes } from './routes/multiuser-agent-accounts.js';
 import { PersonalCodexAccounts } from './services/personal-codex-accounts.js';
@@ -17684,9 +17685,12 @@ export async function startServer({
     ...(studioSettings ? { settings: studioSettings } : {}),
     ...(studioDesignCatalog ? { designCatalog: studioDesignCatalog } : {}),
   }) : null;
+  // Account-owned automation packets/proposals (#64); apply writes only into account stores.
+  const studioAutomations = studioSettings ? registerStudioAutomationRoutes(app, { db, settings: studioSettings }) : null;
   // Account-owned Automations dispatch through the same run admission policy.
   const studioRoutines = multiUserRuns ? registerStudioRoutineRoutes(app, {
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, runs: multiUserRuns,
+    ...(studioAutomations ? { automations: studioAutomations } : {}),
     ...(multiUserMode?.poolClock ? { clock: multiUserMode.poolClock } : {}),
   }) : null;
   if (multiUserRuns) multiUserFront?.setCancelAccountRuns((accountId) => {

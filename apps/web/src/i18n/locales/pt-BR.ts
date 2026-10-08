@@ -4500,6 +4500,7 @@ export const ptBR: Dict = {
   'automations.templatesEmptyTitle': 'Nenhum modelo nesta categoria ainda.',
   'automations.templatesEmptyBody': 'Experimente um filtro diferente ou comece com uma automação em branco.',
   'automations.useTemplate': 'Usar modelo',
+  'automations.templateNeedsConnectors': 'Precisa de conectores, que ainda não estão disponíveis para contas Web.',
   'automations.runHistoryLoading': 'Carregando histórico de execuções...',
   'automations.runHistoryEmpty': 'Nenhuma execução ainda.',
   'automations.runHistoryTitle': 'Histórico de execuções',

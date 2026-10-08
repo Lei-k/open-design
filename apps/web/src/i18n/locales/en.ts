@@ -4514,6 +4514,7 @@ export const en: Dict = {
   'automations.templatesEmptyTitle': 'No templates in this category yet.',
   'automations.templatesEmptyBody': 'Try a different filter, or start from a blank automation.',
   'automations.useTemplate': 'Use template',
+  'automations.templateNeedsConnectors': 'Needs connectors, which are not available for Web accounts yet.',
   'automations.runHistoryLoading': 'Loading run history...',
   'automations.runHistoryEmpty': 'No runs yet.',
   'automations.runHistoryTitle': 'Run history',

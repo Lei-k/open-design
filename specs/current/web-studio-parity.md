@@ -140,7 +140,7 @@ Remote origin 只接受 HTTPS，HTTP 只准 numeric loopback 的本地測試／�
 | #61 / S11/S13/S17/S18/S20 | bundled design/prompt templates and craft; actor design documents, revisions, safe previews and captured execution versions; immutable actor template snapshots; captured skill packages (bundled and private folder imports) with personal read-only mounts and company copy/offline-script tools; fixed-design conversations capture their packages; shared create/editor/catalog/composer and CLI | design generation, design asset packages, plugin/community management and Vela team catalogs | `pilot`，非 `supported` |
 | #62 / S10/S16/S19/S21/S25 | shared Settings frame and section navigation; instructions, manual memory, appearance/notification and personal Codex model preferences, About/version; HTTP A/B/admin negatives, CLI and shared Settings browser workflow | encrypted personal provider credentials, automatic memory extraction/rewrite/verification, connectors, MCP, privacy and library | `pilot`，非 `supported` |
 | #66 / S15/S23 | captured owned project/folder/batch ZIP, SHA-256 receipt and standard design handoff metadata; one-file HTML export bundled from captured owner bytes; shared viewer/file download and CLI | isolated PDF/PPTX/image renderers, historical-version export binding, public share, cloud deploy/finalize/handoff | `pilot`，非 `supported` |
-| #64 / S24 | account-owned routines on the standard `/api/routines` aliases: CRUD, schedules via the shared `RoutineService`, slot claims, manual runs, history; every dispatch re-resolves owner/pilot/project and admits through the standard run policy; TasksView and `od automation` | templates, proposals, ingestion, crystallize, plugin/MCP/connector context and real-provider scheduled acceptance | `pilot`，非 `supported` |
+| #64 / S24/S36 | account-owned routines on the standard `/api/routines` aliases: CRUD, schedules via the shared `RoutineService`, slot claims, manual runs, history; every dispatch re-resolves owner/pilot/project/source (and the bundled template); bundled templates, account source packets/ingestion, proposals applied into account memory/skills/design documents, crystallize into a private skill package; TasksView and `od automation` | plugin/MCP/connector context, the account's own OpenAI key as a routine source, real timer-fired and real-provider scheduled acceptance | `pilot`，非 `supported` |
 | #53 / #69 / S22 | account control (Settings, admin Users/Audit, sign-out) in the shared rail, workspace chrome and in-App admin header; the separate multi-user top bar is removed | full admin presentation inside the Studio shell navigation and #70 mobile/a11y matrix | `pilot`，非 `supported` |
 | #68 | pinned-origin password session、private files、JSON/prompt-file、run cursor；CLI transport 與 real-daemon A/B tests | rich headless chat 與其餘 domain lanes、TLS MITM integration acceptance | 未完成 |
 | Phase 0 | #52 基線及 #53/#54 上述基礎 | #53/#54 的剩餘驗收不可跳過 | 不可標記完成 |
@@ -520,16 +520,35 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
 
 ![Public link in the Share menu](../../docs/design/studio-parity/public-link-entry.png)
 
+## S36 — account automation templates, proposals and crystallize (#64, #61, #62, #68)
+
+- **Model.** `routes/studio-automations.ts` keeps `studio_automation_packets` (immutable) and `studio_automation_proposals`, both keyed by owner on every lookup. Packets and proposals come from the host ingestion planner (`planAutomationIngestion`, `buildAutomationProposal`, now pure and shared with the single-user JSON store), so both runtimes produce the same drafts. Limits: 500 packets, 1,000 proposals, 256 KiB bodies.
+- **Routes.** The standard `GET /api/automation-templates[/:id]`, `GET /api/automation-source-packets[/:id]`, `POST /api/automation-ingestions`, `GET|POST /api/automation-proposals`, `GET /api/automation-proposals/:id`, `POST …/:id/apply|reject` and `POST /api/routines/:id/runs/:runId/crystallize` are `actor-scoped` rewrites to `/api/multiuser/…` aliases. Body policies are `automation-ingestion` and `automation-proposal` (closed field lists in contracts), `automation-proposal-reject` and `empty`.
+  - **Templates:** only the bundled templates, the same for every account; host user templates are never read. Connector-only templates carry `unavailable: { code: 'MULTIUSER_CAPABILITY_UNAVAILABLE', requires: 'connectors' }`.
+  - **Template routines:** `templateId` on routine create is validated against that list. It supplies the default name and the shared prompt (`automationTemplateRoutinePrompt`) and is re-checked at every dispatch.
+  - **Ingestion:** connector sources, `connectorId`/`accountLabel` and connector triggers are refused with the typed code. Project and conversation references must be the owner's own; foreign and missing are the same 404.
+  - **Proposals:** `automation-template` targets are refused with the typed code; clients cannot choose ids or pre-apply. Apply writes only into the owner's memory (S10 limits, a create never overwrites), private skills (a captured S8/S20 package: `SKILL.md` plus `references/source.md`) or design documents. Apply and reject are serialized per owner, so a proposal applies once and later attempts get 409.
+  - **Crystallize:** re-resolves the routine, the run (the owner's, succeeded) and its project for the owner, then ingests through the same planner. Applying its skill proposal creates the private skill package.
+- **Capability.** The `automations` pilot reason now lists templates, ingestion, proposals and crystallize; plugin/MCP/connector context stays pending.
+- **Web.** The transport opens these routes only with a usable `automations` lane. In the shared TasksView, connector-only catalog templates and Orbit/live-artifact cards are disabled with a reason, and the modal picker lists only runnable templates. A catalog template sends `templateId` in Studio, and typed refusals show their message. Proposal review and history → Crystallize reuse the existing controls.
+- **CLI.** `od automation template|source|proposal|crystallize-run` run over `--session-file` unchanged. `od automation create --template <id>` fetches the template and uses the shared prompt helper.
+- **Evidence.** `studio-automations-http` (4): bundled-only templates with the connector flag, template routines and refusals, private packets/proposals with B/admin 404 parity, apply into account memory/skill package/design store with host stores untouched, double-apply 409, foreign update targets, connector/foreign-project/template-target refusals, and crystallize → private skill package. Also host automation suites (unchanged behavior), gate inventory, CLI case (B refusals, template create, ingest, reject), Web `TasksView.studio`, transport oracle and the browser case (disabled connector card → template routine → run → Crystallize → Apply → private skill; B sees nothing).
+- **Remaining for #64.** Plugin/MCP/connector context (needs per-account connector credentials), the account's own OpenAI key as a routine source, account-authored automation templates, and real timer-fired/provider scheduled acceptance on EC2.
+
+![Automation templates for Web accounts](../../docs/design/studio-parity/automation-templates.png)
+
+![Crystallize and proposal review](../../docs/design/studio-parity/automation-proposals.png)
+
 ## 目前進度與續作順序 — 2026-10-07（S25 後）
 
-[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S35 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
+[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S36 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
 
 - 分支：`feat/studio-parity-foundation`；以 PR 最新 head 為準。先核對 git status/log 和 GitHub 最新 review，避免重做已交付項目。S18–S25 的實作、測試、限制與入口截圖見上文；本次依使用者要求階段性收尾並交接，並非 Epic 完成。
 - 已確認產品決定：公司池使用 OpenAI 官方 API；Vela 採使用者驗證的本人身份與服務端 Web account/member binding；native window、OS overlay 與 app installer/updater 的 Web 不適用決定，和 in-page pet 仍需交付項目保持分開。
 - 沒有 staging。使用者會自行部署 EC2；目前沒有真實 OpenAI key 或 EC2 設定。provider fixtures 不能代替真實 provider／EC2 acceptance。公司池 skill script 需要部署端設定 personal sandbox（bubblewrap）才會出現。
 - 2026-10-08 產品決定：#66 以 deploy image 內 headless Chromium（沙箱、拒絕網路）渲染 PDF/PPTX/PNG；#62/#63 允許每帳號自有 provider API key（部署主金鑰加密，管理員不可讀）；#62 Web 帳號 telemetry 關閉；#65 同一部署內帳號間專案分享（view/comment/edit、presence、共享評論），不接 Vela relay。
 - 下一批按 DAG 推進：
-  - #64：automation templates/proposals/ingestion/crystallize、connector/MCP context，以及排程觸發的真實驗收。
+  - #64：S36 完成 templates/ingestion/proposals/crystallize；剩餘 connector/MCP/plugin context、帳號自有 key 作 routine 來源，以及排程觸發的真實驗收。
   - #65：S32 完成同部署帳號間專案分享（view/comment/edit、presence、共享評論、撤銷即時生效）；剩餘 team catalogs（design systems/skills/plugins 共享，併 #61）與他人執行中 turn 的即時鏡像；依決定不接 Vela。
   - #66：PDF/PPTX/PNG 由 S31 伺服器 renderer 完成；S35 完成部署內公開連結；剩餘雲端 deploy（每帳號 token）與 finalize/handoff。
   - #63：S33 每帳號加密 OpenAI key、S34 媒體生成（圖片/旁白/影片）完成；剩餘 Live Artifacts、GenUI、research、critique。

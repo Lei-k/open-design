@@ -42,7 +42,7 @@ export function studioLaneForRoute(entry: Pick<MultiUserRouteClassification, 'me
     if (parts[2] === 'settings') return 'settings';
     if (parts[2] === 'catalog') return parts[3] === 'codex-pets' ? 'settings' : 'catalogs';
     if (parts[2] === 'design-catalog') return 'catalogs';
-    if (parts[2] === 'routines') return 'automations';
+    if (parts[2] === 'routines' || parts[2]?.startsWith('automation-')) return 'automations';
     if (path.includes('/archive') || path.includes('/export/') || path.includes('/public-links') || parts[2] === 'public') return 'delivery';
     if (/\/(?:shares|access|presence)(?:\/|$)/.test(path)) return 'collaboration';
     if (path.includes('/preview') || path.includes('/comments')) return 'preview';
@@ -99,7 +99,7 @@ export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
   composer: 'Pilot composer: text, attachments, private and bundled skills, design systems, queue, stop, question answers, preview comment attachments and personal Codex model/effort; rich media inputs and plugins are pending (#57).',
   preview: 'Pilot preview: opaque HTML/deck/media previews, manual edit, inspect, comments shared with project members and immutable artifact snapshots/thumbnails; renderer covers and complete browser acceptance are pending (#59).',
   files: 'Pilot files: owner file list, read, write, upload, rename, delete, folders, search and versions; public publish and resumable large uploads are pending (#58).',
-  automations: 'Pilot automations: account-owned routines with schedules, manual runs, history and per-dispatch authority on personal Codex or the company pool; templates, proposals, ingestion, crystallize and plugin/connector context are pending (#64).',
+  automations: 'Pilot automations: account-owned routines with schedules, manual runs, history and per-dispatch authority on personal Codex or the company pool, bundled templates, source ingestion, reviewable proposals applied into the account\'s own memory, skills and design documents, and crystallizing runs into private skill packages; plugin/MCP/connector context, the account\'s own OpenAI key as a routine source and real-provider scheduled acceptance are pending (#64).',
   delivery: 'Pilot delivery: owned project/folder/batch ZIP downloads and one-file HTML exports (current or historical version) from captured bytes with design handoff, server-rendered PDF/PPTX/PNG where the deployment configured a renderer, and deployment-local public links to captured files on the preview origin; cloud deploy is pending (#66).',
   home: 'Pilot Home: Prototype, Deck, Other, Image/Video/Audio on an OpenAI source, immutable saved templates, project copies and browser ZIP/directory imports; live artifacts, HyperFrames and Figma import are pending (#60).',
   settings: 'Pilot settings: account appearance/notification preferences, in-page pet (bundled catalog), instructions, manual memory and profile injection; full navigation, providers, automatic extraction, verification, connectors, MCP and library are pending (#62).',

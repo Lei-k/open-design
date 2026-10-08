@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
-import type { CreateRoutineRequest, Routine, RoutineRun, RoutineSchedule, RoutineProjectTarget, UpdateRoutineRequest } from '@open-design/contracts';
+import { automationTemplateRoutinePrompt, type CreateRoutineRequest, type Routine, type RoutineRun, type RoutineSchedule, type RoutineProjectTarget, type UpdateRoutineRequest } from '@open-design/contracts';
 import { getProject, insertConversation, insertProject } from '../db.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { multiUserStreamAllowed } from '../http/multiuser-stream.js';
@@ -13,13 +13,14 @@ import { AuthStore } from '../storage/auth-store.js';
 import { ProjectOwnershipStore } from '../storage/project-ownership.js';
 import { isSafeId, projectDir } from '../projects.js';
 import type { AuthActor } from '../services/auth-service.js';
+import { AutomationRefusal, studioRunnableAutomationTemplate, type StudioAutomations } from './studio-automations.js';
 
 const ROUTINE_LIMIT = 20;
 const POLL_MS = 1_000;
 type Source = 'personal_subscription' | 'company_pool';
 interface RoutineRow {
   id: string; owner_account_id: string; name: string; prompt: string; schedule_json: string; target_json: string;
-  skill_ids_json: string; execution_source: Source; enabled: number; created_at: number; updated_at: number;
+  skill_ids_json: string; execution_source: Source; enabled: number; created_at: number; updated_at: number; template_id: string | null;
 }
 interface RunRow {
   id: string; routine_id: string; trigger: RoutineRun['trigger']; status: RoutineRun['status']; project_id: string;
@@ -44,6 +45,8 @@ class RoutineRefusal extends Error {
  */
 export function registerStudioRoutineRoutes(app: Express, input: {
   db: Database.Database; dataRoot: string; projectsRoot: string; runs: StudioRoutineRuns; clock?: () => number;
+  /** Account automation store for crystallize (#64). */
+  automations?: StudioAutomations;
 }): { stop(): void } {
   const { db } = input;
   const now = input.clock ?? Date.now;
@@ -67,6 +70,10 @@ export function registerStudioRoutineRoutes(app: Express, input: {
       routine_id TEXT NOT NULL REFERENCES studio_routines(id) ON DELETE CASCADE, slot_at INTEGER NOT NULL,
       PRIMARY KEY (routine_id, slot_at)
     );`);
+  // Additive (#64): the bundled template a routine was created from, re-checked at dispatch.
+  if (!(db.prepare('PRAGMA table_info(studio_routines)').all() as Array<{ name: string }>).some((column) => column.name === 'template_id')) {
+    db.exec('ALTER TABLE studio_routines ADD COLUMN template_id TEXT');
+  }
 
   /** The owner may still run work: active, password set and in the Studio pilot. */
   const ownerUsable = (owner: string): AuthActor | null => {
@@ -97,7 +104,7 @@ export function registerStudioRoutineRoutes(app: Express, input: {
         ...(last.completed_at ? { completedAt: last.completed_at } : {}), projectId: last.project_id, conversationId: last.conversation_id,
         agentRunId: last.agent_run_id, ...(last.summary ? { summary: last.summary } : {}), ...(last.error ? { error: last.error } : {}),
         ...(last.error_code ? { errorCode: last.error_code } : {}) } : null,
-      createdAt: found.created_at, updatedAt: found.updated_at };
+      createdAt: found.created_at, updatedAt: found.updated_at, templateId: found.template_id ?? null };
   };
 
   service = new RoutineService({
@@ -171,6 +178,11 @@ export function registerStudioRoutineRoutes(app: Express, input: {
       start: () => { void (async () => {
         const actor = ownerUsable(owner);
         if (!actor || !allowed()) return settle({ status: 'failed', error: 'routine owner cannot run work', errorCode: 'MULTIUSER_PERSONAL_UNAVAILABLE' });
+        // A template routine runs only while its bundled template is still runnable for Web accounts.
+        if (found.template_id) {
+          try { studioRunnableAutomationTemplate(found.template_id); }
+          catch { return settle({ status: 'failed', error: 'routine template is not available', errorCode: 'MULTIUSER_CAPABILITY_UNAVAILABLE' }); }
+        }
         const admitted = await input.runs.admitInternal(actor, { projectId: prepared.projectId, conversationId: prepared.conversationId,
           executionSource: found.execution_source, clientRequestId: `routine-${runId}`,
           skillIds: JSON.parse(found.skill_ids_json) as string[], message: found.prompt }, allowed,
@@ -197,8 +209,21 @@ export function registerStudioRoutineRoutes(app: Express, input: {
 
   const parse = (owner: string, body: Partial<CreateRoutineRequest & UpdateRoutineRequest>, existing?: RoutineRow) => {
     const record = body as Record<string, unknown>;
-    if (Object.keys(record).some((key) => !['name', 'prompt', 'schedule', 'target', 'skillId', 'agentId', 'context', 'enabled'].includes(key)))
+    if (Object.keys(record).some((key) => !['name', 'prompt', 'schedule', 'target', 'skillId', 'agentId', 'context', 'enabled', 'templateId'].includes(key)))
       throw new RoutineRefusal(400, 'unsupported routine field');
+    // A bundled template is chosen once, at creation; it supplies the default name and prompt.
+    let templateId: string | null = existing?.template_id ?? null;
+    if (body.templateId !== undefined && body.templateId !== null) {
+      if (existing && body.templateId !== existing.template_id) throw new RoutineRefusal(400, 'a routine keeps the template it was created from');
+      let template;
+      try { template = studioRunnableAutomationTemplate(body.templateId); }
+      catch (error) { throw new RoutineRefusal((error as { status?: number }).status === 403 ? 403 : 404, 'automation template not available'); }
+      templateId = template.id;
+      if (!existing) {
+        if (body.name === undefined) body = { ...body, name: template.title };
+        if (body.prompt === undefined) body = { ...body, prompt: automationTemplateRoutinePrompt(template) };
+      }
+    }
     const text = (value: unknown, max: number) => typeof value === 'string' && value.trim().length > 0 && value.length <= max && !value.includes('\0');
     if ((!existing || body.name !== undefined) && !text(body.name, 100)) throw new RoutineRefusal(400, 'name is required');
     if ((!existing || body.prompt !== undefined) && !text(body.prompt, 32_000)) throw new RoutineRefusal(400, 'prompt is required');
@@ -221,7 +246,7 @@ export function registerStudioRoutineRoutes(app: Express, input: {
     if (body.enabled !== undefined && typeof body.enabled !== 'boolean') throw new RoutineRefusal(400, 'invalid enabled flag');
     const source: Source = body.agentId === 'openai' ? 'company_pool' : body.agentId === 'codex' ? 'personal_subscription' : existing?.execution_source ?? 'personal_subscription';
     return { name: body.name?.trim() ?? existing!.name, prompt: body.prompt ?? existing!.prompt, schedule, target, skillIds, source,
-      enabled: body.enabled ?? (existing ? existing.enabled === 1 : true) };
+      enabled: body.enabled ?? (existing ? existing.enabled === 1 : true), templateId };
   };
   const handle = (operation: (req: Request, res: Response, owner: string) => unknown) => async (req: Request, res: Response) => {
     const owner = multiUserActorOf(res)?.accountId;
@@ -229,8 +254,12 @@ export function registerStudioRoutineRoutes(app: Express, input: {
     try { await operation(req, res, owner); }
     catch (error) {
       if (res.headersSent) return;
-      if (error instanceof RoutineRefusal) return sendApiError(res, error.status, error.status === 404 ? 'NOT_FOUND'
-        : error.status === 403 ? 'MULTIUSER_CAPABILITY_UNAVAILABLE' : error.status === 409 ? 'CONFLICT' : 'BAD_REQUEST', error.message);
+      // Routine and automation-store refusals carry their own status (no stack or host detail).
+      const status = (error as { status?: unknown } | null)?.status;
+      if ((error instanceof RoutineRefusal || error instanceof AutomationRefusal) && typeof status === 'number') {
+        return sendApiError(res, status, status === 404 ? 'NOT_FOUND' : status === 403 ? 'MULTIUSER_CAPABILITY_UNAVAILABLE'
+          : status === 409 ? 'CONFLICT' : 'BAD_REQUEST', (error as Error).message);
+      }
       sendApiError(res, 400, 'BAD_REQUEST', 'routine request refused');
     }
   };
@@ -248,9 +277,9 @@ export function registerStudioRoutineRoutes(app: Express, input: {
     const count = (db.prepare('SELECT COUNT(*) AS n FROM studio_routines WHERE owner_account_id = ?').get(owner) as { n: number }).n;
     if (count >= ROUTINE_LIMIT) throw new RoutineRefusal(409, 'routine limit reached');
     const id = `studio-routine-${randomUUID()}`; const at = now();
-    db.prepare(`INSERT INTO studio_routines (id, owner_account_id, name, prompt, schedule_json, target_json, skill_ids_json, execution_source, enabled, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, owner, fields.name, fields.prompt, JSON.stringify(fields.schedule), JSON.stringify(fields.target),
-      JSON.stringify(fields.skillIds), fields.source, fields.enabled ? 1 : 0, at, at);
+    db.prepare(`INSERT INTO studio_routines (id, owner_account_id, name, prompt, schedule_json, target_json, skill_ids_json, execution_source, enabled, created_at, updated_at, template_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, owner, fields.name, fields.prompt, JSON.stringify(fields.schedule), JSON.stringify(fields.target),
+      JSON.stringify(fields.skillIds), fields.source, fields.enabled ? 1 : 0, at, at, fields.templateId);
     service.rescheduleOne(id);
     res.status(201).json({ routine: dto(routineRow(id)!) });
   }));
@@ -286,6 +315,25 @@ export function registerStudioRoutineRoutes(app: Express, input: {
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
     res.json({ runs: (db.prepare('SELECT * FROM studio_routine_runs WHERE routine_id = ? AND owner_account_id = ? ORDER BY started_at DESC LIMIT ?')
       .all(existing.id, owner, limit) as RunRow[]).map(runDto) });
+  }));
+  // Crystallize (#64): a succeeded run of the owner's routine becomes reviewable
+  // skill and memory proposals in the owner's automation store. The run, its
+  // routine and its project are re-resolved for the owner; foreign ≡ missing.
+  app.post(`${prefix}/:id/runs/:runId/crystallize`, handle((req, res, owner) => {
+    const routine = owned(owner, req.params.id);
+    const run = db.prepare('SELECT * FROM studio_routine_runs WHERE id = ? AND routine_id = ? AND owner_account_id = ?')
+      .get(String(req.params.runId), routine.id, owner) as RunRow | undefined;
+    if (!run || !ownership.isOwnedBy(run.project_id, owner) || !getProject(db, run.project_id)) throw new RoutineRefusal(404, 'routine run not found');
+    if (run.status !== 'succeeded') throw new RoutineRefusal(409, 'only succeeded routine runs can be crystallized');
+    if (!input.automations) throw new RoutineRefusal(403, 'automation proposals are not available');
+    const bodyMarkdown = [`# ${routine.name} reusable workflow`, '', `Routine id: ${routine.id}`, `Routine run: ${run.id}`,
+      `Project id: ${run.project_id}`, `Conversation id: ${run.conversation_id}`, `Agent run id: ${run.agent_run_id}`, '',
+      '## Original Automation Prompt', '', routine.prompt, '', '## Run Summary', '',
+      run.summary || 'No run summary was recorded; crystallize from the automation prompt and run metadata.'].join('\n');
+    const result = input.automations.ingest(owner, { templateId: 'crystallize-run-into-skill', sourceKind: 'chat', sourceRef: `routine-run:${run.id}`,
+      title: `${routine.name} run`, bodyMarkdown, projectId: run.project_id, conversationId: run.conversation_id, tokenCompression: 'balanced',
+      metadata: { routineId: routine.id, routineRunId: run.id, agentRunId: run.agent_run_id } });
+    if (multiUserStreamAllowed(res)) res.json({ ...result, routineId: routine.id, runId: run.id });
   }));
   service.start();
   return { stop() { service.stop(); auth.close(); } };

@@ -19,7 +19,7 @@ import { splitResearchSubcommand } from './research/cli-args.js';
 import { resolveDaemonUrl } from './daemon-url.js';
 import { SidecarFactory } from '@open-design/sidecar';
 import { APP_KEYS, SIDECAR_MESSAGES } from '@open-design/sidecar-proto';
-import { STUDIO_SETTINGS_FIELDS, STUDIO_ARCHIVE_SHA256_HEADER, EXPORT_FORMATS, EXPORT_IMAGE_FORMATS, mediaFailureNextStep } from '@open-design/contracts';
+import { automationTemplateRoutinePrompt, STUDIO_SETTINGS_FIELDS, STUDIO_ARCHIVE_SHA256_HEADER, EXPORT_FORMATS, EXPORT_IMAGE_FORMATS, mediaFailureNextStep } from '@open-design/contracts';
 import type { StudioArchiveDownload, StudioArchiveBatchRequest, ArtifactLintFinding, LintArtifactCliResultEnvelope, LintArtifactResponse, LintFailOn } from '@open-design/contracts';
 import { buildExportCliRequestBody, buildExportCliResultEnvelope, resolveExportCliDeckMode } from './export-cli-request.js';
 import { exportRoutePath } from './export-cli-routing.js';
@@ -11922,6 +11922,7 @@ function printAutomationHelp() {
   od automation get <id>                                     Print one automation.
   od automation create --name "<title>" --prompt "<text>"
                        --schedule <spec>
+                       [--template <id>] (bundled template: default name and prompt)
                        [--target new-project|reuse=<projectId>]
                        [--disabled] [--json]
                        [--prompt-file <path|->] (alternative to --prompt)
@@ -11953,7 +11954,11 @@ Output:
   can drive the full automation lifecycle headlessly.
 
 Common options:
-  --daemon-url <url>   OpenDesign daemon HTTP base.`);
+  --daemon-url <url>   OpenDesign daemon HTTP base.
+  --session-file <path>  Multi-user Studio session (od session login): every
+                         command runs as that account on its own private
+                         packets, proposals and routines; apply writes only into
+                         the account's memory, skills and design documents.`);
 }
 
 async function runAutomation(args) {
@@ -12367,12 +12372,26 @@ async function runAutomation(args) {
       return;
     }
     case 'create': {
-      const name = typeof flags.name === 'string' ? flags.name.trim() : '';
+      // --template <id>: a bundled automation template supplies the default
+      // name and the shared routine prompt (same helper as the Automations UI).
+      let template = null;
+      if (typeof flags.template === 'string' && flags.template) {
+        let templateResp;
+        try {
+          templateResp = await fetch(`${base}/api/automation-templates/${encodeURIComponent(flags.template)}`);
+        } catch (err) {
+          surfaceFetchError(err, base);
+          process.exit(3);
+        }
+        if (!templateResp.ok) return structuredHttpFailure(templateResp);
+        template = (await templateResp.json()).template ?? null;
+      }
+      const name = typeof flags.name === 'string' && flags.name.trim() ? flags.name.trim() : (template?.title ?? '');
       if (!name) {
         console.error('--name is required');
         process.exit(2);
       }
-      const prompt = (await readPromptFromFlags(flags)) || '';
+      const prompt = (await readPromptFromFlags(flags)) || (template ? automationTemplateRoutinePrompt(template) : '');
       if (!prompt.trim()) {
         console.error('--prompt or --prompt-file is required');
         process.exit(2);
@@ -12392,6 +12411,7 @@ async function runAutomation(args) {
         schedule,
         target,
         enabled: !flags.disabled,
+        ...(template ? { templateId: template.id } : {}),
       };
       const context = automationContextFromFlags(flags);
       const skillIds = splitCommaSeparatedIds(flags.skill);

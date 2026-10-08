@@ -287,3 +287,24 @@ it('opens server-rendered exports only when delivery is usable and the deploymen
   }
   expect(studioRequestAvailable('POST', '/api/projects/p/export/pdf', () => true, true)).toBe(false);
 });
+
+it('opens account automation templates, packets, proposals and crystallize only with a usable automations lane', () => {
+  const open = [['GET', '/api/automation-templates'], ['GET', '/api/automation-templates/t'], ['GET', '/api/automation-source-packets'],
+    ['GET', '/api/automation-source-packets/p'], ['POST', '/api/automation-ingestions'], ['GET', '/api/automation-proposals'],
+    ['POST', '/api/automation-proposals'], ['GET', '/api/automation-proposals/p'], ['POST', '/api/automation-proposals/p/apply'],
+    ['POST', '/api/automation-proposals/p/reject'], ['POST', '/api/routines/r/runs/x/crystallize']] as const;
+  for (const [method, standard] of open) {
+    const alias = standard.replace('/api/routines', '/api/multiuser/routines').replace('/api/automation-', '/api/multiuser/automation-');
+    for (const path of [standard, alias]) {
+      expect(studioRequestAvailable(method, path, (lane) => lane === 'automations'), `${method} ${path}`).toBe(true);
+      expect(studioRequestAvailable(method, path, (lane) => lane !== 'automations'), `${method} ${path}`).toBe(false);
+      const matches = matchMultiUserRoute(method, path);
+      expect(matches.length, `${method} ${path}`).toBeGreaterThan(0);
+      expect(matches.every(({ entry }) => entry.routeClass === 'actor-scoped'), `${method} ${path}`).toBe(true);
+    }
+  }
+  for (const [method, path] of [['DELETE', '/api/automation-proposals/p'], ['PUT', '/api/automation-templates/t'], ['POST', '/api/automation-templates'],
+    ['GET', '/api/routines/r/runs/x/crystallize'], ['POST', '/api/orbit/run'], ['GET', '/api/connectors']] as const) {
+    expect(studioRequestAvailable(method, path, () => true), `${method} ${path}`).toBe(false);
+  }
+});

@@ -1,4 +1,4 @@
-import { studioWindowSetTimeout, studioFetch as fetch } from '../runtime/studio-transport';
+import { studioUsesLocalServices, studioWindowSetTimeout, studioFetch as fetch } from '../runtime/studio-transport';
 // Automations tab: one surface for scheduled routines, Orbit-style digests,
 // and live artifact refreshers. The daemon still stores these as routines;
 // the UI presents them as scheduled agent conversations.
@@ -14,7 +14,9 @@ import type {
   Routine,
   RoutineRun,
   RoutineRunCrystallizeResponse,
+  StudioAutomationTemplate,
 } from '@open-design/contracts';
+import { automationTemplateRoutinePrompt } from '@open-design/contracts';
 
 import { Icon, type IconName } from './Icon';
 import { navigate } from '../router';
@@ -281,24 +283,13 @@ function automationTemplateIcon(category: string): IconName {
   return 'history';
 }
 
-function automationTemplatePrompt(template: ContractAutomationTemplate): string {
-  const stages = template.stages.map((stage) => stage.title).join(' -> ');
-  return [
-    `Use Automation template "${template.id}".`,
-    `Purpose: ${template.purpose}`,
-    `Sources: ${template.sourceKinds.join(', ')}.`,
-    `Trigger modes: ${template.triggerKinds.join(', ')}.`,
-    `Pipeline: ${stages}.`,
-    `Outputs: ${template.outputSinks.join(', ')}.`,
-    `Review policy: ${template.reviewPolicy}. Token compression: ${template.tokenCompression}.`,
-    'Produce reviewable proposals with provenance before applying durable memory, skill, automation, or design-system changes.',
-  ].join('\n');
-}
-
 function templateFromAutomationCatalog(
   template: ContractAutomationTemplate,
+  t: TranslateFn,
 ): AutomationTemplate {
   const category = automationTemplateCategory(template);
+  // A Web account's catalog flags templates that need connectors (#64).
+  const unavailable = (template as StudioAutomationTemplate).unavailable;
   return {
     id: template.id,
     category,
@@ -307,8 +298,27 @@ function templateFromAutomationCatalog(
     title: template.title,
     description: template.description,
     defaultName: template.title,
-    prompt: automationTemplatePrompt(template),
+    prompt: automationTemplateRoutinePrompt(template),
+    catalogTemplateId: template.id,
+    ...(unavailable ? { unavailableReason: t('automations.templateNeedsConnectors') } : {}),
   };
+}
+
+/** Orbit digests and live-artifact refreshers need connectors and live
+ * artifacts, which Web accounts do not have yet; they stay visible but disabled. */
+function withStudioAvailability(templates: AutomationTemplate[], t: TranslateFn): AutomationTemplate[] {
+  if (studioUsesLocalServices()) return templates;
+  return templates.map((template) => template.unavailableReason
+    || (template.kind === 'routine' && template.category !== 'orbit' && template.category !== 'live-artifact')
+    ? template : { ...template, unavailableReason: t('automations.templateNeedsConnectors') });
+}
+
+/** Studio errors are `{ error: { code, message } }`; local errors are `{ error: string }`. */
+function responseErrorText(body: unknown, fallback: string): string {
+  const error = (body as { error?: unknown } | null)?.error;
+  if (typeof error === 'string' && error) return error;
+  const message = (error as { message?: unknown } | null)?.message;
+  return typeof message === 'string' && message ? message : fallback;
 }
 
 function dedupeTemplates(templates: AutomationTemplate[]): AutomationTemplate[] {
@@ -332,12 +342,12 @@ function buildAutomationTemplates(
     .filter((skill) => skill.scenario === 'live')
     .map((skill) => templateFromSkill(skill, 'live-artifact'));
 
-  return dedupeTemplates([
-    ...automationCatalog.map(templateFromAutomationCatalog),
+  return withStudioAvailability(dedupeTemplates([
+    ...automationCatalog.map((template) => templateFromAutomationCatalog(template, t)),
     ...(orbit.length > 0 ? orbit : [fallbackOrbitTemplate(t)]),
     ...(live.length > 0 ? live : [fallbackLiveTemplate(t)]),
     ...buildStaticTemplates(t),
-  ]);
+  ]), t);
 }
 
 function filterTemplates(templates: AutomationTemplate[], filter: TemplateFilter) {
@@ -466,6 +476,10 @@ export function TasksView({ skills = [], designTemplates = [], connectors = [], 
     () => buildAutomationTemplates(designTemplates, automationCatalog, t),
     [automationCatalog, designTemplates, t],
   );
+  const runnableTemplates = useMemo(
+    () => templates.filter((template) => !template.unavailableReason),
+    [templates],
+  );
   const filteredTemplates = useMemo(
     () => filterTemplates(templates, templateFilter),
     [templates, templateFilter],
@@ -572,7 +586,7 @@ export function TasksView({ skills = [], designTemplates = [], connectors = [], 
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        throw new Error(j.error || `${action} failed: ${res.status}`);
+        throw new Error(responseErrorText(j, `${action} failed: ${res.status}`));
       }
       await refresh();
     } catch (err) {
@@ -592,7 +606,7 @@ export function TasksView({ skills = [], designTemplates = [], connectors = [], 
       });
       if (!res.ok && res.status !== 202) {
         const j = await res.json().catch(() => ({}));
-        throw new Error(j.error || `run failed: ${res.status}`);
+        throw new Error(responseErrorText(j, `run failed: ${res.status}`));
       }
       const j = await res.json().catch(() => null);
       if (j?.projectId) {
@@ -624,7 +638,7 @@ export function TasksView({ skills = [], designTemplates = [], connectors = [], 
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        throw new Error(j.error || `crystallize failed: ${res.status}`);
+        throw new Error(responseErrorText(j, `crystallize failed: ${res.status}`));
       }
       const json = (await res.json()) as RoutineRunCrystallizeResponse;
       const createdProposals = Array.isArray(json.proposals) ? json.proposals : [];
@@ -661,7 +675,7 @@ export function TasksView({ skills = [], designTemplates = [], connectors = [], 
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        throw new Error(j.error || `update failed: ${res.status}`);
+        throw new Error(responseErrorText(j, `update failed: ${res.status}`));
       }
       void refresh();
     } catch (err) {
@@ -682,7 +696,7 @@ export function TasksView({ skills = [], designTemplates = [], connectors = [], 
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
-        throw new Error(j.error || `delete failed: ${res.status}`);
+        throw new Error(responseErrorText(j, `delete failed: ${res.status}`));
       }
       if (expandedId === id) setExpandedId(null);
       void refresh();
@@ -1023,7 +1037,12 @@ export function TasksView({ skills = [], designTemplates = [], connectors = [], 
               key={template.id}
               type="button"
               className={`automation-template-card is-${template.kind}`}
+              data-testid={`automation-template-${template.id}`}
+              disabled={Boolean(template.unavailableReason)}
+              aria-disabled={template.unavailableReason ? true : undefined}
+              title={template.unavailableReason ?? undefined}
               onClick={() => {
+                if (template.unavailableReason) return;
                 fireClick('type_card', { template_kind: template.kind });
                 setModal({ kind: 'create', template });
               }}
@@ -1038,10 +1057,16 @@ export function TasksView({ skills = [], designTemplates = [], connectors = [], 
                 </span>
                 <span className="automation-template-card__title">{template.title}</span>
                 <span className="automation-template-card__desc">{template.description}</span>
-                <span className="automation-template-card__cta">
-                  {t('automations.useTemplate')}
-                  <Icon name="chevron-right" size={14} />
-                </span>
+                {template.unavailableReason ? (
+                  <span className="automation-template-card__cta" data-testid="automation-template-unavailable">
+                    {template.unavailableReason}
+                  </span>
+                ) : (
+                  <span className="automation-template-card__cta">
+                    {t('automations.useTemplate')}
+                    <Icon name="chevron-right" size={14} />
+                  </span>
+                )}
               </span>
             </button>
           ))}
@@ -1057,7 +1082,7 @@ export function TasksView({ skills = [], designTemplates = [], connectors = [], 
               ? { template: modal.template }
               : null
         }
-        templates={templates}
+        templates={runnableTemplates}
         projects={projects}
         skills={skills}
         connectors={connectors}

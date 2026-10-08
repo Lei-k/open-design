@@ -4500,6 +4500,7 @@ export const th: Dict = {
   'automations.templatesEmptyTitle': 'ยังไม่มีเทมเพลตในหมวดหมู่นี้',
   'automations.templatesEmptyBody': 'ลองตัวกรองอื่น หรือเริ่มจากระบบอัตโนมัติเปล่า',
   'automations.useTemplate': 'ใช้เทมเพลต',
+  'automations.templateNeedsConnectors': 'ต้องใช้ตัวเชื่อมต่อ ซึ่งยังไม่พร้อมใช้งานสำหรับบัญชีเว็บ',
   'automations.runHistoryLoading': 'กำลังโหลดประวัติการรัน...',
   'automations.runHistoryEmpty': 'ยังไม่มีการรัน',
   'automations.runHistoryTitle': 'ประวัติการรัน',

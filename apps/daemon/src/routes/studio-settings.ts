@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
 import {
   MEMORY_TYPES, STUDIO_MEMORY_MAX_ENTRIES, STUDIO_MEMORY_MAX_ENTRY_BYTES, STUDIO_MEMORY_MAX_TOTAL_BYTES,
-  parseStudioSettingsWrite, type MemoryEntry, type UpsertMemoryRequest,
+  parseStudioSettingsWrite, type MemoryEntry, type MemoryEntrySource, type UpsertMemoryRequest,
 } from '@open-design/contracts';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { bindMultiUserStream, multiUserStreamAllowed } from '../http/multiuser-stream.js';
@@ -24,6 +24,29 @@ const flags = (config: { enabled: boolean; profileEnabled: boolean }) => ({
   enabled: config.enabled, profileEnabled: config.profileEnabled,
   chatExtractionEnabled: false, rewriteEnabled: false, verifyEnabled: false, extraction: null,
 });
+
+/** One account memory entry, or null for an invalid or missing id. Callers hold the account's memory lock. */
+export async function readStudioMemoryEntry(root: string, id: string): Promise<MemoryEntry | null> {
+  return validId(id) ? await readMemoryEntry(root, id) as MemoryEntry | null : null;
+}
+
+/**
+ * Write one entry into an account memory root within the account limits
+ * (entry size, entry count and total body bytes). Callers hold the account's
+ * memory lock (`StudioSettings.withMemory`). `source` records who wrote it.
+ */
+export async function saveStudioMemoryEntry(root: string, draft: UpsertMemoryRequest,
+  source: MemoryEntrySource = 'manual'): Promise<MemoryEntry | 'invalid' | 'limit'> {
+  if (!validEntry(draft)) return 'invalid';
+  const id = draft.id ?? deriveMemoryId(draft.type, draft.name);
+  if (!validId(id)) return 'invalid';
+  const entries = await listMemoryEntries(root) as MemoryEntry[];
+  if (!entries.some((entry) => entry.id === id) && entries.length >= STUDIO_MEMORY_MAX_ENTRIES) return 'limit';
+  const current = await Promise.all(entries.filter((entry) => entry.id !== id).map((entry) => readStudioMemoryEntry(root, entry.id)));
+  const total = current.reduce((bytes, entry) => bytes + Buffer.byteLength(entry?.body ?? ''), Buffer.byteLength(draft.body));
+  if (total > STUDIO_MEMORY_MAX_TOTAL_BYTES) return 'limit';
+  return await upsertMemoryEntry(root, { ...draft, id }, { source, silent: true }) as MemoryEntry;
+}
 
 /** Standard aliases terminate here, ahead of all host-global settings routes. */
 export function registerStudioSettingsRoutes(app: Express, input: { db: Database.Database; dataRoot: string }): StudioSettings {
@@ -84,18 +107,8 @@ export function registerStudioSettingsRoutes(app: Express, input: { db: Database
     });
     res.once('close', unsubscribe);
   }));
-  const read = async (root: string, id: string): Promise<MemoryEntry | null> => validId(id) ? await readMemoryEntry(root, id) as MemoryEntry | null : null;
-  const save = async (root: string, draft: UpsertMemoryRequest): Promise<MemoryEntry | 'invalid' | 'limit'> => {
-    if (!validEntry(draft)) return 'invalid';
-    const id = draft.id ?? deriveMemoryId(draft.type, draft.name);
-    if (!validId(id)) return 'invalid';
-    const entries = await listMemoryEntries(root) as MemoryEntry[];
-    if (!entries.some((entry) => entry.id === id) && entries.length >= STUDIO_MEMORY_MAX_ENTRIES) return 'limit';
-    const current = await Promise.all(entries.filter((entry) => entry.id !== id).map((entry) => read(root, entry.id)));
-    const total = current.reduce((bytes, entry) => bytes + Buffer.byteLength(entry?.body ?? ''), Buffer.byteLength(draft.body));
-    if (total > STUDIO_MEMORY_MAX_TOTAL_BYTES) return 'limit';
-    return await upsertMemoryEntry(root, { ...draft, id }, { source: 'manual', silent: true }) as MemoryEntry;
-  };
+  const read = readStudioMemoryEntry;
+  const save = (root: string, draft: UpsertMemoryRequest) => saveStudioMemoryEntry(root, draft);
   const saveResponse = async (req: Request, res: Response, owner: string, root: string, partial = false) => {
     const id = req.params.id === undefined ? undefined : String(req.params.id);
     const previous = id === undefined ? null : await read(root, id);

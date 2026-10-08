@@ -4499,6 +4499,7 @@ export const ko: Dict = {
   'automations.templatesEmptyTitle': '이 카테고리에 아직 템플릿이 없습니다.',
   'automations.templatesEmptyBody': '다른 필터를 사용하거나 빈 자동화로 시작하세요.',
   'automations.useTemplate': '템플릿 사용',
+  'automations.templateNeedsConnectors': '커넥터가 필요하지만 웹 계정에서는 아직 사용할 수 없습니다.',
   'automations.runHistoryLoading': '실행 기록 불러오는 중...',
   'automations.runHistoryEmpty': '아직 실행 기록이 없습니다.',
   'automations.runHistoryTitle': '실행 기록',

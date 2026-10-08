@@ -4500,6 +4500,7 @@ export const esES: Dict = {
   'automations.templatesEmptyTitle': 'Aún no hay plantillas en esta categoría.',
   'automations.templatesEmptyBody': 'Prueba con otro filtro o empieza desde una automatización en blanco.',
   'automations.useTemplate': 'Usar plantilla',
+  'automations.templateNeedsConnectors': 'Necesita conectores, que aún no están disponibles para cuentas web.',
   'automations.runHistoryLoading': 'Cargando historial de ejecuciones...',
   'automations.runHistoryEmpty': 'Aún no hay ejecuciones.',
   'automations.runHistoryTitle': 'Historial de ejecuciones',
