@@ -389,16 +389,26 @@ pnpm --filter @open-design/daemon exec vitest run -c vitest.config.ts tests/auth
 
 ![Shared Settings navigation](../../docs/design/studio-parity/settings-navigation.png)
 
+## S26 — owner preview comments and comment attachments (#59, #65, #57, #68)
+
+- The six standard comment endpoints (`/api/projects/:id/conversations/:cid/comments[/:commentId[/anchor|/reorder]]`) are owner-scoped in multi-user mode and rewrite to `/api/multiuser/...` aliases served by `routes/studio-comments.ts`. The host handler's workspace/collab identity resolution never runs for a remote actor: no member id is stamped or accepted, nothing is relayed, and a client id is honored only to edit a comment that already exists in that project's conversation. The conversation must belong to the owned project; foreign, admin and missing requests share one 404 body and change nothing. A conversation holds at most 500 comments.
+- Gate body policies (`comment-upsert/status/anchor/reorder`, `empty` for DELETE) refuse `authorMemberId`, unknown fields, non-project-relative image attachment paths, malformed positions and oversized notes before the handler.
+- Personal and company Studio runs honor `ChatRequest.commentAttachments` (moved from `defaultOnly` to `honored` in `MULTIUSER_PERSONAL_RUN_FIELD_POLICY`). Admission normalizes them with the single-user normalizer, requires every file/screenshot/image path to be project-relative, stores them on the run request and renders the same `<attached-preview-comments>` block at dispatch.
+- Web: FileViewer's comment tool/panel and ProjectView's comment read check the reviewed comment endpoint (`preview` lane) instead of the team `collaboration` lane, so the shared comment UI works for pilots while team sharing, presence and Vela relay stay #65. CLI: `od comment list|add|status|delete` on the same endpoints (`--prompt-file` for the note), usable with `--session-file`.
+- Evidence: `studio-comments-http` (owner CRUD on both aliases, A/B/admin/missing parity across all six operations, body refusals, comment attachments reaching the personal agent prompt; red on the S25 base where the routes are blocked), CLI comment case, transport/route oracle, full daemon auth suite (55 files / 510 tests), web typecheck and runtime/FileViewer tests (2,350), production HTTPS browser suite 12/12 including the new comment → send-to-agent case. Fixed while verifying: the transport oracle still asserted S23's HTML export was closed.
+
+![Studio preview comments](../../docs/design/studio-parity/preview-comments.png)
+
 ## 目前進度與續作順序 — 2026-10-07（S25 後）
 
-[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S25 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
+[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S26 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
 
 - 分支：`feat/studio-parity-foundation`；以 PR 最新 head 為準。先核對 git status/log 和 GitHub 最新 review，避免重做已交付項目。S18–S25 的實作、測試、限制與入口截圖見上文；本次依使用者要求階段性收尾並交接，並非 Epic 完成。
 - 已確認產品決定：公司池使用 OpenAI 官方 API；Vela 採使用者驗證的本人身份與服務端 Web account/member binding；native window、OS overlay 與 app installer/updater 的 Web 不適用決定，和 in-page pet 仍需交付項目保持分開。
 - 沒有 staging。使用者會自行部署 EC2；目前沒有真實 OpenAI key 或 EC2 設定。provider fixtures 不能代替真實 provider／EC2 acceptance。公司池 skill script 需要部署端設定 personal sandbox（bubblewrap）才會出現。
 - 下一批按 DAG 推進：
   - #64：automation templates/proposals/ingestion/crystallize、connector/MCP context，以及排程觸發的真實驗收。
-  - #65：預覽評論與 comment attachments 需要把現有 workspace/collab 身份解析的 comments handler 換成 owner/actor 版本（S23 評估過，不可直接開放），再處理 verified Vela binding。
+  - #65：owner 預覽評論與 comment attachments 已於 S26 完成；剩餘 team comment 分享、presence、shared resources 與 verified Vela binding。
   - #66：isolated PDF/PPTX/image renderer、historical-version export、public share／deploy。
   - #63：Media、Live Artifacts、GenUI、research/critique（依 actor credential/background adapters）。
   - #61：design generation、asset packages、plugin/community/team catalogs。

@@ -69,8 +69,8 @@ export interface MultiUserRunRequest {
 export const MULTIUSER_PERSONAL_RUN_FIELD_POLICY = {
   honored: ['projectId', 'conversationId', 'agentId', 'executionSource', 'message', 'currentPrompt', 'userMessageId',
     'assistantMessageId', 'clientRequestId', 'skillId', 'skillIds', 'designSystemId', 'analyticsHints', 'attachments', 'context',
-    'model', 'reasoning'],
-  defaultOnly: ['commentAttachments', 'serviceTier',
+    'model', 'reasoning', 'commentAttachments'],
+  defaultOnly: ['serviceTier',
     'appliedPluginSnapshotId', 'sessionMode'],
   notApplied: ['priorTranscript', 'locale', 'titleGeneration'],
 } as const;

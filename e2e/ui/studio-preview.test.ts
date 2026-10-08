@@ -537,3 +537,56 @@ test('[P1] Studio account automations create, run as the owner and stay private'
   expect((await studio.request('GET', '/api/routines', studio.b.cookie)).json.routines).toEqual([]);
   expect((await studio.request('GET', `/api/routines/${routineId}`, studio.b.cookie)).status).toBe(404);
 });
+
+test('[P1] Studio owner comments on a preview element, sends it to the agent and keeps it private', async ({ page, studio }, info) => {
+  await studio.linkCodex(studio.a);
+  await studio.configureTurn(studio.a, { reply: 'Applied the comment.' });
+  const projectId = studioProjectId();
+  const made = await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Studio comment acceptance' });
+  expect(made.status, made.text).toBe(200);
+  const seeded = await studio.request('POST', `/api/projects/${projectId}/files`, studio.a.cookie, { name: 'index.html',
+    content: '<!doctype html><html><body><h1 data-od-id="hero-title">Owner headline</h1><p>Body copy</p></body></html>' });
+  expect(seeded.status, seeded.text).toBe(200);
+  await page.goto(`${studio.origin}/projects/${projectId}/files/index.html`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  const frame = activeArtifactPreviewFrame(page);
+  await expect(frame.getByRole('heading', { name: 'Owner headline' })).toBeVisible({ timeout: T.long });
+  await clickPreviewToolbarAction(page, 'board-mode-toggle', /^Comment$/);
+  await clickPreviewToolbarAction(page, 'comment-panel-toggle', /^Comments \(\d+\)$/);
+  await expect(frame.locator('html[data-od-comment-mode]')).toHaveCount(1, { timeout: T.medium });
+  await frame.locator('[data-od-id="hero-title"]').click();
+  await expect(page.getByTestId('comment-popover')).toBeVisible();
+  await page.getByTestId('comment-popover-input').fill('Make the headline more specific.');
+  const saved = page.waitForResponse((response) => response.request().method() === 'POST'
+    && /\/conversations\/[^/]+\/comments$/.test(new URL(response.url()).pathname));
+  await page.getByTestId('comment-popover-save').click();
+  expect((await saved).status()).toBe(200);
+  const sidePanel = page.getByTestId('comment-side-panel');
+  await expect(sidePanel).toContainText('Make the headline more specific.');
+  await page.screenshot({ path: info.outputPath('studio-comments-entry.png'), animations: 'disabled' });
+  const conversationId = made.json.conversationId as string;
+  const stored = await studio.request('GET', `/api/projects/${projectId}/conversations/${conversationId}/comments`, studio.a.cookie);
+  expect(stored.json.comments).toEqual([expect.objectContaining({ elementId: 'hero-title', note: 'Make the headline more specific.' })]);
+  expect((await studio.request('GET', `/api/projects/${projectId}/conversations/${conversationId}/comments`, studio.b.cookie)).status).toBe(404);
+  await expect.poll(async () => {
+    const selectAll = sidePanel.getByRole('button', { name: /select all/i }).first();
+    if ((await selectAll.count()) === 0) return false;
+    await selectAll.evaluate((element: HTMLButtonElement) => element.click());
+    return (await page.getByTestId('comment-side-send-claude').count()) > 0;
+  }).toBe(true);
+  const admitted = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/runs');
+  await page.getByTestId('comment-side-send-claude').click();
+  const admission = await admitted;
+  expect(admission.status(), await admission.text()).toBe(202);
+  expect(admission.request().postDataJSON().commentAttachments).toEqual([expect.objectContaining({ elementId: 'hero-title', filePath: 'index.html' })]);
+  await expect.poll(async () => String((await studio.turnEvidence(studio.a).catch(() => null))?.message ?? ''), { timeout: T.long })
+    .toContain('<attached-preview-comments>');
+  // Sending moves the comment through the apply lifecycle with owner PATCHes; the panel lists only open ones.
+  await expect.poll(async () => (await studio.request('GET', `/api/projects/${projectId}/conversations/${conversationId}/comments`, studio.a.cookie))
+    .json.comments[0]?.status, { timeout: T.long }).not.toBe('open');
+  await page.reload();
+  await expect(frame.getByRole('heading', { name: 'Owner headline' })).toBeVisible({ timeout: T.long });
+  expect((await studio.request('GET', `/api/projects/${projectId}/conversations/${conversationId}/comments`, studio.b.cookie)).status).toBe(404);
+});

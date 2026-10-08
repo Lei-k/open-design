@@ -249,6 +249,8 @@ const LIBRARY_ASSET_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 const DIAGNOSTICS_STRING_FLAGS = new Set(['daemon-url', 'output']);
 const DIAGNOSTICS_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 const CONFIG_STRING_FLAGS = new Set(['daemon-url', 'value', 'value-json', 'prompt-file']);
+const COMMENT_STRING_FLAGS = new Set(['daemon-url', 'conversation', 'file', 'selector', 'element-id', 'label', 'note', 'prompt-file', 'status']);
+const COMMENT_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 const CONFIG_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 const AMR_STRING_FLAGS = new Set(['daemon-url']);
 const AMR_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'refresh']);
@@ -461,6 +463,8 @@ const SUBCOMMAND_MAP = {
   'whats-new': runWhatsNew,
   doctor: runDoctor,
   config: runConfig,
+  comment: runComment,
+  comments: runComment,
   library: runLibrary,
   figma: runFigma,
 };
@@ -10662,6 +10666,73 @@ or the daemon cannot be reached.`);
   }
   const hasError = report.issues.some((i) => i.severity === 'error');
   process.exit(hasError ? 1 : 0);
+}
+
+/**
+ * `od comment …` — preview comments on the same endpoints as the FileViewer
+ * comment tool (owner-only in a multi-user Studio, via --session-file).
+ */
+async function runComment(args) {
+  const usage = `Usage:
+  od comment list <projectId> --conversation <id> [--json]
+  od comment add <projectId> --conversation <id> --file <path> --selector <css>
+                 [--element-id <id>] [--label <text>] (--note <text> | --prompt-file <path|->) [--json]
+  od comment status <projectId> <commentId> --conversation <id> --status <open|attached|applying|needs_review|resolved|failed> [--json]
+  od comment delete <projectId> <commentId> --conversation <id> [--json]
+
+Common options:
+  --daemon-url <url>   OpenDesign daemon HTTP base.
+  --json               Emit raw JSON.`;
+  if (args.length === 0 || args[0] === 'help' || args.includes('--help') || args.includes('-h')) {
+    console.log(usage);
+    process.exit(args.length === 0 ? 2 : 0);
+  }
+  const [sub, ...rest] = args;
+  const flags = parseFlags(rest, { string: COMMENT_STRING_FLAGS, boolean: COMMENT_BOOLEAN_FLAGS });
+  const [projectId, commentId] = positionalArgs(rest, COMMENT_STRING_FLAGS);
+  const conversation = flags.conversation;
+  if (!projectId || typeof conversation !== 'string' || !conversation) { console.error(usage); process.exit(2); }
+  const base = (await libraryDaemonUrl(flags)).replace(/\/$/, '');
+  const url = `${base}/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversation)}/comments`;
+  const call = async (method, target, body) => {
+    const response = await fetch(target, { method, ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }) });
+    if (!response.ok) return structuredHttpFailure(response);
+    return response.json();
+  };
+  const print = (value, line) => (flags.json ? process.stdout.write(JSON.stringify(value) + '\n') : console.log(line));
+  switch (sub) {
+    case 'list': {
+      const data = await call('GET', url);
+      if (!data) return;
+      if (flags.json) return print(data);
+      for (const comment of data.comments ?? []) console.log(`${comment.id}\t${comment.status}\t${comment.filePath}\t${comment.selector}\t${comment.note}`);
+      return;
+    }
+    case 'add': {
+      const note = typeof flags['prompt-file'] === 'string' ? await readMemoryPromptFile(flags) : flags.note;
+      if (typeof flags.file !== 'string' || typeof flags.selector !== 'string' || typeof note !== 'string' || !note.trim()) { console.error(usage); process.exit(2); }
+      const elementId = typeof flags['element-id'] === 'string' ? flags['element-id'] : flags.selector;
+      const data = await call('POST', url, { note, target: { filePath: flags.file, selector: flags.selector, elementId,
+        label: typeof flags.label === 'string' ? flags.label : flags.selector, text: '', htmlHint: '', position: { x: 0, y: 0, width: 0, height: 0 } } });
+      if (data) print(data, `[comment] added ${data.comment?.id}`);
+      return;
+    }
+    case 'status': {
+      if (!commentId || typeof flags.status !== 'string') { console.error(usage); process.exit(2); }
+      const data = await call('PATCH', `${url}/${encodeURIComponent(commentId)}`, { status: flags.status });
+      if (data) print(data, `[comment] ${commentId} → ${flags.status}`);
+      return;
+    }
+    case 'delete': {
+      if (!commentId) { console.error(usage); process.exit(2); }
+      const data = await call('DELETE', `${url}/${encodeURIComponent(commentId)}`);
+      if (data) print(data, `[comment] deleted ${commentId}`);
+      return;
+    }
+    default:
+      console.error(usage);
+      process.exit(2);
+  }
 }
 
 async function runConfig(args) {

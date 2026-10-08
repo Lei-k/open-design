@@ -193,13 +193,29 @@ it('opens reviewed creation/import and private template operations without expos
 
 it('opens only captured owner ZIP downloads in the partial delivery lane', () => {
   for (const prefix of ['/api/projects/p', '/api/multiuser/projects/p']) {
-    for (const [method, suffix] of [['GET', '/archive'], ['POST', '/archive/batch']]) {
+    for (const [method, suffix] of [['GET', '/archive'], ['POST', '/archive/batch'], ['POST', '/export/html']]) {
       const path = prefix + suffix;
       expect(studioRequestAvailable(method!, path, (lane) => lane === 'delivery'), path).toBe(true);
       expect(studioRequestAvailable(method!, path, () => false), path).toBe(false);
       expect(matchMultiUserRoute(method!, path).every(({ entry }) => entry.routeClass === 'owner-scoped-project'), path).toBe(true);
     }
   }
-  for (const [method, path] of [['POST', '/api/projects/p/export/html'], ['POST', '/api/projects/p/archive'], ['GET', '/api/projects/p/archive/batch']])
+  for (const [method, path] of [['GET', '/api/projects/p/export/html'], ['POST', '/api/projects/p/export/pdf'], ['POST', '/api/projects/p/archive'], ['GET', '/api/projects/p/archive/batch']])
     expect(studioRequestAvailable(method!, path!, () => true), path).toBe(false);
+});
+
+it('opens owner preview comments only with a usable preview lane, and only where the daemon classifies them', () => {
+  for (const prefix of ['/api/projects/p', '/api/multiuser/projects/p']) {
+    const base = `${prefix}/conversations/c/comments`;
+    for (const [method, path] of [['GET', base], ['POST', base], ['PATCH', `${base}/k`], ['DELETE', `${base}/k`],
+      ['PATCH', `${base}/k/anchor`], ['PATCH', `${base}/k/reorder`]] as const) {
+      expect(studioRequestAvailable(method, path, (lane) => lane === 'preview'), `${method} ${path}`).toBe(true);
+      expect(studioRequestAvailable(method, path, (lane) => lane !== 'preview'), `${method} ${path}`).toBe(false);
+      const matches = matchMultiUserRoute(method, path);
+      expect(matches.length, path).toBeGreaterThan(0);
+      expect(matches.every(({ entry }) => entry.routeClass === 'owner-scoped-project'), path).toBe(true);
+    }
+    for (const [method, path] of [['DELETE', base], ['GET', `${base}/k`], ['DELETE', `${base}/k/anchor`], ['POST', `${base}/k/reorder`]] as const)
+      expect(studioRequestAvailable(method, path, () => true), `${method} ${path}`).toBe(false);
+  }
 });

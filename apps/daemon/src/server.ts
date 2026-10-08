@@ -947,6 +947,7 @@ import { registerStudioSettingsRoutes } from './routes/studio-settings.js';
 import { registerStudioDesignCatalogRoutes } from './routes/studio-design-catalog.js';
 import { registerStudioCatalogRoutes } from './routes/studio-catalog.js';
 import { registerStudioArchiveRoutes } from './routes/studio-archives.js';
+import { registerStudioCommentRoutes } from './routes/studio-comments.js';
 import { registerStudioRoutineRoutes } from './routes/studio-routines.js';
 import { registerStudioProjectCreationRoutes } from './routes/studio-project-creation.js';
 import { registerMultiUserAgentAccountRoutes } from './routes/multiuser-agent-accounts.js';
@@ -17576,6 +17577,7 @@ export async function startServer({
     listBuiltInTemplates: () => listSkills(DESIGN_TEMPLATES_DIR),
   }) : null;
   if (multiUserMode) registerStudioArchiveRoutes(app, { db, projectsRoot: PROJECTS_DIR });
+  if (multiUserMode) registerStudioCommentRoutes(app, { db });
   if (multiUserMode) registerStudioProjectCreationRoutes(app, {
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR,
     readSkill: async (owner, id) => Boolean(await studioCatalog?.readSkills(owner, [id])),

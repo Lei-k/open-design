@@ -15065,6 +15065,8 @@ function HtmlViewer({
   // PDF/image/PPTX remain the open part of #66; ZIP has its own owner action.
   const deliveryUsable = studio.hostServices || studioRequest('POST', `/api/projects/${projectId}/export/html`);
   const rendererExports = studio.hostServices;
+  // Owner preview comments are reviewed for Studio (#59); team sharing of them is #65.
+  const commentsUsable = studioRequest('GET', `/api/projects/${projectId}/conversations/active/comments`);
   const [archiveDownloading, setArchiveDownloading] = useState(false);
   const rawCanShare = rendererExports && deliveryUsable && source !== null && isShareableArtifact;
   const rawCanDownload = deliveryUsable && source !== null && (isShareableArtifact || isMarkdownArtifact);
@@ -16641,8 +16643,8 @@ function HtmlViewer({
                   <RemixIcon name="camera-line" size={15} />
                 </button>
               ) : null}
-              {/* Comments are the collaboration lane (#65); hidden rather than dead without it. */}
-              {studio.available('collaboration') ? <div className="artifact-tool-menu-anchor">
+              {/* Hidden rather than dead when the runtime has no reviewed comment endpoints. */}
+              {commentsUsable ? <div className="artifact-tool-menu-anchor">
                 <button
                   type="button"
                   className={`viewer-action viewer-action-icon viewer-comment-toggle od-tooltip${boardMode && !commentCreateMode && boardTool === 'inspect' ? ' active' : ''}`}
@@ -16686,7 +16688,7 @@ function HtmlViewer({
               >
                 <RemixIcon name="edit-line" size={15} />
               </button>
-              {studio.available('collaboration') ? <>
+              {commentsUsable ? <>
               <span className="viewer-toolbar-tool-divider" aria-hidden />
               <button
                 ref={commentPanelToggleRef}

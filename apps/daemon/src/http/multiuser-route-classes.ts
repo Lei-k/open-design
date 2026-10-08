@@ -44,7 +44,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'archive-batch' | 'export-html' | 'studio-routine' | 'project-duplicate' | 'template-save' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'archive-batch' | 'export-html' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'project-duplicate' | 'template-save' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -284,14 +284,25 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'POST /api/projects/:id/scenario/restore-automatic',
     'POST /api/projects/:id/design-system-copy',
   ]),
-  ...blocked(R_NOT_MINIMUM, [
-    'GET /api/projects/:id/conversations/:cid/comments',
-    'POST /api/projects/:id/conversations/:cid/comments',
-    'PATCH /api/projects/:id/conversations/:cid/comments/:commentId',
-    'PATCH /api/projects/:id/conversations/:cid/comments/:commentId/anchor',
-    'PATCH /api/projects/:id/conversations/:cid/comments/:commentId/reorder',
-    'DELETE /api/projects/:id/conversations/:cid/comments/:commentId',
-  ]),
+  // Owner-only preview comments (#59, #65): standard paths rewrite to the
+  // actor handler; the host handler's workspace/collab identity never runs.
+  ...([
+    ['GET', '', undefined],
+    ['POST', '', 'comment-upsert'],
+    ['PATCH', '/:commentId', 'comment-status'],
+    ['PATCH', '/:commentId/anchor', 'comment-anchor'],
+    ['PATCH', '/:commentId/reorder', 'comment-reorder'],
+    ['DELETE', '/:commentId', 'empty'],
+  ] as const).flatMap(([method, suffix, bodyPolicy]) => {
+    const extras = { projectParam: 'id', ...(bodyPolicy ? { bodyPolicy, ...(bodyPolicy === 'empty' ? {} : { maxBodyBytes: 64 * 1024 }) } : {}) };
+    return [
+      ...group('owner-scoped-project', 'owner-only preview comments; conversation rechecked in the project, no member identity or relay',
+        [`${method} /api/projects/:id/conversations/:cid/comments${suffix}`],
+        { ...extras, rewriteTo: `/api/multiuser/projects/:id/conversations/:cid/comments${suffix}` }),
+      ...group('owner-scoped-project', 'owner-only preview comment alias; same ownership checks',
+        [`${method} /api/multiuser/projects/:id/conversations/:cid/comments${suffix}`], extras),
+    ];
+  }),
   ...blocked('interactive host shell; never available to Web accounts without run isolation (#5)', [
     'GET /api/projects/:id/terminals',
     'POST /api/projects/:id/terminals',

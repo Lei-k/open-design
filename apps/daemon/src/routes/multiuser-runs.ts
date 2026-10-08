@@ -6,7 +6,7 @@ import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
 import { API_ERROR_CODES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
 import { PersonalRunEvents } from '../runtimes/personal-run-events.js';
-import { formatProjectAttachmentHint, resolveSafeProjectAttachments } from '../runtimes/chat-prompt-inputs.js';
+import { formatProjectAttachmentHint, normalizeCommentAttachments, renderCommentAttachmentHint, resolveSafeProjectAttachments } from '../runtimes/chat-prompt-inputs.js';
 import { renderRunContextPrompt } from '../runtimes/chat-run-context.js';
 import { classifyRunSteering } from '../runtimes/run-steering.js';
 import { RESTART_ERROR_CODE } from '../runtimes/run-restart-recovery.js';
@@ -100,6 +100,8 @@ type PersonalRunFields = {
   attachments: string[];
   /** The focused project files/folders (`context.workspaceItems`), already narrowed. */
   workspaceItems: Array<{ id: string; kind: 'design-files' | 'file' | 'folder'; label: string; path?: string }>;
+  /** Preview comment targets (#59), normalized; every path is project-relative. */
+  commentAttachments: ReturnType<typeof normalizeCommentAttachments>;
   /** This turn's Codex model/effort; null leaves the choice to the user's Codex account. */
   model: string | null;
   reasoning: string | null;
@@ -156,6 +158,19 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
   if (!Array.isArray(attachments) || attachments.length > 20 || attachments.some((value) => typeof value !== 'string' || !safeProjectRelative(value))) {
     return refuse(400, 'BAD_REQUEST', 'attachments must be project-relative paths');
   }
+  const rawComments = body.commentAttachments ?? [];
+  if (!Array.isArray(rawComments) || rawComments.length > 20 || JSON.stringify(rawComments).length > 128 * 1024
+    || rawComments.some((item) => !item || typeof item !== 'object' || Array.isArray(item))) {
+    return refuse(400, 'BAD_REQUEST', 'invalid comment attachments');
+  }
+  // The normalizer bounds text and drops unusable targets; every path it keeps
+  // must still be project-relative, since the agent reads them from the project.
+  const commentAttachments = normalizeCommentAttachments(rawComments as Parameters<typeof normalizeCommentAttachments>[0]);
+  if (commentAttachments.some((item) => !safeProjectRelative(item.filePath)
+    || (item.screenshotPath !== undefined && !safeProjectRelative(item.screenshotPath))
+    || (item.imageAttachments ?? []).some((image) => !safeProjectRelative(image.path)))) {
+    return refuse(400, 'BAD_REQUEST', 'comment attachments must use project-relative paths');
+  }
   const workspaceItems: PersonalRunFields['workspaceItems'] = [];
   const context = body.context;
   if (context !== undefined && context !== null) {
@@ -206,7 +221,7 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
     skillIds: selectedSkillIds,
     questionSourceRunId: answer ? sourceRunId as string : null,
     attachments: [...new Set(attachments as string[])],
-    workspaceItems, model, reasoning,
+    workspaceItems, commentAttachments, model, reasoning,
   };
 }
 
@@ -743,7 +758,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 && config.credentialRevision === execution.config.credentialRevision;
             };
             void runCompanyOpenAITurn({ apiKey: execution.apiKey, model: execution.config.model,
-              systemPrompt: stablePrompt, prompt: `${userPrompt}${attached}${focused}`,
+              systemPrompt: stablePrompt, prompt: `${userPrompt}${attached}${renderCommentAttachmentHint(normalizeCommentAttachments(Array.isArray(request.commentAttachments) ? request.commentAttachments : []))}${focused}`,
               history, skillPackages, projectsRoot, projectId: next.project_id, worker, authorized,
               ...(skillRoot && input.scriptSandbox ? { runSkillScript: createStudioSkillScriptRunner({ sandbox: input.scriptSandbox,
                 packages: skillPackages, skillRoot, runHome, cwd: realCwd }) } : {}),
@@ -888,9 +903,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           // Narrowed at admission to project files/folders; rendered exactly like a standard run's context.
           const focused = Array.isArray(request?.workspaceItems) && request.workspaceItems.length
             ? `\n\n${renderRunContextPrompt({ workspaceItems: request.workspaceItems }, null)}` : '';
+          const commented = renderCommentAttachmentHint(normalizeCommentAttachments(Array.isArray(request?.commentAttachments) ? request.commentAttachments : []));
           const resources = skillRoot ? '\n\n# Captured skill resources\n\nThese directories are read-only, fixed to this conversation’s selected revision. Resolve each skill’s relative references and scripts from its own directory:\n'
             + skillPackages.map((resource) => `- ${resource.id}: ${path.join(skillRoot, resource.key)}`).join('\n') : '';
-          const prompt = `${includeStable ? `${stablePrompt}\n\n---\n\n# User request\n\n${userPrompt}` : userPrompt}${attached}${focused}${resources}`;
+          const prompt = `${includeStable ? `${stablePrompt}\n\n---\n\n# User request\n\n${userPrompt}` : userPrompt}${attached}${commented}${focused}${resources}`;
           const projection = new PersonalRunEvents(realCwd, [dataRoot, account.codexHome, runHome, realCwd], (event) => emit(runId, event.event, event.data));
           projections.set(runId, projection);
           const turn = runPersonalCodexTurn({
@@ -1216,6 +1232,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const request = JSON.stringify({ message: fields.text, ...(instruction ? { instruction } : {}), ...(fields.attachments.length ? { attachments: fields.attachments } : {}),
       ...(inheritsSkills || withFixedSkill(fixedCapture?.skill, selectedSkills).length ? { skillIds: inheritsSkills ? inheritedSkillIds : fields.skillIds, skillSnapshots } : {}),
       ...(fields.workspaceItems.length ? { workspaceItems: fields.workspaceItems } : {}),
+      ...(fields.commentAttachments.length ? { commentAttachments: fields.commentAttachments } : {}),
       ...(fields.model ? { model: fields.model } : {}), ...(fields.reasoning ? { reasoning: fields.reasoning } : {}),
       ...(question ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId: question.id } } : {}),
       ...(designSnapshot ? { designSnapshot } : {}),
@@ -1352,7 +1369,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       skillSnapshots: question ? previousRequest?.skillSnapshots ?? [] : withFixedSkill(fixedCapture?.skill, selected),
       ...(designSnapshot ? { designSnapshot, designSystemId: designSnapshot.id } : {}),
       ...(question ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId: question.id } } : {}),
-      attachments: fields.attachments, workspaceItems: fields.workspaceItems });
+      attachments: fields.attachments, workspaceItems: fields.workspaceItems,
+      ...(fields.commentAttachments.length ? { commentAttachments: fields.commentAttachments } : {}) });
     const frame = db.transaction(() => {
       db.prepare(`INSERT OR IGNORE INTO multiuser_company_sessions (conversation_id, owner_account_id, provider_id, model, credential_revision) VALUES (?, ?, 'openai', ?, ?)`)
         .run(target.conversationId, owner, config.model, config.credentialRevision);

@@ -352,6 +352,41 @@ function metadataAllowed(value: unknown, allowNull: boolean): boolean {
 const FILE_NAME_MAX = 1024;
 const projectPathText = (value: unknown) => typeof value === 'string' && value.length > 0 && value.length <= FILE_NAME_MAX && !value.includes('\0');
 
+const COMMENT_STATUSES = ['open', 'attached', 'applying', 'needs_review', 'resolved', 'failed'];
+const COMMENT_ANCHOR_STATES = ['anchored', 'reanchored', 'stale', 'lost'];
+const finiteNumber = (value: unknown) => typeof value === 'number' && Number.isFinite(value);
+const commentPosition = (value: unknown) => isPlainObject(value) && Object.keys(value).every((key) => ['x', 'y', 'width', 'height'].includes(key))
+  && ['x', 'y', 'width', 'height'].every((key) => value[key] === undefined || finiteNumber(value[key]));
+/** A comment image path: project-relative, no traversal, root, drive, backslash or NUL. */
+const commentAttachmentPath = (value: unknown) => typeof value === 'string' && value.length > 0 && value.length <= FILE_NAME_MAX
+  && !value.includes('\0') && !value.startsWith('/') && !value.includes('\\') && !/^[A-Za-z]:/.test(value)
+  && value.split('/').every((part) => part !== '' && part !== '.' && part !== '..');
+/**
+ * Owner-only preview comments (#59). Shapes only: the db normalizer still
+ * trims and bounds every field. Member identity (`authorMemberId`) is never
+ * accepted from a Web client, and attachments must be project-relative paths.
+ */
+function studioCommentBodyAllowed(policy: 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder', body: Record<string, unknown>): boolean {
+  const only = (fields: readonly string[]) => Object.keys(body).every((key) => fields.includes(key));
+  if (policy === 'comment-status') return only(['status']) && typeof body.status === 'string' && COMMENT_STATUSES.includes(body.status);
+  if (policy === 'comment-reorder') return only(['sortKey']) && finiteNumber(body.sortKey);
+  if (policy === 'comment-anchor') return only(['anchorState', 'lastGoodPosition', 'anchoredVersion'])
+    && typeof body.anchorState === 'string' && COMMENT_ANCHOR_STATES.includes(body.anchorState)
+    && (body.lastGoodPosition === undefined || commentPosition(body.lastGoodPosition))
+    && (body.anchoredVersion === undefined || finiteNumber(body.anchoredVersion));
+  const target = body.target;
+  return only(['id', 'target', 'note', 'attachments'])
+    && (body.id === undefined || typeof body.id === 'string' && body.id.length <= 128)
+    && (body.note === undefined || typeof body.note === 'string' && body.note.length <= 10_000)
+    && (body.attachments === undefined || Array.isArray(body.attachments) && body.attachments.length <= 20
+      && body.attachments.every((item) => isPlainObject(item) && Object.keys(item).every((key) => key === 'path' || key === 'name')
+        && commentAttachmentPath(item.path) && (item.name === undefined || typeof item.name === 'string' && item.name.length <= 256)))
+    && isPlainObject(target) && projectPathText(target.filePath) && !('anchoredVersion' in target && !finiteNumber(target.anchoredVersion))
+    && (target.position === undefined || commentPosition(target.position))
+    && (target.podMembers === undefined || Array.isArray(target.podMembers) && target.podMembers.length <= 200)
+    && JSON.stringify(target).length <= 48 * 1024;
+}
+
 export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown, contentType = ''): boolean {
   const multipart = /^multipart\/form-data(?:;|$)/i.test(contentType);
   // Multipart parts are parsed by the route's own bounded parser, after this
@@ -369,6 +404,9 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   // Field-level routine validation needs ownership checks and lives in the route.
   if (policy === 'studio-routine') return only(['name', 'prompt', 'schedule', 'target', 'skillId', 'agentId', 'context', 'enabled']);
   if (policy === 'export-html') return only(['fileName', 'title']) && projectPathText(body.fileName) && optionalText(body.title, 200);
+  if (policy === 'comment-upsert' || policy === 'comment-status' || policy === 'comment-anchor' || policy === 'comment-reorder') {
+    return studioCommentBodyAllowed(policy, body);
+  }
   if (policy === 'project-duplicate') return only(['name']) && (body.name === undefined
     || typeof body.name === 'string' && body.name.trim().length > 0 && body.name.length <= 100 && !body.name.includes('\0'));
   if (policy === 'template-save') return only(['name', 'description', 'sourceProjectId'])

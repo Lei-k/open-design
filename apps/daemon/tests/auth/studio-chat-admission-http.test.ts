@@ -112,7 +112,7 @@ it('refuses capabilities the personal lane does not apply instead of dropping th
   expect((await send(studioRequest(target, 'x', a, { model: 'gpt-unlisted' }))).status).toBe(400);
   for (const extra of [{ serviceTier: 'fast' },
     { sessionMode: 'plan' }, { research: { enabled: true } }, { context: { files: [] } }, { taskExecutionId: randomUUID() },
-    { byokProvider: { kind: 'openai' } }, { commentAttachments: [{ id: 'c' }] }, { appliedPluginSnapshotId: 'snap' }]) {
+    { byokProvider: { kind: 'openai' } }, { appliedPluginSnapshotId: 'snap' }]) {
     const refused = await send(studioRequest(target, 'x', a, extra));
     expect([Object.keys(extra)[0], refused.status, refused.json.error.code])
       .toEqual([Object.keys(extra)[0], 403, 'MULTIUSER_CAPABILITY_UNAVAILABLE']);

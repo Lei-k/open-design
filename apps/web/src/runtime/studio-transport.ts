@@ -128,6 +128,10 @@ export function studioRequestAvailable(method: string, path: string,
       || /^\/api\/projects\/[^/]+\/workspace-artifacts\/[^/]+$/.test(path)
       || /^\/api\/projects\/[^/]+\/conversations\/[^/]+\/messages\/[^/]+\/artifacts$/.test(path)) return method === 'GET';
     if (/^\/api\/multiuser\/projects\/[^/]+\/preview\/[^/]+\/renew$/.test(path)) return method === 'POST';
+    // Owner-only preview comments (#59); team comment sharing stays #65.
+    const comment = /^\/api\/(?:multiuser\/)?projects\/[^/]+\/conversations\/[^/]+\/comments(?:\/([^/]+)(\/anchor|\/reorder)?)?$/.exec(path);
+    if (comment) return comment[1] === undefined ? method === 'GET' || method === 'POST'
+      : comment[2] ? method === 'PATCH' : method === 'PATCH' || method === 'DELETE';
   }
   if (usable('execution')) {
     if (path === '/api/runs') return method === 'GET' || method === 'POST';

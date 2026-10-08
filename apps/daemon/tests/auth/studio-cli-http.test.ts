@@ -49,6 +49,26 @@ function success(result: { code: number | null; stdout: string; stderr: string }
 }
 
 describe('same Studio APIs through remote od sessions', () => {
+  it('lists, adds, updates and deletes owner preview comments through the comment endpoints', async () => {
+    const session = path.join(root, 'cli-comment-session');
+    success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', alice.username,
+      '--password-file', '-', '--session-file', session, '--json'], alice.password));
+    const made = success(await cli(['project', 'create', '--name', 'CLI comments', '--session-file', session, '--json']));
+    const projectId = made.project.id; const conversation = made.conversationId;
+    const added = success(await cli(['comment', 'add', projectId, '--conversation', conversation, '--file', 'index.html',
+      '--selector', '#hero', '--prompt-file', '-', '--session-file', session, '--json'], 'Tighten the hero spacing'));
+    expect(added.comment).toMatchObject({ filePath: 'index.html', selector: '#hero', note: 'Tighten the hero spacing', status: 'open' });
+    const status = success(await cli(['comment', 'status', projectId, added.comment.id, '--conversation', conversation,
+      '--status', 'resolved', '--session-file', session, '--json']));
+    expect(status.comment.status).toBe('resolved');
+    const listed = success(await cli(['comment', 'list', projectId, '--conversation', conversation, '--session-file', session, '--json']));
+    expect(listed.comments.map((comment: { id: string }) => comment.id)).toEqual([added.comment.id]);
+    // The same endpoint refuses another account exactly like a missing project.
+    expect((await daemon.request({ path: `/api/projects/${projectId}/conversations/${conversation}/comments`, cookie: bob.cookie })).status).toBe(404);
+    expect(success(await cli(['comment', 'delete', projectId, added.comment.id, '--conversation', conversation, '--session-file', session, '--json']))).toEqual({ ok: true });
+    expect(success(await cli(['comment', 'list', projectId, '--conversation', conversation, '--session-file', session, '--json'])).comments).toEqual([]);
+  });
+
   it('duplicates and saves/shows/uses/deletes captured private templates through the same APIs', async () => {
     const session = path.join(root, 'cli-template-session');
     success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', alice.username,

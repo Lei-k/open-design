@@ -4065,7 +4065,7 @@ export function ProjectView({
         // contains) behind ChatPane's Loading gate. Keep both reads under this
         // effect's project/conversation/authority lifetime, but settle them
         // independently.
-        if (studio.available('collaboration')) void fetchPreviewComments(
+        if (studioRequest('GET', `/api/projects/${project.id}/conversations/${activeConversationId}/comments`)) void fetchPreviewComments(
           project.id,
           activeConversationId,
           requestWorkspaceContext,
