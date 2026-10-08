@@ -11021,6 +11021,12 @@ function printMemoryHelp() {
       daemon recorded for artifact turns with active rules.
   od memory verify clear [--json]
       Drop the in-memory verification history.
+  od memory verify delete <id> [--json]
+      Remove one verification record.
+
+  od memory extractions [list|clear|delete <id>] [--json]
+      Automatic-memory extraction history (heuristic and LLM attempts, skip
+      reasons, provider and written entries).
 
   od memory config [--enabled true|false] [--extraction true|false]
                    [--profile true|false] [--rewrite true|false]
@@ -11030,7 +11036,11 @@ function printMemoryHelp() {
       profile/rewrite/verify hooks; --extraction maps to chatExtractionEnabled.
 
 Common options:
-  --daemon-url <url>   OpenDesign daemon HTTP base.`);
+  --daemon-url <url>   OpenDesign daemon HTTP base.
+  --session-file <path>  Multi-user Studio session: memory, history and switches
+                         are that account's own. Extraction runs after OpenAI
+                         turns on the turn's own source (company pool or the
+                         account's key); personal Codex turns are skipped.`);
 }
 
 function memoryPositionals(values) {
@@ -11236,6 +11246,7 @@ async function runMemory(args) {
     && topic !== 'rule'
     && topic !== 'config'
     && topic !== 'verify'
+    && topic !== 'extractions'
   ) {
     console.error(`unknown subcommand: od memory ${topic}`);
     printMemoryHelp();
@@ -11263,6 +11274,9 @@ async function runMemory(args) {
   }
   if (topic === 'rule') {
     return runMemoryRule(base, rest, flags, writeJson);
+  }
+  if (topic === 'extractions') {
+    return runMemoryHistory(base, rest, flags, writeJson, 'extractions');
   }
   if (topic === 'verify') {
     return runMemoryVerify(base, rest, flags, writeJson);
@@ -11638,6 +11652,8 @@ async function runMemoryVerify(base, rest, flags, writeJson) {
     return;
   }
 
+  if (action === 'delete') return runMemoryHistory(base, rest, flags, writeJson, 'verifications');
+
   if (action === 'clear') {
     let resp;
     try {
@@ -11656,6 +11672,45 @@ async function runMemoryVerify(base, rest, flags, writeJson) {
   console.error(`unknown subcommand: od memory verify ${action}`);
   printMemoryHelp();
   process.exit(2);
+}
+
+// `od memory extractions <list|clear|delete <id>>` and `od memory verify delete <id>`
+// — the automatic-memory history on the same endpoints the Memory settings
+// panel reads (#62). Over --session-file the history is the account's own.
+async function runMemoryHistory(base, rest, flags, writeJson, kind) {
+  const parts = memoryPositionals(rest);
+  const action = parts[0] ?? 'list';
+  const label = kind === 'extractions' ? 'extraction' : 'verification';
+  let resp;
+  try {
+    if (action === 'list') resp = await fetch(`${base}/api/memory/${kind}`);
+    else if (action === 'clear') resp = await fetch(`${base}/api/memory/${kind}`, { method: 'DELETE' });
+    else if (action === 'delete' && parts[1]) resp = await fetch(`${base}/api/memory/${kind}/${encodeURIComponent(parts[1])}`, { method: 'DELETE' });
+    else {
+      console.error(`Usage: od memory ${kind === 'extractions' ? 'extractions' : 'verify'} <list|clear|delete <id>>`);
+      process.exit(2);
+    }
+  } catch (err) {
+    surfaceFetchError(err, base);
+    process.exit(3);
+  }
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json();
+  if (flags.json) return writeJson(data);
+  if (action !== 'list') {
+    console.log(`[memory] removed ${data.removed ?? 0} ${label} record(s)`);
+    return;
+  }
+  const records = data[kind] ?? [];
+  if (records.length === 0) {
+    console.log(`No ${label} records yet.`);
+    return;
+  }
+  console.log('# id\tkind\tphase\treason\twritten\tprovider');
+  for (const record of records) {
+    console.log([record.id, record.kind ?? 'llm', record.phase, record.reason ?? '-', record.writtenCount ?? 0,
+      record.provider ? `${record.provider.kind}:${record.provider.model}:${record.provider.credentialSource}` : '-'].join('\t'));
+  }
 }
 
 // `od memory config` — inspect or toggle the master switch + the four hooks.

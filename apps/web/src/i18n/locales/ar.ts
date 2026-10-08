@@ -1,7 +1,7 @@
 import type { Dict } from '../types';
 
 export const ar: Dict = {
-  "studio.manualMemoryHint": "Saved manual memories and profile facts are included in future runs. Automatic extraction, brief rewriting and verification are not available yet.",
+  "studio.manualMemoryHint": "تُضمَّن الذكريات المحفوظة وحقائق الملف الشخصي في التشغيلات القادمة. الاستخراج التلقائي اختياري: يعمل بعد أدوار OpenAI على مصدر ذلك الدور نفسه (مجمّع الشركة أو مفتاحك الخاص) ويُتخطّى في أدوار Codex الشخصية.",
 
   "studio.settingsReload": "Reload saved settings",
   "studio.aboutDeployed": "Version {version} is deployed. Reload this page to use it.",
@@ -5235,6 +5235,9 @@ export const ar: Dict = {
   'memory.attemptFailedTitle': 'Could not read {name}',
   'memory.attemptSkippedTitle': 'Skipped {name}',
   'memory.skipChatDisabled': 'Chat conversation learning is off.',
+  'memory.skipSourceHasNoExtraction': "لا تحتوي أدوار Codex الشخصية على استخراج؛ لم تُحتسب أي تكلفة.",
+  'memory.skipSourceUnavailable': "تغيّر مفتاح الدور أو حصته قبل تشغيل الاستخراج.",
+  'memory.skipMemoryFull': "ذاكرتك ممتلئة؛ احذف بعض الإدخالات لإضافة المزيد.",
   'memory.kindConnectedApps': 'Connected apps',
   'memory.timeAgo': '{time} ago',
   'memory.scanRunningTitle': 'Scanning connected apps',

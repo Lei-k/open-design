@@ -19,7 +19,7 @@ import { ProjectOwnershipStore } from '../storage/project-ownership.js';
 import { StudioSkills } from '../storage/studio-skills.js';
 import { StudioDesignSystems } from '../storage/studio-design-systems.js';
 import type { StudioSettings } from '../storage/studio-settings.js';
-import { readStudioMemoryEntry, saveStudioMemoryEntry } from './studio-settings.js';
+import { readStudioMemoryEntry, saveStudioMemoryEntry } from '../storage/studio-settings.js';
 import { deleteMemoryEntry, deriveMemoryId } from '../memory.js';
 import { isSafeId } from '../projects.js';
 

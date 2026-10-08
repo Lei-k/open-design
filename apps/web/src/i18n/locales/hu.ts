@@ -1,7 +1,7 @@
 import type { Dict } from '../types';
 
 export const hu: Dict = {
-  "studio.manualMemoryHint": "Saved manual memories and profile facts are included in future runs. Automatic extraction, brief rewriting and verification are not available yet.",
+  "studio.manualMemoryHint": "A mentett emlékek és profiladatok bekerülnek a későbbi futtatásokba. Az automatikus kinyerés opcionális: OpenAI-körök után fut az adott kör saját forrásán (vállalati keret vagy a saját kulcsod), személyes Codex-köröknél kimarad.",
 
   "studio.settingsReload": "Reload saved settings",
   "studio.aboutDeployed": "Version {version} is deployed. Reload this page to use it.",
@@ -5235,6 +5235,9 @@ export const hu: Dict = {
   'memory.attemptFailedTitle': 'Could not read {name}',
   'memory.attemptSkippedTitle': 'Skipped {name}',
   'memory.skipChatDisabled': 'Chat conversation learning is off.',
+  'memory.skipSourceHasNoExtraction': "A személyes Codex-körökhöz nincs kinyerés; semmi sem lett felszámolva.",
+  'memory.skipSourceUnavailable': "A kör kulcsa vagy kerete megváltozott a kinyerés előtt.",
+  'memory.skipMemoryFull': "A memóriád megtelt; törölj bejegyzéseket újak hozzáadásához.",
   'memory.kindConnectedApps': 'Connected apps',
   'memory.timeAgo': '{time} ago',
   'memory.scanRunningTitle': 'Scanning connected apps',

@@ -138,7 +138,7 @@ Remote origin 只接受 HTTPS，HTTP 只准 numeric loopback 的本地測試／�
 | #56 / #57 / S4 | Pilot actors send through the shared `ProjectView → ChatPane → ChatComposer`；question-form、reload reattach、stop、retry、queue、feedback 與 typed failure copy 由真實 browser harness 驗證 | S5 attachments, S8 private skills, S11 design documents and S21 per-turn personal Codex model/effort are implemented; real-provider recordings and full chat state matrix remain | `pilot`，非 `supported` |
 | #60 / S13–S14 | shared project setup and Home prompt → exactly one run; actor-owned immutable templates, duplicate and browser ZIP/directory imports; matching CLI commands | Live Artifact/Media/Figma, complete carousel/type parity and remaining Home acceptance | `pilot`，非 `supported` |
 | #61 / S11/S13/S17/S18/S20 | bundled design/prompt templates and craft; actor design documents, revisions, safe previews and captured execution versions; immutable actor template snapshots; captured skill packages (bundled and private folder imports) with personal read-only mounts and company copy/offline-script tools; fixed-design conversations capture their packages; shared create/editor/catalog/composer and CLI | design generation, design asset packages, plugin/community management and Vela team catalogs | `pilot`，非 `supported` |
-| #62 / S10/S16/S19/S21/S25 | shared Settings frame and section navigation; instructions, manual memory, appearance/notification and personal Codex model preferences, About/version; HTTP A/B/admin negatives, CLI and shared Settings browser workflow | automatic memory extraction/rewrite/verification, connectors, MCP and library (encrypted OpenAI/Tavily account keys landed in S33/S37; privacy in S30) | `pilot`，非 `supported` |
+| #62 / S10/S16/S19/S21/S25/S38 | shared Settings frame and section navigation; instructions, manual and opt-in automatic memory (turn-source extraction, rule verification, per-account history), appearance/notification and personal Codex model preferences, About/version; HTTP A/B/admin negatives, CLI and shared Settings browser workflow | connectors, MCP, library and memory from connected apps (account OpenAI/Tavily keys in S33/S37, privacy in S30, automatic memory in S38) | `pilot`，非 `supported` |
 | #63 / S33/S34/S37 | OpenAI turns on the company pool or the account's own key carry image/speech/video functions billed to the turn's source; research search on each account's own encrypted Tavily key (standalone and with a turn), usage recorded per account; shared Home/Settings/composer and CLI | Live Artifacts, GenUI, critique and real-provider/EC2 acceptance | `pilot`，非 `supported` |
 | #66 / S15/S23 | captured owned project/folder/batch ZIP, SHA-256 receipt and standard design handoff metadata; one-file HTML export bundled from captured owner bytes; shared viewer/file download and CLI | isolated PDF/PPTX/image renderers, historical-version export binding, public share, cloud deploy/finalize/handoff | `pilot`，非 `supported` |
 | #64 / S24/S36 | account-owned routines on the standard `/api/routines` aliases: CRUD, schedules via the shared `RoutineService`, slot claims, manual runs, history; every dispatch re-resolves owner/pilot/project/source (and the bundled template); bundled templates, account source packets/ingestion, proposals applied into account memory/skills/design documents, crystallize into a private skill package; TasksView and `od automation` | plugin/MCP/connector context, the account's own OpenAI key as a routine source, real timer-fired and real-provider scheduled acceptance | `pilot`，非 `supported` |
@@ -559,9 +559,38 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
 
 ![/search in the Studio composer](../../docs/design/studio-parity/research-composer.png)
 
-## 目前進度與續作順序 — 2026-10-07（S25 後）
+## S38 — automatic memory for Web accounts (#62, #68)
 
-[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S37 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
+- **Model.** `services/studio-memory-automation.ts` works on the account memory root from S10. Extraction and verification history live in owner-keyed SQLite tables (newest 50 per account), and records stream on the account's own `extraction`/`verify` SSE channels. The host-global history, event bus and provider discovery are never used. The regex pack and the LLM extractor prompt/parser are shared with single-user (`heuristicMemoryDrafts`, exported aliases in `memory-llm.ts`), and writes go through the S10 bounded store (entry/count/byte limits).
+- **Extraction.** Off by default; the account opts in with `chatExtractionEnabled`.
+  - **Before admission:** the regex pack runs on the user's own text, so an explicit "remember: …" reaches the same turn.
+  - **After an OpenAI turn succeeds:** the extractor calls the fixed Responses endpoint with the turn's own key, re-resolved at that moment. That is the company credential the turn pinned (while the owner still has quota), or the account's own key at the same revision. The owner must still be active, a pilot and able to read the project. The bill follows the turn's source; tokens are recorded on the history row.
+  - **Personal Codex turns:** recorded as skipped (`source-has-no-extraction`); nothing is called.
+  - **Other skips:** a changed key or quota is `source-unavailable`, and a full store is `memory-full`. Provider failures keep only status classes.
+- **Verification.** When `verifyEnabled` is on, the deterministic scorecard check (`enforceVerify`) runs after each succeeded turn against the account's own `rule` memories, and only enforced turns are recorded. No provider is called.
+- **Prompt.** Admission capture now also carries the account's `profile/rewrite/verify` hooks into `composeSystemPrompt`, so the self-verify and memory-applied instructions follow the account's switches; injection still reads only the actor's own memory. S10 wrote rewrite/verify off on every settings save, so accounts that saved memory settings before S38 see those two off until they turn them on.
+- **Routes.** The standard `GET|DELETE /api/memory/extractions`, `DELETE …/extractions/:id`, the same three for `verifications`, `POST /api/memory/rules/suggest` and `POST /api/memory/extract` are `actor-scoped` rewrites to `/api/multiuser/settings/memory/…`, registered ahead of the `:id` entry routes.
+  - **Deletes:** a foreign or unknown id removes nothing (`{ removed: 0 }`).
+  - **`rules/suggest`:** the deterministic distiller only, because there is no turn source to bill.
+  - **`extract`:** the regex pack on `userMessage` only (`attemptedLLM: false`).
+  - **Body policies:** `studio-memory-config` (the five switches), `studio-memory-rules-suggest` (annotations only) and `studio-memory-extract`. A host provider override, chat provider, agent or model never reaches the server. Connector suggest/extract stay blocked.
+- **Web.** The shared MemorySection shows all four hooks for Web accounts, the account's extraction history (with the new skip reasons) and an updated hint about sources and billing; the connected-apps tab stays hidden. The transport opens the routes above under the `settings` lane, and the `settings` pilot reason lists automatic memory.
+- **CLI.** `od memory config --extraction|--rewrite|--verify true|false`, `od memory extractions [list|clear|delete <id>]`, `od memory verify [list|clear|delete <id>]` and `od memory rule suggest`, all over `--session-file`.
+- **Evidence.** `studio-memory-automation-http` (4):
+  - Opt-in switch; the provider override and chat-provider fields are refused.
+  - A company-pool extraction runs on the company key and model, writes only A's memory, keeps host memory untouched and injects into A's next prompt only.
+  - Own-key extraction runs on A's key; a personal Codex turn is an explicit skip with no provider call; the heuristic runs before the turn.
+  - Rule verification records `missing` with the uncovered rule. History and deletes are per account (B/admin see nothing and remove nothing). Rule proposals and extract are heuristic-only.
+  - Also: the S10 settings/gate tests updated for the opened routes, the CLI case, MemorySection/multiuser/i18n web suites, the transport oracle, and the browser case (Settings → Memory → Learn from chats → company turn → the learned entry and history; B unaffected).
+- **Remaining for #62.** Memory from connected apps (connector credentials), MCP, library/clipper, LLM rule distillation (it needs a billed source outside a turn), and real-provider acceptance.
+
+![Automatic memory switch for Web accounts](../../docs/design/studio-parity/memory-auto-settings.png)
+
+![Learned memory and extraction history](../../docs/design/studio-parity/memory-auto-learned.png)
+
+## 目前進度與續作順序 — 2026-10-08（S38 後）
+
+[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S38 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
 
 - 分支：`feat/studio-parity-foundation`；以 PR 最新 head 為準。先核對 git status/log 和 GitHub 最新 review，避免重做已交付項目。S18–S25 的實作、測試、限制與入口截圖見上文；本次依使用者要求階段性收尾並交接，並非 Epic 完成。
 - 已確認產品決定：公司池使用 OpenAI 官方 API；Vela 採使用者驗證的本人身份與服務端 Web account/member binding；native window、OS overlay 與 app installer/updater 的 Web 不適用決定，和 in-page pet 仍需交付項目保持分開。
@@ -573,13 +602,13 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
   - #66：PDF/PPTX/PNG 由 S31 伺服器 renderer 完成；S35 完成部署內公開連結；剩餘雲端 deploy（每帳號 token）與 finalize/handoff。
   - #63：S33 每帳號加密 OpenAI key、S34 媒體生成（圖片/旁白/影片）、S37 每帳號 Tavily research 完成；剩餘 Live Artifacts、GenUI、critique。
   - #61：design generation、asset packages、plugin/community/team catalogs。
-  - #62：S33 完成 encrypted personal provider credentials；剩餘自動記憶、connectors/MCP、library。
+  - #62：S33/S37 完成每帳號 OpenAI/Tavily 加密金鑰；S38 完成自動記憶（opt-in、依回合來源計費、驗證與歷史）；剩餘 connectors/MCP、library、connected-app 記憶。
   - #67：in-page pet 與清除本瀏覽器資料已於 S27 完成；剩餘逐項 host bridge 的 mobile/permission-denied/headless UX 驗收（#70）。
 - #53–#59 和 #68/#69 的尚欠驗收（完整 chat state matrix、replay/telemetry、background/artifact lineage、provider recording、rich headless flows）不因本批完成。最後執行 #70 同 build 單人/A/B、desktop/mobile、a11y/visual/performance、revocation/restart/rollback，再決定 rollout。
 - 關鍵邊界：pure contracts；actor authority 只由 server cookie 解析（背景工作用 `internalMultiUserResponse` 並由呼叫端提供 server-side authority）；admin 無 private-content bypass；standard aliases 不落入 host-global handler；async I/O/streams 重驗權限；resolved daemon data-root；新能力同 PR 同時接 HTTP/UI/CLI。新 route 同步 exact gate inventory、frontend allowlist 和跨 runtime negative oracle。
-- 維護入口：daemon `routes/studio-routines.ts`、`studio-archives.ts`（ZIP／HTML）、`studio-catalog.ts`（含資料夾匯入）、`studio-project-creation.ts`、`studio-*` settings 與 `http/multiuser-*`；Web shared App、`components/SettingsFrame.tsx`、`runtime/StudioAccountSettings.tsx`、`runtime/StudioAccountMenu.tsx`、`runtime/StudioExecutionSource.tsx`、FileViewer 與 `runtime/studio-*`；CLI `src/cli.ts`。聊天與 prompt 改動前讀現行 chat/prompt 規劃及 module guidance。
+- 維護入口：daemon `routes/studio-routines.ts`、`studio-automations.ts`（S36）、`research/studio-research.ts`（S37）、`services/studio-memory-automation.ts`（S38）、`studio-archives.ts`（ZIP／HTML）、`studio-catalog.ts`（含資料夾匯入）、`studio-project-creation.ts`、`studio-*` settings 與 `http/multiuser-*`；Web shared App、`components/SettingsFrame.tsx`、`runtime/StudioAccountSettings.tsx`、`runtime/StudioAccountMenu.tsx`、`runtime/StudioExecutionSource.tsx`、FileViewer 與 `runtime/studio-*`；CLI `src/cli.ts`。聊天與 prompt 改動前讀現行 chat/prompt 規劃及 module guidance。
 - 本機 Node 24 需加入 PATH，Corepack 選 pnpm 10.33.2；Web/root typecheck 或 build 使用 8 GiB heap。dev lifecycle 只用 `pnpm tools-dev`。驗證 logs 位於 scratch，不能提交。
-- `e2e/ui/studio-preview.test.ts` 用 production Web export、HTTPS app/preview origins、真實 A/B cookies 與 daemon authority，只 mock providers；每次改 Web 後需先 `pnpm --filter @open-design/web build`。
+- `e2e/ui/studio-preview.test.ts` 用 production Web export、HTTPS app/preview origins、真實 A/B cookies 與 daemon authority，只 mock providers；每次改 Web 後需先 `pnpm --filter @open-design/web build`。本機 Playwright 1.60 需 Chromium 1223；S36–S38 以 scratch `PLAYWRIGHT_BROWSERS_PATH` 指向已安裝的 1234 版執行。此環境的伺服器 PDF/PPTX renderer 回 `UPSTREAM_UNAVAILABLE`（`studio-render-http`、CLI export 與 deck 瀏覽器案例的 PDF 步驟在 `efa7980a` 同樣失敗），屬環境限制，需在部署映像驗證。
 
 ## Remaining provider and deployment decisions
 

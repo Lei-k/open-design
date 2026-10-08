@@ -17629,7 +17629,10 @@ export async function startServer({
     };
   });
 
-  const studioSettings = multiUserMode ? registerStudioSettingsRoutes(app, { db, dataRoot: RUNTIME_DATA_DIR }) : null;
+  // Account settings and automatic memory (#62); extraction calls only a turn's own OpenAI source.
+  const studioSettings = multiUserMode ? registerStudioSettingsRoutes(app, { db, dataRoot: RUNTIME_DATA_DIR,
+    ...(multiUserMode.testCompanyOpenAIFetch ? { fetch: multiUserMode.testCompanyOpenAIFetch } : {}),
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}) }) : null;
   const studioCatalog = multiUserMode ? registerStudioCatalogRoutes(app, {
     db, skillsRoot: SKILLS_DIR, listBuiltInSkills: async () => (await listSkills(SKILLS_DIR)).map((skill) => ({ ...skill, source: 'built-in' as const })),
   }) : null;
@@ -17684,7 +17687,7 @@ export async function startServer({
     ...(multiUserMode.personalCodex?.sandbox ? { scriptSandbox: multiUserMode.personalCodex.sandbox } : {}),
     ...(multiUserDesign ? { design: multiUserDesign } : {}),
     ...(studioCatalog ? { catalog: studioCatalog } : {}),
-    ...(studioSettings ? { settings: studioSettings } : {}),
+    ...(studioSettings ? { settings: studioSettings, memory: studioSettings.automation } : {}),
     ...(studioDesignCatalog ? { designCatalog: studioDesignCatalog } : {}),
   }) : null;
   // Account research on each account's own Tavily key (#63); never the host research key.

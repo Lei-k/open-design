@@ -1,56 +1,33 @@
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
 import {
-  MEMORY_TYPES, STUDIO_MEMORY_MAX_ENTRIES, STUDIO_MEMORY_MAX_ENTRY_BYTES, STUDIO_MEMORY_MAX_TOTAL_BYTES,
-  parseStudioSettingsWrite, type MemoryEntry, type MemoryEntrySource, type UpsertMemoryRequest,
+  STUDIO_MEMORY_CONFIG_FIELDS, parseStudioSettingsWrite, type AnnotationDistillInput, type MemoryEntry, type UpsertMemoryRequest,
 } from '@open-design/contracts';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { bindMultiUserStream, multiUserStreamAllowed } from '../http/multiuser-stream.js';
 import { sendApiError } from '../http/api-errors.js';
-import { StudioSettings } from '../storage/studio-settings.js';
+import { StudioSettings, readStudioMemoryEntry, saveStudioMemoryEntry } from '../storage/studio-settings.js';
+import { StudioMemoryAutomation } from '../services/studio-memory-automation.js';
+import { distillRulesFromAnnotations } from '../memory-rules.js';
 import {
-  buildMemoryTree, composeMemoryBody, deleteMemoryEntry, deriveMemoryId,
-  listMemoryEntries, readMemoryConfig, readMemoryEntry, readMemoryIndex,
-  upsertMemoryEntry, writeMemoryConfig, writeMemoryIndex,
+  buildMemoryTree, composeMemoryBody, deleteMemoryEntry,
+  listMemoryEntries, readMemoryConfig, readMemoryIndex,
+  writeMemoryConfig, writeMemoryIndex,
 } from '../memory.js';
 
-const reservedIds = new Set(['tree', 'index', 'config', 'events', 'extract', 'extractions', 'verifications', 'rules', 'connectors']);
-const validId = (id: string) => typeof id === 'string' && /^[a-z0-9_]{1,128}$/.test(id) && !reservedIds.has(id);
-const text = (value: unknown, max: number) => typeof value === 'string' && Buffer.byteLength(value) <= max && !value.includes('\0');
-const validEntry = (value: UpsertMemoryRequest) => text(value.name, 512) && value.name.trim().length > 0
-  && text(value.description, 2000) && text(value.body, STUDIO_MEMORY_MAX_ENTRY_BYTES)
-  && MEMORY_TYPES.includes(value.type) && (value.id === undefined || validId(value.id));
-const flags = (config: { enabled: boolean; profileEnabled: boolean }) => ({
-  enabled: config.enabled, profileEnabled: config.profileEnabled,
-  chatExtractionEnabled: false, rewriteEnabled: false, verifyEnabled: false, extraction: null,
+export { readStudioMemoryEntry, saveStudioMemoryEntry };
+/** The account's own memory switches (#62). The host provider override is never exposed: extraction uses the turn's own source. */
+const flags = (config: { enabled: boolean; profileEnabled: boolean; chatExtractionEnabled: boolean; rewriteEnabled: boolean; verifyEnabled: boolean }) => ({
+  enabled: config.enabled, profileEnabled: config.profileEnabled, chatExtractionEnabled: config.chatExtractionEnabled,
+  rewriteEnabled: config.rewriteEnabled, verifyEnabled: config.verifyEnabled, extraction: null,
 });
 
-/** One account memory entry, or null for an invalid or missing id. Callers hold the account's memory lock. */
-export async function readStudioMemoryEntry(root: string, id: string): Promise<MemoryEntry | null> {
-  return validId(id) ? await readMemoryEntry(root, id) as MemoryEntry | null : null;
-}
-
-/**
- * Write one entry into an account memory root within the account limits
- * (entry size, entry count and total body bytes). Callers hold the account's
- * memory lock (`StudioSettings.withMemory`). `source` records who wrote it.
- */
-export async function saveStudioMemoryEntry(root: string, draft: UpsertMemoryRequest,
-  source: MemoryEntrySource = 'manual'): Promise<MemoryEntry | 'invalid' | 'limit'> {
-  if (!validEntry(draft)) return 'invalid';
-  const id = draft.id ?? deriveMemoryId(draft.type, draft.name);
-  if (!validId(id)) return 'invalid';
-  const entries = await listMemoryEntries(root) as MemoryEntry[];
-  if (!entries.some((entry) => entry.id === id) && entries.length >= STUDIO_MEMORY_MAX_ENTRIES) return 'limit';
-  const current = await Promise.all(entries.filter((entry) => entry.id !== id).map((entry) => readStudioMemoryEntry(root, entry.id)));
-  const total = current.reduce((bytes, entry) => bytes + Buffer.byteLength(entry?.body ?? ''), Buffer.byteLength(draft.body));
-  if (total > STUDIO_MEMORY_MAX_TOTAL_BYTES) return 'limit';
-  return await upsertMemoryEntry(root, { ...draft, id }, { source, silent: true }) as MemoryEntry;
-}
-
 /** Standard aliases terminate here, ahead of all host-global settings routes. */
-export function registerStudioSettingsRoutes(app: Express, input: { db: Database.Database; dataRoot: string }): StudioSettings {
+export function registerStudioSettingsRoutes(app: Express, input: { db: Database.Database; dataRoot: string; fetch?: typeof fetch; clock?: () => number }):
+  StudioSettings & { automation: StudioMemoryAutomation } {
   const store = new StudioSettings(input.db, input.dataRoot);
+  const automation = new StudioMemoryAutomation({ db: input.db, settings: store,
+    ...(input.fetch ? { fetch: input.fetch } : {}), ...(input.clock ? { clock: input.clock } : {}) });
   const handle = (operation: (req: Request, res: Response, owner: string) => Promise<unknown> | unknown) => async (req: Request, res: Response) => {
     const owner = multiUserActorOf(res)?.accountId;
     if (!owner) return sendApiError(res, 401, 'UNAUTHORIZED', 'authentication required');
@@ -90,7 +67,8 @@ export function registerStudioSettingsRoutes(app: Express, input: { db: Database
     if (multiUserStreamAllowed(res)) res.json({ index: req.body.index });
   }));
   app.patch(`${memory}/config`, inMemory(async (req, res, owner, root) => {
-    const config = await writeMemoryConfig(root, { ...req.body, chatExtractionEnabled: false, rewriteEnabled: false, verifyEnabled: false, extraction: null });
+    const patch = Object.fromEntries(STUDIO_MEMORY_CONFIG_FIELDS.filter((key) => typeof req.body?.[key] === 'boolean').map((key) => [key, req.body[key]]));
+    const config = await writeMemoryConfig(root, { ...patch, extraction: null });
     store.publish(owner, { kind: 'config', enabled: config.enabled });
     if (multiUserStreamAllowed(res)) res.json(flags(config));
   }));
@@ -105,7 +83,37 @@ export function registerStudioSettingsRoutes(app: Express, input: { db: Database
     const unsubscribe = store.subscribe(owner, (event) => {
       if (multiUserStreamAllowed(res)) res.write(`event: change\ndata: ${JSON.stringify(event)}\n\n`);
     });
-    res.once('close', unsubscribe);
+    // Extraction and verification records of this account only (#62).
+    const unsubscribeChannels = store.subscribeChannels(owner, (channel, data) => {
+      if (multiUserStreamAllowed(res)) res.write(`event: ${channel}\ndata: ${JSON.stringify(data)}\n\n`);
+    });
+    res.once('close', () => { unsubscribe(); unsubscribeChannels(); });
+  }));
+  // Automatic memory history (#62): registered ahead of the `:id` entry routes.
+  for (const kind of ['extractions', 'verifications'] as const) {
+    app.get(`${memory}/${kind}`, handle((_req, res, owner) => {
+      if (multiUserStreamAllowed(res)) res.json({ [kind]: automation.list(owner, kind) });
+    }));
+    app.delete(`${memory}/${kind}`, handle((_req, res, owner) => {
+      if (multiUserStreamAllowed(res)) res.json({ removed: automation.remove(owner, kind) });
+    }));
+    // A foreign or unknown id removes nothing: the same `{ removed: 0 }`.
+    app.delete(`${memory}/${kind}/:id`, handle((req, res, owner) => {
+      if (multiUserStreamAllowed(res)) res.json({ removed: automation.remove(owner, kind, String(req.params.id)) });
+    }));
+  }
+  // Rule proposals from annotations: the deterministic distiller only. There is
+  // no turn here, so no provider is billed and no host key can be reached.
+  app.post(`${memory}/rules/suggest`, inMemory(async (req, res, _owner, root) => {
+    const annotations = (Array.isArray(req.body?.annotations) ? req.body.annotations : []) as AnnotationDistillInput[];
+    const result = await distillRulesFromAnnotations(root, { annotations }, { suggest: async () => null as never });
+    if (multiUserStreamAllowed(res)) res.json(result);
+  }));
+  // Imperative extract: the regex pack on the user's own text. LLM extraction
+  // happens after a turn on that turn's source, never from a request body.
+  app.post(`${memory}/extract`, handle(async (req, res, owner) => {
+    const changed = await automation.extractUserText(owner, typeof req.body?.userMessage === 'string' ? req.body.userMessage : '');
+    if (multiUserStreamAllowed(res)) res.json({ changed, attemptedLLM: false });
   }));
   const read = readStudioMemoryEntry;
   const save = (root: string, draft: UpsertMemoryRequest) => saveStudioMemoryEntry(root, draft);
@@ -140,5 +148,5 @@ export function registerStudioSettingsRoutes(app: Express, input: { db: Database
     store.publish(owner, { kind: 'delete', id });
     if (multiUserStreamAllowed(res)) res.json({ ok: true });
   }));
-  return store;
+  return Object.assign(store, { automation });
 }

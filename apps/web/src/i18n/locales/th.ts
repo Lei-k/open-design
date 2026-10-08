@@ -1,7 +1,7 @@
 import type { Dict } from '../types';
 
 export const th: Dict = {
-  "studio.manualMemoryHint": "Saved manual memories and profile facts are included in future runs. Automatic extraction, brief rewriting and verification are not available yet.",
+  "studio.manualMemoryHint": "หน่วยความจำที่บันทึกไว้และข้อมูลโปรไฟล์จะถูกใช้ในการรันครั้งถัดไป การดึงข้อมูลอัตโนมัติเป็นตัวเลือก: ทำงานหลังรอบ OpenAI โดยใช้แหล่งของรอบนั้นเอง (พูลของบริษัทหรือคีย์ของคุณ) และจะข้ามรอบ Codex ส่วนตัว",
 
   "studio.settingsReload": "Reload saved settings",
   "studio.aboutDeployed": "Version {version} is deployed. Reload this page to use it.",
@@ -5235,6 +5235,9 @@ export const th: Dict = {
   'memory.attemptFailedTitle': 'Could not read {name}',
   'memory.attemptSkippedTitle': 'Skipped {name}',
   'memory.skipChatDisabled': 'Chat conversation learning is off.',
+  'memory.skipSourceHasNoExtraction': "รอบ Codex ส่วนตัวไม่มีการดึงข้อมูล จึงไม่มีการคิดค่าใช้จ่าย",
+  'memory.skipSourceUnavailable': "คีย์หรือโควตาของรอบเปลี่ยนไปก่อนการดึงข้อมูล",
+  'memory.skipMemoryFull': "หน่วยความจำเต็มแล้ว ลบบางรายการเพื่อเพิ่มใหม่",
   'memory.kindConnectedApps': 'Connected apps',
   'memory.timeAgo': '{time} ago',
   'memory.scanRunningTitle': 'Scanning connected apps',

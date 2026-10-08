@@ -128,8 +128,12 @@ export function studioRequestAvailable(method: string, path: string,
     if (settingsPath === '/api/memory/index') return method === 'PUT';
     if (settingsPath === '/api/memory/config') return method === 'PATCH';
     if (/^\/api\/memory\/tree\/[a-z0-9_]{1,128}$/.test(settingsPath)) return method === 'PATCH';
+    // Automatic memory (#62): the account's own history, heuristic rule proposals and extract.
+    if (settingsPath === '/api/memory/extractions' || settingsPath === '/api/memory/verifications') return method === 'GET' || method === 'DELETE';
+    if (/^\/api\/memory\/(?:extractions|verifications)\/[^/]+$/.test(settingsPath)) return method === 'DELETE';
+    if (settingsPath === '/api/memory/rules/suggest' || settingsPath === '/api/memory/extract') return method === 'POST';
     if (/^\/api\/memory\/[a-z0-9_]{1,128}$/.test(settingsPath)) {
-      if (['extractions', 'verifications', 'extract', 'rules', 'connectors'].includes(settingsPath.slice(12))) return false;
+      if (['extract', 'rules', 'connectors'].includes(settingsPath.slice(12))) return false;
       return ['GET', 'PUT', 'DELETE'].includes(method);
     }
   }

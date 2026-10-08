@@ -1,7 +1,7 @@
 import type { Dict } from '../types';
 
 export const fr: Dict = {
-  "studio.manualMemoryHint": "Saved manual memories and profile facts are included in future runs. Automatic extraction, brief rewriting and verification are not available yet.",
+  "studio.manualMemoryHint": "Les mémoires enregistrées et les informations de profil sont incluses dans les prochaines exécutions. L’extraction automatique est facultative : elle s’exécute après les tours OpenAI sur la source de ce tour (le pool de l’entreprise ou votre propre clé) et est ignorée pour les tours Codex personnels.",
 
   "multiuser.companyOpenAI": "OpenAI company pool",
   "multiuser.companyOpenAIHelp": "Choose the OpenAI model and concurrent workers. Leave the key blank to retain it. Credentials stay on the server. A model or key change requires new conversations.",
@@ -5234,6 +5234,9 @@ export const fr: Dict = {
   'memory.attemptFailedTitle': 'Échec de la lecture : {name}',
   'memory.attemptSkippedTitle': 'Lecture ignorée : {name}',
   'memory.skipChatDisabled': 'L’apprentissage à partir des conversations est désactivé.',
+  'memory.skipSourceHasNoExtraction': "Les tours Codex personnels n’ont pas d’extraction ; rien n’a été facturé.",
+  'memory.skipSourceUnavailable': "La clé ou le quota du tour a changé avant l’extraction.",
+  'memory.skipMemoryFull': "Votre mémoire est pleine ; supprimez des entrées pour en ajouter.",
   'memory.kindConnectedApps': 'Applications connectées',
   'memory.timeAgo': 'Il y a {time}',
   'memory.scanRunningTitle': 'Analyse des applications connectées en cours',

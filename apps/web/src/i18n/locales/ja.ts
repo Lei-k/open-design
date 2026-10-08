@@ -1,7 +1,7 @@
 import type { Dict } from '../types';
 
 export const ja: Dict = {
-  "studio.manualMemoryHint": "Saved manual memories and profile facts are included in future runs. Automatic extraction, brief rewriting and verification are not available yet.",
+  "studio.manualMemoryHint": "保存したメモリとプロフィール情報は今後の実行に含まれます。自動抽出はオプトインです。OpenAI のターン後に、そのターン自身のソース（会社のプールまたは自分のキー）で実行され、個人の Codex ターンではスキップされます。",
 
   "multiuser.companyOpenAI": "OpenAI 共有プール",
   "multiuser.companyOpenAIHelp": "OpenAI モデルと同時実行数を設定します。キーを空欄にすると現在の値を保持します。認証情報はサーバーに保存されます。モデルやキーを変更した場合は新しい会話を開始してください。",
@@ -5234,6 +5234,9 @@ export const ja: Dict = {
   'memory.attemptFailedTitle': 'Could not read {name}',
   'memory.attemptSkippedTitle': 'Skipped {name}',
   'memory.skipChatDisabled': 'Chat conversation learning is off.',
+  'memory.skipSourceHasNoExtraction': "個人の Codex ターンには抽出機能がありません。料金は発生していません。",
+  'memory.skipSourceUnavailable': "抽出の前にターンのキーまたはクォータが変わりました。",
+  'memory.skipMemoryFull': "メモリがいっぱいです。追加するにはエントリを削除してください。",
   'memory.kindConnectedApps': 'Connected apps',
   'memory.timeAgo': '{time} ago',
   'memory.scanRunningTitle': 'Scanning connected apps',

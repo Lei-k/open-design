@@ -1,7 +1,7 @@
 import type { Dict } from '../types';
 
 export const ko: Dict = {
-  "studio.manualMemoryHint": "Saved manual memories and profile facts are included in future runs. Automatic extraction, brief rewriting and verification are not available yet.",
+  "studio.manualMemoryHint": "저장된 메모리와 프로필 정보는 이후 실행에 포함됩니다. 자동 추출은 선택 사항이며, OpenAI 턴이 끝난 뒤 해당 턴의 소스(회사 풀 또는 내 키)로 실행되고 개인 Codex 턴에서는 건너뜁니다.",
 
   "multiuser.companyOpenAI": "OpenAI company pool",
   "multiuser.companyOpenAIHelp": "Choose the OpenAI model and concurrent workers. Leave the key blank to retain it. Credentials stay on the server. A model or key change requires new conversations.",
@@ -5234,6 +5234,9 @@ export const ko: Dict = {
   'memory.attemptFailedTitle': 'Could not read {name}',
   'memory.attemptSkippedTitle': 'Skipped {name}',
   'memory.skipChatDisabled': 'Chat conversation learning is off.',
+  'memory.skipSourceHasNoExtraction': "개인 Codex 턴에는 추출 기능이 없어 비용이 청구되지 않았습니다.",
+  'memory.skipSourceUnavailable': "추출 전에 턴의 키나 할당량이 변경되었습니다.",
+  'memory.skipMemoryFull': "메모리가 가득 찼습니다. 더 추가하려면 항목을 삭제하세요.",
   'memory.kindConnectedApps': 'Connected apps',
   'memory.timeAgo': '{time} ago',
   'memory.scanRunningTitle': 'Scanning connected apps',

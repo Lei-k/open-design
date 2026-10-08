@@ -5493,6 +5493,9 @@ export interface Dict {
   'memory.attemptFailedTitle': string;
   'memory.attemptSkippedTitle': string;
   'memory.skipChatDisabled': string;
+  'memory.skipSourceHasNoExtraction': string;
+  'memory.skipSourceUnavailable': string;
+  'memory.skipMemoryFull': string;
   'memory.kindConnectedApps': string;
   'memory.timeAgo': string;
   'memory.scanRunningTitle': string;

@@ -145,8 +145,24 @@ it('opens only actor instructions and manual memory when settings is usable', ()
       expect(matches.every(({ entry }) => entry.routeClass === 'actor-scoped'), path).toBe(true);
     }
   }
-  for (const path of ['/api/memory/extractions', '/api/memory/verifications', '/api/mcp/config', '/api/connectors/discovery', '/api/library/assets', '/api/agents']) {
+  for (const path of ['/api/mcp/config', '/api/connectors/discovery', '/api/library/assets', '/api/agents']) {
     expect(studioRequestAvailable('GET', path, () => true), path).toBe(false);
+  }
+  // Automatic memory (#62): the account's own history, heuristic rule proposals and extract.
+  for (const [method, standard] of [['GET', '/api/memory/extractions'], ['DELETE', '/api/memory/extractions'], ['DELETE', '/api/memory/extractions/x'],
+    ['GET', '/api/memory/verifications'], ['DELETE', '/api/memory/verifications'], ['DELETE', '/api/memory/verifications/x'],
+    ['POST', '/api/memory/rules/suggest'], ['POST', '/api/memory/extract']] as const) {
+    for (const path of [standard, standard.replace('/api/memory', '/api/multiuser/settings/memory')]) {
+      expect(studioRequestAvailable(method, path, (lane) => lane === 'settings'), `${method} ${path}`).toBe(true);
+      expect(studioRequestAvailable(method, path, () => false), `${method} ${path}`).toBe(false);
+      const matches = matchMultiUserRoute(method, path);
+      expect(matches.length, path).toBeGreaterThan(0);
+      expect(matches.every(({ entry }) => entry.routeClass === 'actor-scoped'), `${method} ${path}`).toBe(true);
+    }
+  }
+  for (const [method, path] of [['POST', '/api/memory/connectors/extract'], ['POST', '/api/memory/connectors/suggest'], ['POST', '/api/memory/extractions'],
+    ['GET', '/api/memory/rules/suggest']] as const) {
+    expect(studioRequestAvailable(method, path, () => true), `${method} ${path}`).toBe(false);
   }
 });
 

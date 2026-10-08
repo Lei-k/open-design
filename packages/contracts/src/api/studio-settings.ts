@@ -140,3 +140,16 @@ export function parseStudioSettingsWrite(value: unknown): StudioSettingsWrite | 
 export const STUDIO_MEMORY_MAX_ENTRY_BYTES = 64 * 1024;
 export const STUDIO_MEMORY_MAX_TOTAL_BYTES = 1024 * 1024;
 export const STUDIO_MEMORY_MAX_ENTRIES = 100;
+/**
+ * Automatic memory for Studio accounts (#62). The account switches its own
+ * hooks on the standard `PATCH /api/memory/config`; the host extraction
+ * provider override (`extraction`, with its key and base URL) is never a
+ * field: extraction runs only on the turn's own OpenAI source (company pool or
+ * the account's key) and bills it. Personal Codex turns are recorded as
+ * skipped (`source-has-no-extraction`). Extraction and verification history
+ * is per account, newest first, capped at {@link STUDIO_MEMORY_HISTORY_LIMIT}.
+ */
+export const STUDIO_MEMORY_CONFIG_FIELDS = ['enabled', 'profileEnabled', 'chatExtractionEnabled', 'rewriteEnabled', 'verifyEnabled'] as const;
+export const STUDIO_MEMORY_HISTORY_LIMIT = 50;
+/** `POST /api/memory/extract` for Studio: the regex pack on the user text only; never a provider call. */
+export const STUDIO_MEMORY_EXTRACT_FIELDS = ['userMessage', 'assistantMessage'] as const;

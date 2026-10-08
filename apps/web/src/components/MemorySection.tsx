@@ -595,6 +595,10 @@ function describeRecord(
     if (reason === 'chat-disabled') return t('memory.skipChatDisabled');
     if (reason === 'empty-message') return t('settings.memoryExtractionSkipEmpty');
     if (reason === 'no-match') return t('settings.memoryExtractionSkipNoMatch');
+    // Studio accounts (#62): extraction follows the turn's own source.
+    if (reason === 'source-has-no-extraction') return t('memory.skipSourceHasNoExtraction');
+    if (reason === 'source-unavailable') return t('memory.skipSourceUnavailable');
+    if (reason === 'memory-full') return t('memory.skipMemoryFull');
     return null;
   })();
   // Records written before the `kind` field existed default to 'llm' —
@@ -911,8 +915,9 @@ export function MemorySection({
 
   useEffect(() => {
     void reload();
-    if (localServices) void reloadExtractions();
-  }, [reload, reloadExtractions, localServices]);
+    // Studio accounts read their own extraction history (#62).
+    void reloadExtractions();
+  }, [reload, reloadExtractions]);
 
   useEffect(() => {
     if (!localServices || activeTab !== 'connected') return;
@@ -1504,8 +1509,8 @@ export function MemorySection({
   // owns the master toggle has to show every one of them that is not running —
   // rather than leaving the user to find it under a second tab (OPEND-2606).
   const undisclosedHooks = useMemo(
-    () => hooksOffWhileEnabled(knownFlags).filter((key) => localServices || key === 'profileEnabled'),
-    [knownFlags, localServices],
+    () => hooksOffWhileEnabled(knownFlags),
+    [knownFlags],
   );
 
   const onSaveIndex = useCallback(async () => {
@@ -1863,7 +1868,6 @@ export function MemorySection({
             enabled={enabled}
             flags={hookFlags}
             onToggle={onToggleHook}
-            hooks={localServices ? undefined : ['profileEnabled']}
           />
         </div>
       ) : null}

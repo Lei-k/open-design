@@ -1,7 +1,7 @@
 import type { Dict } from '../types';
 
 export const pl: Dict = {
-  "studio.manualMemoryHint": "Saved manual memories and profile facts are included in future runs. Automatic extraction, brief rewriting and verification are not available yet.",
+  "studio.manualMemoryHint": "Zapisane wspomnienia i dane profilu są uwzględniane w kolejnych uruchomieniach. Automatyczne wyodrębnianie jest opcjonalne: działa po turach OpenAI na źródle danej tury (pula firmowa lub Twój klucz) i jest pomijane dla osobistych tur Codex.",
 
   "multiuser.companyOpenAI": "OpenAI company pool",
   "multiuser.companyOpenAIHelp": "Choose the OpenAI model and concurrent workers. Leave the key blank to retain it. Credentials stay on the server. A model or key change requires new conversations.",
@@ -5234,6 +5234,9 @@ export const pl: Dict = {
   'memory.attemptFailedTitle': 'Could not read {name}',
   'memory.attemptSkippedTitle': 'Skipped {name}',
   'memory.skipChatDisabled': 'Chat conversation learning is off.',
+  'memory.skipSourceHasNoExtraction': "Osobiste tury Codex nie mają wyodrębniania; nic nie zostało naliczone.",
+  'memory.skipSourceUnavailable': "Klucz lub limit tury zmienił się przed wyodrębnianiem.",
+  'memory.skipMemoryFull': "Pamięć jest pełna; usuń wpisy, aby dodać kolejne.",
   'memory.kindConnectedApps': 'Connected apps',
   'memory.timeAgo': '{time} ago',
   'memory.scanRunningTitle': 'Scanning connected apps',

@@ -35,6 +35,7 @@ import { STUDIO_MEDIA_PROMPT } from '../runtimes/studio-media.js';
 import { PersonalProviderKeyError, PersonalProviderKeyStore } from '../storage/personal-provider-keys.js';
 import { createStudioResearch, StudioResearchError, type StudioResearch } from '../research/studio-research.js';
 import { renderStudioResearchFindings } from '../prompts/research-contract.js';
+import type { StudioMemoryAutomation, StudioMemoryTurnKey } from '../services/studio-memory-automation.js';
 import type { StudioDesignCatalog } from './studio-design-catalog.js';
 import type { StudioSettings } from '../storage/studio-settings.js';
 import type { StudioCatalog } from './studio-catalog.js';
@@ -334,6 +335,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   personalProviderKeys?: boolean;
   /** Programmatic Tavily fixture for tests; production calls the fixed provider endpoint. */
   researchFetch?: typeof fetch;
+  /** Account automatic memory (#62): heuristics at admission, extraction/verification after a turn. */
+  memory?: StudioMemoryAutomation;
 }): { cancelAccountRuns(accountId: string): void; isRunOwner(runId: string, accountId: string): boolean;
   /** `accountId: null` stops every account's runs in the project. */
   cancelProjectRuns(accountId: string | null, projectId: string, conversationId?: string): Promise<() => void>;
@@ -708,6 +711,38 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (status === 'canceled') ledger.cancel(run.owner_account_id, run.id);
     else ledger.finish(run.owner_account_id, run.id);
   };
+  /**
+   * After a succeeded turn (#62): verification and extraction run in the
+   * background for the turn's owner only. Extraction re-resolves the turn's
+   * own source when it starts — the company credential the turn pinned (and
+   * the owner's remaining quota) or the account's own key at the same
+   * revision — and never another source. Personal Codex has no extraction.
+   */
+  const scheduleMemory = (run: RunRow, result: Record<string, unknown>) => {
+    if (!input.memory || storesClosed) return;
+    const request = storedRequest(run.request_json);
+    const text = String(result.text ?? '');
+    const files = Array.isArray(result.files) ? result.files : [];
+    const resolveKey = (): StudioMemoryTurnKey | null => {
+      if (isByok(run)) {
+        const own = providerKeys?.execution(run.owner_account_id) ?? null;
+        return own && own.credentialRevision === request?.personalCredentialRevision
+          ? { apiKey: own.apiKey, model: own.model, credentialSource: 'account-key' } : null;
+      }
+      if (!isOpenAI(run)) return null;
+      let execution: ReturnType<CompanyOpenAIStore['execution']>;
+      try { execution = companyOpenAI.execution(); } catch { return null; }
+      if (!execution || execution.config.credentialRevision !== request?.companyCredentialRevision
+        || ledger.balance(run.owner_account_id).remainingMs === 0) return null;
+      return { apiKey: execution.apiKey, model: execution.config.model, credentialSource: 'company-pool' };
+    };
+    void input.memory.afterTurn({ owner: run.owner_account_id, runId: run.id, projectId: run.project_id,
+      source: run.execution_source as 'personal_subscription' | 'company_pool' | 'personal_api_key',
+      userText: storedMessage(run.request_json) ?? '', assistantText: text, hadArtifact: files.length > 0 || /<artifact[\s>]/i.test(text),
+      resolveKey,
+      allowed: () => !storesClosed && accounts.getAccountById(run.owner_account_id)?.active === true
+        && accounts.getStudioPilot(run.owner_account_id).studioPilot && projects.canView(run.project_id, run.owner_account_id) });
+  };
   const finish = (id: string, status: 'succeeded' | 'failed' | 'canceled', output?: unknown) => {
     if (storesClosed) return;
     const existing = row(id);
@@ -736,6 +771,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       return frames;
     })();
     for (const frame of frames) publishEvent(id, frame);
+    if (status === 'succeeded' && (isPersonal(existing) || isOpenAI(existing))) scheduleMemory(existing, result);
     for (const res of listeners.get(id) ?? []) res.end();
     listeners.delete(id);
     children.delete(id);
@@ -1343,6 +1379,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (fixedDesign && !fixedCapture) return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
     const designSnapshot = fixedCapture ? fixedCapture.design : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? getProject(db, target.projectId)?.designSystemId ?? null, question);
     if (designSnapshot === false) return sendApiError(res, 404, 'NOT_FOUND', 'selected design system not found or unavailable');
+    // Opt-in "remember: …" heuristics land before capture, so this turn already sees them (#62).
+    await input.memory?.beforeTurn(owner, fields.text);
     const actorContext = await input.settings?.capture(owner) ?? { userInstructions: '', memoryBody: '' };
     let composed = fixedCapture
       ? await input.design?.composeStablePrompt({ conversationId: target.conversationId, ownerId: owner, projectId: target.projectId, ...actorContext,
@@ -1521,6 +1559,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (designSnapshot === false) return sendApiError(res, 404, 'NOT_FOUND', 'selected design system not found or unavailable');
     const selected = !question && fields.skillIds.length ? await captureSkills(owner, target.conversationId, fields.skillIds) : [];
     if (!selected) return sendApiError(res, 404, 'NOT_FOUND', 'selected skills not found or unavailable');
+    // Opt-in "remember: …" heuristics land before capture, so this turn already sees them (#62).
+    await input.memory?.beforeTurn(owner, fields.text);
     const actorContext = await input.settings?.capture(owner) ?? { userInstructions: '', memoryBody: '' };
     const design = fixedCapture ? await input.design?.composeStablePrompt({ ...target, ownerId: owner, ...actorContext,
       captured: { skill: fixedCapture.skill, design: { id: fixedCapture.design.id, ...fixedCapture.design.prompt } } }) : null;

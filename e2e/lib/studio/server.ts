@@ -23,6 +23,13 @@ process.once('message', async (input: { dataRoot: string; appOrigin: string; pre
       return Response.json({ data: [{ b64_json: png }] });
     }
     const request = JSON.parse(String(init?.body)) as { input: Array<{ type?: string; role?: string; content?: unknown }> };
+    // Automatic memory (#62): the extractor's request returns one durable fact.
+    if (String(request.input.find((item) => item.role === 'developer')?.content ?? '').startsWith('You are a memory extractor')) {
+      const entries = JSON.stringify({ entries: [{ type: 'feedback', name: 'Prefers dense dashboards', description: 'Layout preference',
+        body: 'Likes dense dashboards with small type.' }] });
+      return new Response([{ type: 'response.output_text.delta', delta: entries }, { type: 'response.completed', response: { output: [] } }]
+        .map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
+    }
     const wrote = request.input.some((item) => item.type === 'function_call_output');
     const user = request.input.filter((item) => item.role === 'user').map((item) => String(item.content)).join('\n');
     if (user.includes('BROWSER_IMAGE')) {

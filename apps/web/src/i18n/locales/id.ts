@@ -1,7 +1,7 @@
 import type { Dict } from '../types';
 
 export const id: Dict = {
-  "studio.manualMemoryHint": "Saved manual memories and profile facts are included in future runs. Automatic extraction, brief rewriting and verification are not available yet.",
+  "studio.manualMemoryHint": "Memori tersimpan dan fakta profil disertakan dalam proses berikutnya. Ekstraksi otomatis bersifat opsional: berjalan setelah giliran OpenAI pada sumber giliran itu sendiri (kumpulan perusahaan atau kunci Anda) dan dilewati untuk giliran Codex pribadi.",
 
   "studio.settingsReload": "Reload saved settings",
   "studio.aboutDeployed": "Version {version} is deployed. Reload this page to use it.",
@@ -5235,6 +5235,9 @@ export const id: Dict = {
   'memory.attemptFailedTitle': 'Could not read {name}',
   'memory.attemptSkippedTitle': 'Skipped {name}',
   'memory.skipChatDisabled': 'Chat conversation learning is off.',
+  'memory.skipSourceHasNoExtraction': "Giliran Codex pribadi tidak memiliki ekstraksi; tidak ada yang ditagih.",
+  'memory.skipSourceUnavailable': "Kunci atau kuota giliran berubah sebelum ekstraksi berjalan.",
+  'memory.skipMemoryFull': "Memori Anda penuh; hapus entri untuk menambah yang baru.",
   'memory.kindConnectedApps': 'Connected apps',
   'memory.timeAgo': '{time} ago',
   'memory.scanRunningTitle': 'Scanning connected apps',

@@ -29,7 +29,7 @@
 
 import type Database from 'better-sqlite3';
 import type { Express, Request, RequestHandler, Response } from 'express';
-import { STUDIO_AUTOMATION_INGESTION_FIELDS, STUDIO_AUTOMATION_PROPOSAL_FIELDS, parseStudioMessageFeedback, parseStudioSettingsWrite, type StudioProjectShareSummary } from '@open-design/contracts';
+import { STUDIO_AUTOMATION_INGESTION_FIELDS, STUDIO_AUTOMATION_PROPOSAL_FIELDS, STUDIO_MEMORY_CONFIG_FIELDS, STUDIO_MEMORY_EXTRACT_FIELDS, parseStudioMessageFeedback, parseStudioSettingsWrite, type StudioProjectShareSummary } from '@open-design/contracts';
 import { sendApiError } from './api-errors.js';
 import { setMultiUserStreamAuthority } from './multiuser-stream.js';
 import { clearedSessionCookie, readSessionCookie, registerAuthRoutes } from '../routes/auth.js';
@@ -466,8 +466,15 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   if (policy === 'studio-memory-entry') return only(['id', 'name', 'description', 'type', 'body']);
   if (policy === 'studio-memory-index') return only(['index']) && typeof body.index === 'string'
     && Buffer.byteLength(body.index) <= 64 * 1024 && !body.index.includes('\0');
-  if (policy === 'studio-memory-config') return only(['enabled', 'profileEnabled'])
+  if (policy === 'studio-memory-config') return only(STUDIO_MEMORY_CONFIG_FIELDS)
     && Object.values(body).every((value) => typeof value === 'boolean');
+  // #62: annotations only — no chat provider, agent or model can ride along.
+  if (policy === 'studio-memory-rules-suggest') return only(['annotations']) && Array.isArray(body.annotations) && body.annotations.length <= 20
+    && body.annotations.every((item) => isPlainObject(item)
+      && Object.keys(item).every((key) => ['note', 'targetLabel', 'filePath', 'currentText', 'selectionKind', 'htmlHint'].includes(key))
+      && typeof item.note === 'string' && Object.values(item).every((value) => typeof value === 'string' && value.length <= 4000 && !value.includes('\0')));
+  if (policy === 'studio-memory-extract') return only(STUDIO_MEMORY_EXTRACT_FIELDS)
+    && Object.values(body).every((value) => typeof value === 'string' && Buffer.byteLength(value) <= 64 * 1024 && !value.includes('\0'));
   if (policy === 'public-link-revoke') return only(['slug']) && (body.slug === undefined || typeof body.slug === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(body.slug));
   if (policy === 'provider-key') return only(['revision', 'apiKey', 'model']) && Number.isSafeInteger(body.revision)
     && (body.apiKey === undefined || body.apiKey === null || typeof body.apiKey === 'string' && body.apiKey.length <= 4096)

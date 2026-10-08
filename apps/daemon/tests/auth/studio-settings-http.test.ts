@@ -157,16 +157,19 @@ it('isolates manual entries, tree, index and profile; foreign equals missing inc
   expect((await daemon.request({ method: 'PATCH', path: `/api/memory/tree/${id}`, cookie: a.cookie, body: { description: 'edited', type: 'reference' } })).status).toBe(200);
 });
 
-it('keeps automatic/provider memory closed and bounds manual content and identifiers', async () => {
-  for (const body of [{ extraction: { provider: 'openai', apiKey: 'secret' } }, { chatExtractionEnabled: true }, { verifyEnabled: true }, { rewriteEnabled: true }, { ownerId: b.id }]) {
+it('keeps the host provider override closed and bounds manual content and identifiers', async () => {
+  // The account's own hooks are switches since #62 (S38); the host extraction provider override never is.
+  for (const body of [{ extraction: { provider: 'openai', apiKey: 'secret' } }, { ownerId: b.id }, { chatExtractionEnabled: 'yes' }]) {
     expect((await daemon.request({ method: 'PATCH', path: '/api/memory/config', cookie: a.cookie, body })).status).toBe(400);
   }
   for (const extra of [{ id: '../escape' }, { id: 123 }, { id: 'events' }, { ownerId: b.id }, { path: '/host/private' }, { body: 'a'.repeat(65537) }]) {
     expect((await daemon.request({ method: 'POST', path: '/api/memory', cookie: a.cookie,
       body: { name: 'bad', description: '', type: 'user', body: 'text', ...extra } })).status).toBe(400);
   }
-  for (const endpoint of ['/api/memory/extractions', '/api/memory/verifications']) {
-    expect((await daemon.request({ path: endpoint, cookie: a.cookie })).status).toBe(403);
+  // Automatic-memory history is the account's own (S38): empty here, never the host's.
+  for (const [endpoint, key] of [['/api/memory/extractions', 'extractions'], ['/api/memory/verifications', 'verifications']] as const) {
+    const read = await daemon.request({ path: endpoint, cookie: a.cookie });
+    expect([read.status, read.json[key]]).toEqual([200, []]);
   }
 });
 

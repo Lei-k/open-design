@@ -1,7 +1,7 @@
 import type { Dict } from '../types';
 
 export const tr: Dict = {
-  "studio.manualMemoryHint": "Saved manual memories and profile facts are included in future runs. Automatic extraction, brief rewriting and verification are not available yet.",
+  "studio.manualMemoryHint": "Kaydedilen anılar ve profil bilgileri sonraki çalıştırmalara eklenir. Otomatik çıkarım isteğe bağlıdır: OpenAI turlarından sonra o turun kendi kaynağında (şirket havuzu veya kendi anahtarınız) çalışır ve kişisel Codex turlarında atlanır.",
 
   "studio.settingsReload": "Reload saved settings",
   "studio.aboutDeployed": "Version {version} is deployed. Reload this page to use it.",
@@ -5235,6 +5235,9 @@ export const tr: Dict = {
   'memory.attemptFailedTitle': 'Could not read {name}',
   'memory.attemptSkippedTitle': 'Skipped {name}',
   'memory.skipChatDisabled': 'Chat conversation learning is off.',
+  'memory.skipSourceHasNoExtraction': "Kişisel Codex turlarında çıkarım yok; hiçbir ücret alınmadı.",
+  'memory.skipSourceUnavailable': "Turun anahtarı veya kotası çıkarımdan önce değişti.",
+  'memory.skipMemoryFull': "Belleğiniz dolu; yenilerini eklemek için girdileri silin.",
   'memory.kindConnectedApps': 'Connected apps',
   'memory.timeAgo': '{time} ago',
   'memory.scanRunningTitle': 'Scanning connected apps',

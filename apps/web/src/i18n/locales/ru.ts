@@ -1,7 +1,7 @@
 import type { Dict } from '../types';
 
 export const ru: Dict = {
-  "studio.manualMemoryHint": "Saved manual memories and profile facts are included in future runs. Automatic extraction, brief rewriting and verification are not available yet.",
+  "studio.manualMemoryHint": "Сохраненные воспоминания и данные профиля учитываются в следующих запусках. Автоматическое извлечение включается по желанию: оно выполняется после ходов OpenAI на источнике этого хода (пул компании или ваш ключ) и пропускается для личных ходов Codex.",
 
   "studio.settingsReload": "Reload saved settings",
   "studio.aboutDeployed": "Version {version} is deployed. Reload this page to use it.",
@@ -5235,6 +5235,9 @@ export const ru: Dict = {
   'memory.attemptFailedTitle': 'Could not read {name}',
   'memory.attemptSkippedTitle': 'Skipped {name}',
   'memory.skipChatDisabled': 'Chat conversation learning is off.',
+  'memory.skipSourceHasNoExtraction': "Для личных ходов Codex извлечение не выполняется; ничего не списано.",
+  'memory.skipSourceUnavailable': "Ключ или квота хода изменились до извлечения.",
+  'memory.skipMemoryFull': "Память заполнена; удалите записи, чтобы добавить новые.",
   'memory.kindConnectedApps': 'Connected apps',
   'memory.timeAgo': '{time} ago',
   'memory.scanRunningTitle': 'Scanning connected apps',

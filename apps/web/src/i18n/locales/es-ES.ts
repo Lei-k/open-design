@@ -1,7 +1,7 @@
 import type { Dict } from '../types';
 
 export const esES: Dict = {
-  "studio.manualMemoryHint": "Saved manual memories and profile facts are included in future runs. Automatic extraction, brief rewriting and verification are not available yet.",
+  "studio.manualMemoryHint": "Las memorias guardadas y los datos del perfil se incluyen en las próximas ejecuciones. La extracción automática es opcional: se ejecuta tras los turnos de OpenAI con la fuente de ese turno (el grupo de la empresa o tu propia clave) y se omite en los turnos personales de Codex.",
 
   "studio.settingsReload": "Reload saved settings",
   "studio.aboutDeployed": "Version {version} is deployed. Reload this page to use it.",
@@ -5235,6 +5235,9 @@ export const esES: Dict = {
   'memory.attemptFailedTitle': 'Could not read {name}',
   'memory.attemptSkippedTitle': 'Skipped {name}',
   'memory.skipChatDisabled': 'Chat conversation learning is off.',
+  'memory.skipSourceHasNoExtraction': "Los turnos personales de Codex no tienen extracción; no se cobró nada.",
+  'memory.skipSourceUnavailable': "La clave o la cuota del turno cambió antes de la extracción.",
+  'memory.skipMemoryFull': "Tu memoria está llena; elimina entradas para añadir más.",
   'memory.kindConnectedApps': 'Connected apps',
   'memory.timeAgo': '{time} ago',
   'memory.scanRunningTitle': 'Scanning connected apps',

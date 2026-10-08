@@ -45,7 +45,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'provider-key' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'studio-memory-rules-suggest' | 'studio-memory-extract' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'provider-key' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -736,16 +736,8 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'POST /api/analytics/mcp/event',
     'POST /api/attribution/claim',
     'POST /api/attribution/bridge-url',
-    'GET /api/memory/extractions',
-    'DELETE /api/memory/extractions',
-    'DELETE /api/memory/extractions/:id',
-    'GET /api/memory/verifications',
-    'DELETE /api/memory/verifications',
-    'DELETE /api/memory/verifications/:id',
-    'POST /api/memory/rules/suggest',
     'POST /api/memory/connectors/suggest',
     'POST /api/memory/connectors/extract',
-    'POST /api/memory/extract',
     'POST /api/upload',
     'POST /api/artifacts/save',
     'POST /api/artifacts/lint',
@@ -802,6 +794,17 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     ['PATCH /api/memory/config', 'studio-memory-config'],
     ['GET /api/memory/events', undefined],
     ['GET /api/memory/system-prompt', undefined],
+    // Automatic memory (#62): the account's own extraction/verification history,
+    // heuristic-only rule proposals and imperative extract; LLM extraction runs
+    // after a turn on that turn's own source, never from a request.
+    ['GET /api/memory/extractions', undefined],
+    ['DELETE /api/memory/extractions', 'empty'],
+    ['DELETE /api/memory/extractions/:id', 'empty'],
+    ['GET /api/memory/verifications', undefined],
+    ['DELETE /api/memory/verifications', 'empty'],
+    ['DELETE /api/memory/verifications/:id', 'empty'],
+    ['POST /api/memory/rules/suggest', 'studio-memory-rules-suggest'],
+    ['POST /api/memory/extract', 'studio-memory-extract'],
     ['POST /api/memory', 'studio-memory-entry'],
     ['GET /api/memory/:id', undefined],
     ['PUT /api/memory/:id', 'studio-memory-entry'],
@@ -810,7 +813,7 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     const alias = key!.replace('/api/app-config', '/api/multiuser/settings/config').replace('/api/memory', '/api/multiuser/settings/memory');
     const bodyPolicy = policy as MultiUserBodyPolicy | undefined;
     const extras = bodyPolicy ? { bodyPolicy } : {};
-    return [...group('actor-scoped', 'account-owned preferences and manual memory; private stream; no host settings or provider access', [key!],
+    return [...group('actor-scoped', 'account-owned preferences and memory (manual and automatic on the turn\'s own source); private stream; no host settings or provider keys', [key!],
       { ...extras, rewriteTo: alias.slice(alias.indexOf(' ') + 1) }),
       ...group('actor-scoped', 'actor settings alias; identical cookie authority and closed fields', [alias], extras)];
   }),

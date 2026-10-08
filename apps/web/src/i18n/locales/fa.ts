@@ -1,7 +1,7 @@
 import type { Dict } from '../types';
 
 export const fa: Dict = {
-  "studio.manualMemoryHint": "Saved manual memories and profile facts are included in future runs. Automatic extraction, brief rewriting and verification are not available yet.",
+  "studio.manualMemoryHint": "حافظه‌های ذخیره‌شده و اطلاعات پروفایل در اجراهای بعدی گنجانده می‌شوند. استخراج خودکار اختیاری است: پس از نوبت‌های OpenAI با منبع همان نوبت (استخر شرکت یا کلید خودتان) اجرا می‌شود و برای نوبت‌های شخصی Codex رد می‌شود.",
 
   "multiuser.companyOpenAI": "OpenAI company pool",
   "multiuser.companyOpenAIHelp": "Choose the OpenAI model and concurrent workers. Leave the key blank to retain it. Credentials stay on the server. A model or key change requires new conversations.",
@@ -5229,6 +5229,9 @@ export const fa: Dict = {
   'memory.attemptFailedTitle': 'Could not read {name}',
   'memory.attemptSkippedTitle': 'Skipped {name}',
   'memory.skipChatDisabled': 'Chat conversation learning is off.',
+  'memory.skipSourceHasNoExtraction': "نوبت‌های شخصی Codex استخراج ندارند؛ هزینه‌ای ثبت نشد.",
+  'memory.skipSourceUnavailable': "کلید یا سهمیه نوبت پیش از اجرای استخراج تغییر کرد.",
+  'memory.skipMemoryFull': "حافظه شما پر است؛ برای افزودن، مواردی را حذف کنید.",
   'memory.kindConnectedApps': 'Connected apps',
   'memory.timeAgo': '{time} ago',
   'memory.scanRunningTitle': 'Scanning connected apps',

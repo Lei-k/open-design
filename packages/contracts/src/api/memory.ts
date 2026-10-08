@@ -449,7 +449,14 @@ export type MemoryExtractionSkipReason =
   | 'memory-disabled'
   | 'chat-disabled'
   | 'empty-message'
-  | 'no-match';
+  | 'no-match'
+  // Studio accounts (#62): the turn ran on personal Codex, which has no
+  // extraction function, so nothing is billed or extracted.
+  | 'source-has-no-extraction'
+  // Studio accounts: the turn's own key or quota changed before extraction ran.
+  | 'source-unavailable'
+  // Studio accounts: the account memory store is at its entry/byte limit.
+  | 'memory-full';
 
 export interface MemoryExtractionRecord {
   /** Stable id for the attempt. UUID-ish; safe to use as a React key. */
@@ -485,7 +492,10 @@ export interface MemoryExtractionRecord {
       | 'env'
       | 'media-config'
       | 'chat-byok'
-      | 'chat-cli';
+      | 'chat-cli'
+      // Studio accounts (#62): the turn's own source — the company pool or the account's own OpenAI key.
+      | 'company-pool'
+      | 'account-key';
   };
   /** First ~120 chars of the user's message for display in the list. */
   userMessagePreview: string;
@@ -498,6 +508,10 @@ export interface MemoryExtractionRecord {
   writtenIds?: string[];
   /** Populated when phase === 'failed'. Single-line, ≤ 240 chars. */
   error?: string;
+  /** Studio accounts: the turn this extraction followed. */
+  runId?: string;
+  /** Studio accounts: provider tokens this extraction spent on the turn's source. */
+  usage?: { inputTokens: number; outputTokens: number };
 }
 
 // GET /api/memory/extractions — most-recent-first. Capped server-side.

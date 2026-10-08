@@ -1,7 +1,7 @@
 import type { Dict } from "../types";
 
 export const zhTW: Dict = {
-  "studio.manualMemoryHint": "手動儲存的記憶與個人檔案會帶入後續執行。目前尚未開放自動擷取、需求改寫與驗證。",
+  "studio.manualMemoryHint": "已儲存的記憶和個人資料會用於之後的執行。自動擷取需手動開啟：在 OpenAI 回合結束後使用該回合自身的來源（公司池或你自己的金鑰）執行，個人 Codex 回合會略過。",
 
   "studio.settingsReload": "重新載入設定",
   "studio.aboutDeployed": "伺服器已部署版本 {version}，重新載入頁面後生效。",
@@ -5687,6 +5687,9 @@ export const zhTW: Dict = {
   'memory.attemptFailedTitle': '無法讀取 {name}',
   'memory.attemptSkippedTitle': '已跳過 {name}',
   'memory.skipChatDisabled': '對話學習已關閉。',
+  'memory.skipSourceHasNoExtraction': "個人 Codex 回合沒有擷取功能，未產生費用。",
+  'memory.skipSourceUnavailable': "擷取執行前，該回合的金鑰或配額已變更。",
+  'memory.skipMemoryFull': "你的記憶已滿；請刪除一些項目後再新增。",
   'memory.kindConnectedApps': '已連接的應用程式',
   'memory.timeAgo': '{time}前',
   'memory.scanRunningTitle': '正在掃描已連接的應用程式',

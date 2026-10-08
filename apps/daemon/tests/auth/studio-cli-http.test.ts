@@ -369,6 +369,23 @@ describe('same Studio APIs through remote od sessions', () => {
     success(await cli(['automation', 'delete', id, '--session-file', aFile, '--json']));
   }, 60_000);
 
+  it('switches automatic memory, reads its history and distils rules per account through od memory (#62)', async () => {
+    const on = success(await cli(['memory', 'config', '--extraction', 'true', '--session-file', aFile, '--json']));
+    expect(on).toMatchObject({ chatExtractionEnabled: true });
+    expect(success(await cli(['memory', 'config', '--session-file', bFile, '--json'])).chatExtractionEnabled).toBe(false);
+    const extracted = await daemon.request({ method: 'POST', path: '/api/memory/extract', cookie: alice.cookie, body: { userMessage: 'remember: CLI_MEMORY_MARKER ships on Fridays' } });
+    expect(extracted.json.changed).toHaveLength(1);
+    const history = success(await cli(['memory', 'extractions', 'list', '--session-file', aFile, '--json'])).extractions;
+    expect(history[0]).toMatchObject({ kind: 'heuristic', phase: 'success', writtenCount: 1 });
+    expect(success(await cli(['memory', 'extractions', '--session-file', bFile, '--json'])).extractions).toEqual([]);
+    expect(success(await cli(['memory', 'extractions', 'delete', history[0].id, '--session-file', bFile, '--json']))).toEqual({ removed: 0 });
+    const rules = success(await cli(['memory', 'rule', 'suggest', '--note', 'Keep the logo top-left', '--target', 'Header', '--session-file', aFile, '--json']));
+    expect(rules).toMatchObject({ attemptedLLM: false, source: 'heuristic' });
+    expect(success(await cli(['memory', 'verify', 'list', '--session-file', aFile, '--json'])).verifications).toEqual([]);
+    expect(success(await cli(['memory', 'extractions', 'clear', '--session-file', aFile, '--json'])).removed).toBeGreaterThan(0);
+    success(await cli(['memory', 'config', '--extraction', 'false', '--session-file', aFile, '--json']));
+  }, 40_000);
+
   it('honors server revocation and logs B out without printing or retaining credentials', async () => {
     const revoked = await daemon.request({ method: 'POST', path: `/api/auth/users/${alice.id}/sessions/revoke`, cookie: admin.cookie, body: {} });
     expect(revoked.status).toBe(200);

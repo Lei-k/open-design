@@ -658,6 +658,48 @@ test('[P1] Studio account saves its own Tavily key and /search runs research on 
   await expect(page.getByTestId('user-message').last()).toContainText('Search for: calm palettes');
 });
 
+test('[P1] Studio automatic memory learns from a company turn into the account memory only', async ({ page, studio }, info) => {
+  const pool = await studio.request('GET', '/api/admin/pool/openai', studio.admin.cookie);
+  expect((await studio.request('PUT', '/api/admin/pool/openai', studio.admin.cookie, { revision: pool.json.provider.revision, model: 'browser-memory-model',
+    enabled: true, capacity: 1, apiKey: 'sk-browser-memory-company-key-0123456789' })).status).toBe(200);
+  await page.goto(`${studio.origin}/settings`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.getByTestId('studio-settings-nav-memory').click({ timeout: T.long });
+  await page.getByRole('tab', { name: 'How it works', exact: true }).click();
+  const learn = page.getByRole('checkbox', { name: 'Learn from chats', exact: true });
+  await expect(learn).not.toBeChecked({ timeout: T.long });
+  const switched = page.waitForResponse((response) => response.request().method() === 'PATCH' && new URL(response.url()).pathname === '/api/memory/config');
+  // The input is a styled switch; its visible label (titled with the hook name) takes the click.
+  await page.locator('label[title="Learn from chats"]').click();
+  expect((await (await switched).json()).chatExtractionEnabled).toBe(true);
+  await expect(learn).toBeChecked();
+  await page.screenshot({ path: info.outputPath('studio-memory-auto-settings.png'), animations: 'disabled' });
+
+  const projectId = studioProjectId();
+  expect((await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Memory browser acceptance' })).status).toBe(200);
+  await page.goto(`${studio.origin}/projects/${projectId}`);
+  const picker = page.getByTestId('studio-execution-source').getByRole('combobox', { name: 'Execution source', exact: true });
+  await expect(picker).toBeVisible({ timeout: T.long });
+  await picker.selectOption('openai');
+  await page.getByTestId('chat-composer-input').fill('Design an analytics page; I like dense dashboards.');
+  const admitted = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/runs');
+  await page.getByTestId('chat-send').click();
+  expect((await admitted).status()).toBe(202);
+  await expect(page.locator('body')).toContainText('Company browser design complete.', { timeout: T.long });
+  await expect.poll(async () => (await studio.request('GET', '/api/memory/extractions', studio.a.cookie)).json.extractions
+    .find((item: { kind?: string }) => item.kind === 'llm')?.phase, { timeout: T.long }).toBe('success');
+
+  await page.goto(`${studio.origin}/settings`);
+  await page.getByTestId('studio-settings-nav-memory').click({ timeout: T.long });
+  await expect(page.locator('.settings-content')).toContainText('Prefers dense dashboards', { timeout: T.long });
+  await expect(page.locator('.memory-extraction-card').first()).toBeVisible();
+  await page.screenshot({ path: info.outputPath('studio-memory-auto-learned.png'), animations: 'disabled' });
+  expect((await studio.request('GET', '/api/memory/extractions', studio.b.cookie)).json.extractions).toEqual([]);
+  expect((await studio.request('GET', '/api/memory', studio.b.cookie)).text).not.toContain('Prefers dense dashboards');
+});
+
 test('[P1] Studio account control lives in the shared rail, workspace chrome and admin pages at desktop and phone widths', async ({ page, studio }, info) => {
   const projectId = studioProjectId();
   expect((await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Account chrome' })).status).toBe(200);
