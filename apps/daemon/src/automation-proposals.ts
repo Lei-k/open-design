@@ -172,9 +172,30 @@ function withMemoryProvenance(body: string, proposal: AutomationEvolutionProposa
   return [text, '', ...provenance].join('\n');
 }
 
+/** A memory proposal that names one entry as its target but carries another. */
+export class MemoryProposalTargetMismatch extends Error {
+  constructor() { super('memory update proposal id must match its targetRef'); }
+}
+
+/**
+ * The entry id a memory proposal writes. An update is bound to its declared
+ * `targetRef`: an id embedded in the patch may only repeat it, otherwise the
+ * proposal is refused (before any write) instead of retargeted. A create
+ * keeps its embedded id or `targetRef`, if any. Pure; both runtimes use it.
+ */
+export function memoryProposalEntryId(proposal: AutomationEvolutionProposal): string | undefined {
+  const embedded = parseJsonPatchAfter(proposal).id;
+  if (proposal.action === 'update') {
+    if (!proposal.targetRef || (embedded !== undefined && embedded !== proposal.targetRef)) throw new MemoryProposalTargetMismatch();
+    return proposal.targetRef;
+  }
+  return typeof embedded === 'string' ? embedded : proposal.targetRef;
+}
+
 /**
  * The memory entry a create/update proposal writes, given the entry it
  * replaces (if any). Pure: the host store and Studio account memory share it.
+ * Its id is `memoryProposalEntryId`, so an update writes only its target.
  */
 export function memoryEntryFromProposal(
   proposal: AutomationEvolutionProposal,
@@ -192,7 +213,7 @@ export function memoryEntryFromProposal(
       : typeof json.markdown === 'string'
         ? json.markdown
         : proposal.patch.after ?? (typeof before?.body === 'string' ? before.body : '');
-  const id = typeof json.id === 'string' ? json.id : proposal.targetRef;
+  const id = memoryProposalEntryId(proposal);
   return {
     ...(id ? { id } : {}),
     name:
@@ -215,6 +236,8 @@ async function applyMemoryProposal(dataDir: string, proposal: AutomationEvolutio
     return { memoryId: proposal.targetRef, action: 'delete' };
   }
 
+  // Resolved before reading or writing anything: a mismatched update changes nothing.
+  memoryProposalEntryId(proposal);
   const before = proposal.targetRef
     ? await readMemoryEntry(dataDir, proposal.targetRef)
     : null;
@@ -247,6 +270,8 @@ function targetSlugFor(proposal: AutomationEvolutionProposal, kind: 'design-syst
     : /^skills\/([^/]+)\/SKILL\.md$/;
   const fromRef = typeof proposal.targetRef === 'string' ? expected.exec(proposal.targetRef)?.[1] : '';
   if (fromRef && SAFE_SLUG.test(fromRef)) return fromRef;
+  // An update or delete is bound to its declared target; only a create may name its own slug.
+  if (proposal.action !== 'create') throw new Error(`${kind} ${proposal.action} proposal requires a ${kind} targetRef`);
   const metadata = metadataRecord(proposal);
   if (typeof metadata.slug === 'string' && SAFE_SLUG.test(metadata.slug)) return metadata.slug;
   return slugifyTarget(proposal.title);

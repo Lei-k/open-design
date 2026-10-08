@@ -535,6 +535,11 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
 - **CLI.** `od automation template|source|proposal|crystallize-run` run over `--session-file` unchanged. `od automation create --template <id>` fetches the template and uses the shared prompt helper.
 - **Evidence.** `studio-automations-http` (4): bundled-only templates with the connector flag, template routines and refusals, private packets/proposals with B/admin 404 parity, apply into account memory/skill package/design store with host stores untouched, double-apply 409, foreign update targets, connector/foreign-project/template-target refusals, and crystallize → private skill package. Also host automation suites (unchanged behavior), gate inventory, CLI case (B refusals, template create, ingest, reject), Web `TasksView.studio`, transport oracle and the browser case (disabled connector card → template routine → run → Crystallize → Apply → private skill; B sees nothing).
 - **Remaining for #64.** Plugin/MCP/connector context (needs per-account connector credentials), the account's own OpenAI key as a routine source, account-authored automation templates, and real timer-fired/provider scheduled acceptance on EC2.
+- **Review repair.**
+  - **Target binding:** a memory `update` proposal writes only its `targetRef`. An id embedded in the patch may only repeat it; otherwise apply is refused with 400 before anything is read or written, and the proposal stays reviewable.
+  - **Shared helper:** the binding lives in the pure `memoryProposalEntryId`, so the host store follows it too.
+  - **Skills and design documents:** Studio skill/design updates already write to `targetRef` only. Host skill/design updates and deletes now also require a path-shaped `targetRef`, with no `metadata.slug` or title fallback.
+  - **Evidence:** `studio-automations-http` and `automation-proposals`. Both entries are unchanged on refusal.
 
 ![Automation templates for Web accounts](../../docs/design/studio-parity/automation-templates.png)
 
@@ -554,6 +559,10 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
 - **CLI.** `od account key get|set|remove --provider tavily` (key from a private file or stdin; `--model` refused) and `od research search --query … --session-file … --json` on the same endpoints.
 - **Evidence.** `studio-research-http` (3): write-only per-account key and capability; fixed endpoint, actor key only, no host key, B/admin refusals, rejected/rate-limited codes without echo, value-free usage rows and sealed storage; a turn's research reaching the agent as evidence, typed refusal without a queued run, unsupported provider refused, disabled research a no-op. Also the migration case, S33/S4 tests updated for the honored field and both key rows, the CLI case, Web `studio-research`, the transport oracle, and the browser case: no `/search` before a key → save in Settings → `/search` → findings in the turn; B refused.
 - **Remaining for #63.** Live Artifacts (connector credentials), GenUI, critique theater, and real Tavily/EC2 acceptance. Deeper research modes (`depth` other than shallow, other providers) stay refused.
+- **Review repair.**
+  - **One admission per turn:** admission of one logical turn (owner + conversation + `clientRequestId`) is serialized before any paid work, on the personal path, the OpenAI path and routine dispatch alike. A concurrent retry waits, then replays the run the first admission created.
+  - **Paid findings:** if an admission fails after its search, a retry of the same turn and query reuses the findings it already paid for (bounded, 10 minutes).
+  - **Evidence:** `studio-research-http`. Two concurrent identical requests produce one Tavily call, one usage row and one run, on personal Codex and on the company pool.
 
 ![Tavily research key in Settings](../../docs/design/studio-parity/research-key-settings.png)
 
@@ -583,6 +592,14 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
   - Rule verification records `missing` with the uncovered rule. History and deletes are per account (B/admin see nothing and remove nothing). Rule proposals and extract are heuristic-only.
   - Also: the S10 settings/gate tests updated for the opened routes, the CLI case, MemorySection/multiuser/i18n web suites, the transport oracle, and the browser case (Settings → Memory → Learn from chats → company turn → the learned entry and history; B unaffected).
 - **Remaining for #62.** Memory from connected apps (connector credentials), MCP, library/clipper, LLM rule distillation (it needs a billed source outside a turn), and real-provider acceptance.
+- **Review repair.**
+  - **Before the provider call:** background extraction rechecks the account switches, the owner's authority and the pinned credential after the memory read, immediately before the call.
+  - **During and after the call:** it rechecks again on each streamed chunk and inside the memory write lock, so removing the key alone stops the write.
+  - **Cancellation:** in-flight requests are tracked and aborted when the runs service shuts down. Revocation is recorded as `source-unavailable`, and a switch turned off as `memory-disabled`/`chat-disabled`.
+  - **Verification:** it uses only the active, index-linked rules (`listActiveRuleEntries`) under the account memory lock.
+  - **Fixed-design turns:** `composeStablePrompt` now forwards the account's memory hooks, so these turns honor the rewrite/verify switches on every source.
+  - **Evidence:** `studio-memory-automation` (delayed memory read and delayed provider, with key removal, key replacement, pilot withdrawal, switch-off and close) and `studio-memory-automation-http` (key removed during a real extraction, unlinked rule neither injected nor enforced, hooks off in fixed-design company/own-key/Codex turns).
+  - **Open (S10, not repaired here):** the Studio `PUT /api/memory/index` alias is refused by the gate, because the overlapping `PUT /api/memory/:id` entry body policy also applies. Editing the memory index from Studio therefore fails today.
 
 ![Automatic memory switch for Web accounts](../../docs/design/studio-parity/memory-auto-settings.png)
 

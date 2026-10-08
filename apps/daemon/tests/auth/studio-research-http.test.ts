@@ -4,7 +4,7 @@
 // against the account without the query, and a turn's research runs at
 // admission with its findings sent to the agent as untrusted evidence.
 import { readFileSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, expect, it } from 'vitest';
@@ -16,10 +16,13 @@ const HOST_KEY = 'tvly-host-daemon-key-must-never-be-used';
 const keyA = 'tvly-account-a-research-key-0123456789';
 const keyB = 'tvly-account-b-research-key-9876543210';
 let mode: 'ok' | 'reject' | 'limit' | 'empty' = 'ok';
+/** When set, every Tavily response waits for it: concurrent admissions overlap on the paid call. */
+let tavilyGate: Promise<void> | null = null;
 const calls: Array<{ url: string; authorization: string; redirect: unknown; body: Record<string, unknown> }> = [];
 const tavily: typeof fetch = async (url, init) => {
   calls.push({ url: String(url), authorization: new Headers(init?.headers).get('authorization') ?? '', redirect: init?.redirect,
     body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+  if (tavilyGate) await tavilyGate;
   if (mode === 'reject') return new Response(`invalid key ${keyA}`, { status: 401 });
   if (mode === 'limit') return new Response('slow down', { status: 429 });
   return Response.json({ answer: mode === 'empty' ? '' : 'RESEARCH_SUMMARY_MARKER calm palettes trend upward.',
@@ -29,18 +32,26 @@ const tavily: typeof fetch = async (url, init) => {
     ] });
 };
 
+const companyKey = 'sk-company-research-fixture-key-0123456789';
+const companyOpenAI: typeof fetch = async () => new Response(`data: ${JSON.stringify({ type: 'response.completed', response: {
+  output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Noted.' }] }] } })}\n\n`,
+{ headers: { 'content-type': 'text/event-stream' } });
+
 let daemon: StartedMultiUserDaemon; let root: string; let a: Principal; let b: Principal; let admin: Principal;
 beforeAll(async () => {
   process.env.TAVILY_API_KEY = HOST_KEY;
   process.env.OD_TAVILY_API_KEY = HOST_KEY;
   ({ dataRoot: root } = await loadIsolatedServerModule());
-  daemon = await startMultiUserDaemon(multiUserOptions({ testTavilyFetch: tavily, testPersonalCodexAppServer: PERSONAL_CODEX_MOCK }));
+  daemon = await startMultiUserDaemon(multiUserOptions({ testTavilyFetch: tavily, testCompanyOpenAIFetch: companyOpenAI, testPersonalCodexAppServer: PERSONAL_CODEX_MOCK }));
   const accounts = await provisionAccounts(daemon, ['research-a', 'research-b']);
   [a, b] = accounts.users as [Principal, Principal]; admin = accounts.admin;
   for (const user of [a, b]) {
     expect((await daemon.request({ method: 'PUT', path: `/api/admin/users/${user.id}/studio-pilot`, cookie: admin.cookie,
       body: { studioPilot: true, revision: 0 } })).status).toBe(200);
   }
+  const pool = await daemon.request({ path: '/api/admin/pool/openai', cookie: admin.cookie });
+  expect((await daemon.request({ method: 'PUT', path: '/api/admin/pool/openai', cookie: admin.cookie, body: {
+    revision: pool.json.provider.revision, model: 'company-model', enabled: true, capacity: 2, apiKey: companyKey } })).status).toBe(200);
   await linkCodex(daemon, root, a, 'research-a@example.test');
   await linkCodex(daemon, root, b, 'research-b@example.test');
 }, 120_000);
@@ -144,3 +155,74 @@ it('runs a turn\'s research at admission on the account key and sends the findin
   expect(quiet.status, quiet.text).toBe(202);
   expect(calls).toHaveLength(1);
 }, 30_000);
+
+it('runs one paid search for concurrent retries of one logical turn, on personal and OpenAI sources', async () => {
+  mode = 'ok';
+  const usageRows = () => {
+    const db = new Database(path.join(root, 'app.sqlite'), { readonly: true });
+    try { return (db.prepare('SELECT COUNT(*) AS n FROM multiuser_research_usage WHERE account_id = ?').get(a.id) as { n: number }).n; }
+    finally { db.close(); }
+  };
+  for (const source of [{ agentId: 'codex', executionSource: 'personal_subscription' }, { agentId: 'openai', executionSource: 'company_pool' }]) {
+    calls.length = 0;
+    const projectId = randomUUID();
+    const made = await daemon.request({ method: 'POST', path: '/api/projects', cookie: a.cookie, body: { id: projectId, name: `Retry ${source.executionSource}` } });
+    const conversationId = made.json.conversationId as string;
+    const usageBefore = usageRows();
+    let release!: () => void;
+    tavilyGate = new Promise<void>((resolve) => { release = resolve; });
+    const send = () => daemon.request({ method: 'POST', path: '/api/runs', cookie: a.cookie, body: { projectId, conversationId, ...source,
+      clientRequestId: `retry-${source.executionSource}`, message: 'Search for: calm palettes', research: { enabled: true, query: 'calm palettes' } } });
+    const first = send(); const second = send();
+    // Both admissions are in flight while the first paid search is held. Give a
+    // second search every chance to start before the provider answers.
+    await until(async () => calls.length, (count) => count >= 1, 'first search');
+    for (let tick = 0; tick < 40 && calls.length < 2; tick++) await new Promise((resolve) => setTimeout(resolve, 25));
+    release(); tavilyGate = null;
+    const replies = await Promise.all([first, second]);
+    expect(replies.map((reply) => reply.status).sort(), replies.map((reply) => reply.text).join('\n')).toEqual([200, 202]);
+    expect(replies[0]!.json.runId).toBe(replies[1]!.json.runId);
+    expect(calls).toHaveLength(1);
+    expect(usageRows() - usageBefore).toBe(1);
+    const runs = await daemon.request({ path: `/api/runs?conversationId=${conversationId}`, cookie: a.cookie });
+    expect(runs.json.runs).toHaveLength(1);
+    await until(() => daemon.request({ path: `/api/runs/${replies[0]!.json.runId}`, cookie: a.cookie }),
+      (r) => ['succeeded', 'failed', 'canceled'].includes(r.json.status), 'retried turn');
+    // A later replay of the same logical turn is the same run, with no new search.
+    const replay = await send();
+    expect([replay.status, replay.json.runId]).toEqual([200, replies[0]!.json.runId]);
+    expect(calls).toHaveLength(1);
+  }
+}, 60_000);
+
+it('reuses the paid findings when a retry follows an admission refused after its search', async () => {
+  mode = 'ok';
+  const projectId = randomUUID();
+  const made = await daemon.request({ method: 'POST', path: '/api/projects', cookie: a.cookie, body: { id: projectId, name: 'Refused after search' } });
+  const conversationId = made.json.conversationId as string;
+  const send = (extra: Record<string, unknown>) => daemon.request({ method: 'POST', path: '/api/runs', cookie: a.cookie, body: { projectId, conversationId,
+    agentId: 'codex', executionSource: 'personal_subscription', message: 'Search for: warm palettes', ...extra } });
+  // Client-proposed turn ids live in the account's own namespace.
+  const prefix = `mua_${createHash('sha256').update(`studio-message-namespace:${a.id}`).digest('hex').slice(0, 24)}_`;
+  const usedAssistantId = `${prefix}${randomUUID()}`;
+  const first = await send({ userMessageId: `${prefix}${randomUUID()}`, assistantMessageId: usedAssistantId });
+  expect(first.status, first.text).toBe(202);
+  await until(() => daemon.request({ path: `/api/runs/${first.json.runId}`, cookie: a.cookie }), (r) => ['succeeded', 'failed'].includes(r.json.status), 'first turn');
+  calls.length = 0;
+  // An assistant id already used by another turn: refused after the search ran.
+  const turn = { clientRequestId: 'refused-after-search', research: { enabled: true, query: 'warm palettes' } };
+  const refused = await send({ ...turn, userMessageId: `${prefix}${randomUUID()}`, assistantMessageId: usedAssistantId });
+  expect([refused.status, refused.json.error?.code]).toEqual([409, 'CONFLICT']);
+  expect(calls).toHaveLength(1);
+  const retried = await send(turn);
+  expect(retried.status, retried.text).toBe(202);
+  expect(calls).toHaveLength(1);
+  await until(() => daemon.request({ path: `/api/runs/${retried.json.runId}`, cookie: a.cookie }), (r) => ['succeeded', 'failed'].includes(r.json.status), 'retried turn');
+  const evidence = JSON.parse(readFileSync(path.join(codexHome(root, a.id), 'mock-turn-evidence.json'), 'utf8'));
+  expect(evidence.message).toContain('## Research findings');
+  // Another query in the same turn is a new search.
+  const other = await send({ clientRequestId: 'refused-after-search-2', research: { enabled: true, query: 'cool palettes' } });
+  expect(other.status, other.text).toBe(202);
+  expect(calls).toHaveLength(2);
+  await until(() => daemon.request({ path: `/api/runs/${other.json.runId}`, cookie: a.cookie }), (r) => ['succeeded', 'failed'].includes(r.json.status), 'other turn');
+}, 60_000);

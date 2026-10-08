@@ -11,7 +11,7 @@ import {
 } from '../src/automation-proposals.js';
 import { listAllAutomationTemplates } from '../src/automation-templates.js';
 import { listDesignSystems } from '../src/design-systems/index.js';
-import { readMemoryEntry } from '../src/memory.js';
+import { readMemoryEntry, upsertMemoryEntry } from '../src/memory.js';
 import { listSkills } from '../src/skills.js';
 
 let dataDir = '';
@@ -59,6 +59,44 @@ describe('automation evolution proposals', () => {
       type: 'project',
     });
     expect(entry?.body).toContain('keep design-system extraction behind review');
+  });
+
+  it('keeps a memory update bound to its targetRef and refuses a different embedded id before writing', async () => {
+    for (const id of ['entry_a', 'entry_b']) {
+      await upsertMemoryEntry(dataDir, { id, name: id, description: id, type: 'project', body: `${id} original body` }, {});
+    }
+    const original = { a: (await readMemoryEntry(dataDir, 'entry_a'))?.body, b: (await readMemoryEntry(dataDir, 'entry_b'))?.body };
+    expect(original.a).toContain('entry_a original body');
+    const mismatched = await createAutomationProposal(dataDir, {
+      id: 'proposal-memory-mismatch', title: 'Update A', summary: 'Targets A', targetKind: 'memory-node', action: 'update',
+      targetRef: 'entry_a', patch: { format: 'json', after: JSON.stringify({ id: 'entry_b', body: 'replacement' }) },
+    });
+    await expect(applyAutomationProposal(dataDir, mismatched.id)).rejects.toThrow(/targetRef/);
+    expect((await readMemoryEntry(dataDir, 'entry_a'))?.body).toBe(original.a);
+    expect((await readMemoryEntry(dataDir, 'entry_b'))?.body).toBe(original.b);
+    expect((await listAutomationProposals(dataDir, { status: 'pending-review' })).map((item) => item.id)).toContain(mismatched.id);
+
+    // Repeating the target's own id is fine: the write lands on targetRef.
+    const bound = await createAutomationProposal(dataDir, {
+      id: 'proposal-memory-bound', title: 'Update A', summary: 'Targets A', targetKind: 'memory-node', action: 'update',
+      targetRef: 'entry_a', patch: { format: 'json', after: JSON.stringify({ id: 'entry_a', body: 'replacement' }) },
+    });
+    expect((await applyAutomationProposal(dataDir, bound.id)).result).toMatchObject({ memoryId: 'entry_a', action: 'update' });
+    expect((await readMemoryEntry(dataDir, 'entry_a'))?.body).toContain('replacement');
+    expect((await readMemoryEntry(dataDir, 'entry_b'))?.body).toBe(original.b);
+  });
+
+  it('keeps design-system and skill updates bound to a declared targetRef', async () => {
+    for (const [kind, file] of [['design-system', 'design-systems/other/DESIGN.md'], ['skill', 'skills/other/SKILL.md']] as const) {
+      await fsp.mkdir(path.dirname(path.join(dataDir, file)), { recursive: true });
+      await fsp.writeFile(path.join(dataDir, file), 'ORIGINAL\n');
+      const proposal = await createAutomationProposal(dataDir, {
+        id: `proposal-${kind}-unbound`, title: 'other', summary: 'Retarget by metadata', targetKind: kind, action: 'update',
+        targetRef: 'not-a-target-path', metadata: { slug: 'other' }, patch: { format: 'markdown', after: '# Replaced\n' },
+      });
+      await expect(applyAutomationProposal(dataDir, proposal.id)).rejects.toThrow(/targetRef/);
+      expect(await fsp.readFile(path.join(dataDir, file), 'utf8')).toBe('ORIGINAL\n');
+    }
   });
 
   it('rejects a pending proposal without applying it', async () => {

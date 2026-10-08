@@ -13,7 +13,7 @@ import { multiUserStreamAllowed } from '../http/multiuser-stream.js';
 import { sendApiError } from '../http/api-errors.js';
 import { BUILT_IN_AUTOMATION_TEMPLATES } from '../automation-templates.js';
 import { planAutomationIngestion } from '../automation-ingestions.js';
-import { assertReviewable, buildAutomationProposal, memoryEntryFromProposal } from '../automation-proposals.js';
+import { assertReviewable, buildAutomationProposal, MemoryProposalTargetMismatch, memoryEntryFromProposal, memoryProposalEntryId } from '../automation-proposals.js';
 import { parseFrontmatter } from '../design-systems/frontmatter.js';
 import { ProjectOwnershipStore } from '../storage/project-ownership.js';
 import { StudioSkills } from '../storage/studio-skills.js';
@@ -255,10 +255,14 @@ export function registerStudioAutomationRoutes(app: Express, input: {
       input.settings.publish(owner, { kind: 'delete', id });
       return { memoryId: id, action: 'delete' };
     }
+    // An update writes only its declared target: a different embedded id is refused before anything is read or written.
+    try { memoryProposalEntryId(proposal); } catch (error) {
+      throw error instanceof MemoryProposalTargetMismatch ? new AutomationRefusal(400, 'memory proposal id must match its targetRef') : error;
+    }
     const before = proposal.targetRef ? await readStudioMemoryEntry(root, String(proposal.targetRef)) : null;
     if (proposal.action === 'update' && !before) throw notFound();
     const draft = memoryEntryFromProposal(proposal, before);
-    const id = draft.id ?? deriveMemoryId(draft.type, draft.name);
+    const id = proposal.action === 'update' ? String(proposal.targetRef) : draft.id ?? deriveMemoryId(draft.type, draft.name);
     if (!MEMORY_ID.test(id)) throw new AutomationRefusal(400, 'invalid memory proposal');
     // A create never overwrites an existing entry of the account.
     if (proposal.action === 'create' && await readStudioMemoryEntry(root, id)) throw new AutomationRefusal(409, 'memory entry already exists');

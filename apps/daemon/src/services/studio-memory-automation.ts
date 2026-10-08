@@ -5,7 +5,7 @@ import {
   type MemoryEntry, type MemoryExtractionRecord, type MemoryVerifyRecord,
 } from '@open-design/contracts';
 import type { StudioSettings } from '../storage/studio-settings.js';
-import { composeMemoryBody, heuristicMemoryDrafts, listMemoryEntries, readMemoryConfig, readMemoryEntry } from '../memory.js';
+import { composeMemoryBody, heuristicMemoryDrafts, listActiveRuleEntries, listMemoryEntries, readMemoryConfig } from '../memory.js';
 import {
   MEMORY_EXTRACTION_SYSTEM_PROMPT, memoryCandidateKnown, memoryDraftFromCandidate, parseMemoryExtractionEntries,
   renderMemoryExtractionPayload,
@@ -31,6 +31,14 @@ export interface StudioMemoryTurn {
 }
 
 type Kind = 'extractions' | 'verifications';
+type MemorySwitches = { enabled: boolean; chatExtractionEnabled: boolean };
+/** Why extraction may not run under the account's own switches, or null when it may. */
+const switchedOff = (config: MemorySwitches): 'memory-disabled' | 'chat-disabled' | null =>
+  !config.enabled ? 'memory-disabled' : !config.chatExtractionEnabled ? 'chat-disabled' : null;
+const sameKey = (a: StudioMemoryTurnKey | null, b: StudioMemoryTurnKey) =>
+  a !== null && a.apiKey === b.apiKey && a.model === b.model && a.credentialSource === b.credentialSource;
+/** The credential, authority or service went away while extraction waited. */
+class ExtractionRevoked extends Error {}
 
 /**
  * Automatic memory for Studio accounts (#62). Everything is keyed by the
@@ -45,6 +53,9 @@ type Kind = 'extractions' | 'verifications';
 export class StudioMemoryAutomation {
   private readonly now: () => number;
   private readonly http: typeof fetch;
+  /** In-flight provider requests, aborted by `close()`. */
+  private readonly inflight = new Set<AbortController>();
+  private closed = false;
   constructor(private readonly input: { db: Database.Database; settings: StudioSettings; fetch?: typeof fetch; clock?: () => number }) {
     this.now = input.clock ?? Date.now;
     this.http = input.fetch ?? globalThis.fetch.bind(globalThis);
@@ -114,8 +125,26 @@ export class StudioMemoryAutomation {
   }
   beforeTurn(owner: string, userText: string): Promise<unknown> { return this.extractUserText(owner, userText); }
 
+  /** Stops background memory work: in-flight provider requests abort and later turns start nothing. */
+  close(): void {
+    this.closed = true;
+    for (const controller of this.inflight) controller.abort();
+    this.inflight.clear();
+  }
+
+  /**
+   * The turn may still bill its pinned source right now: the service is open,
+   * the owner may run background work (active, pilot, can read the project) and
+   * the turn's own key still resolves to the credential extraction pinned.
+   * Synchronous, so callers act on it with no I/O in between.
+   */
+  private stillPinned(turn: StudioMemoryTurn, pinned: StudioMemoryTurnKey): boolean {
+    return !this.closed && turn.allowed() && sameKey(turn.resolveKey(), pinned);
+  }
+
   /** After a succeeded turn: verification, then extraction on the turn's own source. Never throws. */
   async afterTurn(turn: StudioMemoryTurn): Promise<void> {
+    if (this.closed) return;
     try {
       const config = await this.input.settings.withMemory(turn.owner, (root) => readMemoryConfig(root));
       if (!config.enabled) return;
@@ -124,12 +153,17 @@ export class StudioMemoryAutomation {
     } catch { /* background memory work never fails the turn */ }
   }
 
+  /**
+   * Checks the turn against the active rules only: the MEMORY.md-linked set
+   * the prompt injected (`listActiveRuleEntries`, the same gate as
+   * `composeMemoryBody`), read under the account memory lock. A rule removed
+   * from the index is neither injected nor enforced.
+   */
   private async verify(turn: StudioMemoryTurn): Promise<void> {
-    const rules = await this.input.settings.withMemory(turn.owner, async (root) => {
-      const entries = (await listMemoryEntries(root) as MemoryEntry[]).filter((entry) => entry.type === 'rule');
-      const bodies = await Promise.all(entries.map((entry) => readMemoryEntry(root, entry.id)));
-      return entries.map((entry, index) => ({ name: entry.name, check: parseRuleBody(String((bodies[index] as { body?: unknown } | null)?.body ?? '')).check }));
-    });
+    const rules = await this.input.settings.withMemory(turn.owner, async (root) =>
+      (await listActiveRuleEntries(root) as Array<{ name: string; body: string }>)
+        .map((rule) => ({ name: rule.name, check: parseRuleBody(String(rule.body ?? '')).check })));
+    if (this.closed || !turn.allowed()) return;
     const result = enforceVerify({ assistantOutput: turn.assistantText, activeRules: rules, hadArtifact: turn.hadArtifact, verifyEnabled: true });
     // Only enforced turns are history; "no rules / no artifact" says nothing about the turn.
     if (result.status === 'skipped') return;
@@ -146,7 +180,7 @@ export class StudioMemoryAutomation {
       return;
     }
     // Re-resolved after the turn: the owner and the turn's own key, nothing else.
-    const key = turn.allowed() ? turn.resolveKey() : null;
+    const key = !this.closed && turn.allowed() ? turn.resolveKey() : null;
     if (!key) {
       this.extraction(turn.owner, { kind: 'llm', userText: turn.userText, runId: turn.runId, phase: 'skipped', reason: 'source-unavailable', finishedAt: this.now() });
       return;
@@ -154,15 +188,26 @@ export class StudioMemoryAutomation {
     const provider = { kind: 'openai' as const, model: key.model, credentialSource: key.credentialSource };
     const running = this.extraction(turn.owner, { kind: 'llm', userText: turn.userText, runId: turn.runId, phase: 'running', provider });
     const settle = (patch: Partial<MemoryExtractionRecord>) => this.record(turn.owner, 'extractions', { ...running, ...patch, finishedAt: this.now() });
-    const memory = await this.input.settings.withMemory(turn.owner, async (root) => ({ body: await composeMemoryBody(root) }));
+    const memory = await this.input.settings.withMemory(turn.owner, async (root) => {
+      const config = await readMemoryConfig(root);
+      const off = switchedOff(config);
+      return off ? { off } : { body: await composeMemoryBody(root) as string };
+    });
+    if ('off' in memory) return settle({ phase: 'skipped', reason: memory.off });
+    // The memory read yielded: authority and the pinned key are rechecked
+    // immediately before the provider is called, with no I/O in between.
+    if (!this.stillPinned(turn, key)) return settle({ phase: 'skipped', reason: 'source-unavailable' });
     let text = ''; const usage = { inputTokens: 0, outputTokens: 0 };
+    const controller = new AbortController();
+    this.inflight.add(controller);
     try {
-      const response = await this.http(RESPONSES_URL, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(TIMEOUT_MS),
+      const response = await this.http(RESPONSES_URL, { method: 'POST', redirect: 'error', signal: AbortSignal.any([controller.signal, AbortSignal.timeout(TIMEOUT_MS)]),
         headers: { authorization: `Bearer ${key.apiKey}`, 'content-type': 'application/json' },
         body: JSON.stringify({ model: key.model, store: false, stream: true, max_output_tokens: 1024, input: [
           { role: 'developer', content: MEMORY_EXTRACTION_SYSTEM_PROMPT },
           { role: 'user', content: renderMemoryExtractionPayload({ userMessage: turn.userText, assistantMessage: turn.assistantText, currentMemory: memory.body }) },
         ] }) });
+      if (!this.stillPinned(turn, key)) { await response.body?.cancel().catch(() => {}); throw new ExtractionRevoked(); }
       if (!response.ok || !response.body) {
         await response.body?.cancel().catch(() => {});
         // Secret-free classes only; the provider's body is never kept.
@@ -173,6 +218,8 @@ export class StudioMemoryAutomation {
       let bytes = 0; let buffer = ''; let completedText = '';
       for (;;) {
         const chunk = await reader.read(); if (chunk.done) break;
+        // Revocation while the provider streams stops reading; nothing is written.
+        if (!this.stillPinned(turn, key)) { await reader.cancel().catch(() => {}); throw new ExtractionRevoked(); }
         bytes += chunk.value.byteLength; if (bytes > RESPONSE_BYTES) { await reader.cancel(); throw new Error('response too large'); }
         buffer = (buffer + decoder.decode(chunk.value, { stream: true })).replaceAll('\r\n', '\n');
         for (let end = buffer.indexOf('\n\n'); end >= 0; end = buffer.indexOf('\n\n')) {
@@ -192,25 +239,35 @@ export class StudioMemoryAutomation {
         }
       }
       text = text || completedText;
-    } catch {
+    } catch (error) {
+      // Closed, or the key/authority went away mid-request: a skip, not a provider failure.
+      if (error instanceof ExtractionRevoked || controller.signal.aborted) return settle({ phase: 'skipped', reason: 'source-unavailable', usage });
       return settle({ phase: 'failed', error: 'OpenAI request failed', usage });
+    } finally {
+      this.inflight.delete(controller);
     }
     const proposed = (parseMemoryExtractionEntries(text) as Array<{ type: string; name: string; description?: string; body: string }>);
-    // The owner may have lost access while the provider answered: nothing is written then.
-    if (!turn.allowed()) return settle({ phase: 'skipped', reason: 'source-unavailable', proposedCount: proposed.length, usage });
-    const written = await this.input.settings.withMemory(turn.owner, async (root) => {
-      const out: string[] = [];
+    // The provider answer yielded again. Inside the account lock, before any
+    // write: the switches, the owner's authority and the pinned key must all
+    // still hold, so removing the key alone stops the write.
+    const written = await this.input.settings.withMemory(turn.owner, async (root): Promise<string[] | 'memory-full' | 'memory-disabled' | 'chat-disabled' | 'source-unavailable'> => {
+      if (!this.stillPinned(turn, key)) return 'source-unavailable';
+      const off = switchedOff(await readMemoryConfig(root));
+      if (off) return off;
       const known = await listMemoryEntries(root);
-      if (known.length >= STUDIO_MEMORY_MAX_ENTRIES) return null;
+      if (known.length >= STUDIO_MEMORY_MAX_ENTRIES) return 'memory-full';
+      const out: string[] = [];
       for (const candidate of proposed) {
         if (memoryCandidateKnown(known, candidate)) continue;
+        // Rechecked per write: each save is I/O the revocation may overtake.
+        if (!this.stillPinned(turn, key)) return out.length ? out : 'source-unavailable';
         const entry = await saveStudioMemoryEntry(root, memoryDraftFromCandidate(candidate), 'llm');
         if (entry === 'limit') break;
         if (entry !== 'invalid') out.push(entry.id);
       }
       return out;
     });
-    if (written === null) return settle({ phase: 'skipped', reason: 'memory-full', proposedCount: proposed.length, usage });
+    if (typeof written === 'string') return settle({ phase: 'skipped', reason: written, proposedCount: proposed.length, usage });
     if (written.length) this.input.settings.publish(turn.owner, { kind: 'extract', count: written.length, source: 'llm' });
     settle({ phase: 'success', proposedCount: proposed.length, writtenCount: written.length, writtenIds: written, usage });
   }

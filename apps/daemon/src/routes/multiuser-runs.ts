@@ -443,15 +443,32 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   const now = input.clock ?? Date.now;
   const research = createStudioResearch({ db, keys: providerKeys, clock: now, ...(input.researchFetch ? { fetch: input.researchFetch } : {}) });
   /**
+   * Findings already paid for, per logical turn (owner, conversation,
+   * clientRequestId) and query: a retry whose earlier admission failed after
+   * the search reuses them instead of billing the account again. Bounded and
+   * short-lived; a turn that queued a run is replayed before research anyway.
+   */
+  const paidFindings = new Map<string, { at: number; findings: string }>();
+  const PAID_FINDINGS_TTL_MS = 10 * 60_000;
+  /**
    * The turn's research (#63): one search on the account's own key, rendered
    * as daemon-authored evidence that precedes the turn for the agent only.
    * A refusal answers the admission with its typed code; nothing is queued.
    */
-  const researchInstruction = async (owner: string, fields: PersonalRunFields, res: Response): Promise<string | null | false> => {
+  const researchInstruction = async (owner: string, conversationId: string, fields: PersonalRunFields, res: Response): Promise<string | null | false> => {
     if (!fields.research) return null;
+    const query = fields.research.query ?? fields.text;
+    const paidKey = fields.clientRequestId === null ? null
+      : JSON.stringify([owner, conversationId, fields.clientRequestId, query, fields.research.maxSources ?? null]);
+    const paid = paidKey === null ? undefined : paidFindings.get(paidKey);
+    if (paid && now() - paid.at < PAID_FINDINGS_TTL_MS) return paid.findings;
     try {
-      const findings = await research.search(owner, fields.research.query ?? fields.text, fields.research.maxSources);
-      return renderStudioResearchFindings(findings);
+      const findings = renderStudioResearchFindings(await research.search(owner, query, fields.research.maxSources));
+      if (paidKey !== null) {
+        for (const [key, entry] of paidFindings) if (paidFindings.size >= 256 || now() - entry.at >= PAID_FINDINGS_TTL_MS) paidFindings.delete(key);
+        paidFindings.set(paidKey, { at: now(), findings });
+      }
+      return findings;
     } catch (error) {
       if (error instanceof StudioResearchError) sendApiError(res, error.status, error.code, error.message);
       else sendApiError(res, 502, 'UPSTREAM_UNAVAILABLE', 'research failed');
@@ -740,7 +757,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       source: run.execution_source as 'personal_subscription' | 'company_pool' | 'personal_api_key',
       userText: storedMessage(run.request_json) ?? '', assistantText: text, hadArtifact: files.length > 0 || /<artifact[\s>]/i.test(text),
       resolveKey,
-      allowed: () => !storesClosed && accounts.getAccountById(run.owner_account_id)?.active === true
+      allowed: () => !storesClosed && !shuttingDown && accounts.getAccountById(run.owner_account_id)?.active === true
         && accounts.getStudioPilot(run.owner_account_id).studioPilot && projects.canView(run.project_id, run.owner_account_id) });
   };
   const finish = (id: string, status: 'succeeded' | 'failed' | 'canceled', output?: unknown) => {
@@ -1341,8 +1358,27 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       .get(conversationId) as { id: string; status: RunRow['status'] } | undefined;
     return retried !== null && newest?.id === retried && (newest.status === 'failed' || newest.status === 'canceled');
   };
+  /**
+   * One logical turn is admitted once (#63). Admissions that name the same
+   * owner, conversation and clientRequestId run one at a time, from before any
+   * paid work (research) until the run is queued or refused. A concurrent retry
+   * therefore waits, then meets the replay check and answers with the run the
+   * first admission created instead of paying for a second search. The key
+   * only orders work; each admission still validates its own body and authority.
+   */
+  const admissionLanes = new Map<string, Promise<unknown>>();
+  const admitOnce = async (inputBody: Record<string, unknown>, res: Response, admit: () => Promise<unknown>): Promise<void> => {
+    const { conversationId, clientRequestId } = inputBody;
+    if (typeof conversationId !== 'string' || typeof clientRequestId !== 'string') { await admit(); return; }
+    const key = JSON.stringify([actor(res), conversationId, clientRequestId]);
+    const current = (admissionLanes.get(key) ?? Promise.resolve()).catch(() => {}).then(admit);
+    admissionLanes.set(key, current);
+    try { await current; } finally { if (admissionLanes.get(key) === current) admissionLanes.delete(key); }
+  };
   /** `instruction` is daemon-authored (routines): sent to the agent with the turn, never shown as the user's message. */
-  const createPersonalRun = async (inputBody: Record<string, unknown>, res: Response, instruction?: string) => {
+  const createPersonalRun = (inputBody: Record<string, unknown>, res: Response, instruction?: string) =>
+    admitOnce(inputBody, res, () => admitPersonalRun(inputBody, res, instruction));
+  const admitPersonalRun = async (inputBody: Record<string, unknown>, res: Response, instruction?: string) => {
     const target = managedTarget(inputBody, res);
     if (!target) return;
     const owner = actor(res);
@@ -1432,7 +1468,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (fields.research && !personal.usableAccount(owner)) {
       return sendApiError(res, 409, 'MULTIUSER_PERSONAL_UNAVAILABLE', 'no usable personal Codex account; link or re-authorize it');
     }
-    const findings = await researchInstruction(owner, fields, res);
+    const findings = await researchInstruction(owner, target.conversationId, fields, res);
     if (findings === false) return;
     if (findings) instruction = [instruction, findings].filter(Boolean).join('\n\n');
     const request = JSON.stringify({ message: fields.text, ...(instruction ? { instruction } : {}), ...(fields.attachments.length ? { attachments: fields.attachments } : {}),
@@ -1503,8 +1539,11 @@ export function registerMultiUserRunRoutes(app: Express, input: {
    * #62/#63). A conversation is pinned to the first source it ran on; the
    * other source is a mismatch, never a fallback.
    */
-  const createOpenAIRun = async (inputBody: Record<string, unknown>, res: Response, instruction?: string,
-    executionSource: 'company_pool' | 'personal_api_key' = 'company_pool') => {
+  const createOpenAIRun = (inputBody: Record<string, unknown>, res: Response, instruction?: string,
+    executionSource: 'company_pool' | 'personal_api_key' = 'company_pool') =>
+    admitOnce(inputBody, res, () => admitOpenAIRun(inputBody, res, instruction, executionSource));
+  const admitOpenAIRun = async (inputBody: Record<string, unknown>, res: Response, instruction: string | undefined,
+    executionSource: 'company_pool' | 'personal_api_key') => {
     const own = executionSource === 'personal_api_key';
     const target = managedTarget(inputBody, res); if (!target) return;
     const owner = actor(res);
@@ -1571,7 +1610,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const prompt = question && typeof previousRequest?.stablePrompt === 'string' ? previousRequest.stablePrompt : stablePrompt + selected.map((skill) => `\n\n---\n\n## Composed skill — ${skill.name}\n\n${skill.body.trim()}`).join('');
     // Research bills the account's own Tavily key whatever the turn's source; the recheck below covers this I/O.
     if (fields.research && !own && ledger.balance(owner).remainingMs === 0) return sendApiError(res, 429, 'MULTIUSER_QUOTA_EXHAUSTED', 'worker quota exhausted');
-    const findings = await researchInstruction(owner, fields, res);
+    const findings = await researchInstruction(owner, target.conversationId, fields, res);
     if (findings === false) return;
     if (findings) instruction = [instruction, findings].filter(Boolean).join('\n\n');
     if (!multiUserStreamAllowed(res) || !managedTarget(inputBody, res)) return;
@@ -1808,6 +1847,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (shuttingDown) return;
     shuttingDown = true;
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    // Background memory extraction bills a turn's source: none outlives the daemon.
+    input.memory?.close();
     for (const set of listeners.values()) for (const res of set) res.end();
     listeners.clear();
   };

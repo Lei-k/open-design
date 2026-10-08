@@ -101,6 +101,8 @@ export interface MultiUserDesignRoutes {
     projectId: string;
     userInstructions?: string;
     memoryBody?: string;
+    /** The account's own memory hooks (#62), captured with `memoryBody`; absent means the prompt defaults. */
+    memoryHooks?: Parameters<typeof composeSystemPrompt>[0]['memoryHooks'];
     /** Conversation-captured revisions; the live bundled tree is never read. */
     captured: MultiUserDesignCapture;
   }): Promise<{ prompt: string; hash: string; selection: MultiUserDesignSelection } | null>;
@@ -372,7 +374,7 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
 
   return {
     selection,
-    async composeStablePrompt({ conversationId, ownerId, projectId, userInstructions, memoryBody, captured }) {
+    async composeStablePrompt({ conversationId, ownerId, projectId, userInstructions, memoryBody, memoryHooks, captured }) {
       const design = selection(conversationId, ownerId);
       const project = getProject(db, projectId);
       if (!design || !project || !projects.canWrite(projectId, ownerId)) return null;
@@ -391,6 +393,7 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
         skillMode: captured.skill.mode,
         ...designPrompt,
         memoryBody,
+        memoryHooks,
         userInstructions,
         pluginBlock: undefined,
       });

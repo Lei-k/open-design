@@ -138,6 +138,33 @@ it('keeps packets and proposals private and applies them only into the account s
   expect((await get(a, `/api/memory/${memoryId}`)).json.entry.body).not.toContain('stolen');
 });
 
+it('keeps a memory update bound to its targetRef and refuses a different embedded id before writing', async () => {
+  for (const id of ['entry_a', 'entry_b']) {
+    const made = await post(a, '/api/memory', { id, type: 'project', name: id, description: id, body: `${id} original body` });
+    expect(made.status, made.text).toBe(200);
+  }
+  const body = async (id: string) => (await get(a, `/api/memory/${id}`)).json.entry.body as string;
+  const original = { a: await body('entry_a'), b: await body('entry_b') };
+  expect(original.a).toContain('entry_a original body');
+  const mismatched = await post(a, '/api/automation-proposals', { title: 'Update A', summary: 'Targets A', targetKind: 'memory-node', action: 'update',
+    targetRef: 'entry_a', patch: { format: 'json', after: JSON.stringify({ id: 'entry_b', body: 'replacement' }) } });
+  expect(mismatched.status, mismatched.text).toBe(200);
+  const refused = await post(a, `/api/automation-proposals/${mismatched.json.proposal.id}/apply`);
+  expect([refused.status, refused.json.error?.code]).toEqual([400, 'BAD_REQUEST']);
+  expect(await body('entry_a')).toBe(original.a);
+  expect(await body('entry_b')).toBe(original.b);
+  expect((await get(a, `/api/automation-proposals/${mismatched.json.proposal.id}`)).json.proposal.status).toBe('pending-review');
+
+  // Repeating the target's own id is fine: the write lands on targetRef only.
+  const bound = await post(a, '/api/automation-proposals', { title: 'Update A', summary: 'Targets A', targetKind: 'memory-node', action: 'update',
+    targetRef: 'entry_a', patch: { format: 'json', after: JSON.stringify({ id: 'entry_a', body: 'BOUND_MARKER' }) } });
+  const applied = await post(a, `/api/automation-proposals/${bound.json.proposal.id}/apply`);
+  expect(applied.status, applied.text).toBe(200);
+  expect(applied.json.result).toMatchObject({ memoryId: 'entry_a', action: 'update' });
+  expect(await body('entry_a')).toContain('BOUND_MARKER');
+  expect(await body('entry_b')).toBe(original.b);
+});
+
 it('refuses connector context, foreign projects, host-shaped fields and account automation templates', async () => {
   const connector = await ingest(a, { sourceKind: 'connector' });
   expect([connector.status, connector.json.error.code]).toEqual([403, 'MULTIUSER_CAPABILITY_UNAVAILABLE']);
