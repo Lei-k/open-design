@@ -22,7 +22,7 @@ import { useStudioCapabilities, StudioUnavailable } from './studio-capabilities'
 /** Account sections, plus the desktop sections whose lane is still open: those
  * stay in the navigation with the server's reason instead of disappearing. */
 type StudioSettingsSection = 'agentAccounts' | 'skills' | 'general' | 'instructions' | 'memory' | 'media' | 'integrations' | 'privacy' | 'about';
-const PENDING: Partial<Record<StudioSettingsSection, StudioParityLaneId>> = { media: 'generation', integrations: 'settings', privacy: 'settings' };
+const PENDING: Partial<Record<StudioSettingsSection, StudioParityLaneId>> = { media: 'generation', integrations: 'settings' };
 
 function studioSection(section: SettingsSection): StudioSettingsSection {
   switch (section) {
@@ -138,6 +138,11 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
     </>}
     {usable && section === 'memory' && <MemorySection />}
     {pending && <StudioUnavailable lane={pending} />}
+    {/* Deployment decision (#62): no usage metrics or content leave a Web deployment, so there is nothing to opt into. */}
+    {section === 'privacy' && <section className="settings-section" data-testid="studio-privacy">
+      <h3>{t('studio.privacyOffTitle')}</h3>
+      <p className="hint">{t('studio.privacyOffBody')}</p>
+    </section>}
     {section === 'about' && <StudioAbout loaded={appVersionInfo ?? null} />}
   </SettingsFrame>;
 }

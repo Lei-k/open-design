@@ -35,6 +35,8 @@ export interface Dict {
   'studio.aboutReloadPage': string;
   'studio.aboutClearData': string;
   'studio.aboutClearDataHint': string;
+  'studio.privacyOffTitle': string;
+  'studio.privacyOffBody': string;
   'studio.settingsSaved': string;
   'studio.settingsError': string;
   'studio.settingsConflict': string;

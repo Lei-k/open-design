@@ -394,6 +394,8 @@ export const fa: Dict = {
   'studio.aboutReloadPage': 'Reload page',
   'studio.aboutClearData': 'پاک کردن داده‌های این مرورگر و خروج',
   'studio.aboutClearDataHint': 'آنچه این مرورگر برای Open Design نگه می‌دارد را حذف می‌کند و این نشست را پایان می‌دهد. پروژه‌ها و تنظیمات شما روی سرور می‌مانند.',
+  'studio.privacyOffTitle': 'داده‌های استفاده از این استقرار خارج نمی‌شود',
+  'studio.privacyOffBody': 'آمار استفاده و اشتراک محتوای Open Design برای حساب‌های این سرور خاموش است. هیچ چیز از پروژه‌ها، دستورها یا فعالیت شما برای تیم Open Design ارسال نمی‌شود. این استقرار را مدیر شما اداره می‌کند.',
   'studio.settingsSaved': 'Account instructions saved.',
   'studio.settingsError': 'Could not load or save account instructions.',
   'studio.settingsConflict': 'Settings changed in another tab. Reload saved settings before saving again.',

@@ -177,6 +177,13 @@ test('[P1] Studio saves a private template in FileViewer and creates its capture
 });
 
 test('[P1] Studio saves private skills, instructions and memory in shared Settings and runs their captured text', async ({ page, studio }, info) => {
+  // No browser request may leave the deployment's own app/preview origins (telemetry off, no third-party calls).
+  const foreign: string[] = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (!['https:', 'http:', 'wss:', 'ws:'].includes(url.protocol)) return;
+    if (![new URL(studio.origin).origin, new URL(studio.previewOrigin).origin].includes(url.origin)) foreign.push(url.origin);
+  });
   await studio.linkCodex(studio.a);
   await studio.configureTurn(studio.a, { promptReplyMarkers: ['Browser private skill marker', 'Browser account instructions marker', 'Browser account memory marker', 'Browser design original marker'] });
   await page.goto(`${studio.origin}/settings`);
@@ -186,10 +193,15 @@ test('[P1] Studio saves private skills, instructions and memory in shared Settin
   // Shared Settings frame: every desktop section stays in the navigation; open lanes show their reason.
   await expect(page.getByTestId('studio-settings-nav-agentAccounts')).toHaveClass(/active/, { timeout: T.long });
   await page.screenshot({ path: info.outputPath('studio-settings-navigation-entry.png'), animations: 'disabled' });
-  for (const pending of ['media', 'integrations', 'privacy']) {
+  for (const pending of ['media', 'integrations']) {
     await page.getByTestId(`studio-settings-nav-${pending}`).click();
     await expect(page.locator('.settings-content .studio-unavailable')).toBeVisible();
   }
+  // Telemetry is off for Web accounts (deployment decision): the page says so and offers no opt-in.
+  await page.getByTestId('studio-settings-nav-privacy').click();
+  await expect(page.getByTestId('studio-privacy')).toContainText('No usage data leaves this deployment');
+  await expect(page.getByTestId('studio-privacy').getByRole('checkbox')).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath('studio-privacy-entry.png'), animations: 'disabled' });
   // About: the deployed version and a no-store check for a newer deployment (#67 Web equivalent).
   await page.getByTestId('studio-settings-nav-about').click();
   await expect(page.getByTestId('studio-about-version')).not.toHaveText('—');
@@ -324,6 +336,7 @@ test('[P1] Studio saves private skills, instructions and memory in shared Settin
   await page.getByTestId('studio-settings-nav-instructions').click();
   await expect(page.locator('.custom-instructions-input')).toHaveValue('Browser account instructions marker');
   await page.screenshot({ path: info.outputPath('studio-skill-turn.png') });
+  expect([...new Set(foreign)]).toEqual([]);
 });
 
 // One browser witness owns the iframe → parent → owner file-write transition.

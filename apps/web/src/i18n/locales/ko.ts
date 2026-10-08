@@ -394,6 +394,8 @@ export const ko: Dict = {
   'studio.aboutReloadPage': '페이지 새로고침',
   'studio.aboutClearData': '이 브라우저 데이터 지우고 로그아웃',
   'studio.aboutClearDataHint': '이 브라우저가 Open Design용으로 보관한 데이터를 삭제하고 이 세션을 종료합니다. 프로젝트와 설정은 서버에 그대로 남습니다.',
+  'studio.privacyOffTitle': '사용 데이터는 이 배포 밖으로 나가지 않습니다',
+  'studio.privacyOffBody': '이 서버의 계정은 Open Design 사용 통계와 콘텐츠 공유가 꺼져 있습니다. 프로젝트, 프롬프트, 활동 정보는 Open Design 팀에 전송되지 않습니다. 이 배포는 관리자가 운영합니다.',
   'studio.settingsSaved': 'Account instructions saved.',
   'studio.settingsError': 'Could not load or save account instructions.',
   'studio.settingsConflict': 'Settings changed in another tab. Reload saved settings before saving again.',

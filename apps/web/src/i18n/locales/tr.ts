@@ -8,6 +8,8 @@ export const tr: Dict = {
   "studio.aboutReloadPage": "Reload page",
   "studio.aboutClearData": "Bu tarayıcının verilerini temizle ve çıkış yap",
   "studio.aboutClearDataHint": "Bu tarayıcının Open Design için sakladıklarını kaldırır ve bu oturumu sonlandırır. Projeleriniz ve ayarlarınız sunucuda kalır.",
+  "studio.privacyOffTitle": "Kullanım verileri bu kurulumun dışına çıkmaz",
+  "studio.privacyOffBody": "Bu sunucudaki hesaplar için Open Design kullanım ölçümleri ve içerik paylaşımı kapalıdır. Projeleriniz, istemleriniz ve etkinliğiniz Open Design ekibine gönderilmez. Bu kurulumu yöneticiniz işletir.",
   "studio.settingsSaved": "Account instructions saved.",
   "studio.settingsError": "Could not load or save account instructions.",
   "studio.settingsConflict": "Settings changed in another tab. Reload saved settings before saving again.",

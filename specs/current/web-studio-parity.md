@@ -419,13 +419,33 @@ pnpm --filter @open-design/daemon exec vitest run -c vitest.config.ts tests/auth
 - **Historical HTML export.** `export-html` accepts `versionId` (`^[A-Za-z0-9-]{1,64}$`): the entry HTML comes from the (now link-safe) version store and same-project assets from the bounded no-follow capture, exactly the single-user semantics. Unknown versions are 404, foreign/admin stay 404. FileViewer already passes the viewed version; CLI `od project export-html … --version-id <id>`.
 - Evidence: `studio-files-http` link-planting case (content link, per-file store link with forged manifest, store root link; read, list and restore) red before / green after; 149 existing version/route tests; `studio-archives-http` historical export; CLI case.
 
+## S29 — project-tree link hardening (#54, #58, #59)
+
+A read-only audit of every Studio-reachable path that touches the agent-writable project tree found link-following writes and reads beyond the S28 version store. Fixed:
+
+- **Dangling links on write (deterministic).** `resolveSafeReal` re-appended the name of a dangling link after realpath's ENOENT, so `POST files`, artifact-manifest sidecars and version restore created the link's target outside the project with owner bytes. The first missing component is now `lstat`ed and a link is refused.
+- **Uploads (deterministic).** Multer's disk storage opened `join(dir, name)` with `w`, and the collision check used `existsSync` (follows links). A storage engine now creates files with `wx` (O_CREAT|O_EXCL, never through a link) inside the destination pinned by descriptor, and names are chosen with `lstat` semantics.
+- **Writes and folder delete.** Project writes go to an exclusive temp sibling then `rename` into place inside the parent pinned by descriptor (`/proc/self/fd/<n>` on Linux), so neither a final link nor a swapped ancestor can redirect them; version-store writes and recursive folder delete use the same pinning.
+- **Reads.** `readProjectFile`, file search, artifact-manifest sidecars and the raw/preview/file-content/preview-origin streams read through an `O_NOFOLLOW` descriptor that must be a regular file resolving inside the project (closing the realpath-then-reopen race). Directory reads keep their `EISDIR` error.
+- Residual (documented, low): post-run artifact capture only races with a second live lane in the same project; the attachment resolver can reveal whether a link target exists. Neither returns foreign bytes through these paths.
+- Also fixed: the S1-era `sse-response` unit test failures (responses without Express `locals` are non-gated streams) and the S27 storage test expectation.
+- Evidence: `studio-files-http` link case (dangling file and directory links on write, upload named like a planted link, linked manifest sidecar) red on the S28 source and green now; full daemon suite 976 files (12,699 passed before the three fixes above, all green after); browser suite 13/13.
+
+## S30 — Privacy for Web accounts (#62, decision)
+
+- Product decision 2026-10-08: telemetry stays off for Web accounts. `/api/analytics/*` remain blocked in multi-user mode, so the browser never obtains an analytics key. Studio Settings → Privacy now states that no usage data or content leaves the deployment and offers no opt-in (instead of a "pending" notice).
+- Evidence: the Settings browser case records every request and asserts none leaves the app/preview origins during the whole flow.
+
+![Privacy for Web accounts](../../docs/design/studio-parity/privacy-off.png)
+
 ## 目前進度與續作順序 — 2026-10-07（S25 後）
 
-[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S28 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
+[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S30 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
 
 - 分支：`feat/studio-parity-foundation`；以 PR 最新 head 為準。先核對 git status/log 和 GitHub 最新 review，避免重做已交付項目。S18–S25 的實作、測試、限制與入口截圖見上文；本次依使用者要求階段性收尾並交接，並非 Epic 完成。
 - 已確認產品決定：公司池使用 OpenAI 官方 API；Vela 採使用者驗證的本人身份與服務端 Web account/member binding；native window、OS overlay 與 app installer/updater 的 Web 不適用決定，和 in-page pet 仍需交付項目保持分開。
 - 沒有 staging。使用者會自行部署 EC2；目前沒有真實 OpenAI key 或 EC2 設定。provider fixtures 不能代替真實 provider／EC2 acceptance。公司池 skill script 需要部署端設定 personal sandbox（bubblewrap）才會出現。
+- 2026-10-08 產品決定：#66 以 deploy image 內 headless Chromium（沙箱、拒絕網路）渲染 PDF/PPTX/PNG；#62/#63 允許每帳號自有 provider API key（部署主金鑰加密，管理員不可讀）；#62 Web 帳號 telemetry 關閉；#65 同一部署內帳號間專案分享（view/comment/edit、presence、共享評論），不接 Vela relay。
 - 下一批按 DAG 推進：
   - #64：automation templates/proposals/ingestion/crystallize、connector/MCP context，以及排程觸發的真實驗收。
   - #65：owner 預覽評論與 comment attachments 已於 S26 完成；剩餘 team comment 分享、presence、shared resources 與 verified Vela binding。

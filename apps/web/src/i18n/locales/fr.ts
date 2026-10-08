@@ -394,6 +394,8 @@ export const fr: Dict = {
   'studio.aboutReloadPage': 'Reload page',
   'studio.aboutClearData': 'Effacer les données de ce navigateur et se déconnecter',
   'studio.aboutClearDataHint': 'Supprime ce que ce navigateur conserve pour Open Design et met fin à cette session. Vos projets et réglages restent sur le serveur.',
+  'studio.privacyOffTitle': 'Aucune donnée d’usage ne quitte ce déploiement',
+  'studio.privacyOffBody': 'Les statistiques d’usage et le partage de contenu d’Open Design sont désactivés pour les comptes de ce serveur. Rien de vos projets, prompts ou activités n’est envoyé à l’équipe Open Design. Ce déploiement est géré par votre administrateur.',
   'studio.settingsSaved': 'Account instructions saved.',
   'studio.settingsError': 'Could not load or save account instructions.',
   'studio.settingsConflict': 'Settings changed in another tab. Reload saved settings before saving again.',

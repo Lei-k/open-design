@@ -8,6 +8,8 @@ export const hu: Dict = {
   "studio.aboutReloadPage": "Reload page",
   "studio.aboutClearData": "A böngésző adatainak törlése és kijelentkezés",
   "studio.aboutClearDataHint": "Eltávolítja, amit ez a böngésző az Open Design számára tárol, és befejezi a munkamenetet. A projektek és beállítások a szerveren maradnak.",
+  "studio.privacyOffTitle": "Használati adat nem hagyja el ezt a telepítést",
+  "studio.privacyOffBody": "Ezen a szerveren a fiókoknál ki van kapcsolva az Open Design használati statisztika és tartalommegosztás. A projektjeid, promptjaid és tevékenységed nem kerül az Open Design csapathoz. A telepítést a rendszergazdád üzemelteti.",
   "studio.settingsSaved": "Account instructions saved.",
   "studio.settingsError": "Could not load or save account instructions.",
   "studio.settingsConflict": "Settings changed in another tab. Reload saved settings before saving again.",

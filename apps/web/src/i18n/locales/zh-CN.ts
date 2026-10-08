@@ -8,6 +8,8 @@ export const zhCN: Dict = {
   "studio.aboutReloadPage": "重新加载页面",
   "studio.aboutClearData": "清除此浏览器数据并退出登录",
   "studio.aboutClearDataHint": "移除此浏览器为 Open Design 保存的数据并结束本次会话。你的项目和设置仍保留在服务器上。",
+  "studio.privacyOffTitle": "使用数据不会离开此部署",
+  "studio.privacyOffBody": "此服务器上的账号已关闭 Open Design 使用统计与内容共享。你的项目、提示和活动不会发送给 Open Design 团队。此部署由你的管理员运维。",
   "studio.settingsSaved": "已保存个人指令。",
   "studio.settingsError": "无法加载或保存个人指令。",
   "studio.settingsConflict": "另一个标签页已修改设置。请重新加载后再保存。",

@@ -8,6 +8,8 @@ export const zhTW: Dict = {
   "studio.aboutReloadPage": "重新載入頁面",
   "studio.aboutClearData": "清除此瀏覽器資料並登出",
   "studio.aboutClearDataHint": "移除此瀏覽器為 Open Design 保存的資料並結束本次工作階段。你的專案與設定仍保留在伺服器上。",
+  "studio.privacyOffTitle": "使用資料不會離開此部署",
+  "studio.privacyOffBody": "此伺服器上的帳號已關閉 Open Design 使用統計與內容分享。你的專案、提示與活動不會傳送給 Open Design 團隊。此部署由你的管理員維運。",
   "studio.settingsSaved": "已儲存個人指示。",
   "studio.settingsError": "無法載入或儲存個人指示。",
   "studio.settingsConflict": "另一個分頁已修改設定。請重新載入後再儲存。",

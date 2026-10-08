@@ -394,6 +394,8 @@ export const ja: Dict = {
   'studio.aboutReloadPage': 'ページを再読み込み',
   'studio.aboutClearData': 'このブラウザのデータを消去してサインアウト',
   'studio.aboutClearDataHint': 'このブラウザが Open Design のために保存しているデータを削除し、このセッションを終了します。プロジェクトと設定はサーバーに残ります。',
+  'studio.privacyOffTitle': '利用データはこのデプロイの外に送信されません',
+  'studio.privacyOffBody': 'このサーバーのアカウントでは Open Design の利用統計とコンテンツ共有がオフになっています。プロジェクト、プロンプト、操作内容が Open Design チームに送信されることはありません。このデプロイは管理者が運用しています。',
   'studio.settingsSaved': 'Account instructions saved.',
   'studio.settingsError': 'Could not load or save account instructions.',
   'studio.settingsConflict': 'Settings changed in another tab. Reload saved settings before saving again.',

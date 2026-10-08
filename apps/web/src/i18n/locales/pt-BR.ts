@@ -8,6 +8,8 @@ export const ptBR: Dict = {
   "studio.aboutReloadPage": "Reload page",
   "studio.aboutClearData": "Limpar os dados deste navegador e sair",
   "studio.aboutClearDataHint": "Remove o que este navegador guarda para o Open Design e encerra esta sessão. Seus projetos e configurações continuam no servidor.",
+  "studio.privacyOffTitle": "Nenhum dado de uso sai desta implantação",
+  "studio.privacyOffBody": "As métricas de uso e o compartilhamento de conteúdo do Open Design estão desativados para as contas deste servidor. Nada dos seus projetos, prompts ou atividades é enviado à equipe do Open Design. Esta implantação é operada pelo seu administrador.",
   "studio.settingsSaved": "Account instructions saved.",
   "studio.settingsError": "Could not load or save account instructions.",
   "studio.settingsConflict": "Settings changed in another tab. Reload saved settings before saving again.",

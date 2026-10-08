@@ -8,6 +8,8 @@ export const esES: Dict = {
   "studio.aboutReloadPage": "Reload page",
   "studio.aboutClearData": "Borrar los datos de este navegador y cerrar sesión",
   "studio.aboutClearDataHint": "Elimina lo que este navegador guarda para Open Design y cierra esta sesión. Tus proyectos y ajustes siguen en el servidor.",
+  "studio.privacyOffTitle": "Ningún dato de uso sale de este despliegue",
+  "studio.privacyOffBody": "Las métricas de uso y el envío de contenido de Open Design están desactivados para las cuentas de este servidor. Nada de tus proyectos, prompts o actividad se envía al equipo de Open Design. Tu administrador gestiona este despliegue.",
   "studio.settingsSaved": "Account instructions saved.",
   "studio.settingsError": "Could not load or save account instructions.",
   "studio.settingsConflict": "Settings changed in another tab. Reload saved settings before saving again.",
