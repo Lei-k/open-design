@@ -4518,7 +4518,7 @@ export function CommentSidePanel({
   t: TranslateFn;
   composer?: ReactNode;
 }) {
-  const { workspaceContext } = useProjectCollabContext();
+  const { workspaceContext, resolveMember } = useProjectCollabContext();
   const [newCommentDraft, setNewCommentDraft] = useState('');
   const [dragState, setDragState] = useState<CommentSideDragState | null>(null);
   // Collab-cloud member directory: turns a comment's authorMemberId into a
@@ -4722,7 +4722,8 @@ export function CommentSidePanel({
           const selected = visibleSelectedIds.has(comment.id);
           const active = comment.id === activeCommentId;
           const sendable = canSend(comment);
-          const author = resolveCommentAuthor(comment.authorMemberId);
+          // Studio projects resolve authors from their own member list (#65).
+          const author = (resolveMember ?? resolveCommentAuthor)(comment.authorMemberId);
           const isDragging = dragState?.draggingId === comment.id;
           const dropClass = dragState?.overId === comment.id &&
             dragState.draggingId !== comment.id &&
@@ -14784,7 +14785,7 @@ function HtmlViewer({
     if (returnFocusTarget) commentPanelReturnFocusRef.current = returnFocusTarget;
     fireArtifactToolbarClick('comment');
     void capturePreviewScrollPosition();
-    if (boardMode && commentCreateMode) {
+    if ((boardMode && commentCreateMode) || (!commentCreateAllowed && commentPanelOpen)) {
       setBoardMode(false);
       setCommentCreateMode(false);
       setCommentPanelOpen(false);
@@ -14795,6 +14796,8 @@ function HtmlViewer({
     const activateCommentCreate = () => {
       setCommentPanelOpen(true);
       setCommentSidePanelCollapsed(false);
+      // A view-only Studio member opens the list only; there is nothing to place (#65).
+      if (!commentCreateAllowed) { closeArtifactToolMenus(); return; }
       setCommentCreateMode(true);
       if (!activeCommentTarget) clearBoardComposer();
       setInspectMode(false);
@@ -15066,8 +15069,10 @@ function HtmlViewer({
   const deliveryUsable = studio.hostServices || studioRequest('POST', `/api/projects/${projectId}/export/html`);
   const studioRenderedExports = !studio.hostServices && studioRequest('POST', `/api/projects/${projectId}/export/pptx`);
   const rendererExports = studio.hostServices || studioRenderedExports;
-  // Owner preview comments are reviewed for Studio (#59); team sharing of them is #65.
+  // Preview comments are reviewed for Studio (#59) and shared with project members (#65).
   const commentsUsable = studioRequest('GET', `/api/projects/${projectId}/conversations/active/comments`);
+  // A view-only Studio member reads the comments but cannot add any.
+  const commentCreateAllowed = commentsUsable && collab.canComment !== false;
   const [archiveDownloading, setArchiveDownloading] = useState(false);
   const rawCanShare = studio.hostServices && deliveryUsable && source !== null && isShareableArtifact;
   const canRenderExports = rendererExports && deliveryUsable && source !== null && isShareableArtifact && !viewerOnly;
@@ -16161,6 +16166,9 @@ function HtmlViewer({
     // to the current viewer, including a read-only member/admin annotating
     // someone else's shared project.
     if (!comment) return true;
+    // An unshared Studio project has one author: the viewer. Studio stamps
+    // the session account even then (#65), which must not lock the owner out.
+    if (studio.actor && !collab.enabled) return true;
     const authorId = comment?.authorMemberId ?? null;
     // A legacy shared comment without an author is deliberately owner-only.
     // Treating it as "mine" for every member made the client advertise a
@@ -16422,7 +16430,7 @@ function HtmlViewer({
           setSendingBoardBatch(false);
         }
       }}
-      onCreateComment={savePanelComment}
+      {...(commentCreateAllowed ? { onCreateComment: savePanelComment } : {})}
       canSendComment={canSendCommentToAgent}
       currentUser={commentAuthorSelf}
       sending={sendingBoardBatch}
@@ -16646,7 +16654,7 @@ function HtmlViewer({
                 </button>
               ) : null}
               {/* Hidden rather than dead when the runtime has no reviewed comment endpoints. */}
-              {commentsUsable ? <div className="artifact-tool-menu-anchor">
+              {commentCreateAllowed ? <div className="artifact-tool-menu-anchor">
                 <button
                   type="button"
                   className={`viewer-action viewer-action-icon viewer-comment-toggle od-tooltip${boardMode && !commentCreateMode && boardTool === 'inspect' ? ' active' : ''}`}

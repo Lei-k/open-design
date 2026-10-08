@@ -15,7 +15,7 @@ import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { composeSystemPrompt } from '../prompts/system.js';
 import { listFiles, openProjectReadStreamNoFollow, resolveProjectDir, resolveProjectFilePath } from '../projects.js';
 import { AuthStore } from '../storage/auth-store.js';
-import { ProjectOwnershipStore } from '../storage/project-ownership.js';
+import { ProjectAccessStore } from '../storage/project-access.js';
 import type { SkillInfo } from '../skills.js';
 import type { DesignSystemSummary } from '../design-systems/index.js';
 
@@ -47,6 +47,7 @@ type SelectionRow = {
 
 type PreviewCapability = {
   projectId: string;
+  /** The account the capability was issued to: the owner or a grantee (#65). */
   ownerAccountId: string;
   sessionId: string;
   expiresAt: number;
@@ -117,7 +118,8 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
   clock?: () => number;
 }): MultiUserDesignRoutes {
   const { db, projectsRoot } = input;
-  const owners = new ProjectOwnershipStore(db);
+  // Preview reads need any project role; new design conversations and run prompts need write access (#65).
+  const projects = new ProjectAccessStore(db);
   const auth = AuthStore.open({ dataRoot: input.dataRoot });
   const now = input.clock ?? Date.now;
   const capabilities = new Map<string, PreviewCapability>();
@@ -193,7 +195,7 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
   app.post('/api/multiuser/projects/:id/conversations', async (req, res) => {
     const ownerId = actorId(res);
     const project = getProject(db, req.params.id);
-    if (!project || !ownerId || !owners.isOwnedBy(project.id, ownerId)) {
+    if (!project || !ownerId || !projects.canWrite(project.id, ownerId)) {
       return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
     }
     const body = req.body as Record<string, unknown> | null;
@@ -222,6 +224,7 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
         createdAt,
         updatedAt: createdAt,
       });
+      projects.bindConversationAuthor(conversationId, ownerId);
       db.prepare(`INSERT INTO multiuser_design_selections
         (conversation_id, owner_account_id, skill_id, design_system_id, locale, created_at)
         VALUES (?, ?, ?, ?, ?, ?)`).run(conversationId, ownerId, skillId, designSystemId, locale, createdAt);
@@ -279,7 +282,7 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
     const actor = multiUserActorOf(res);
     const project = getProject(db, req.params.id);
     const file = typeof req.query.file === 'string' ? req.query.file : '';
-    if (!actor || !project || !owners.isOwnedBy(project.id, ownerId) || !file) {
+    if (!actor || !project || !projects.canView(project.id, ownerId) || !file) {
       return sendApiError(res, 404, 'NOT_FOUND', 'not found');
     }
     try {
@@ -323,7 +326,7 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
     }
     if (!actor || !capability || capability.projectId !== req.params.id
         || capability.ownerAccountId !== ownerId || capability.sessionId !== actor.sessionId
-        || capability.expiresAt <= requestedAt || !owners.isOwnedBy(capability.projectId, ownerId)) {
+        || capability.expiresAt <= requestedAt || !projects.canView(capability.projectId, ownerId)) {
       if (capability?.expiresAt !== undefined && capability.expiresAt <= requestedAt) capabilities.delete(scope);
       return sendApiError(res, 404, 'NOT_FOUND', 'not found');
     }
@@ -349,7 +352,7 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
     const session = auth.getSessionById(capability.sessionId);
     const account = auth.getAccountById(capability.ownerAccountId);
     if (!session || session.accountId !== capability.ownerAccountId || session.expiresAt <= now()
-        || !account?.active || account.passwordState !== 'set' || !owners.isOwnedBy(capability.projectId, capability.ownerAccountId)) {
+        || !account?.active || account.passwordState !== 'set' || !projects.canView(capability.projectId, capability.ownerAccountId)) {
       capabilities.delete(scope);
       return sendApiError(res, 404, 'NOT_FOUND', 'not found');
     }
@@ -372,7 +375,7 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
     async composeStablePrompt({ conversationId, ownerId, projectId, userInstructions, memoryBody, captured }) {
       const design = selection(conversationId, ownerId);
       const project = getProject(db, projectId);
-      if (!design || !project || !owners.isOwnedBy(projectId, ownerId)) return null;
+      if (!design || !project || !projects.canWrite(projectId, ownerId)) return null;
       if (captured.skill.id !== design.skillId || captured.design.id !== design.designSystemId || !captured.design.designSystemBody) return null;
       const { id: _designId, ...designPrompt } = captured.design;
       const prompt = composeSystemPrompt({

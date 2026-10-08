@@ -10,7 +10,7 @@ import { addDesignArchiveMetadata, mimeFor, validateProjectPath } from '../proje
 import { sanitizeArchiveFilename } from '../projects/archive-filename.js';
 import { captureStudioProject } from '../projects/studio-snapshot.js';
 import { readProjectFileVersion } from '../project-file-versions.js';
-import { ProjectOwnershipStore } from '../storage/project-ownership.js';
+import { ProjectAccessStore } from '../storage/project-access.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { bindMultiUserStream, multiUserStreamAllowed } from '../http/multiuser-stream.js';
 import { sendApiError } from '../http/api-errors.js';
@@ -20,7 +20,8 @@ import { bundleStandaloneHtml, StandaloneHtmlExportError } from '../artifacts/st
  * endpoints rewrite here so the host archive/export walkers never execute for
  * a remote actor. */
 export function registerStudioArchiveRoutes(app: Express, input: { db: Database.Database; projectsRoot: string }): void {
-  const ownership = new ProjectOwnershipStore(input.db);
+  // Owner or any grantee (#65): every member may download what it can read.
+  const access = new ProjectAccessStore(input.db);
   const active = new Set<string>();
   const safePath = (value: unknown): string => {
     if (typeof value !== 'string' || !value || value.length > 1024) throw new Error('Invalid archive path');
@@ -30,11 +31,11 @@ export function registerStudioArchiveRoutes(app: Express, input: { db: Database.
   };
   const download = async (req: Request, res: Response, batch: boolean) => {
     const id = String(req.params.id);
-    const owner = multiUserActorOf(res)?.accountId;
-    const project = owner && ownership.isOwnedBy(id, owner) ? getProject(input.db, id) : null;
+    const reader = multiUserActorOf(res)?.accountId;
+    const project = reader && access.canView(id, reader) ? getProject(input.db, id) : null;
     if (!project) return sendApiError(res, 404, 'NOT_FOUND', 'resource not found');
-    if (active.has(owner!) || active.size >= 4) return sendApiError(res, 429, 'RATE_LIMITED', 'archive capture busy; retry later');
-    active.add(owner!);
+    if (active.has(reader!) || active.size >= 4) return sendApiError(res, 429, 'RATE_LIMITED', 'archive capture busy; retry later');
+    active.add(reader!);
     try {
       if (Object.keys(req.query).some((key) => !(!batch && key === 'root'))) throw new Error('Invalid archive query');
       const root = req.query.root === undefined || req.query.root === '' ? '' : safePath(req.query.root);
@@ -51,7 +52,7 @@ export function registerStudioArchiveRoutes(app: Express, input: { db: Database.
       // Logout/revocation/project deletion while compression yields withdraws
       // the entire download, before headers or any captured byte are released.
       if (req.aborted || res.destroyed || !multiUserStreamAllowed(res)) return;
-      if (!ownership.isOwnedBy(id, owner!) || !getProject(input.db, id)) return sendApiError(res, 404, 'NOT_FOUND', 'resource not found');
+      if (!access.canView(id, reader!) || !getProject(input.db, id)) return sendApiError(res, 404, 'NOT_FOUND', 'resource not found');
       const name = `${sanitizeArchiveFilename(project.name) || 'project'}${root ? `-${sanitizeArchiveFilename(root)}` : ''}.zip`;
       const encoded = encodeURIComponent(name).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
       const ascii = name.replace(/[^\x20-\x7e]/g, '_');
@@ -77,17 +78,17 @@ export function registerStudioArchiveRoutes(app: Express, input: { db: Database.
       await completion;
     } catch {
       if (!res.headersSent && !res.writableEnded) sendApiError(res, 400, 'BAD_REQUEST', 'archive capture refused');
-    } finally { active.delete(owner!); }
+    } finally { active.delete(reader!); }
   };
   // One-file HTML on the same bounded capture: same-project assets are read
   // from captured bytes, never by re-resolving a worker-writable path.
   const exportHtml = async (req: Request, res: Response) => {
     const id = String(req.params.id);
-    const owner = multiUserActorOf(res)?.accountId;
-    const project = owner && ownership.isOwnedBy(id, owner) ? getProject(input.db, id) : null;
+    const reader = multiUserActorOf(res)?.accountId;
+    const project = reader && access.canView(id, reader) ? getProject(input.db, id) : null;
     if (!project) return sendApiError(res, 404, 'NOT_FOUND', 'resource not found');
-    if (active.has(owner!) || active.size >= 4) return sendApiError(res, 429, 'RATE_LIMITED', 'export busy; retry later');
-    active.add(owner!);
+    if (active.has(reader!) || active.size >= 4) return sendApiError(res, 429, 'RATE_LIMITED', 'export busy; retry later');
+    active.add(reader!);
     try {
       const { fileName, title, versionId } = req.body as { fileName: string; title?: string | null; versionId?: string };
       const entryPath = safePath(fileName);
@@ -107,7 +108,7 @@ export function registerStudioArchiveRoutes(app: Express, input: { db: Database.
           return bytes ? { buffer: bytes, mime: mimeFor(projectPath), size: bytes.length } : null;
         } });
       if (req.aborted || res.destroyed || !multiUserStreamAllowed(res)) return;
-      if (!ownership.isOwnedBy(id, owner!) || !getProject(input.db, id)) return sendApiError(res, 404, 'NOT_FOUND', 'resource not found');
+      if (!access.canView(id, reader!) || !getProject(input.db, id)) return sendApiError(res, 404, 'NOT_FOUND', 'resource not found');
       const base = (typeof title === 'string' && title.trim()) || path.posix.basename(entryPath, path.posix.extname(entryPath)) || 'artifact';
       const name = `${sanitizeArchiveFilename(base) || 'artifact'}.html`;
       const encoded = encodeURIComponent(name).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
@@ -125,7 +126,7 @@ export function registerStudioArchiveRoutes(app: Express, input: { db: Database.
         return sendApiError(res, unprocessable ? 422 : 400, unprocessable ? 'VALIDATION_FAILED' : 'BAD_REQUEST', error.message, { details });
       }
       sendApiError(res, 400, 'BAD_REQUEST', 'export refused');
-    } finally { active.delete(owner!); }
+    } finally { active.delete(reader!); }
   };
   app.post('/api/multiuser/projects/:id/export/html', (req, res) => { void exportHtml(req, res); });
   app.get('/api/multiuser/projects/:id/archive', (req, res) => { void download(req, res, false); });

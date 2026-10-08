@@ -185,4 +185,35 @@ describe('decideMultiUserAccess', () => {
     const noParam = [{ entry: entry({ routeClass: 'owner-scoped-project', projectParam: 'id' }), params: {} }];
     expect(decideMultiUserAccess({ matches: noParam, actor: actor('user', 'user-1'), isProjectOwner: owns }).kind).toBe('project-not-found');
   });
+
+  it('admits a grantee only at or above the entry\'s share role, and never an admin by role (#65)', () => {
+    const roles: Record<string, 'view' | 'comment' | 'edit'> = { 'user-2': 'view', 'user-3': 'comment', 'user-4': 'edit', 'admin-1': 'view' };
+    const shareRole = (projectId: string, accountId: string) => projectId === 'p-owned' ? roles[accountId] ?? null : null;
+    const at = (sharedRole?: 'view' | 'comment' | 'edit') => [{
+      entry: entry({ routeClass: 'owner-scoped-project', projectParam: 'id', path: '/p/:id', key: 'GET /p/:id', ...(sharedRole ? { sharedRole } : {}) }),
+      params: { id: 'p-owned' },
+    }];
+    const decide = (sharedRole: 'view' | 'comment' | 'edit' | undefined, accountId: string, role: 'user' | 'admin' = 'user') =>
+      decideMultiUserAccess({ matches: at(sharedRole), actor: actor(role, accountId), isProjectOwner: owns, projectShareRole: shareRole }).kind;
+    expect(decide(undefined, 'user-4')).toBe('project-not-found');
+    expect(['user-2', 'user-3', 'user-4'].map((id) => decide('view', id))).toEqual(['allow', 'allow', 'allow']);
+    expect(['user-2', 'user-3', 'user-4'].map((id) => decide('comment', id))).toEqual(['project-not-found', 'allow', 'allow']);
+    expect(['user-2', 'user-3', 'user-4'].map((id) => decide('edit', id))).toEqual(['project-not-found', 'project-not-found', 'allow']);
+    expect(decide('view', 'user-9')).toBe('project-not-found');
+    // An admin holds exactly its own grant, nothing more.
+    expect(decide('view', 'admin-1', 'admin')).toBe('allow');
+    expect(decide('comment', 'admin-1', 'admin')).toBe('project-not-found');
+  });
+
+  it('requires conversation authorship for transcript writes, the owner included (#65)', () => {
+    const matches = matchMultiUserRoute('PUT', '/api/projects/p-owned/conversations/c-1/messages/m-1');
+    expect(matches.map((match) => match.entry.conversationParam)).toEqual(['cid']);
+    const decide = (accountId: string, authored: boolean) => decideMultiUserAccess({ matches, actor: actor('user', accountId), isProjectOwner: owns,
+      projectShareRole: () => 'edit', canWriteConversation: (projectId, conversationId, who) => authored && projectId === 'p-owned' && conversationId === 'c-1' && who === accountId }).kind;
+    expect(decide('user-1', true)).toBe('allow');
+    expect(decide('user-1', false)).toBe('project-not-found');
+    expect(decide('user-4', true)).toBe('allow');
+    expect(decide('user-4', false)).toBe('project-not-found');
+    expect(decideMultiUserAccess({ matches, actor: actor('user', 'user-1'), isProjectOwner: owns }).kind).toBe('project-not-found');
+  });
 });

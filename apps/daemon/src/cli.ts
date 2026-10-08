@@ -283,6 +283,7 @@ const PROJECT_RESOURCE_STRING_FLAGS = new Set([
   ...PROJECT_STRING_FLAGS,
   'workspace',
   'workspace-member',
+  'role',
 ]);
 const PROJECT_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'follow', 'thumbnail', 'clear']);
 const WORKSPACE_STRING_FLAGS = new Set([
@@ -7068,6 +7069,15 @@ async function runProject(args) {
                                           Restore the daemon-selected default
                                           scenario with a snapshot CAS guard.
   od project delete <id>                  Delete a project.
+  od project members <id> [--json]        Your role and everyone with access
+                                          (multi-user Studio, --session-file).
+  od project share <id> <username> --role view|comment|edit [--json]
+                                          Grant or change another account's
+                                          access (project owner only).
+  od project unshare <id> <username> [--json]
+                                          Revoke that account's access.
+  od project leave <id> [--json]          Give up access shared with you.
+  od project presence <id> [--json]       Who has the project open now.
   od project revoke-public-link <id> --path <file> --url <public-url>
                     Revoke a public file link whose local publication record
                     was lost during an older daemon restart or upgrade.
@@ -7118,6 +7128,60 @@ Common options:
   const explicitWorkspaceHeaders = workspaceHeadersFromExplicitFlags(flags);
   const workspaceHeaders = explicitWorkspaceHeaders ?? {};
   switch (sub) {
+    case 'members':
+    case 'share':
+    case 'unshare':
+    case 'leave':
+    case 'presence': {
+      // Project sharing between accounts of one multi-user deployment (#65).
+      const [id, username] = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS);
+      const usage = 'Usage: od project members|leave|presence <id> | share <id> <username> --role view|comment|edit | unshare <id> <username> [--json]';
+      if (!id || ((sub === 'share' || sub === 'unshare') !== Boolean(username))
+        || (sub === 'share' && !['view', 'comment', 'edit'].includes(flags.role))) { console.error(usage); process.exit(2); }
+      const projectUrl = `${base}/api/multiuser/projects/${encodeURIComponent(id)}`;
+      const call = async (method, target, body) => {
+        const response = await fetch(target, { method, ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }) });
+        if (!response.ok) { await structuredHttpFailure(response); return null; }
+        return response.json();
+      };
+      const print = (value, line) => (flags.json ? process.stdout.write(JSON.stringify(value) + '\n') : console.log(line));
+      if (sub === 'members') {
+        const data = await call('GET', `${projectUrl}/access`);
+        if (!data) return;
+        if (flags.json) return print(data);
+        console.log(`you: ${data.role}`);
+        for (const member of data.members ?? []) console.log(`${member.username}\t${member.role}`);
+        return;
+      }
+      if (sub === 'presence') {
+        const data = await call('GET', `${projectUrl}/presence`);
+        if (!data) return;
+        if (flags.json) return print(data);
+        for (const member of data.present ?? []) console.log(`${member.name}\t${member.role}\t${member.filePath ?? ''}`);
+        return;
+      }
+      if (sub === 'leave') {
+        const data = await call('DELETE', `${projectUrl}/access`);
+        if (data) print(data, `[project] left ${id}`);
+        return;
+      }
+      if (sub === 'share') {
+        const data = await call('PUT', `${projectUrl}/shares`, { username, role: flags.role });
+        if (data) print(data, `[project] ${data.member.username} → ${data.member.role}`);
+        return;
+      }
+      // Revocation is by account id; resolve the username through the member list.
+      const access = await call('GET', `${projectUrl}/access`);
+      if (!access) return;
+      const member = (access.members ?? []).find((entry) => entry.username === username && entry.role !== 'owner');
+      if (!member) {
+        process.stderr.write(`${JSON.stringify({ ok: false, error: { code: 'NOT_FOUND', message: 'no such member' } })}\n`);
+        process.exit(1);
+      }
+      const data = await call('DELETE', `${projectUrl}/shares/${encodeURIComponent(member.accountId)}`);
+      if (data) print(data, `[project] revoked ${username}`);
+      return;
+    }
     case 'active': {
       const id = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
       if ((id && flags.clear) || (!id && flags['active-file'])) {

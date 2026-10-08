@@ -29,14 +29,14 @@
 
 import type Database from 'better-sqlite3';
 import type { Express, Request, RequestHandler, Response } from 'express';
-import { parseStudioMessageFeedback, parseStudioSettingsWrite } from '@open-design/contracts';
+import { parseStudioMessageFeedback, parseStudioSettingsWrite, type StudioProjectShareSummary } from '@open-design/contracts';
 import { sendApiError } from './api-errors.js';
 import { setMultiUserStreamAuthority } from './multiuser-stream.js';
 import { clearedSessionCookie, readSessionCookie, registerAuthRoutes } from '../routes/auth.js';
 import { AuthService, type AuthActor } from '../services/auth-service.js';
 import type { ResolvedMultiUserMode } from '../services/multiuser-mode.js';
 import { AuthStore } from '../storage/auth-store.js';
-import { ProjectOwnershipStore } from '../storage/project-ownership.js';
+import { ProjectAccessStore, projectRoleAtLeast, type ProjectAccessRole } from '../storage/project-access.js';
 import { acknowledgePathlessUse } from '../route-registration-guard.js';
 import {
   findStaleNonBlockedClassifications,
@@ -71,17 +71,23 @@ export type MultiUserAccessDecision =
  *   nothing about which routes exist or are blocked);
  * - no match => not-found; matches of different classes => blocked;
  * - owner-scoped-project requires ownership of the declared param for every
- *   match; a missing param, a missing project and a foreign project are the
- *   same `project-not-found`. The admin role grants nothing here.
+ *   match, or a project share grant (#65) of at least the entry's
+ *   `sharedRole`; a missing param, a missing project, a foreign project and
+ *   an insufficient grant are the same `project-not-found`. The admin role
+ *   grants nothing here.
  */
 export function decideMultiUserAccess(input: {
   matches: readonly MultiUserRouteMatch[];
   actor: AuthActor | null;
   isProjectOwner: (projectId: string, accountId: string) => boolean;
+  /** The actor's share role on a project it does not own (#65); absent = owners only. */
+  projectShareRole?: (projectId: string, accountId: string) => ProjectAccessRole | null;
+  /** Whether the actor authored this conversation of the project (#65); absent = refuse such routes. */
+  canWriteConversation?: (projectId: string, conversationId: string, accountId: string) => boolean;
   isRunOwner?: (runId: string, accountId: string) => boolean;
   isAgentAccountOwner?: (param: 'attemptId' | 'accountId', id: string, accountId: string) => boolean;
 }): MultiUserAccessDecision {
-  const { matches, actor, isProjectOwner, isRunOwner, isAgentAccountOwner } = input;
+  const { matches, actor, isProjectOwner, projectShareRole, canWriteConversation, isRunOwner, isAgentAccountOwner } = input;
   const classes = new Set(matches.map((match) => match.entry.routeClass));
   if (classes.size === 1 && (classes.has('public-probe') || classes.has('auth') || classes.has('public-web'))) {
     return { kind: 'pass-unauthenticated' };
@@ -97,7 +103,17 @@ export function decideMultiUserAccess(input: {
       for (const match of matches) {
         const param = match.entry.projectParam;
         const projectId = param ? match.params[param] : undefined;
-        if (!projectId || !isProjectOwner(projectId, actor.accountId)) return { kind: 'project-not-found' };
+        if (!projectId) return { kind: 'project-not-found' };
+        const conversationParam = match.entry.conversationParam;
+        if (conversationParam) {
+          const conversationId = match.params[conversationParam];
+          if (!conversationId || !canWriteConversation?.(projectId, conversationId, actor.accountId)) return { kind: 'project-not-found' };
+        }
+        if (isProjectOwner(projectId, actor.accountId)) continue;
+        const required = match.entry.sharedRole;
+        if (!required || !projectShareRole || !projectRoleAtLeast(projectShareRole(projectId, actor.accountId), required)) {
+          return { kind: 'project-not-found' };
+        }
       }
       return { kind: 'allow' };
     case 'owner-scoped-run':
@@ -185,6 +201,8 @@ export interface MultiUserGateDeps {
   allowedOrigins: readonly string[];
   previewOrigin?: string;
   isProjectOwner: (projectId: string, accountId: string) => boolean;
+  projectShareRole?: (projectId: string, accountId: string) => ProjectAccessRole | null;
+  canWriteConversation?: (projectId: string, conversationId: string, accountId: string) => boolean;
   isRunOwner?: (runId: string, accountId: string) => boolean;
   isAgentAccountOwner?: (param: 'attemptId' | 'accountId', id: string, accountId: string) => boolean;
 }
@@ -213,6 +231,8 @@ export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
       !== 'pass-unauthenticated';
     const actor = needsSession && cookie.token ? deps.auth.resolveSession(cookie.token) : null;
     const decision = decideMultiUserAccess({ matches, actor, isProjectOwner: deps.isProjectOwner,
+      ...(deps.projectShareRole ? { projectShareRole: deps.projectShareRole } : {}),
+      ...(deps.canWriteConversation ? { canWriteConversation: deps.canWriteConversation } : {}),
       ...(deps.isRunOwner ? { isRunOwner: deps.isRunOwner } : {}),
       ...(deps.isAgentAccountOwner ? { isAgentAccountOwner: deps.isAgentAccountOwner } : {}) });
     if (decision.kind === 'pass-unauthenticated') {
@@ -277,6 +297,8 @@ export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
         res.locals[ROUTE_LOCAL] = matches;
         setMultiUserStreamAuthority(res, () => actor !== null && deps.auth.isActorCurrent(actor)
           && decideMultiUserAccess({ matches, actor, isProjectOwner: deps.isProjectOwner,
+            ...(deps.projectShareRole ? { projectShareRole: deps.projectShareRole } : {}),
+      ...(deps.canWriteConversation ? { canWriteConversation: deps.canWriteConversation } : {}),
             ...(deps.isRunOwner ? { isRunOwner: deps.isRunOwner } : {}),
             ...(deps.isAgentAccountOwner ? { isAgentAccountOwner: deps.isAgentAccountOwner } : {}) }).kind === 'allow');
         next();
@@ -414,6 +436,14 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
       && dimension(body.width) && dimension(body.height)
       && (body.versionId === undefined || typeof body.versionId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(body.versionId));
   }
+  // #65: grantee by username (resolved server-side) and a role; nothing else.
+  if (policy === 'project-share') return only(['username', 'role']) && typeof body.username === 'string'
+    && body.username.length > 0 && body.username.length <= 64 && typeof body.role === 'string' && ['view', 'comment', 'edit'].includes(body.role);
+  // Presence identity comes from the session; a client names only its tab and the file it shows.
+  const presenceClient = (value: unknown) => typeof value === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(value);
+  if (policy === 'presence-heartbeat') return only(['clientId', 'filePath']) && presenceClient(body.clientId)
+    && (body.filePath === undefined || body.filePath === null || projectPathText(body.filePath));
+  if (policy === 'presence-leave') return only(['clientId']) && presenceClient(body.clientId);
   if (policy === 'export-html') return only(['fileName', 'title', 'versionId']) && projectPathText(body.fileName) && optionalText(body.title, 200)
     && (body.versionId === undefined || typeof body.versionId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(body.versionId));
   if (policy === 'comment-upsert' || policy === 'comment-status' || policy === 'comment-anchor' || policy === 'comment-reorder') {
@@ -534,13 +564,15 @@ export function createMultiUserBodyPolicy(): RequestHandler {
 
 /** Hooks the project routes call in multi-user mode (null/absent otherwise). */
 export interface ProjectOwnershipRouteHooks {
-  /** Keep only projects the request's actor owns; no actor => nothing. */
+  /** Keep only projects the request's actor owns or was granted (#65); no actor => nothing. */
   filterVisibleProjects<T extends { id: string }>(res: Response, projects: readonly T[]): T[];
   /**
    * Bind the actor as immutable owner. Call INSIDE the create transaction;
    * throws (rolling the create back) when there is no actor or store.
    */
   bindCreatedProject(res: Response, projectId: string, createdAt: number): void;
+  /** Record the actor as the conversation's author (#65); call INSIDE the create transaction. */
+  bindCreatedConversation(res: Response, conversationId: string): void;
   /** Await workers; call the returned release in finally AFTER deleting parent/files. */
   cancelOwnedRuns(res: Response, projectId: string, conversationId?: string): Promise<() => void>;
 }
@@ -555,7 +587,8 @@ export interface MultiUserFront {
   setCompanyPoolAvailable: (check: () => boolean) => void;
   setRenderedExportsAvailable: (check: () => boolean) => void;
   setIsRunOwner: (check: (runId: string, accountId: string) => boolean) => void;
-  setCancelProjectRuns: (cancel: (accountId: string, projectId: string, conversationId?: string) => Promise<() => void>) => void;
+  /** `accountId: null` cancels every account's runs in the project (owner deletion). */
+  setCancelProjectRuns: (cancel: (accountId: string | null, projectId: string, conversationId?: string) => Promise<() => void>) => void;
   setIsAgentAccountOwner: (check: (param: 'attemptId' | 'accountId', id: string, accountId: string) => boolean) => void;
   /** Install the post-parse body policy; call right after the global JSON parser. */
   installBodyPolicy: (app: Express) => void;
@@ -579,10 +612,10 @@ export function installMultiUserFront(
   });
   let companyPoolAvailable = () => false;
   let renderedExportsAvailable = () => false;
-  let ownership: ProjectOwnershipStore | null = null;
+  let access: ProjectAccessStore | null = null;
   let cancelAccountRuns: ((accountId: string) => void) | null = null;
   let isRunOwner: ((runId: string, accountId: string) => boolean) | null = null;
-  let cancelProjectRuns: ((accountId: string, projectId: string, conversationId?: string) => Promise<() => void>) | null = null;
+  let cancelProjectRuns: ((accountId: string | null, projectId: string, conversationId?: string) => Promise<() => void>) | null = null;
   let isAgentAccountOwner: ((param: 'attemptId' | 'accountId', id: string, accountId: string) => boolean) | null = null;
   let bodyPolicyInstalled = false;
 
@@ -590,7 +623,9 @@ export function installMultiUserFront(
     auth,
     allowedOrigins: mode.allowedOrigins,
     previewOrigin: mode.previewOrigin,
-    isProjectOwner: (projectId, accountId) => ownership?.isOwnedBy(projectId, accountId) ?? false,
+    isProjectOwner: (projectId, accountId) => access?.ownership.isOwnedBy(projectId, accountId) ?? false,
+    projectShareRole: (projectId, accountId) => access?.roleOf(projectId, accountId) ?? null,
+    canWriteConversation: (projectId, conversationId, accountId) => access?.canWriteConversation(projectId, conversationId, accountId) ?? false,
     isRunOwner: (runId, accountId) => isRunOwner?.(runId, accountId) ?? false,
     isAgentAccountOwner: (param, id, accountId) => isAgentAccountOwner?.(param, id, accountId) ?? false,
   }), 'authorization-gate'));
@@ -609,28 +644,41 @@ export function installMultiUserFront(
   const projectOwnershipHooks: ProjectOwnershipRouteHooks = {
     filterVisibleProjects(res, projects) {
       const actor = multiUserActorOf(res);
-      if (!actor || !ownership) return [];
-      const owned = ownership.listOwnedProjectIds(actor.accountId);
-      return projects.filter((project) => owned.has(project.id));
+      if (!actor || !access) return [];
+      const owned = access.ownership.listOwnedProjectIds(actor.accountId);
+      const shared = access.shareSummaries(actor.accountId);
+      return projects.filter((project) => owned.has(project.id) || shared.has(project.id)).map((project) => {
+        const summary = shared.get(project.id);
+        if (!summary) return project;
+        const studioShare: StudioProjectShareSummary = { role: summary.role, memberCount: summary.memberCount,
+          ownerUsername: store.getAccountById(summary.ownerAccountId)?.username ?? '' };
+        return { ...project, studioShare };
+      });
     },
     bindCreatedProject(res, projectId, createdAt) {
       const actor = multiUserActorOf(res);
-      if (!actor || !ownership) throw new Error('multi-user project creation requires a resolved actor');
-      ownership.bindOwner(projectId, actor.accountId, createdAt);
+      if (!actor || !access) throw new Error('multi-user project creation requires a resolved actor');
+      access.ownership.bindOwner(projectId, actor.accountId, createdAt);
+    },
+    bindCreatedConversation(res, conversationId) {
+      const actor = multiUserActorOf(res);
+      if (!actor || !access) throw new Error('multi-user conversation creation requires a resolved actor');
+      access.bindConversationAuthor(conversationId, actor.accountId);
     },
     async cancelOwnedRuns(res, projectId, conversationId) {
       const actor = multiUserActorOf(res);
-      if (!actor || !ownership?.isOwnedBy(projectId, actor.accountId) || !cancelProjectRuns) {
+      if (!actor || !access?.ownership.isOwnedBy(projectId, actor.accountId) || !cancelProjectRuns) {
         throw new Error('multi-user deletion requires an owned project and isolated run service');
       }
-      return cancelProjectRuns(actor.accountId, projectId, conversationId);
+      // The owner's deletion also stops collaborators' turns in the project (#65).
+      return cancelProjectRuns(null, projectId, conversationId);
     },
   };
 
   return {
     projectOwnershipHooks,
     attachProjectOwnership(db) {
-      ownership = new ProjectOwnershipStore(db);
+      access = new ProjectAccessStore(db);
     },
     setCancelAccountRuns(cancel) { cancelAccountRuns = cancel; },
     setCompanyPoolAvailable(check) { companyPoolAvailable = check; },
@@ -652,7 +700,7 @@ export function installMultiUserFront(
         throw new Error(`multi-user mode refused: allowed classifications without a registered route: ${staleAllowed.join(', ')}`);
       }
       if (!bodyPolicyInstalled) throw new Error('multi-user mode refused: body policy middleware was not installed');
-      if (!ownership) throw new Error('multi-user mode refused: project ownership store was not attached');
+      if (!access) throw new Error('multi-user mode refused: project ownership store was not attached');
       if (!cancelAccountRuns) throw new Error('multi-user mode refused: isolated run service was not attached');
       if (!isRunOwner) throw new Error('multi-user mode refused: run ownership lookup was not attached');
       if (!cancelProjectRuns) throw new Error('multi-user mode refused: project run cancellation was not attached');

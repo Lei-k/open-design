@@ -948,6 +948,7 @@ import { registerStudioSettingsRoutes } from './routes/studio-settings.js';
 import { registerStudioDesignCatalogRoutes } from './routes/studio-design-catalog.js';
 import { registerStudioCatalogRoutes } from './routes/studio-catalog.js';
 import { registerStudioArchiveRoutes } from './routes/studio-archives.js';
+import { registerStudioSharingRoutes } from './routes/studio-sharing.js';
 import { registerStudioCommentRoutes } from './routes/studio-comments.js';
 import { registerStudioPetRoutes } from './routes/studio-pets.js';
 import { registerStudioRenderRoutes } from './routes/studio-render.js';
@@ -17627,7 +17628,9 @@ export async function startServer({
     listBuiltInTemplates: () => listSkills(DESIGN_TEMPLATES_DIR),
   }) : null;
   if (multiUserMode) registerStudioArchiveRoutes(app, { db, projectsRoot: PROJECTS_DIR });
-  if (multiUserMode) registerStudioCommentRoutes(app, { db });
+  if (multiUserMode) registerStudioCommentRoutes(app, { db, onChanged: (projectId) => {
+    emitProjectEvent(projectId, { type: 'comment-changed', projectId, at: Date.now() });
+  } });
   if (multiUserMode) registerStudioPetRoutes(app, { bundledRoot: BUNDLED_PETS_DIR });
   // Server-side PDF/PPTX/PNG exports (#66): only when the deployment configured a renderer.
   const studioRenderHost = multiUserMode?.studioRenderer ? createChromiumCaptureHost({
@@ -17683,6 +17686,11 @@ export async function startServer({
   if (multiUserRuns) multiUserFront?.setCompanyPoolAvailable(() => multiUserRuns.openaiPoolAvailable);
   if (multiUserRuns) multiUserFront?.setIsRunOwner(multiUserRuns.isRunOwner);
   if (multiUserRuns) multiUserFront?.setCancelProjectRuns(multiUserRuns.cancelProjectRuns);
+  const studioSharing = multiUserMode ? registerStudioSharingRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, emitProjectEvent,
+    ...(multiUserRuns ? { cancelProjectRuns: multiUserRuns.cancelProjectRuns } : {}),
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
+  }) : null;
   if (multiUserRuns && personalCodex) {
     personalCodex.setRunHooks({ cancelPersonalRuns: multiUserRuns.cancelPersonalRuns,
       forgetNativeSessions: multiUserRuns.forgetNativeSessions,
@@ -18313,6 +18321,7 @@ export async function startServer({
       studioRoutines?.stop();
       void studioRenderHost?.close();
       multiUserDesign?.close();
+      studioSharing?.close();
       multiUserFront?.close();
       void personalCodex?.shutdown();
       void multiUserRuns?.shutdown();
@@ -18327,6 +18336,7 @@ export async function startServer({
         await personalCodex?.shutdown();
         await multiUserRuns.shutdown();
         multiUserDesign?.close();
+      studioSharing?.close();
       }
       amrTerminalReportDelivery.stop();
       clearTerminalTelemetryFallbackTimers();

@@ -450,9 +450,48 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
 
 ![Studio rendered exports](../../docs/design/studio-parity/export-rendered.png)
 
+## S32 — project sharing between accounts (#65, #59, #68; decision 2026-10-08)
+
+- **Model.** The owner binding stays immutable and authoritative. `storage/project-access.ts` adds `multiuser_project_grants` (project, grantee account, `view` < `comment` < `edit`, cascade with the project, at most 50 per project) and `multiuser_conversation_authors`. Only accounts of the same deployment can be granted, by username resolved on the server. There is no Vela relay, invitation link, workspace or client-asserted member identity, and admins hold nothing beyond their own grants.
+- **Gate.** Owner-scoped project entries gain `sharedRole` from one reviewed table (`MULTIUSER_SHARED_PROJECT_ROLES`).
+  - **view:** project, conversations, messages, files, raw, versions, search, events, preview capability, comments list, archive/HTML/rendered export, presence and access.
+  - **comment:** creating and acting on comments.
+  - **edit:** file writes, uploads, folders, version save/restore, new conversations and their transcripts.
+  - **Owner only:** everything else (delete, rename/settings `PATCH`, tabs, duplicate, routines, grants).
+  - **Transcript writes** (`PATCH` conversation, `PUT` message) also require conversation authorship (`MULTIUSER_CONVERSATION_AUTHOR_PARAMS`), the owner included. Run admission applies the same rule, so no account's agent history carries another account's turns.
+  - **Refusals:** a missing, foreign or insufficient grant is the same 404.
+  - **Streams:** the stream authority re-decides with the live role, so revocation closes open project streams within a second.
+- **Handlers.** Comments stamp `authorMemberId` with the session account. Only the author edits a note. The author, owner or an editor changes status, and the author or owner deletes. Comment changes push `comment-changed`.
+  - **Runs:** an editor runs its own turns on its own linked Codex or company quota. Account-pinned personal sessions still refuse another account. Downgrading below edit, revoking or leaving stops the grantee's turns; deleting the project stops every account's turns. An account keeps reading its own run history while it can read the project.
+  - **Read access:** archive, HTML and rendered exports and the preview capability accept any member, and the preview capability rechecks the role on every byte request.
+  - **New routes:** `routes/studio-sharing.ts` serves `GET/DELETE /api/multiuser/projects/:id/access` (members, own role, leave) and `PUT /shares` / `DELETE /shares/:accountId` (owner). It also serves process-local presence on the standard `/api/projects/:id/presence[/heartbeat|/leave]` paths, rewritten. Presence identity comes from the session; a client names only its tab and file.
+  - **Project list:** `GET /api/projects` lists shared projects with a `studioShare` projection (`role`, `ownerUsername`, `memberCount`).
+- **Capability.** The `collaboration` lane becomes a pilot lane. The transport opens access, shares and presence only with that lane, and never Vela collab sync or workspace routes.
+- **Web.** `runtime/studio-project-sharing.ts` adapts the daemon's roles to the existing `ProjectCollab` shape. The shared project UI therefore keeps working unchanged: read-only banner and disabled composer for view/comment, presence avatars, comment author names and per-comment permissions. Two optional fields were added: `canComment` (view-only members read comments only) and `resolveMember`.
+  - **Header:** the project header carries a Share button. Owners add, change and remove members; others see who has access and can leave.
+  - **Lists:** project cards show "Shared by …" / "Share · N".
+  - **Revocation:** a revoked or deleted project returns the open view to Home.
+  - **Tabs:** grantees keep their tab layout in the browser.
+- **CLI.** `od project members|share|unshare|leave|presence` on the same endpoints, usable with `--session-file`.
+- **Evidence.**
+  - Daemon:
+    - `studio-sharing-http` (8 cases): listing and members; refusals for unknown, own and inactive usernames; the view/comment/edit matrix across 13 routes; comment authorship rules; editor runs and transcript authorship; presence spoofing and revocation; streams closing and turns stopping on downgrade or revoke; leave; and owner delete stopping collaborators' turns.
+    - Gate unit cases for share roles and conversation authorship.
+    - CLI case; transport oracle; the existing comment test now expects a stamped author.
+  - Browser: two real accounts. The owner shares from the header (unknown username refused). The member sees the badge in Projects, both see each other's presence, and the member comments while the owner sees the comment and its author. A direct write is refused, and on revoke the member's view returns home and the project disappears.
+  - Suites: full daemon suite 973 files / 12,727 passed; full web suite 1,268 files / 12,899 passed (plus the FileViewer/component rerun after the comment-ownership fix; one ProjectView auto-open case flaked under load and passes 3/3 alone); transport oracle 14/14; production HTTPS browser suite 14/14.
+  - Fixed while verifying: the existing owner-comment browser case went red once owner comments carried an author stamp (an unshared Studio project now treats every comment as the viewer's), and the Share button first sat in the file-action slot that the shell hides for private artifacts.
+- **Remaining for #65.** Shared design systems, skills and plugins (team catalogs, #61); live mirroring of another member's running turn (members see persisted messages); Vela binding stays out by decision.
+
+![Share dialog](../../docs/design/studio-parity/share-dialog.png)
+
+![Shared project in Projects](../../docs/design/studio-parity/share-projects-badge.png)
+
+![Member view with presence and shared comments](../../docs/design/studio-parity/share-member-view.png)
+
 ## 目前進度與續作順序 — 2026-10-07（S25 後）
 
-[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S31 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
+[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S32 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
 
 - 分支：`feat/studio-parity-foundation`；以 PR 最新 head 為準。先核對 git status/log 和 GitHub 最新 review，避免重做已交付項目。S18–S25 的實作、測試、限制與入口截圖見上文；本次依使用者要求階段性收尾並交接，並非 Epic 完成。
 - 已確認產品決定：公司池使用 OpenAI 官方 API；Vela 採使用者驗證的本人身份與服務端 Web account/member binding；native window、OS overlay 與 app installer/updater 的 Web 不適用決定，和 in-page pet 仍需交付項目保持分開。
@@ -460,7 +499,7 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
 - 2026-10-08 產品決定：#66 以 deploy image 內 headless Chromium（沙箱、拒絕網路）渲染 PDF/PPTX/PNG；#62/#63 允許每帳號自有 provider API key（部署主金鑰加密，管理員不可讀）；#62 Web 帳號 telemetry 關閉；#65 同一部署內帳號間專案分享（view/comment/edit、presence、共享評論），不接 Vela relay。
 - 下一批按 DAG 推進：
   - #64：automation templates/proposals/ingestion/crystallize、connector/MCP context，以及排程觸發的真實驗收。
-  - #65：owner 預覽評論與 comment attachments 已於 S26 完成；剩餘 team comment 分享、presence、shared resources 與 verified Vela binding。
+  - #65：S32 完成同部署帳號間專案分享（view/comment/edit、presence、共享評論、撤銷即時生效）；剩餘 team catalogs（design systems/skills/plugins 共享，併 #61）與他人執行中 turn 的即時鏡像；依決定不接 Vela。
   - #66：PDF/PPTX/PNG 由 S31 伺服器 renderer 完成；剩餘 public share／publish／deploy。
   - #63：Media、Live Artifacts、GenUI、research/critique（依 actor credential/background adapters）。
   - #61：design generation、asset packages、plugin/community/team catalogs。

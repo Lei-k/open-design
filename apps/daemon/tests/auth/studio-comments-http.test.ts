@@ -6,7 +6,7 @@ import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, pr
   startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
 import { PERSONAL_CODEX_MOCK, codexHome, linkCodex } from './personal-codex-helpers.js';
 
-// S26 (#59, #65): owner-only preview comments on the standard endpoints, and
+// S26 (#59, #65): preview comments on the standard endpoints (session-stamped author), and
 // comment attachments honored by personal Studio runs.
 let daemon: StartedMultiUserDaemon; let root: string; let a: Principal; let b: Principal; let admin: Principal;
 let prefix = '';
@@ -43,7 +43,7 @@ it('lets the owner create, edit, list, anchor, reorder, change status and delete
   expect(made.status, made.text).toBe(200);
   const comment = made.json.comment;
   expect(comment).toMatchObject({ projectId: t.projectId, conversationId: t.conversationId, note: 'Make the title red', status: 'open' });
-  expect(comment.authorMemberId).toBeUndefined();
+  expect(comment.authorMemberId).toBe(a.id);
   const edited = await create(t, { id: comment.id, target, note: 'Make it blue', attachments: [{ path: 'refs/shot.png', name: 'shot.png' }] }, a, true);
   expect(edited.status, edited.text).toBe(200);
   expect(edited.json.comment).toMatchObject({ id: comment.id, note: 'Make it blue', attachments: [{ path: 'refs/shot.png', name: 'shot.png' }] });

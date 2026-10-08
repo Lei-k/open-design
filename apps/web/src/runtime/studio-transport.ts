@@ -135,10 +135,19 @@ export function studioRequestAvailable(method: string, path: string,
       || /^\/api\/projects\/[^/]+\/workspace-artifacts\/[^/]+$/.test(path)
       || /^\/api\/projects\/[^/]+\/conversations\/[^/]+\/messages\/[^/]+\/artifacts$/.test(path)) return method === 'GET';
     if (/^\/api\/multiuser\/projects\/[^/]+\/preview\/[^/]+\/renew$/.test(path)) return method === 'POST';
-    // Owner-only preview comments (#59); team comment sharing stays #65.
+    // Preview comments (#59), shared with project members (#65).
     const comment = /^\/api\/(?:multiuser\/)?projects\/[^/]+\/conversations\/[^/]+\/comments(?:\/([^/]+)(\/anchor|\/reorder)?)?$/.exec(path);
     if (comment) return comment[1] === undefined ? method === 'GET' || method === 'POST'
       : comment[2] ? method === 'PATCH' : method === 'PATCH' || method === 'DELETE';
+  }
+  if (usable('collaboration')) {
+    // Account-to-account project sharing on this deployment (#65): members,
+    // grants and session-stamped presence. Never Vela workspace or collab sync.
+    if (/^\/api\/multiuser\/projects\/[^/]+\/access$/.test(path)) return method === 'GET' || method === 'DELETE';
+    if (/^\/api\/multiuser\/projects\/[^/]+\/shares$/.test(path)) return method === 'PUT';
+    if (/^\/api\/multiuser\/projects\/[^/]+\/shares\/[^/]+$/.test(path)) return method === 'DELETE';
+    if (/^\/api\/projects\/[^/]+\/presence$/.test(path)) return method === 'GET';
+    if (/^\/api\/projects\/[^/]+\/presence\/(?:heartbeat|leave)$/.test(path)) return method === 'POST';
   }
   if (usable('execution')) {
     if (path === '/api/runs') return method === 'GET' || method === 'POST';

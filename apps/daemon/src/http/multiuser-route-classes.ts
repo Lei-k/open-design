@@ -1,3 +1,4 @@
+import type { ProjectShareRole } from '../storage/project-access.js';
 import { MULTIUSER_SHELL_PATHS, MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE, MULTIUSER_AGENT_ICON_ROUTE, MULTIUSER_EDITOR_ICON_ROUTE, publicMultiUserFile } from './multiuser-static.js';
 
 // Multi-user route classification registry (issue #4) — declarative data.
@@ -44,7 +45,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'project-duplicate' | 'template-save' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'project-duplicate' | 'template-save' | 'project-share' | 'presence-heartbeat' | 'presence-leave' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -91,6 +92,18 @@ export interface MultiUserRouteClassification {
    * owner/session-bound variant.
    */
   rewriteTo?: string;
+  /**
+   * owner-scoped-project only: the least project share role (#65) that also
+   * admits a non-owner grantee. Absent means the owner alone. Assigned from
+   * {@link MULTIUSER_SHARED_PROJECT_ROLES}, never per group.
+   */
+  sharedRole?: ProjectShareRole;
+  /**
+   * owner-scoped-project only: route param naming a conversation the actor
+   * must have authored (#65), whatever its project role. Assigned from
+   * {@link MULTIUSER_CONVERSATION_AUTHOR_PARAMS}.
+   */
+  conversationParam?: string;
 }
 
 export function routeKey(method: string, path: string): string {
@@ -157,7 +170,7 @@ const R_GLOBAL_STATE = 'daemon-global state shared by every account';
 
 // ---- registry ---------------------------------------------------------------
 
-export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassification[] = [
+const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
   ...group('public-web', 'reviewed public app code only; canonical file and symlink checks in the static handler',
     [...MULTIUSER_SHELL_PATHS, ...MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE, MULTIUSER_AGENT_ICON_ROUTE, MULTIUSER_EDITOR_ICON_ROUTE].map((path) => `GET ${path}`)),
   // Probes -------------------------------------------------------------------
@@ -264,9 +277,6 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
 
   // Projects: everything else stays blocked -------------------------------------
   ...blocked(R_WORKSPACE, [
-    'GET /api/projects/:id/presence',
-    'POST /api/projects/:id/presence/heartbeat',
-    'POST /api/projects/:id/presence/leave',
     'POST /api/projects/:id/collab/changed',
     'POST /api/projects/:id/collab/publish',
     'POST /api/projects/:id/collab/sync-intent',
@@ -284,6 +294,27 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'POST /api/projects/:id/scenario/restore-automatic',
     'POST /api/projects/:id/design-system-copy',
   ]),
+  // Project sharing between accounts of this deployment (#65). The owner
+  // manages grants; a grantee reads its own access and may leave. Presence is
+  // stamped from the session, never from a client-asserted member.
+  ...group('owner-scoped-project', 'project owner manages account grants; grantees resolved server-side by username',
+    ['DELETE /api/multiuser/projects/:id/shares/:accountId'], { projectParam: 'id' }),
+  ...group('owner-scoped-project', 'project owner grants view/comment/edit to an active account of this deployment',
+    ['PUT /api/multiuser/projects/:id/shares'], { projectParam: 'id', bodyPolicy: 'project-share', maxBodyBytes: 4 * 1024 }),
+  ...group('owner-scoped-project', 'the actor\'s own role and the member list of a project it owns or was granted; leaving removes only that grant',
+    ['GET /api/multiuser/projects/:id/access', 'DELETE /api/multiuser/projects/:id/access'], { projectParam: 'id' }),
+  ...([
+    ['GET', '', undefined],
+    ['POST', '/heartbeat', 'presence-heartbeat'],
+    ['POST', '/leave', 'presence-leave'],
+  ] as const).flatMap(([method, suffix, bodyPolicy]) => {
+    const extras = { projectParam: 'id', ...(bodyPolicy ? { bodyPolicy, maxBodyBytes: 4 * 1024 } : {}) };
+    return [
+      ...group('owner-scoped-project', 'project presence for the owner and grantees; identity from the session, process-local, no relay',
+        [`${method} /api/projects/:id/presence${suffix}`], { ...extras, rewriteTo: `/api/multiuser/projects/:id/presence${suffix}` }),
+      ...group('owner-scoped-project', 'project presence alias', [`${method} /api/multiuser/projects/:id/presence${suffix}`], extras),
+    ];
+  }),
   // Owner-only preview comments (#59, #65): standard paths rewrite to the
   // actor handler; the host handler's workspace/collab identity never runs.
   ...([
@@ -861,6 +892,99 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
   ]),
 ];
 
+
+const PROJECT_FILE_RE = String.raw`/^\/api\/projects\/([^/]+)`;
+/**
+ * The least share role (#65) that reaches each owner-scoped project route.
+ * Everything not listed stays owner-only: deleting the project or a
+ * conversation, project settings and instructions (PATCH), duplicating, tab
+ * layout, routines and grant management.
+ */
+export const MULTIUSER_SHARED_PROJECT_ROLES: Readonly<Record<string, ProjectShareRole>> = {
+  ...Object.fromEntries([
+    'GET /api/projects/:id',
+    'GET /api/projects/:id/conversations',
+    'GET /api/projects/:id/conversations/:cid/messages',
+    'GET /api/projects/:id/conversations/:cid/messages/:mid/artifacts',
+    'GET /api/projects/:id/files',
+    'GET /api/projects/:id/file-content/*path',
+    'GET /api/projects/:id/tabs',
+    'GET /api/projects/:id/events',
+    'GET /api/projects/:id/search',
+    'GET /api/projects/:id/folders',
+    'GET /api/projects/:id/preview-url',
+    'GET /api/multiuser/projects/:id/preview-url',
+    'POST /api/multiuser/projects/:id/preview/:scope/renew',
+    'GET /api/multiuser/projects/:id/conversations/:cid/design',
+    'GET /api/multiuser/projects/:id/design-selections',
+    'GET /api/projects/:id/chat-artifact-snapshots/:sid',
+    'GET /api/projects/:id/chat-artifact-snapshots/:sid/content',
+    'GET /api/projects/:id/chat-artifact-snapshots/:sid/thumbnail',
+    'GET /api/projects/:id/workspace-artifacts/:aid',
+    'GET /api/projects/:id/archive',
+    'GET /api/multiuser/projects/:id/archive',
+    'POST /api/projects/:id/archive/batch',
+    'POST /api/multiuser/projects/:id/archive/batch',
+    ...['html', 'pptx', 'pdf-image', 'image'].flatMap((format) => [
+      `POST /api/projects/:id/export/${format}`, `POST /api/multiuser/projects/:id/export/${format}`]),
+    'GET /api/projects/:id/conversations/:cid/comments',
+    'GET /api/multiuser/projects/:id/conversations/:cid/comments',
+    ...['', '/heartbeat', '/leave'].flatMap((suffix) => [
+      `${suffix ? 'POST' : 'GET'} /api/projects/:id/presence${suffix}`, `${suffix ? 'POST' : 'GET'} /api/multiuser/projects/:id/presence${suffix}`]),
+    'GET /api/multiuser/projects/:id/access',
+    'DELETE /api/multiuser/projects/:id/access',
+    String.raw`GET ${PROJECT_FILE_RE}\/files\/(.+)$/u`,
+    String.raw`GET ${PROJECT_FILE_RE}\/raw\/(.+)$/u`,
+    String.raw`GET ${PROJECT_FILE_RE}\/files\/(.+)\/versions\/([^/]+)$/u`,
+    String.raw`GET ${PROJECT_FILE_RE}\/files\/(.+)\/versions$/u`,
+    String.raw`GET ${PROJECT_FILE_RE}\/text-preview\/(.+)$/u`,
+  ].map((key) => [key, 'view' as const])),
+  ...Object.fromEntries([
+    ...['', '/:commentId', '/:commentId/anchor', '/:commentId/reorder'].flatMap((suffix) => [
+      ...(suffix ? ['PATCH'] : ['POST']).flatMap((method) => [
+        `${method} /api/projects/:id/conversations/:cid/comments${suffix}`,
+        `${method} /api/multiuser/projects/:id/conversations/:cid/comments${suffix}`]),
+    ]),
+    'DELETE /api/projects/:id/conversations/:cid/comments/:commentId',
+    'DELETE /api/multiuser/projects/:id/conversations/:cid/comments/:commentId',
+  ].map((key) => [key, 'comment' as const])),
+  ...Object.fromEntries([
+    'POST /api/projects/:id/conversations',
+    'POST /api/multiuser/projects/:id/conversations',
+    'PATCH /api/projects/:id/conversations/:cid',
+    'PUT /api/projects/:id/conversations/:cid/messages/:mid',
+    'POST /api/projects/:id/folders',
+    'DELETE /api/projects/:id/folders',
+    'POST /api/projects/:id/files',
+    'POST /api/projects/:id/files/rename',
+    'DELETE /api/projects/:id/files/:name',
+    'POST /api/projects/:id/upload',
+    String.raw`DELETE ${PROJECT_FILE_RE}\/raw\/(.+)$/u`,
+    String.raw`POST ${PROJECT_FILE_RE}\/files\/(.+)\/versions$/u`,
+    String.raw`POST ${PROJECT_FILE_RE}\/files\/(.+)\/versions\/([^/]+)\/restore$/u`,
+  ].map((key) => [key, 'edit' as const])),
+};
+
+/**
+ * Transcript writes (#65): only the conversation's author appends messages or
+ * renames it, so one account's agent history never carries another's turns.
+ * Run admission applies the same rule in the run service.
+ */
+export const MULTIUSER_CONVERSATION_AUTHOR_PARAMS: Readonly<Record<string, string>> = {
+  'PATCH /api/projects/:id/conversations/:cid': 'cid',
+  'PUT /api/projects/:id/conversations/:cid/messages/:mid': 'cid',
+};
+
+export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassification[] = (() => {
+  const keys = new Set(CLASSIFICATION_ENTRIES.filter((entry) => entry.routeClass === 'owner-scoped-project').map((entry) => entry.key));
+  const unknown = [...Object.keys(MULTIUSER_SHARED_PROJECT_ROLES), ...Object.keys(MULTIUSER_CONVERSATION_AUTHOR_PARAMS)].filter((key) => !keys.has(key));
+  if (unknown.length) throw new Error(`share roles name routes that are not owner-scoped projects: ${unknown.join(', ')}`);
+  return CLASSIFICATION_ENTRIES.map((entry) => {
+    const sharedRole = MULTIUSER_SHARED_PROJECT_ROLES[entry.key];
+    const conversationParam = MULTIUSER_CONVERSATION_AUTHOR_PARAMS[entry.key];
+    return sharedRole || conversationParam ? { ...entry, ...(sharedRole ? { sharedRole } : {}), ...(conversationParam ? { conversationParam } : {}) } : entry;
+  });
+})();
 const CLASSIFICATION_BY_KEY: ReadonlyMap<string, MultiUserRouteClassification> = new Map(
   MULTIUSER_ROUTE_CLASSIFICATION.map((entry) => [entry.key, entry]),
 );

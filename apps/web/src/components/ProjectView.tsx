@@ -307,6 +307,8 @@ import { useWorkspaceTabsDockRef } from './workspaceTabsDock';
 import { localizePluginTitle } from './plugins-home/localization';
 import { DesignSystemPicker } from './DesignSystemPicker';
 import { PresenceBar } from '../collab/PresenceBar';
+import { useStudioProjectSharing } from '../runtime/studio-project-sharing';
+import { StudioShareButton } from '../runtime/StudioShareDialog';
 import { useProjectCollab } from '../collab/useProjectCollab';
 import {
   currentUserDirectoryEntry,
@@ -2413,7 +2415,7 @@ export function ProjectView({
   // Team collaboration: presence for a shared project. Dormant (no heartbeat,
   // renders nothing) unless the workspace context marks the viewer an active
   // team member — safe to mount unconditionally.
-  const projectCollab = useProjectCollab(project?.id ?? null, {
+  const workspaceProjectCollab = useProjectCollab(project?.id ?? null, {
     workspaceContext: projectRunWorkspaceContext,
     workspaceContextLoading: projectWorkspaceScopeState.loading,
     initialMaterializationPending,
@@ -2424,6 +2426,24 @@ export function ProjectView({
     projectVisibility: projectWorkspaceVisibility(projectWorkspaceScopeState.scope),
     presenceFilePath: project?.metadata?.entryFile ?? null,
   });
+  // Studio accounts share projects with other accounts of the same deployment
+  // (#65) instead of a Vela workspace. A project shared to this account, or
+  // shared by it, drives the same shared-project UI from daemon-resolved roles.
+  const studioSharing = useStudioProjectSharing(studio.actor ? project.id : null, {
+    enabled: Boolean(studio.actor),
+    filePath: project?.metadata?.entryFile ?? null,
+  });
+  const studioSharedProject = Boolean(studio.actor) && (
+    Boolean(studioSharing.access?.shared)
+    || studioSharing.revoked
+    || (project.studioShare !== undefined && project.studioShare.role !== 'owner')
+  );
+  const projectCollab = studioSharedProject ? studioSharing.collab : workspaceProjectCollab;
+  // Revoked, left or deleted while open: the daemon already refuses every
+  // request and closed the streams; return to Home instead of a dead view.
+  useEffect(() => {
+    if (studioSharing.revoked) onBack();
+  }, [studioSharing.revoked, onBack]);
   // A Team-bound placeholder is safe to render and comment around, but its
   // empty tree is never a writer authority. Reuse the established viewer-only
   // gates for content/run/project mutations until the daemon's own status poll
@@ -2432,7 +2452,7 @@ export function ProjectView({
   // syncing project, not the misleading “shared by someone else” notice.
   const projectMutationReadOnly =
     projectCollab.viewerOnly || projectCollab.materializationPending;
-  const { resolve: resolvePresenceMember } = useTeamMembers(
+  const { resolve: resolveWorkspacePresenceMember } = useTeamMembers(
     currentUserDirectoryEntry(projectRunWorkspaceContext),
     projectRunWorkspaceContext,
   );
@@ -2442,7 +2462,8 @@ export function ProjectView({
   // unbound projects retain their existing local-daemon persistence once the
   // daemon has settled that scope. The local project row is not an unbound
   // authority witness: it can lag a daemon-side Team binding.
-  const projectTabsCanPersistToDaemon = !!studio.actor ||
+  // A Studio grantee keeps its tab layout in the browser; tabs are the owner's (#65).
+  const projectTabsCanPersistToDaemon = studio.actor ? !studioSharedProject || projectCollab.isOwner :
     projectWorkspaceScopeState.scope?.kind === 'unbound'
     || projectWorkspaceScopeState.scope?.kind === 'personal'
     || (
@@ -2466,11 +2487,14 @@ export function ProjectView({
   // also covers the status-unknown window, where naming this a shared project
   // would be a guess. `isSharedNonOwner` requires positive evidence (see its
   // docblock in useProjectCollab) -- exactly what a factual banner needs.
-  const readonlyNoticeText = projectReadOnlyClaim({
-    isSharedNonOwner: projectCollab.isSharedNonOwner,
-    ownerDisplayName: projectCollab.ownerDisplayName,
-    t,
-  });
+  const resolvePresenceMember = projectCollab.resolveMember ?? resolveWorkspacePresenceMember;
+  const readonlyNoticeText = studioSharedProject && studioSharing.access?.role === 'view'
+    ? t('studio.share.readonlyView', { owner: studioSharing.access.owner.username })
+    : projectReadOnlyClaim({
+      isSharedNonOwner: projectCollab.isSharedNonOwner,
+      ownerDisplayName: projectCollab.ownerDisplayName,
+      t,
+    });
   // Team-share file-sync badge for the design-files tab bar + empty state
   // (recvqghymxqQQq). A member downloads (their local mirror trails the
   // published head); the owner uploads (a local edit hasn't published yet).
@@ -14128,7 +14152,7 @@ export function ProjectView({
           githubConnected={githubConnected}
           commentPortalId={commentInspectorPortalId}
           onCommentModeChange={setCommentInspectorActive}
-          fileActionsBefore={projectCollab.enabled ? (
+          fileActionsBefore={projectCollab.enabled && !studioSharedProject ? (
             <PresenceBar
               members={projectCollab.present}
               selfMember={projectCollab.member}
@@ -14136,6 +14160,21 @@ export function ProjectView({
               {...(projectCollab.member ? { selfMemberId: projectCollab.member.memberId } : {})}
             />
           ) : null}
+          // Studio sharing (#65) is project-level, not tied to the open file's
+          // public-share state, so it sits with the project actions.
+          headerActions={studioSharing.access ? (
+            <>
+              {projectCollab.enabled ? (
+                <PresenceBar
+                  members={projectCollab.present}
+                  selfMember={projectCollab.member}
+                  resolveMember={resolvePresenceMember}
+                  {...(projectCollab.member ? { selfMemberId: projectCollab.member.memberId } : {})}
+                />
+              ) : null}
+              <StudioShareButton sharing={studioSharing} onLeft={onBack} />
+            </>
+          ) : undefined}
           chatConfig={config}
           chatAgentsById={agentsById}
           handoffAgents={agents}

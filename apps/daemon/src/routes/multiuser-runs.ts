@@ -15,7 +15,8 @@ import { getConversation, getMessage, getProject, updateProject } from '../db.js
 import { sendApiError } from '../http/api-errors.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { bindMultiUserStream, multiUserStreamAllowed } from '../http/multiuser-stream.js';
-import { PROJECT_OWNERS_TABLE, ProjectOwnershipStore } from '../storage/project-ownership.js';
+import { PROJECT_OWNERS_TABLE } from '../storage/project-ownership.js';
+import { PROJECT_GRANTS_TABLE, ProjectAccessStore } from '../storage/project-access.js';
 import { MultiUserStudioMessages } from '../storage/multiuser-studio-messages.js';
 import { studioMessageIdPrefix } from '../http/studio-parity.js';
 import { WorkerQuotaLedger } from '../storage/worker-quota-ledger.js';
@@ -306,7 +307,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   settings?: StudioSettings;
   designCatalog?: StudioDesignCatalog;
 }): { cancelAccountRuns(accountId: string): void; isRunOwner(runId: string, accountId: string): boolean;
-  cancelProjectRuns(accountId: string, projectId: string, conversationId?: string): Promise<() => void>;
+  /** `accountId: null` stops every account's runs in the project. */
+  cancelProjectRuns(accountId: string | null, projectId: string, conversationId?: string): Promise<() => void>;
   cancelPersonalRuns(accountId: string): Promise<void>; forgetNativeSessions(accountId: string): void; personalLane: PersonalRunLaneControls; listAccountIds(): string[];
   /** Admit a run for a background actor through the same policy as POST /api/runs. */
   admitInternal(actor: AuthActor, request: Record<string, unknown>, allowed: () => boolean, instruction?: string): Promise<InternalMultiUserResult>;
@@ -394,7 +396,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   if (mockAgentScript && mockAgentScript !== fs.realpathSync(path.join(input.repositoryRoot, 'mocks/run-isolation-agent.ts'))) {
     throw new Error('multi-user mode refused: only the repository test mock may run');
   }
-  const owners = new ProjectOwnershipStore(db);
+  // Owner or editor (#65): who may change the project and run turns in it.
+  const projects = new ProjectAccessStore(db);
   const ledger = new WorkerQuotaLedger({ dataRoot, ...(input.clock ? { clock: input.clock } : {}) });
   const accounts = AuthStore.open({ dataRoot });
   const now = input.clock ?? Date.now;
@@ -539,7 +542,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   const owned = (req: Request, res: Response): RunRow | null => {
     const id = String(req.params.id ?? '');
     const found = row(id);
-    if (!found || found.owner_account_id !== actor(res) || !owners.isOwnedBy(found.project_id, actor(res))) {
+    // An account keeps reading (and may cancel) its own runs while it can still read the project (#65).
+    if (!found || found.owner_account_id !== actor(res) || !projects.canView(found.project_id, actor(res))) {
       sendApiError(res, 404, 'NOT_FOUND', 'run not found');
       return null;
     }
@@ -603,9 +607,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   // Held through parent deletion, not just subprocess termination. Refcounts
   // allow overlapping project/conversation deletes without reopening admission.
   const deletingTargets = new Map<string, number>();
-  const targetKey = (owner: string, projectId: string, conversationId?: string) => JSON.stringify([owner, projectId, conversationId ?? null]);
-  const targetDeleting = (owner: string, projectId: string, conversationId: string) =>
-    deletingTargets.has(targetKey(owner, projectId)) || deletingTargets.has(targetKey(owner, projectId, conversationId));
+  // A null owner fences every account's admissions (the owner deleting a shared project).
+  const targetKey = (owner: string | null, projectId: string, conversationId?: string) => JSON.stringify([owner, projectId, conversationId ?? null]);
+  const targetDeleting = (owner: string, projectId: string, conversationId: string) => [owner, null].some((who) =>
+    deletingTargets.has(targetKey(who, projectId)) || deletingTargets.has(targetKey(who, projectId, conversationId)));
   let retryTimer: NodeJS.Timeout | null = null;
   let dispatch = () => {};
   let dispatchPersonal = () => {};
@@ -690,7 +695,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           finish(next.id, 'canceled');
           continue;
         }
-        if (!owners.isOwnedBy(next.project_id, next.owner_account_id) ||
+        if (!projects.canWrite(next.project_id, next.owner_account_id) ||
             conversation?.projectId !== next.project_id || metadata?.baseDir || metadata?.linkedDirs || metadata?.imported ||
             !realCwd || path.dirname(realCwd) !== fs.realpathSync(projectsRoot)) {
           finish(next.id, 'failed');
@@ -753,7 +758,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
               if (storesClosed) return false;
               const config = companyOpenAI.read();
               return !storesClosed && !shuttingDown && !cancelPending.has(next.id) && row(next.id)?.status === 'active'
-                && accounts.getAccountById(next.owner_account_id)?.active === true && owners.isOwnedBy(next.project_id, next.owner_account_id)
+                && accounts.getAccountById(next.owner_account_id)?.active === true && projects.canWrite(next.project_id, next.owner_account_id)
                 && config.enabled && config.configured && config.model === execution.config.model
                 && config.credentialRevision === execution.config.credentialRevision;
             };
@@ -860,7 +865,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         const metadata = project?.metadata as Record<string, unknown> | null | undefined;
         let realCwd: string | null = null;
         try { realCwd = fs.realpathSync(path.join(projectsRoot, next.project_id)); } catch { /* failed below */ }
-        if (!owners.isOwnedBy(next.project_id, next.owner_account_id) || conversation?.projectId !== next.project_id ||
+        if (!projects.canWrite(next.project_id, next.owner_account_id) || conversation?.projectId !== next.project_id ||
             metadata?.baseDir || metadata?.linkedDirs || metadata?.imported || !realCwd || path.dirname(realCwd) !== fs.realpathSync(projectsRoot)) {
           finish(next.id, 'failed');
           continue;
@@ -1103,8 +1108,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     };
     const projectId = inputBody.projectId;
     const conversationId = inputBody.conversationId;
+    // #65: project write access and the actor's own conversation; collaborators
+    // read each other's conversations but start their own to run turns.
     if (typeof projectId !== 'string' || typeof conversationId !== 'string' ||
-        !owners.isOwnedBy(projectId, actor(res))) return fail(404, 'NOT_FOUND', 'not found');
+        !projects.canWriteConversation(projectId, conversationId, actor(res))) return fail(404, 'NOT_FOUND', 'not found');
     const project = getProject(db, projectId);
     const conversation = getConversation(db, conversationId);
     if (!project || !conversation || conversation.projectId !== projectId || targetDeleting(actor(res), projectId, conversationId)) return fail(404, 'NOT_FOUND', 'not found');
@@ -1443,16 +1450,19 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   const personalPinStale = (owner: string, conversationId: string): boolean => {
     const pin = personalSession(conversationId);
     const projectId = pin ? getConversation(db, conversationId)?.projectId : undefined;
-    if (!pin || !personal || pin.owner_account_id !== owner || !projectId || !owners.isOwnedBy(projectId, owner)) return false;
+    if (!pin || !personal || pin.owner_account_id !== owner || !projectId || !projects.canWrite(projectId, owner)) return false;
     return !personal.isOwner('accountId', pin.personal_account_id, owner);
   };
+  /** SQL twin of `projects.canView` over the joined owner row `o` (two account binds). */
+  const readable = `(o.owner_account_id = ? OR EXISTS (SELECT 1 FROM ${PROJECT_GRANTS_TABLE} g
+    WHERE g.project_id = r.project_id AND g.grantee_account_id = ?))`;
   app.get('/api/runs', (req, res) => {
     const query = parseRunListQuery(req.query);
     if (!query) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid run list query');
     const owner = actor(res);
     // Ownership and filters apply in SQL before the limit, so a page is never short of the owner's rows.
-    const where = ['r.owner_account_id = ?', 'o.owner_account_id = ?'];
-    const args: Array<string | number> = [owner, owner];
+    const where = ['r.owner_account_id = ?', readable];
+    const args: Array<string | number> = [owner, owner, owner];
     if (query.projectId !== undefined) { where.push('r.project_id = ?'); args.push(query.projectId); }
     if (query.conversationId !== undefined) { where.push('r.conversation_id = ?'); args.push(query.conversationId); }
     if (query.status === 'nonterminal') where.push("r.status IN ('queued','active')");
@@ -1468,9 +1478,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const response: MultiUserRunsResponse = {
       runs: page.map(body), awaitingInputProjectIds: (db.prepare(`SELECT DISTINCT r.project_id AS id FROM multiuser_run_questions q
         JOIN multiuser_runs r ON r.id = q.run_id JOIN ${PROJECT_OWNERS_TABLE} o ON o.project_id = r.project_id
-        WHERE r.owner_account_id = ? AND o.owner_account_id = ? AND q.answered_by IS NULL
+        WHERE r.owner_account_id = ? AND ${readable} AND q.answered_by IS NULL
         AND NOT EXISTS (SELECT 1 FROM multiuser_runs newer WHERE newer.conversation_id = r.conversation_id AND newer.queue_seq > r.queue_seq)`)
-        .all(actor(res), actor(res)) as Array<{ id: string }>).map((value) => value.id),
+        .all(actor(res), actor(res), actor(res)) as Array<{ id: string }>).map((value) => value.id),
       nextCursor: rows.length > query.limit && last ? `${last.created_at}:${last.id}` : null,
       ...(query.conversationId === undefined ? {} : { personalPinStale: personalPinStale(owner, query.conversationId) }),
     };
@@ -1611,7 +1621,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     },
     isRunOwner(runId, accountId) {
       const found = row(runId);
-      return !!found && found.owner_account_id === accountId && owners.isOwnedBy(found.project_id, accountId);
+      return !!found && found.owner_account_id === accountId && projects.canView(found.project_id, accountId);
     },
     cancelAccountRuns(accountId) {
       const active = db.prepare(`SELECT id FROM ${table} WHERE owner_account_id = ? AND status IN ('active','queued')`).all(accountId) as Array<{ id: string }>;
@@ -1641,9 +1651,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       let keepFence = false;
       try {
         const rows = db.prepare(`SELECT id FROM ${table}
-          WHERE owner_account_id = ? AND project_id = ? AND status IN ('active','queued')
+          WHERE (? IS NULL OR owner_account_id = ?) AND project_id = ? AND status IN ('active','queued')
           ${conversationId === undefined ? '' : 'AND conversation_id = ?'}`)
-          .all(...(conversationId === undefined ? [accountId, projectId] : [accountId, projectId, conversationId])) as Array<{ id: string }>;
+          .all(...[accountId, accountId, projectId, ...(conversationId === undefined ? [] : [conversationId])]) as Array<{ id: string }>;
         const exits: Promise<void>[] = [];
         suspendDispatch = true;
         try {

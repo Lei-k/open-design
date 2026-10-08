@@ -677,3 +677,82 @@ test('[P1] Studio adopts a bundled in-page pet as an account preference that fol
     expect((await studio.request('GET', '/api/app-config', studio.b.cookie)).json.config.pet.adopted).toBe(false);
   } finally { await other.close(); }
 });
+
+test('[P1] Studio owner shares a project with another account: badge, presence, shared comments and live revocation', async ({ page, browser, studio }, info) => {
+  const projectId = studioProjectId();
+  const made = await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Studio shared acceptance' });
+  expect(made.status, made.text).toBe(200);
+  const seeded = await studio.request('POST', `/api/projects/${projectId}/files`, studio.a.cookie, { name: 'index.html',
+    content: '<!doctype html><html><body><h1 data-od-id="hero-title">Shared headline</h1><p>Body copy</p></body></html>' });
+  expect(seeded.status, seeded.text).toBe(200);
+  const conversationId = made.json.conversationId as string;
+  // Owner: the Share entry point in the project header.
+  await page.goto(`${studio.origin}/projects/${projectId}/files/index.html`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(activeArtifactPreviewFrame(page).getByRole('heading', { name: 'Shared headline' })).toBeVisible({ timeout: T.long });
+  await page.getByTestId('studio-share-button').click({ timeout: T.long });
+  const dialog = page.getByTestId('studio-share-dialog');
+  await dialog.getByTestId('studio-share-username').fill('nobody-here');
+  await dialog.getByTestId('studio-share-submit').click();
+  await expect(dialog.getByRole('status')).toContainText('No active account');
+  await dialog.getByTestId('studio-share-username').fill(studio.b.username);
+  await dialog.getByTestId('studio-share-role').selectOption('comment');
+  await dialog.getByTestId('studio-share-submit').click();
+  await expect(dialog.getByTestId('studio-share-member')).toHaveCount(2, { timeout: T.medium });
+  await expect(dialog).toContainText('Can comment');
+  await page.screenshot({ path: info.outputPath('studio-share-dialog.png'), animations: 'disabled' });
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+
+  const other = await browser.newContext({ ignoreHTTPSErrors: true });
+  try {
+    const b = await other.newPage();
+    await b.goto(`${studio.origin}/`);
+    await b.locator('input[name="username"]').fill(studio.b.username);
+    await b.locator('input[name="password"]').fill(studio.b.password);
+    await b.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await expect(b.getByRole('button', { name: 'Create project', exact: true })).toBeVisible({ timeout: T.long });
+    // The project list shows the shared project with its owner.
+    await b.goto(`${studio.origin}/projects`);
+    const badge = b.getByTestId('project-share-badge').filter({ hasText: `Shared by ${studio.a.username}` }).first();
+    await expect(badge).toBeVisible({ timeout: T.long });
+    await b.screenshot({ path: info.outputPath('studio-share-home-badge.png'), animations: 'disabled' });
+    await b.goto(`${studio.origin}/projects/${projectId}/files/index.html`);
+    const bFrame = activeArtifactPreviewFrame(b);
+    await expect(bFrame.getByRole('heading', { name: 'Shared headline' })).toBeVisible({ timeout: T.long });
+    // Both members appear in each other's presence bar, named by the server.
+    await expect(b.locator(`[title="${studio.a.username}"]`).first()).toBeVisible({ timeout: T.long });
+    await expect(page.locator(`[title="${studio.b.username}"]`).first()).toBeVisible({ timeout: T.long });
+    await expect(b.getByTestId('studio-share-button')).toContainText('Can comment');
+    // The commenter comments on an element; the owner sees it with its author.
+    await clickPreviewToolbarAction(b, 'board-mode-toggle', /^Comment$/);
+    await clickPreviewToolbarAction(b, 'comment-panel-toggle', /^Comments \(\d+\)$/);
+    await expect(bFrame.locator('html[data-od-comment-mode]')).toHaveCount(1, { timeout: T.medium });
+    await bFrame.locator('[data-od-id="hero-title"]').click();
+    await b.getByTestId('comment-popover-input').fill('Commenter asks for a shorter headline.');
+    const saved = b.waitForResponse((response) => response.request().method() === 'POST'
+      && /\/conversations\/[^/]+\/comments$/.test(new URL(response.url()).pathname));
+    await b.getByTestId('comment-popover-save').click();
+    expect((await saved).status()).toBe(200);
+    const stored = await studio.request('GET', `/api/projects/${projectId}/conversations/${conversationId}/comments`, studio.a.cookie);
+    expect(stored.json.comments).toEqual([expect.objectContaining({ note: 'Commenter asks for a shorter headline.', authorMemberId: studio.b.id })]);
+    await clickPreviewToolbarAction(page, 'comment-panel-toggle', /^Comments \(\d+\)$/);
+    const ownerPanel = page.getByTestId('comment-side-panel');
+    await expect(ownerPanel).toContainText('Commenter asks for a shorter headline.', { timeout: T.long });
+    await expect(ownerPanel).toContainText(studio.b.username);
+    await b.screenshot({ path: info.outputPath('studio-share-member-view.png'), animations: 'disabled' });
+    // A commenter cannot change files; the server refuses even a direct write.
+    expect((await studio.request('POST', `/api/projects/${projectId}/files`, studio.b.cookie, { name: 'index.html', content: 'x', overwrite: true })).status).toBe(404);
+    // The owner revokes: the member's open project closes back to Home.
+    await page.getByTestId('studio-share-button').click();
+    await page.getByTestId('studio-share-dialog').getByTestId('studio-share-revoke').click();
+    await expect(page.getByTestId('studio-share-dialog').getByTestId('studio-share-member')).toHaveCount(1, { timeout: T.medium });
+    await expect.poll(() => new URL(b.url()).pathname, { timeout: T.long }).not.toContain(projectId);
+    expect((await studio.request('GET', `/api/projects/${projectId}`, studio.b.cookie)).status).toBe(404);
+    const relisted = b.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/api/projects');
+    await b.goto(`${studio.origin}/projects`);
+    expect(JSON.stringify(await (await relisted).json())).not.toContain(projectId);
+    await expect(b.getByTestId('project-share-badge')).toHaveCount(0);
+  } finally { await other.close(); }
+});

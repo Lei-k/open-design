@@ -1,3 +1,4 @@
+import { ProjectShareBadge } from './ProjectShareBadge';
 import { studioWindowLocalStorage } from '../runtime/studio-transport';
 import { reportProjectFailure } from '../observability/experience-diagnostics';
 // Horizontal "Recent projects" rail for the Home view.
@@ -1765,6 +1766,7 @@ export function RecentProjectsStrip({
                       ) : (
                         <ProjectTag category={projectCategory(project)} />
                       )}
+                      <ProjectShareBadge project={project} />
                     </div>
                   </div>
                 </div>

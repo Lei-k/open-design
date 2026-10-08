@@ -8,14 +8,14 @@ import { getProject } from '../db.js';
 import { mimeFor, validateProjectPath } from '../projects.js';
 import { captureStudioProject } from '../projects/studio-snapshot.js';
 import { readProjectFileVersion } from '../project-file-versions.js';
-import { ProjectOwnershipStore } from '../storage/project-ownership.js';
+import { ProjectAccessStore } from '../storage/project-access.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { multiUserStreamAllowed } from '../http/multiuser-stream.js';
 import { sendApiError } from '../http/api-errors.js';
 import { buildDeckRenderInput, buildScreenshotPdf, buildScreenshotPptx, decodeSlideDataUrls, screenshotRenderClientError } from '../deck-export.js';
 import type { ChromiumCaptureHost } from '../render/chromium-capture-runtime.js';
 
-/** Owner render body (gate policy `export-render`). */
+/** Render body (gate policy `export-render`). */
 export interface StudioRenderRequest {
   fileName: string;
   title?: string;
@@ -32,10 +32,10 @@ type Format = 'pptx' | 'pdf' | 'image';
 const FORMATS: Record<string, Format> = { pptx: 'pptx', 'pdf-image': 'pdf', image: 'image' };
 
 /**
- * Owner PDF/PPTX/PNG exports rendered by the daemon's headless Chromium (#66).
+ * Member PDF/PPTX/PNG exports rendered by the daemon's headless Chromium (#66).
  * The standard `/export/{pptx,pdf-image,image}` endpoints rewrite here. The
  * document and its same-project assets come from a bounded no-follow capture
- * of the owned project and reach the browser only through this render's
+ * of the readable project and reach the browser only through this render's
  * private namespace; the browser has no route to daemon URLs or the network
  * beyond the configured public font/CDN hosts. Authority is rechecked before
  * bytes are released.
@@ -43,16 +43,17 @@ const FORMATS: Record<string, Format> = { pptx: 'pptx', 'pdf-image': 'pdf', imag
 export function registerStudioRenderRoutes(app: Express, input: {
   db: Database.Database; projectsRoot: string; dataRoot: string; host: ChromiumCaptureHost | null;
 }): void {
-  const ownership = new ProjectOwnershipStore(input.db);
+  // Owner or any grantee (#65): every member may download what it can read.
+  const access = new ProjectAccessStore(input.db);
   const active = new Set<string>();
   const host = input.host;
   const render = async (req: Request, res: Response, format: Format) => {
     if (!host) return sendApiError(res, 503, 'UPSTREAM_UNAVAILABLE', 'this deployment has no export renderer configured');
     const id = String(req.params.id);
-    const owner = multiUserActorOf(res)?.accountId;
-    if (!owner || !ownership.isOwnedBy(id, owner) || !getProject(input.db, id)) return sendApiError(res, 404, 'NOT_FOUND', 'resource not found');
-    if (active.has(owner) || active.size >= 2) return sendApiError(res, 429, 'RATE_LIMITED', 'export busy; retry later');
-    active.add(owner);
+    const reader = multiUserActorOf(res)?.accountId;
+    if (!reader || !access.canView(id, reader) || !getProject(input.db, id)) return sendApiError(res, 404, 'NOT_FOUND', 'resource not found');
+    if (active.has(reader) || active.size >= 2) return sendApiError(res, 429, 'RATE_LIMITED', 'export busy; retry later');
+    active.add(reader);
     const body = req.body as StudioRenderRequest;
     let outputDir: string | null = null;
     let registration: { baseHref: string; dispose(): void } | null = null;
@@ -124,7 +125,7 @@ export function registerStudioRenderRoutes(app: Express, input: {
       }
       // Rendering is slow: logout, deletion or a transfer of the project may have won meanwhile.
       if (req.socket.destroyed || res.destroyed || !multiUserStreamAllowed(res)) return;
-      if (!ownership.isOwnedBy(id, owner) || !getProject(input.db, id)) return sendApiError(res, 404, 'NOT_FOUND', 'resource not found');
+      if (!access.canView(id, reader) || !getProject(input.db, id)) return sendApiError(res, 404, 'NOT_FOUND', 'resource not found');
       const filename = `${defaultFilename}.${ext}`;
       const ascii = filename.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '_') || `export.${ext}`;
       res.set({ 'Content-Type': contentType, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
@@ -133,7 +134,7 @@ export function registerStudioRenderRoutes(app: Express, input: {
     } catch {
       if (!res.headersSent) sendApiError(res, 400, 'BAD_REQUEST', 'export refused');
     } finally {
-      active.delete(owner);
+      active.delete(reader);
       registration?.dispose();
       if (outputDir) await fs.rm(outputDir, { recursive: true, force: true }).catch(() => undefined);
     }

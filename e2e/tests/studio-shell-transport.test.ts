@@ -204,7 +204,7 @@ it('opens only captured owner ZIP downloads in the partial delivery lane', () =>
     expect(studioRequestAvailable(method!, path!, () => true), path).toBe(false);
 });
 
-it('opens owner preview comments only with a usable preview lane, and only where the daemon classifies them', () => {
+it('opens preview comments only with a usable preview lane, and only where the daemon classifies them', () => {
   for (const prefix of ['/api/projects/p', '/api/multiuser/projects/p']) {
     const base = `${prefix}/conversations/c/comments`;
     for (const [method, path] of [['GET', base], ['POST', base], ['PATCH', `${base}/k`], ['DELETE', `${base}/k`],
@@ -217,6 +217,23 @@ it('opens owner preview comments only with a usable preview lane, and only where
     }
     for (const [method, path] of [['DELETE', base], ['GET', `${base}/k`], ['DELETE', `${base}/k/anchor`], ['POST', `${base}/k/reorder`]] as const)
       expect(studioRequestAvailable(method, path, () => true), `${method} ${path}`).toBe(false);
+  }
+});
+
+it('opens project sharing and presence only with a usable collaboration lane, never Vela collab sync', () => {
+  const open = [['GET', '/api/multiuser/projects/p/access'], ['DELETE', '/api/multiuser/projects/p/access'],
+    ['PUT', '/api/multiuser/projects/p/shares'], ['DELETE', '/api/multiuser/projects/p/shares/a'],
+    ['GET', '/api/projects/p/presence'], ['POST', '/api/projects/p/presence/heartbeat'], ['POST', '/api/projects/p/presence/leave']] as const;
+  for (const [method, path] of open) {
+    expect(studioRequestAvailable(method, path, (lane) => lane === 'collaboration'), `${method} ${path}`).toBe(true);
+    expect(studioRequestAvailable(method, path, (lane) => lane !== 'collaboration'), `${method} ${path}`).toBe(false);
+    const matches = matchMultiUserRoute(method, path);
+    expect(matches.length, path).toBeGreaterThan(0);
+    expect(matches.every(({ entry }) => entry.routeClass === 'owner-scoped-project'), path).toBe(true);
+  }
+  for (const [method, path] of [['GET', '/api/multiuser/projects/p/shares'], ['POST', '/api/projects/p/collab/publish'], ['GET', '/api/projects/p/collab/status'],
+    ['GET', '/api/workspace/members'], ['POST', '/api/projects/p/presence'], ['GET', '/api/projects/p/workspace-scope']] as const) {
+    expect(studioRequestAvailable(method, path, () => true), `${method} ${path}`).toBe(false);
   }
 });
 

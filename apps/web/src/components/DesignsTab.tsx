@@ -36,6 +36,7 @@ import {
 	resolveProjectDesignSystemId,
 } from "./design-system-project";
 import { LiveArtifactBadges } from "./LiveArtifactBadges";
+import { ProjectShareBadge } from "./ProjectShareBadge";
 import { Toast } from "./Toast";
 import {
 	HtmlProjectCoverFrame,
@@ -937,7 +938,7 @@ export function DesignsTab({
 									>
 										{isSelected ? <Icon name="check" size={14} /> : null}
 									</span>
-								) : (
+								) : p.studioShare && p.studioShare.role !== "owner" ? null : (
 									<div
 										className="design-card-menu-anchor"
 										ref={menuOpenId === p.id ? menuContainerRef : undefined}
@@ -1077,6 +1078,7 @@ export function DesignsTab({
 										) : (
 											<ProjectTag category={projectCategory(p)} />
 										)}
+										<ProjectShareBadge project={p} />
 									</div>
 									<div className="design-card-name" title={p.name}>
 										{p.name}

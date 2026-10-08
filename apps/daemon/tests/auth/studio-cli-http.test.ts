@@ -86,6 +86,34 @@ describe('same Studio APIs through remote od sessions', () => {
     expect(success(await cli(['comment', 'list', projectId, '--conversation', conversation, '--session-file', session, '--json'])).comments).toEqual([]);
   });
 
+  it('shares a project with another account, lists members and presence, and revokes it through od project', async () => {
+    const owner = path.join(root, 'cli-share-owner'); const grantee = path.join(root, 'cli-share-grantee');
+    for (const [user, file] of [[alice, owner], [bob, grantee]] as const) {
+      success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', user.username,
+        '--password-file', '-', '--session-file', file, '--json'], user.password));
+    }
+    const made = success(await cli(['project', 'create', '--name', 'CLI shared', '--session-file', owner, '--json']));
+    const projectId = made.project.id;
+    expect(success(await cli(['project', 'share', projectId, bob.username, '--role', 'comment', '--session-file', owner, '--json'])).member)
+      .toMatchObject({ accountId: bob.id, username: bob.username, role: 'comment' });
+    expect((await cli(['project', 'share', projectId, bob.username, '--role', 'admin', '--session-file', owner, '--json'])).code).toBe(2);
+    const members = success(await cli(['project', 'members', projectId, '--session-file', grantee, '--json']));
+    expect(members).toMatchObject({ role: 'comment', owner: { username: alice.username } });
+    expect((await cli(['project', 'share', projectId, alice.username, '--role', 'view', '--session-file', grantee, '--json'])).code).not.toBe(0);
+    expect((await daemon.request({ method: 'POST', path: `/api/projects/${projectId}/presence/heartbeat`, cookie: bob.cookie, body: { clientId: 'cli-tab' } })).status).toBe(200);
+    expect(success(await cli(['project', 'presence', projectId, '--session-file', owner, '--json'])).present)
+      .toEqual([expect.objectContaining({ memberId: bob.id, name: bob.username })]);
+    const added = success(await cli(['comment', 'add', projectId, '--conversation', made.conversationId, '--file', 'index.html',
+      '--selector', '#hero', '--note', 'From Bob', '--session-file', grantee, '--json']));
+    expect(added.comment.authorMemberId).toBe(bob.id);
+    expect(success(await cli(['project', 'unshare', projectId, bob.username, '--session-file', owner, '--json']))).toEqual({ ok: true });
+    expect((await cli(['project', 'members', projectId, '--session-file', grantee, '--json'])).code).not.toBe(0);
+    // Leaving: re-share, then the grantee gives the access up.
+    success(await cli(['project', 'share', projectId, bob.username, '--role', 'view', '--session-file', owner, '--json']));
+    expect(success(await cli(['project', 'leave', projectId, '--session-file', grantee, '--json']))).toEqual({ ok: true });
+    expect(success(await cli(['project', 'members', projectId, '--session-file', owner, '--json'])).members.map((m: { username: string }) => m.username)).toEqual([alice.username]);
+  }, 120_000);
+
   it('duplicates and saves/shows/uses/deletes captured private templates through the same APIs', async () => {
     const session = path.join(root, 'cli-template-session');
     success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', alice.username,
