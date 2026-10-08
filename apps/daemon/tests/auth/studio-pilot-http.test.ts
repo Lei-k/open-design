@@ -34,7 +34,7 @@ it('defaults off, changes only the target effective shell, and rejects stale wri
   // when server policy is off), never as deployment-wide `supported`.
   for (const [lane, feature] of Object.entries(own.json.studio.features) as Array<[string, { status: string; reason?: string }]>) {
     const expected = lane === 'baseline' ? 'supported' : !(lane in STUDIO_PILOT_LANES) ? 'unavailable'
-      : ['execution', 'composer'].includes(lane) ? 'admin-disabled' : 'pilot';
+      : ['execution', 'composer', 'generation'].includes(lane) ? 'admin-disabled' : 'pilot';
     expect([lane, feature.status]).toEqual([lane, expected]);
     if (lane !== 'baseline') expect(feature.reason).toBeTruthy();
   }

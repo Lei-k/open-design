@@ -2672,7 +2672,12 @@ export function ProjectView({
   // Durable run rows pin the conversation. Reload and retry retain its source.
   const studioPinnedAgentId = !studio.hostServices ? messages.find((message) => message.runId
     && (message.agentId === 'codex' || message.agentId === 'openai' || message.agentId === 'openai-byok'))?.agentId : undefined;
-  const executionAgentId = studioPinnedAgentId ?? config.agentId;
+  // Studio media projects generate through OpenAI functions (#63): an unpinned
+  // conversation starts on an advertised OpenAI source, never personal Codex.
+  const studioMediaProject = !studio.hostServices && ['image', 'video', 'audio'].includes(String(project?.metadata?.kind ?? ''));
+  const studioMediaAgentId = studioMediaProject && config.agentId !== 'openai' && config.agentId !== 'openai-byok'
+    ? studio.capabilities?.executionSources?.find((choice) => choice.agentId !== 'codex')?.agentId ?? null : null;
+  const executionAgentId = studioPinnedAgentId ?? studioMediaAgentId ?? config.agentId;
   const [forkingMessageId, setForkingMessageId] = useState<string | null>(null);
   const [activePluginActionPaths, setActivePluginActionPaths] = useState<Set<string>>(() => new Set());
   const [hiddenAssistantPluginActionPaths, setHiddenAssistantPluginActionPaths] = useState<Set<string>>(() => new Set());
@@ -13608,6 +13613,7 @@ export function ProjectView({
   // Choosing an agent needs the host agent catalog (settings lane); without it
   // the server-fixed execution source is shown instead.
   const executionControls = !studio.hostServices ? <StudioExecutionSource agentId={executionAgentId} onChange={studioPinnedAgentId ? undefined : onAgentChange}
+    mediaOnly={studioMediaProject}
     modelChoice={config.agentModels?.codex} onModelChange={(choice) => onAgentModelChange('codex', choice)} /> : (
     <>
       <AvatarMenu

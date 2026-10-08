@@ -7,14 +7,17 @@ import styles from './StudioExecutionSource.module.css';
 
 /** Sources are server-advertised; the daemon pins each conversation at admission.
  * The personal Codex model/effort applies per turn and is an account preference. */
-export function StudioExecutionSource({ agentId, onChange, modelChoice, onModelChange }: {
+export function StudioExecutionSource({ agentId, onChange, modelChoice, onModelChange, mediaOnly }: {
   agentId?: string | null; onChange?: (id: string) => void;
+  /** Media projects list only OpenAI sources; personal Codex has no media functions (#63). */
+  mediaOnly?: boolean;
   modelChoice?: AgentModelChoice; onModelChange?: (choice: AgentModelChoice) => void;
 } = {}) {
   const studio = useStudioCapabilities();
   const t = useT();
-  const choices = studio.capabilities?.executionSources ?? (studio.executionAgentId === 'codex'
+  const advertised = studio.capabilities?.executionSources ?? (studio.executionAgentId === 'codex'
     ? [{ source: 'personal_subscription' as const, agentId: 'codex' as const }] : []);
+  const choices = mediaOnly ? advertised.filter((choice) => choice.agentId !== 'codex') : advertised;
   if (!choices.length) return null;
   const selected = agentId ?? studio.executionAgentId;
   const label = (id: string) => t(id === 'openai' ? 'multiuser.executionSourceCompanyOpenAI'

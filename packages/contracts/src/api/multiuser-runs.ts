@@ -63,8 +63,9 @@ export interface MultiUserRunRequest {
  *   capability is not used (empty list, null, `false`, or `design` mode).
  * - `notApplied`: accepted for request-shape compatibility and not applied:
  *   the stitched transcript (the native thread is the context), the UI locale,
- *   title generation, and analytics-only hints. None of them changes what
- *   runs or who pays for it.
+ *   title generation, analytics-only hints, and the host media policy (Studio
+ *   OpenAI turns carry their own media functions on the turn's source, #63).
+ *   None of them changes what runs or who pays for it.
  */
 export const MULTIUSER_PERSONAL_RUN_FIELD_POLICY = {
   honored: ['projectId', 'conversationId', 'agentId', 'executionSource', 'message', 'currentPrompt', 'userMessageId',
@@ -72,7 +73,7 @@ export const MULTIUSER_PERSONAL_RUN_FIELD_POLICY = {
     'model', 'reasoning', 'commentAttachments'],
   defaultOnly: ['serviceTier',
     'appliedPluginSnapshotId', 'sessionMode'],
-  notApplied: ['priorTranscript', 'locale', 'titleGeneration'],
+  notApplied: ['priorTranscript', 'locale', 'titleGeneration', 'mediaExecution'],
 } as const;
 
 export interface MultiUserRunResponse { run: MultiUserRun }

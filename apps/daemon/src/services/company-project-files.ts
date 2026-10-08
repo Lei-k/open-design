@@ -74,6 +74,13 @@ export function writeCompanyProjectBytes(projectsRoot: string, projectId: string
   withFile(projectsRoot, projectId, name, true, (fd) => { ftruncateSync(fd, 0); writeFileSync(fd, bytes); }, RESOURCE_LIMIT);
 }
 
+/** Generated media (#63) is bounded by its own ceiling, not the text/resource one. */
+export const MEDIA_FILE_LIMIT = 64 * 1024 * 1024;
+export function writeCompanyProjectMedia(projectsRoot: string, projectId: string, name: string, bytes: Buffer): void {
+  if (bytes.length > MEDIA_FILE_LIMIT) throw new Error('project tool file limit');
+  withFile(projectsRoot, projectId, name, true, (fd) => { ftruncateSync(fd, 0); writeFileSync(fd, bytes); }, MEDIA_FILE_LIMIT);
+}
+
 /** Bounded descriptor traversal: no foreign names leak through a renamed or
  * symlinked intermediate directory, and no FIFO/device is ever opened to read. */
 export function listCompanyProjectFiles(projectsRoot: string, projectId: string): Array<{ name: string; size: number; kind: string }> {

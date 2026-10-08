@@ -93,7 +93,8 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
     <button type="button" data-testid="studio-instructions-reload" className="ghost" disabled={busy} onClick={() => void load()}>{t('studio.settingsReload')}</button>
     {status && <p role="status">{t(status === 'saved' ? 'studio.settingsSaved' : status === 'conflict' ? 'studio.settingsConflict' : 'studio.settingsError')}</p>}
   </div>;
-  const pending = PENDING[section];
+  // Media is usable once an OpenAI source can generate it (#63); the other open lanes keep their reason.
+  const pending = section === 'media' && studio.available('generation') ? undefined : PENDING[section];
   return <SettingsFrame presentation={presentation} onClose={onClose}
     header={<SettingsSectionHeader title={headers[section].title} subtitle={headers[section].subtitle} />}
     nav={<>
@@ -142,6 +143,16 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
     </>}
     {usable && section === 'memory' && <MemorySection />}
     {pending && <StudioUnavailable lane={pending} />}
+    {section === 'media' && !pending && <section className="settings-section" data-testid="studio-media">
+      <h3>{t('studio.media.title')}</h3>
+      <p className="hint">{t('studio.media.body')}</p>
+      <dl className="settings-about-list">
+        <div><dt>{t('studio.media.image')}</dt><dd>gpt-image-1</dd></div>
+        <div><dt>{t('studio.media.speech')}</dt><dd>gpt-4o-mini-tts</dd></div>
+        <div><dt>{t('studio.media.video')}</dt><dd>sora-2</dd></div>
+      </dl>
+      <Button variant="ghost" data-testid="studio-media-keys" onClick={() => setSection('agentAccounts')}>{t('studio.media.manageKey')}</Button>
+    </section>}
     {/* Deployment decision (#62): no usage metrics or content leave a Web deployment, so there is nothing to opt into. */}
     {section === 'privacy' && <section className="settings-section" data-testid="studio-privacy">
       <h3>{t('studio.privacyOffTitle')}</h3>

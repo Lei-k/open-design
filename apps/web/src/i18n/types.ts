@@ -37,6 +37,12 @@ export interface Dict {
   'studio.aboutClearDataHint': string;
   'studio.privacyOffTitle': string;
   'studio.privacyOffBody': string;
+  'studio.media.title': string;
+  'studio.media.body': string;
+  'studio.media.image': string;
+  'studio.media.speech': string;
+  'studio.media.video': string;
+  'studio.media.manageKey': string;
   'multiuser.executionSourcePersonalKey': string;
   'studio.keys.title': string;
   'studio.keys.hint': string;

@@ -31,6 +31,7 @@ import type { PersonalRunLaneControls } from './multiuser-agent-accounts.js';
 import type { MultiUserDesignRoutes } from './multiuser-design.js';
 import { CompanyOpenAIConfigError, CompanyOpenAIStore } from '../storage/company-openai.js';
 import { CompanyOpenAIWorker, runCompanyOpenAITurn } from '../runtimes/company-openai.js';
+import { STUDIO_MEDIA_PROMPT } from '../runtimes/studio-media.js';
 import { PersonalProviderKeyError, PersonalProviderKeyStore } from '../storage/personal-provider-keys.js';
 import type { StudioDesignCatalog } from './studio-design-catalog.js';
 import type { StudioSettings } from '../storage/studio-settings.js';
@@ -829,7 +830,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 && key.current();
             };
             void runCompanyOpenAITurn({ apiKey: key.apiKey, model: key.model,
-              systemPrompt: stablePrompt, prompt: `${userPrompt}${attached}${renderCommentAttachmentHint(normalizeCommentAttachments(Array.isArray(request.commentAttachments) ? request.commentAttachments : []))}${focused}`,
+              // Media tools ride on the turn's own key: the bill follows the turn's source (#63).
+              systemPrompt: `${stablePrompt}${STUDIO_MEDIA_PROMPT}`, media: true, prompt: `${userPrompt}${attached}${renderCommentAttachmentHint(normalizeCommentAttachments(Array.isArray(request.commentAttachments) ? request.commentAttachments : []))}${focused}`,
               history, skillPackages, projectsRoot, projectId: next.project_id, worker, authorized,
               ...(skillRoot && input.scriptSandbox ? { runSkillScript: createStudioSkillScriptRunner({ sandbox: input.scriptSandbox,
                 packages: skillPackages, skillRoot, runHome, cwd: realCwd }) } : {}),
@@ -849,7 +851,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 { projectId: next.project_id, messageId, runId: next.id, projectRoot: realCwd, touchedPaths: files.map((file) => path.join(realCwd, file)) });
               if (!authorized()) { finish(next.id, 'canceled'); return; }
               key.saveHistory(JSON.stringify(result.input));
-              finish(next.id, 'succeeded', { files, producedFiles, usage: result.usage });
+              finish(next.id, 'succeeded', { files, producedFiles, usage: result.usage,
+                ...(result.media.images || result.media.speechCharacters || result.media.videoSeconds ? { media: result.media } : {}) });
             }).catch((error: unknown) => {
               const cause = error instanceof Error ? error.message : '';
               finish(next.id, cancelPending.has(next.id) || shuttingDown ? 'canceled' : 'failed', { reason: failurePending.has(next.id) ? 'MULTIUSER_QUOTA_EXHAUSTED'
@@ -1272,6 +1275,11 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const fields = parsePersonalRunFields(inputBody, studioMessageIdPrefix(owner));
     if ('code' in fields) return sendApiError(res, fields.status, fields.code, fields.message);
     if (!personal?.enabled) return sendApiError(res, 403, 'MULTIUSER_PERSONAL_DISABLED', 'personal subscriptions are not enabled on this server');
+    // Media projects generate through OpenAI functions; the sandboxed personal Codex lane has none (#63).
+    const projectKind = (getProject(db, target.projectId)?.metadata as { kind?: unknown } | null | undefined)?.kind;
+    if (projectKind === 'image' || projectKind === 'video' || projectKind === 'audio') {
+      return sendApiError(res, 409, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'media projects run on an OpenAI source');
+    }
     const replay = requestedRun(owner, target.conversationId, fields.clientRequestId);
     if (replay) { res.status(200).json({ runId: replay.id, run: body(replay) }); return; }
     const question = fields.questionSourceRunId === null ? undefined : source;

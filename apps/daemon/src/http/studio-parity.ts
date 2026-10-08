@@ -101,9 +101,10 @@ export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
   files: 'Pilot files: owner file list, read, write, upload, rename, delete, folders, search and versions; public publish and resumable large uploads are pending (#58).',
   automations: 'Pilot automations: account-owned routines with schedules, manual runs, history and per-dispatch authority on personal Codex or the company pool; templates, proposals, ingestion, crystallize and plugin/connector context are pending (#64).',
   delivery: 'Pilot delivery: owned project/folder/batch ZIP downloads and one-file HTML exports (current or historical version) from captured bytes with design handoff, and server-rendered PDF/PPTX/PNG where the deployment configured a renderer; public publish and cloud delivery are pending (#66).',
-  home: 'Pilot Home: Prototype, Deck, Other, immutable saved templates, project copies and browser ZIP/directory imports; live artifacts, media and Figma import are pending (#60).',
+  home: 'Pilot Home: Prototype, Deck, Other, Image/Video/Audio on an OpenAI source, immutable saved templates, project copies and browser ZIP/directory imports; live artifacts, HyperFrames and Figma import are pending (#60).',
   settings: 'Pilot settings: account appearance/notification preferences, in-page pet (bundled catalog), instructions, manual memory and profile injection; full navigation, providers, automatic extraction, verification, connectors, MCP and library are pending (#62).',
   collaboration: 'Pilot collaboration: owner-managed view/comment/edit sharing with other accounts of this deployment, members, presence and shared comments with server-stamped authors; revocation closes open streams and stops turns. Shared design systems/skills/plugins and live chat mirroring are pending (#65).',
+  generation: 'Pilot generation: image (gpt-image-1), narration (gpt-4o-mini-tts) and short video (sora-2) inside OpenAI turns, billed to the turn\'s own source (company pool or the account\'s key) and saved in the project; live artifacts, GenUI, research and critique are pending (#63).',
   catalogs: 'Pilot catalogs: bundled templates/craft, account text and folder skills, captured skill packages with company script/binary tools, and versioned design documents; design generation/asset packages, plugins and team catalogs are pending (#61).',
 };
 
@@ -124,6 +125,9 @@ export function multiUserStudioCapabilities(studioPilot = false, policy: { perso
     const pilot = studioPilot ? STUDIO_PILOT_LANES[lane.id] : undefined;
     if (!pilot) return [lane.id, unavailable(lane.issue)];
     if ((lane.id === 'execution' || lane.id === 'composer') && !policy.personalEnabled && !policy.companyEnabled && !policy.personalKeysEnabled) return [lane.id, executionOff];
+    // Media runs on an OpenAI source only; personal Codex has no media functions.
+    if (lane.id === 'generation' && !policy.companyEnabled && !policy.personalKeysEnabled) return [lane.id, { status: 'admin-disabled',
+      reason: 'Media generation needs the company OpenAI pool or accounts\' own OpenAI keys; neither is enabled on this server.' }];
     return [lane.id, { status: 'pilot', reason: pilot }];
   })) as StudioRuntimeCapabilities['features'];
   return { schemaVersion: 1, shell: studioPilot ? 'studio' : 'legacy-multiuser', features,

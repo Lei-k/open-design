@@ -84,8 +84,8 @@ test(`[P1] Studio Home rich composer creates one ${taskType ?? 'freeform'} proje
   if (taskType) {
     await page.getByTestId('home-hero-template-trigger').getByRole('button').click();
     const menu = page.getByTestId('home-hero-template-menu');
-    await expect(menu.locator('[data-chip="image"]')).toBeDisabled();
-    await expect(menu.locator('[data-chip="image"]')).toHaveAttribute('title', /pending/);
+    await expect(menu.locator('[data-chip="hyperframes"]')).toBeDisabled();
+    await expect(menu.locator('[data-chip="hyperframes"]')).toHaveAttribute('title', /pending/);
     await menu.locator(`[data-chip="${taskType}"]`).click();
     await expect(page.getByTestId('home-hero-template-picker')).toHaveAttribute('data-type', taskType);
   }
@@ -113,6 +113,42 @@ test(`[P1] Studio Home rich composer creates one ${taskType ?? 'freeform'} proje
   expect((await studio.request('GET', `/api/projects/${project.id}`, studio.b.cookie)).status).toBe(404);
 });
 }
+
+test('[P1] Studio Home Image project generates an image on the account key, billed to it, and previews the file', async ({ page, studio }, info) => {
+  expect((await studio.request('PUT', '/api/multiuser/settings/provider-keys/openai', studio.a.cookie,
+    { revision: 0, apiKey: 'sk-browser-media-account-key-0123456789' })).status).toBe(200);
+  await page.goto(studio.origin);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  const input = page.getByTestId('home-hero-input');
+  await expect(input).toBeVisible({ timeout: T.long });
+  await page.getByTestId('home-hero-template-trigger').getByRole('button').click();
+  const menu = page.getByTestId('home-hero-template-menu');
+  await expect(menu.locator('[data-chip="image"]')).toBeEnabled();
+  await page.screenshot({ path: info.outputPath('studio-home-media-entry.png') });
+  await menu.locator('[data-chip="image"]').click();
+  await input.fill('BROWSER_IMAGE a calm product hero');
+  const projects = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/projects');
+  const runs = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/runs');
+  await page.getByTestId('home-hero-submit').click();
+  const created = await projects;
+  const project = (await created.json()).project;
+  expect(project.metadata.kind).toBe('image');
+  const run = await runs;
+  expect(run.status(), await run.text()).toBe(202);
+  expect(run.request().postDataJSON().agentId).toBe('openai-byok');
+  await expect(page.getByTestId('chat-log')).toContainText('Image saved to hero.png.', { timeout: T.long });
+  const runInfo = await studio.request('GET', `/api/runs/${(await run.json()).runId}`, studio.a.cookie);
+  expect(runInfo.json).toMatchObject({ executionSource: 'personal_api_key', output: { media: { images: 1 } } });
+  expect((await studio.request('GET', `/api/projects/${project.id}/raw/hero.png`, studio.a.cookie)).status).toBe(200);
+  expect((await studio.request('GET', `/api/projects/${project.id}/raw/hero.png`, studio.b.cookie)).status).toBe(404);
+  // The source picker lists only OpenAI sources in a media project.
+  await expect(page.getByTestId('studio-execution-source')).toContainText('OpenAI · your API key');
+  // The generated file opens in the workspace once the turn ends; the chat keeps its immutable card.
+  await expect(page.getByText(/^Image · \d+ B$/)).toBeVisible({ timeout: T.long });
+  await page.screenshot({ path: info.outputPath('studio-media-image-run.png') });
+});
 
 test('[P1] Studio saves a private template in FileViewer and creates its captured files from Home', async ({ page, studio }, info) => {
   const sourceId = studioProjectId();
@@ -193,10 +229,12 @@ test('[P1] Studio saves private skills, instructions and memory in shared Settin
   // Shared Settings frame: every desktop section stays in the navigation; open lanes show their reason.
   await expect(page.getByTestId('studio-settings-nav-agentAccounts')).toHaveClass(/active/, { timeout: T.long });
   await page.screenshot({ path: info.outputPath('studio-settings-navigation-entry.png'), animations: 'disabled' });
-  for (const pending of ['media', 'integrations']) {
-    await page.getByTestId(`studio-settings-nav-${pending}`).click();
-    await expect(page.locator('.settings-content .studio-unavailable')).toBeVisible();
-  }
+  await page.getByTestId('studio-settings-nav-integrations').click();
+  await expect(page.locator('.settings-content .studio-unavailable')).toBeVisible();
+  // Media is usable on an OpenAI source (accounts' own keys are on): models and billing, no host provider form.
+  await page.getByTestId('studio-settings-nav-media').click();
+  await expect(page.getByTestId('studio-media')).toContainText('gpt-image-1');
+  await page.screenshot({ path: info.outputPath('studio-media-settings.png'), animations: 'disabled' });
   // Telemetry is off for Web accounts (deployment decision): the page says so and offers no opt-in.
   await page.getByTestId('studio-settings-nav-privacy').click();
   await expect(page.getByTestId('studio-privacy')).toContainText('No usage data leaves this deployment');

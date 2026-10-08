@@ -277,7 +277,7 @@ const PROJECT_STRING_FLAGS = new Set([
   'source', 'out', 'root',
   'execution-source',
   'tabs-json', 'files-json', 'active-file',
-  'last-event-id', 'question-answer', 'version-id',
+  'last-event-id', 'question-answer', 'version-id', 'kind',
 ]);
 const PROJECT_RESOURCE_STRING_FLAGS = new Set([
   ...PROJECT_STRING_FLAGS,
@@ -7045,6 +7045,7 @@ async function runProject(args) {
     console.log(`Usage:
   od project create [--name "<title>"] [--skill <id>] [--design-system <id>]
                     [--plugin <id>] [--inputs <json>] [--metadata-json <path|->]
+                    [--kind prototype|deck|image|video|audio|other]
                     [--mode design|chat|plan] [--prompt "<text>" | --prompt-file <path|->] [--json]
   od project create-design-system <id> [--name "<title>"]
                     [--prompt "<text>" | --prompt-file <path|->] [--json]
@@ -7363,6 +7364,8 @@ Common options:
         const mj = safeReadJsonFile(flags['metadata-json']);
         if (mj && typeof mj === 'object') body.metadata = mj;
       }
+      // Shortcut for the project kind (e.g. an Image project whose OpenAI turns generate media, #63).
+      if (typeof flags.kind === 'string' && flags.kind) body.metadata = { ...(body.metadata ?? {}), kind: flags.kind };
       if (flags.plugin) body.pluginId = flags.plugin;
       if (flags.inputs) {
         try { body.pluginInputs = JSON.parse(flags.inputs); } catch (err) {

@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { listCompanyProjectFiles, readCompanyProjectFile, writeCompanyProjectBytes, writeCompanyProjectFile } from '../services/company-project-files.js';
 import type { StudioSkillPackage } from '../services/studio-skill-packages.js';
 import type { StudioSkillScriptRunner } from '../services/studio-skill-scripts.js';
+import { STUDIO_MEDIA_TOOLS, STUDIO_MEDIA_TOOL_NAMES, StudioMediaError, emptyStudioMediaUsage, runStudioMediaTool, type StudioMediaUsage } from './studio-media.js';
 
 type Json = Record<string, unknown>;
 const RESPONSE_BYTES_LIMIT = 4 * 1024 * 1024;
@@ -21,8 +22,10 @@ const tools = [
     properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] },
 ].map(({ properties, required, ...tool }) => ({ ...tool, type: 'function', strict: true,
   parameters: { type: 'object', properties, required, additionalProperties: false } }));
+const mediaTools = STUDIO_MEDIA_TOOLS.map(({ properties, required, ...tool }) => ({ ...tool, type: 'function', strict: true,
+  parameters: { type: 'object', properties, required: [...required], additionalProperties: false } }));
 
-export interface CompanyOpenAITurnResult { ok: boolean; input: Json[]; files: string[]; usage: { inputTokens: number; outputTokens: number } }
+export interface CompanyOpenAITurnResult { ok: boolean; input: Json[]; files: string[]; usage: { inputTokens: number; outputTokens: number }; media: StudioMediaUsage }
 
 /** Same lifecycle the scheduler uses for native children, without giving an
  * agent process the company API key. The daemon executes only bounded,
@@ -58,12 +61,14 @@ export async function runCompanyOpenAITurn(input: {
   runSkillScript?: StudioSkillScriptRunner;
   authorized: () => boolean; onAgentEvent: (event: Json) => void;
   fetch?: typeof fetch;
+  /** Image, speech and video functions on the same key and bill as the turn (#63). */
+  media?: boolean;
 }): Promise<CompanyOpenAITurnResult> {
   const signal = AbortSignal.any([input.worker.abort.signal, AbortSignal.timeout(10 * 60_000)]);
   const check = () => { signal.throwIfAborted(); if (!input.authorized()) throw new Error('company_authority_changed'); };
   const history: Json[] = [...(input.systemPrompt ? [{ role: 'developer', content: input.systemPrompt }] : []),
     ...input.history.filter((item) => item.role !== 'developer'), { role: 'user', content: input.prompt }];
-  const files = new Set<string>(); const usage = { inputTokens: 0, outputTokens: 0 };
+  const files = new Set<string>(); const usage = { inputTokens: 0, outputTokens: 0 }; const media = emptyStudioMediaUsage();
   const emit = (event: Json) => { check(); input.onAgentEvent(event); };
   const safePath = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 1024
     && !value.includes('\0') && !value.startsWith('/') && !value.includes('\\') && !value.split('/').some((part) => !part || part === '..');
@@ -74,7 +79,7 @@ export async function runCompanyOpenAITurn(input: {
       method: 'POST', signal, redirect: 'error', headers: { authorization: `Bearer ${input.apiKey}`, 'content-type': 'application/json' },
       body: JSON.stringify({ model: input.model, store: false, stream: true, input: history,
         include: ['reasoning.encrypted_content'], max_output_tokens: 8192, parallel_tool_calls: false,
-        tools: tools.filter((tool) => tool.name !== 'run_skill_script' || input.runSkillScript) }),
+        tools: [...tools.filter((tool) => tool.name !== 'run_skill_script' || input.runSkillScript), ...(input.media ? mediaTools : [])] }),
     });
     check();
     if (!response.ok || !response.body || !response.headers.get('content-type')?.includes('text/event-stream')) {
@@ -111,7 +116,7 @@ export async function runCompanyOpenAITurn(input: {
     }
     history.push(...output);
     const calls = output.filter((item) => item.type === 'function_call');
-    if (calls.length === 0) return { ok: true, input: history, files: [...files], usage };
+    if (calls.length === 0) return { ok: true, input: history, files: [...files], usage, media };
     if (calls.length > 12) throw new Error('company_tool_limit');
     for (const call of calls) {
       check();
@@ -123,7 +128,18 @@ export async function runCompanyOpenAITurn(input: {
         emit({ type: 'tool_use', id: call.call_id, name: call.name,
           input: { ...(typeof args.path === 'string' ? { file_path: args.path } : {}),
             ...(typeof args.destination === 'string' ? { destination: args.destination } : {}) } });
-        if (call.name === 'list_skill_files' && Object.keys(args).length === 0) {
+        if (input.media && STUDIO_MEDIA_TOOL_NAMES.has(call.name)) {
+          check();
+          try {
+            result = await runStudioMediaTool(call.name, args, { apiKey: input.apiKey, fetch: input.fetch ?? fetch, signal,
+              projectsRoot: input.projectsRoot, projectId: input.projectId, check, usage: media });
+            files.add((result as { saved: string }).saved);
+          } catch (error) {
+            check();
+            if (!(error instanceof StudioMediaError)) throw error;
+            failed = true; result = { error: error.code };
+          }
+        } else if (call.name === 'list_skill_files' && Object.keys(args).length === 0) {
           result = (input.skillPackages ?? []).map((resource) => ({ skillId: resource.id,
             files: resource.files.map((file) => ({ path: file.path, bytes: Buffer.byteLength(file.data, 'base64'), sha256: file.sha256 })) }));
         } else if (call.name === 'read_skill_file' && typeof args.skillId === 'string' && safePath(args.path)

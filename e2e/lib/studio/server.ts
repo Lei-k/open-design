@@ -16,9 +16,21 @@ process.once('message', async (input: { dataRoot: string; appOrigin: string; pre
   };
   // Mock only the external provider; all HTTP admission, authorization, file
   // functions, persistence and browser transports use the production daemon.
-  const companyFetch: typeof fetch = async (_url, init) => {
-    const request = JSON.parse(String(init?.body)) as { input: Array<{ type?: string }> };
+  const companyFetch: typeof fetch = async (url, init) => {
+    // Media endpoints (#63): a fixed valid PNG for images.
+    if (String(url) === 'https://api.openai.com/v1/images/generations') {
+      const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+      return Response.json({ data: [{ b64_json: png }] });
+    }
+    const request = JSON.parse(String(init?.body)) as { input: Array<{ type?: string; role?: string; content?: unknown }> };
     const wrote = request.input.some((item) => item.type === 'function_call_output');
+    const user = request.input.filter((item) => item.role === 'user').map((item) => String(item.content)).join('\n');
+    if (user.includes('BROWSER_IMAGE')) {
+      const output = wrote ? [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Image saved to hero.png.' }] }]
+        : [{ type: 'function_call', call_id: 'browser-image', name: 'generate_image', arguments: JSON.stringify({ prompt: 'A product hero', path: 'hero.png', size: '1024x1024' }) }];
+      const events = [...(wrote ? [{ type: 'response.output_text.delta', delta: 'Image saved to hero.png.' }] : []), { type: 'response.completed', response: { output } }];
+      return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
+    }
     const output = wrote ? [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Company browser design complete.' }] }]
       : [{ type: 'function_call', call_id: 'browser-write', name: 'write_project_file', arguments: JSON.stringify({ path: 'company.html', content: '<!doctype html><html><body><h1>Company browser design</h1></body></html>' }) }];
     const events = [...(wrote ? [{ type: 'response.output_text.delta', delta: 'Company browser design complete.\n' }] : []), { type: 'response.completed', response: { output } }];

@@ -154,6 +154,9 @@ import { AnimatePresence } from 'motion/react';
 import { DeepSeekV4FlashCampaign } from './DeepSeekV4FlashCampaign';
 import type { DeepSeekV4FlashCampaignAudience } from '../campaigns/deepseek-v4-flash';
 
+/** Home media kinds a Studio OpenAI turn can generate (image, narration, short video). */
+const STUDIO_MEDIA_CHIPS: ReadonlySet<string> = new Set(['image', 'video', 'audio']);
+
 export interface ActivePlugin {
   record: InstalledPluginRecord;
   // `result` is `null` during the optimistic window — set on chip
@@ -614,6 +617,9 @@ export function HomeView({
   );
   const [fallbackProjectKind, setFallbackProjectKind] = useState<ProjectKind | null>(null);
   const [studioTaskChipId, setStudioTaskChipId] = useState<string | null>(null);
+  // Studio task types: design kinds always; media kinds once an OpenAI source can generate them (#63).
+  const studioTaskChipUsable = (id: string) => ['prototype', 'deck', 'document'].includes(id)
+    || (STUDIO_MEDIA_CHIPS.has(id) && studio.available('generation'));
   const [fallbackProjectMetadata, setFallbackProjectMetadata] =
     useState<ProjectMetadata | null>(null);
   const [active, setActive] = useState<ActivePlugin | null>(null);
@@ -2565,7 +2571,7 @@ export function HomeView({
     },
   ) {
     if (!studio.hostServices) {
-      if (['prototype', 'deck', 'document'].includes(chip.id) && chip.action.kind === 'apply-scenario') {
+      if (studioTaskChipUsable(chip.id) && chip.action.kind === 'apply-scenario') {
         setStudioTaskChipId(chip.id);
         setFallbackProjectKind(chip.action.projectKind);
         setFallbackProjectMetadata(selection?.projectMetadata ?? chip.action.projectMetadata ?? null);
@@ -3188,7 +3194,8 @@ export function HomeView({
         activeSkillRecord={activeSkill}
         activeChipId={active?.chipId ?? studioTaskChipId}
         taskTypeUnavailableReason={studio.hostServices ? undefined : (chip) =>
-          ['prototype', 'deck', 'document'].includes(chip.id) ? undefined : studio.reason('home')}
+          studioTaskChipUsable(chip.id) ? undefined
+            : STUDIO_MEDIA_CHIPS.has(chip.id) ? studio.reason('generation') : studio.reason('home')}
         activePrototypeSubtypeId={active?.prototypeSubtypeId ?? null}
         showActivePluginChip={showActivePluginChip}
         onClearActivePlugin={clearActivePlugin}

@@ -414,6 +414,13 @@ it('stores the account\'s own OpenAI key through stdin, runs on it with --execut
   expect(watched.stdout).not.toContain(key);
   const info = success(await cli(['run', 'info', admitted.runId, '--session-file', sessionA, '--json']));
   expect(JSON.stringify(info)).toContain('personal_api_key');
+  // An Image project on the CLI: personal Codex is refused, the own-key source is admitted (#63).
+  const image = success(await cli(['project', 'create', '--name', 'CLI image', '--kind', 'image', '--session-file', sessionA, '--json']));
+  expect(image.project.metadata.kind).toBe('image');
+  expect((await cli(['run', 'start', '--project', image.project.id, '--conversation', image.conversationId, '--execution-source', 'personal_subscription',
+    '--prompt-file', '-', '--session-file', sessionA, '--json'], 'Image via Codex')).code).not.toBe(0);
+  success(await cli(['run', 'start', '--project', image.project.id, '--conversation', image.conversationId, '--execution-source', 'personal_api_key',
+    '--prompt-file', '-', '--session-file', sessionA, '--json'], 'Image via own key'));
   const current = success(await cli(['account', 'key', 'get', '--session-file', sessionA, '--json'])).key;
   expect(success(await cli(['account', 'key', 'remove', '--revision', String(current.revision), '--session-file', sessionA, '--json'])).key)
     .toMatchObject({ configured: false, last4: null });
