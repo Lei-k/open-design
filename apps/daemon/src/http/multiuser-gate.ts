@@ -404,6 +404,16 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   if (policy === 'studio-routine') return only(['name', 'prompt', 'schedule', 'target', 'skillId', 'agentId', 'context', 'enabled']);
   // A historical versionId bundles that version's HTML with the project's current
   // same-project assets, exactly like the single-user export.
+  if (policy === 'export-render') {
+    const dimension = (value: unknown) => value === undefined || (typeof value === 'number' && Number.isInteger(value) && value >= 64 && value <= 8192);
+    return only(['fileName', 'title', 'deck', 'editable', 'index', 'imageFormat', 'width', 'height', 'versionId'])
+      && projectPathText(body.fileName) && optionalText(body.title, 200)
+      && (body.deck === undefined || typeof body.deck === 'boolean') && (body.editable === undefined || typeof body.editable === 'boolean')
+      && (body.index === undefined || (typeof body.index === 'number' && Number.isInteger(body.index) && body.index >= 0 && body.index < 1000))
+      && (body.imageFormat === undefined || body.imageFormat === 'png' || body.imageFormat === 'jpeg')
+      && dimension(body.width) && dimension(body.height)
+      && (body.versionId === undefined || typeof body.versionId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(body.versionId));
+  }
   if (policy === 'export-html') return only(['fileName', 'title', 'versionId']) && projectPathText(body.fileName) && optionalText(body.title, 200)
     && (body.versionId === undefined || typeof body.versionId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(body.versionId));
   if (policy === 'comment-upsert' || policy === 'comment-status' || policy === 'comment-anchor' || policy === 'comment-reorder') {
@@ -543,6 +553,7 @@ export interface MultiUserFront {
   attachProjectOwnership: (db: Database.Database) => void;
   setCancelAccountRuns: (cancel: (accountId: string) => void) => void;
   setCompanyPoolAvailable: (check: () => boolean) => void;
+  setRenderedExportsAvailable: (check: () => boolean) => void;
   setIsRunOwner: (check: (runId: string, accountId: string) => boolean) => void;
   setCancelProjectRuns: (cancel: (accountId: string, projectId: string, conversationId?: string) => Promise<() => void>) => void;
   setIsAgentAccountOwner: (check: (param: 'attemptId' | 'accountId', id: string, accountId: string) => boolean) => void;
@@ -567,6 +578,7 @@ export function installMultiUserFront(
     ...(mode.auth.sessionIdleTtlMs ? { sessionIdleTtlMs: mode.auth.sessionIdleTtlMs } : {}),
   });
   let companyPoolAvailable = () => false;
+  let renderedExportsAvailable = () => false;
   let ownership: ProjectOwnershipStore | null = null;
   let cancelAccountRuns: ((accountId: string) => void) | null = null;
   let isRunOwner: ((runId: string, accountId: string) => boolean) | null = null;
@@ -591,6 +603,7 @@ export function installMultiUserFront(
     onAccountSessionsRevoked: (accountId) => cancelAccountRuns?.(accountId),
     personalRunsEnabled: Boolean(mode.personalCodex),
     companyPoolAvailable: () => companyPoolAvailable(),
+    renderedExportsAvailable: () => renderedExportsAvailable(),
   });
 
   const projectOwnershipHooks: ProjectOwnershipRouteHooks = {
@@ -621,6 +634,7 @@ export function installMultiUserFront(
     },
     setCancelAccountRuns(cancel) { cancelAccountRuns = cancel; },
     setCompanyPoolAvailable(check) { companyPoolAvailable = check; },
+    setRenderedExportsAvailable(check) { renderedExportsAvailable = check; },
     setIsRunOwner(check) { isRunOwner = check; },
     setCancelProjectRuns(cancel) { cancelProjectRuns = cancel; },
     setIsAgentAccountOwner(check) { isAgentAccountOwner = check; },

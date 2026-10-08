@@ -99,7 +99,7 @@ export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
   preview: 'Pilot preview: opaque HTML/deck/media previews, manual edit, inspect, owner-only comments and immutable artifact snapshots/thumbnails; team comments, renderer covers and complete browser acceptance are pending (#59).',
   files: 'Pilot files: owner file list, read, write, upload, rename, delete, folders, search and versions; public publish and resumable large uploads are pending (#58).',
   automations: 'Pilot automations: account-owned routines with schedules, manual runs, history and per-dispatch authority on personal Codex or the company pool; templates, proposals, ingestion, crystallize and plugin/connector context are pending (#64).',
-  delivery: 'Pilot delivery: owned project/folder/batch ZIP downloads and one-file HTML exports (current or historical version) from captured bytes with design handoff; PDF, PPTX, image, public publish and cloud delivery are pending (#66).',
+  delivery: 'Pilot delivery: owned project/folder/batch ZIP downloads and one-file HTML exports (current or historical version) from captured bytes with design handoff, and server-rendered PDF/PPTX/PNG where the deployment configured a renderer; public publish and cloud delivery are pending (#66).',
   home: 'Pilot Home: Prototype, Deck, Other, immutable saved templates, project copies and browser ZIP/directory imports; live artifacts, media and Figma import are pending (#60).',
   settings: 'Pilot settings: account appearance/notification preferences, in-page pet (bundled catalog), instructions, manual memory and profile injection; full navigation, providers, automatic extraction, verification, connectors, MCP and library are pending (#62).',
   catalogs: 'Pilot catalogs: bundled templates/craft, account text and folder skills, captured skill packages with company script/binary tools, and versioned design documents; design generation/asset packages, plugins and team catalogs are pending (#61).',
@@ -111,7 +111,7 @@ export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
  * lanes: it marks the pilot-usable ones `pilot`, never `supported`, and a lane
  * whose server policy is off is `admin-disabled` for the pilot as well.
  */
-export function multiUserStudioCapabilities(studioPilot = false, policy: { personalEnabled?: boolean; companyEnabled?: boolean } = {}): StudioRuntimeCapabilities {
+export function multiUserStudioCapabilities(studioPilot = false, policy: { personalEnabled?: boolean; companyEnabled?: boolean; renderedExports?: boolean } = {}): StudioRuntimeCapabilities {
   const unavailable = (issue: number): StudioAvailability => ({
     status: 'unavailable', reason: `Studio integration #${issue} has not passed its complete parity gate; the legacy fallback remains active.`,
   });
@@ -128,7 +128,7 @@ export function multiUserStudioCapabilities(studioPilot = false, policy: { perso
     ...(studioPilot ? { executionSources: [
       ...(policy.personalEnabled ? [{ source: 'personal_subscription' as const, agentId: 'codex' as const }] : []),
       ...(policy.companyEnabled ? [{ source: 'company_pool' as const, agentId: 'openai' as const }] : []),
-    ] } : {}) };
+    ], renderedExports: policy.renderedExports === true } : {}) };
 }
 
 /** The actor's private transcript-id namespace (see `isStudioMessageIdInNamespace`).

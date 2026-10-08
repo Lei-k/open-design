@@ -40,6 +40,7 @@ preview iframe ──▶ preview origin┘
    - Create a second DNS A/AAAA record for the preview host, set `previewOrigin` to its exact HTTPS origin, and export the same host as `OD_PREVIEW_DOMAIN`. It must use a different hostname from `publicOrigin`; changing only the port would still send host cookies.
    - Keep `acknowledge` exactly as written. It records that this is a staging deployment.
    - To run without personal subscriptions, remove `personalCodex`. Then also remove the three `*=unconfined` entries from `security_opt` in `docker-compose.yml`.
+   - `renderer` enables server-rendered PDF, PPTX and PNG exports in Studio (Chromium is in the image). Each render runs in a fresh headless browser context that can reach only the captured project bytes and GETs to a fixed list of public font/CDN hosts (Google Fonts, Tailwind CDN, jsDelivr, unpkg, cdnjs). Set `"assetHosts": []` to block those too (artifacts that load fonts or CSS from a CDN then render without them), or list your own hosts. The image's Alpine Chromium cannot run its own seccomp sandbox, so `bwrap` confines it with bubblewrap instead (the same unprivileged user namespaces as the personal-subscription sandbox): only system files and the browser's own profile are mounted — no daemon data, projects or credentials — and with `"assetHosts": []` it has no network namespace at all. Remove `renderer` to turn rendered exports off; the Export menu then offers HTML, Markdown and ZIP only.
 2. **Bootstrap secret** for the first administrator. It must be at least 32 characters, and the container user (uid 1001) must be able to read it:
    ```sh
    openssl rand -hex 32 > secrets/bootstrap
@@ -94,5 +95,5 @@ Pull or build the new image and run `docker compose up -d`. Queued runs survive 
 
 - One host and one daemon process. No horizontal scaling.
 - Company pool off until #14.
-- No `od` CLI for multi-user accounts yet (deferred by the owner).
+- PDF/PPTX/PNG exports are rasterized (one image per slide or viewport), like the desktop's default export.
 - The cross-account end-to-end and browser regression gate (#8) is run on this deployment after it is up.

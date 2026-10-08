@@ -14,7 +14,7 @@ let aFile: string;
 let bFile: string;
 beforeAll(async () => {
   ({ dataRoot: root } = await loadIsolatedServerModule());
-  daemon = await startMultiUserDaemon(multiUserOptions({ testMockAgentScript: path.resolve('../..', 'mocks/run-isolation-agent.ts'), testPersonalCodexAppServer: PERSONAL_CODEX_MOCK,
+  daemon = await startMultiUserDaemon(multiUserOptions({ testMockAgentScript: path.resolve('../..', 'mocks/run-isolation-agent.ts'), testPersonalCodexAppServer: PERSONAL_CODEX_MOCK, studioRenderer: { assetHosts: [] },
     testCompanyOpenAIFetch: async () => new Response('data: ' + JSON.stringify({ type: 'response.output_text.delta', delta: 'CLI company completed.\n' })
       + '\n\ndata: ' + JSON.stringify({ type: 'response.completed', response: { output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'CLI company completed.' }] }] } }) + '\n\n',
       { headers: { 'content-type': 'text/event-stream' } }) }));
@@ -49,6 +49,23 @@ function success(result: { code: number | null; stdout: string; stderr: string }
 }
 
 describe('same Studio APIs through remote od sessions', () => {
+  it('exports server-rendered PPTX and PDF through od export over a session', async () => {
+    const session = path.join(root, 'cli-render-session');
+    success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', alice.username,
+      '--password-file', '-', '--session-file', session, '--json'], alice.password));
+    const made = success(await cli(['project', 'create', '--name', 'CLI render', '--session-file', session, '--json']));
+    const projectId = made.project.id;
+    expect((await daemon.request({ method: 'POST', path: `/api/projects/${projectId}/files`, cookie: alice.cookie,
+      body: { name: 'deck.html', content: '<section class="slide"><h1>CLI slide</h1></section>' } })).status).toBe(200);
+    for (const [format, magic] of [['pptx', 'PK'], ['pdf', '%PDF']] as const) {
+      const out = path.join(root, `cli-render.${format}`);
+      const result = success(await cli(['export', '--project', projectId, '--file', 'deck.html', '--format', format, '--deck',
+        '--out', out, '--session-file', session, '--json']));
+      expect(result).toMatchObject({ ok: true, path: out });
+      expect(readFileSync(out).subarray(0, magic.length).toString()).toBe(magic);
+    }
+  }, 120_000);
+
   it('lists, adds, updates and deletes owner preview comments through the comment endpoints', async () => {
     const session = path.join(root, 'cli-comment-session');
     success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', alice.username,

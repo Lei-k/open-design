@@ -950,6 +950,9 @@ import { registerStudioCatalogRoutes } from './routes/studio-catalog.js';
 import { registerStudioArchiveRoutes } from './routes/studio-archives.js';
 import { registerStudioCommentRoutes } from './routes/studio-comments.js';
 import { registerStudioPetRoutes } from './routes/studio-pets.js';
+import { registerStudioRenderRoutes } from './routes/studio-render.js';
+import { createChromiumCaptureHost } from './render/chromium-capture-runtime.js';
+import { setArtifactCaptureRuntime } from '@open-design/artifact-capture';
 import { registerStudioRoutineRoutes } from './routes/studio-routines.js';
 import { registerStudioProjectCreationRoutes } from './routes/studio-project-creation.js';
 import { registerMultiUserAgentAccountRoutes } from './routes/multiuser-agent-accounts.js';
@@ -17626,6 +17629,20 @@ export async function startServer({
   if (multiUserMode) registerStudioArchiveRoutes(app, { db, projectsRoot: PROJECTS_DIR });
   if (multiUserMode) registerStudioCommentRoutes(app, { db });
   if (multiUserMode) registerStudioPetRoutes(app, { bundledRoot: BUNDLED_PETS_DIR });
+  // Server-side PDF/PPTX/PNG exports (#66): only when the deployment configured a renderer.
+  const studioRenderHost = multiUserMode?.studioRenderer ? createChromiumCaptureHost({
+    ...(multiUserMode.studioRenderer.executablePath ? { executablePath: multiUserMode.studioRenderer.executablePath } : {}),
+    ...(multiUserMode.studioRenderer.assetHosts ? { assetHosts: multiUserMode.studioRenderer.assetHosts } : {}),
+    ...(multiUserMode.studioRenderer.sandbox !== undefined ? { sandbox: multiUserMode.studioRenderer.sandbox } : {}),
+    ...(multiUserMode.studioRenderer.domToPptxBundlePath ? { domToPptxBundlePath: multiUserMode.studioRenderer.domToPptxBundlePath } : {}),
+    // The generated launcher is daemon data (root AGENTS.md data-directory contract).
+    ...(multiUserMode.studioRenderer.bwrapPath ? { bwrap: { path: multiUserMode.studioRenderer.bwrapPath, launcherDir: path.join(RUNTIME_DATA_DIR, 'studio-renderer') } } : {}),
+  }) : null;
+  if (studioRenderHost) {
+    setArtifactCaptureRuntime(studioRenderHost.runtime);
+    multiUserFront?.setRenderedExportsAvailable(() => true);
+  }
+  if (multiUserMode) registerStudioRenderRoutes(app, { db, projectsRoot: PROJECTS_DIR, dataRoot: RUNTIME_DATA_DIR, host: studioRenderHost });
   if (multiUserMode) registerStudioProjectCreationRoutes(app, {
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR,
     readSkill: async (owner, id) => Boolean(await studioCatalog?.readSkills(owner, [id])),
@@ -18294,6 +18311,7 @@ export async function startServer({
       collabPublishWatcher.dispose();
       collabCloud?.dispose();
       studioRoutines?.stop();
+      void studioRenderHost?.close();
       multiUserDesign?.close();
       multiUserFront?.close();
       void personalCodex?.shutdown();

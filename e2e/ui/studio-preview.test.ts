@@ -390,12 +390,29 @@ test('[P1] Studio deck navigation and manual edits survive reload under owner co
   await expect(frame.getByRole('heading', { name: 'Owner Slide One' })).toBeVisible();
   await expect.poll(() => frame.locator('body').evaluate((body) => getComputedStyle(body).backgroundColor)).toBe('rgb(238, 242, 255)');
   await page.screenshot({ path: info.outputPath('studio-deck-owner.png') });
-  // Export: the owner's one-file HTML bundle; renderer formats stay closed until #66.
+  // Export: the owner's one-file HTML bundle, plus server-rendered PDF/PPTX (#66, S31).
   await page.getByRole('button', { name: 'Export', exact: true }).click();
   const exportMenu = page.locator('.chrome-unified-panel');
   await expect(exportMenu.getByRole('menuitem', { name: 'Export as standalone HTML' })).toBeVisible();
-  await expect(exportMenu.getByRole('menuitem', { name: /PDF/ })).toHaveCount(0);
+  await expect(exportMenu.getByRole('menuitem', { name: 'Export as PDF' })).toBeVisible();
+  await expect(exportMenu.getByRole('menuitem', { name: 'Export as PPTX' })).toBeVisible();
   await page.screenshot({ path: info.outputPath('studio-export-html-entry.png'), animations: 'disabled' });
+  const pdfResponse = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `/api/projects/${projectId}/export/pdf-image`);
+  const pdfDownload = page.waitForEvent('download');
+  await exportMenu.getByRole('menuitem', { name: 'Export as PDF' }).click();
+  expect((await pdfResponse).status()).toBe(200);
+  expect((await pdfDownload).suggestedFilename()).toMatch(/\.pdf$/);
+  await page.getByRole('button', { name: 'Export', exact: true }).click();
+  await exportMenu.getByRole('menuitem', { name: 'Export as PPTX' }).click();
+  await page.screenshot({ path: info.outputPath('studio-export-pptx-entry.png'), animations: 'disabled' });
+  const pptxResponse = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `/api/projects/${projectId}/export/pptx`);
+  const pptxDownload = page.waitForEvent('download');
+  await page.locator('.viewer-action.primary').filter({ hasText: 'Export' }).click();
+  const pptxReply = await pptxResponse;
+  expect(pptxReply.status(), await pptxReply.text().catch(() => '')).toBe(200);
+  expect(pptxReply.request().postDataJSON()).toMatchObject({ editable: true, deck: true });
+  expect((await pptxDownload).suggestedFilename()).toMatch(/\.pptx$/);
+  await page.getByRole('button', { name: 'Export', exact: true }).click();
   const exported = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `/api/projects/${projectId}/export/html`);
   const downloaded = page.waitForEvent('download');
   await exportMenu.getByRole('menuitem', { name: 'Export as standalone HTML' }).click();

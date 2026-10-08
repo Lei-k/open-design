@@ -15060,15 +15060,17 @@ function HtmlViewer({
   // guards the actual export/publish handlers.
   // Share and Export are the delivery lane (#66); without it they would be dead ends.
   const studioRequest = useStudioRequestAvailable();
-  // Studio exports only what the daemon renders for an owner today: the one-file
-  // HTML bundle (and client-side Markdown). Share/publish/deploy and rendered
-  // PDF/image/PPTX remain the open part of #66; ZIP has its own owner action.
+  // Studio exports what the daemon produces for an owner: the one-file HTML
+  // bundle, client-side Markdown, and PDF/PPTX/PNG where the deployment runs a
+  // renderer. Share/publish/deploy remain the open part of #66; ZIP has its own owner action.
   const deliveryUsable = studio.hostServices || studioRequest('POST', `/api/projects/${projectId}/export/html`);
-  const rendererExports = studio.hostServices;
+  const studioRenderedExports = !studio.hostServices && studioRequest('POST', `/api/projects/${projectId}/export/pptx`);
+  const rendererExports = studio.hostServices || studioRenderedExports;
   // Owner preview comments are reviewed for Studio (#59); team sharing of them is #65.
   const commentsUsable = studioRequest('GET', `/api/projects/${projectId}/conversations/active/comments`);
   const [archiveDownloading, setArchiveDownloading] = useState(false);
-  const rawCanShare = rendererExports && deliveryUsable && source !== null && isShareableArtifact;
+  const rawCanShare = studio.hostServices && deliveryUsable && source !== null && isShareableArtifact;
+  const canRenderExports = rendererExports && deliveryUsable && source !== null && isShareableArtifact && !viewerOnly;
   const rawCanDownload = deliveryUsable && source !== null && (isShareableArtifact || isMarkdownArtifact);
   const canShare = rawCanShare && !viewerOnly;
   const canDownload = rawCanDownload && !viewerOnly;
@@ -15083,10 +15085,10 @@ function HtmlViewer({
   // answered or predates the flag: keep showing the entry, since hiding on
   // absence would take a working export away from every deployment that has
   // not upgraded. Only an explicit `false` hides it.
-  const showPptxExport = canShare && deckExportSignal && slideRendererAvailable !== false;
+  const showPptxExport = canRenderExports && deckExportSignal && (studioRenderedExports || slideRendererAvailable !== false);
   const canPptx = showPptxExport && !streaming;
   const showMarkdownExport = source !== null && isMarkdownArtifact && !viewerOnly;
-  const showImageExport = canShare;
+  const showImageExport = canRenderExports;
   // Read-only viewer of a team-shared project: comment-only copy for the
   // disabled edit/export controls and the comment composer's send-to-chat path.
   const viewerOnlyDisabledTitle = t('fileViewer.readonlySharedNoExport');
@@ -15113,7 +15115,7 @@ function HtmlViewer({
     const pdfTitle = context?.title ?? exportTitle;
     const pdfSource = context?.content ?? source ?? '';
     const pdfDeck = deckExportSignalForContext(context);
-    if (isOpenDesignHostAvailable()) {
+    if (isOpenDesignHostAvailable() || studioRenderedExports) {
       const res = await exportProjectScreenshotPdf({
         projectId,
         fileName: file.name,
@@ -15339,7 +15341,7 @@ function HtmlViewer({
     // reports; otherwise (Copy screenshot, Mark/Draw capture) it grabs the
     // CURRENT slide, mirroring what's on screen. An ordinary page is its
     // full-page capture either way.
-    if (isOpenDesignHostAvailable() && projectId && file.name) {
+    if ((isOpenDesignHostAvailable() || studioRenderedExports) && projectId && file.name) {
       // Deck-vs-page uses the same signal as PDF export — broader than the viewer's nav
       // signal — so runtime-managed decks (`<deck-stage>` / `data-screen-label`,
       // no literal `.slide`) export as a deck instead of a single page-mode shot
@@ -15586,7 +15588,7 @@ function HtmlViewer({
     // unacceptable for a Chinese-first product. Falls back to the
     // vector/browser print path on web or on failure.
     fireShareExport('pdf', async () => {
-      if (isOpenDesignHostAvailable()) {
+      if (isOpenDesignHostAvailable() || studioRenderedExports) {
         const res = await exportProjectScreenshotPdf({
           projectId,
           fileName: file.name,

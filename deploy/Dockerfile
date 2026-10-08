@@ -154,9 +154,13 @@ COPY --from=codex-download /out/ /
 
 FROM runtime AS multiuser
 USER root
-RUN apk add --no-cache bubblewrap ca-certificates
+# chromium + fonts: server-rendered PDF/PPTX/PNG exports (#66). CJK and emoji
+# fonts keep Chinese/Japanese/Korean artifacts from rendering as tofu.
+RUN apk add --no-cache bubblewrap ca-certificates chromium font-noto font-noto-cjk font-noto-emoji
 COPY --from=codex-release / /opt/codex/
 RUN chmod -R a+rX /opt/codex && /opt/codex/bin/codex --version
+# Editable PPTX engine (vendored browser bundle) for the export renderer.
+COPY --from=build --chown=open-design:open-design /app/apps/desktop/vendor/dom-to-pptx/dom-to-pptx.bundle.js.gz /opt/open-design/dom-to-pptx.bundle.js.gz
 # The daemon binds loopback only; the proxy shares this network namespace.
 ENV OD_BIND_HOST=127.0.0.1
 ENV NODE_OPTIONS=--max-old-space-size=1024

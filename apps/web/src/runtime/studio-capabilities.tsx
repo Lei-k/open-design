@@ -26,7 +26,7 @@ export function StudioCapabilitiesProvider({ session, generation, actor, capabil
   const usable = (lane: StudioParityLaneId) => ['supported', 'pilot'].includes(capabilities.features[lane].status);
   // The session owns this lifetime (including StrictMode remounts). It releases
   // the transport and module registry before publishing another generation.
-  activateStudioTransport(session, generation, { messageIdPrefix, usable });
+  activateStudioTransport(session, generation, { messageIdPrefix, usable, renderedExports: capabilities.renderedExports === true });
   const value: StudioCapabilities = { actor, session, generation, capabilities, hostServices: false,
     // Choices are advertised by the authenticated daemon, never inferred from host configuration.
     executionAgentId: usable('execution') ? (capabilities.executionSources?.[0]?.agentId ?? (capabilities.executionSources === undefined ? 'codex' : null)) : null,
@@ -38,8 +38,9 @@ export function useStudioCapabilities() { return useContext(Context); }
 /** Partial pilot lanes expose only the operations reviewed by the transport. */
 export function useStudioRequestAvailable() {
   const studio = useStudioCapabilities();
-  return useCallback((method: string, path: string) => studio.hostServices || studioRequestAvailable(method, path, studio.available),
-    [studio.hostServices, studio.available]);
+  const renderedExports = studio.capabilities?.renderedExports === true;
+  return useCallback((method: string, path: string) => studio.hostServices || studioRequestAvailable(method, path, studio.available, renderedExports),
+    [studio.hostServices, studio.available, renderedExports]);
 }
 export function StudioUnavailable({ lane }: { lane: StudioParityLaneId }) {
   const studio = useStudioCapabilities();

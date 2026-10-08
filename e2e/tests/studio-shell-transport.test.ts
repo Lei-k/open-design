@@ -4,7 +4,7 @@ import { expect, it } from 'vitest';
 import { MULTIUSER_ROUTE_CLASSIFICATION, matchMultiUserRoute } from '../../apps/daemon/src/http/multiuser-route-classes.js';
 const runtime = fileURLToPath(new URL('../../apps/web/src/runtime/studio-transport.ts', import.meta.url));
 const { studioRequestAvailable } = await import(runtime) as {
-  studioRequestAvailable(method: string, path: string, usable?: (lane: string) => boolean): boolean;
+  studioRequestAvailable(method: string, path: string, usable?: (lane: string) => boolean, renderedExports?: boolean): boolean;
 };
 
 it('classifies every observed request from the real App and cookie entry lifecycle', () => {
@@ -228,4 +228,16 @@ it('opens only the bundled pet catalog with a usable settings lane; community sy
   }
   expect(studioRequestAvailable('POST', '/api/codex-pets/sync', () => true)).toBe(false);
   expect(matchMultiUserRoute('POST', '/api/codex-pets/sync').every(({ entry }) => entry.routeClass === 'blocked-in-multiuser')).toBe(true);
+});
+
+it('opens server-rendered exports only when delivery is usable and the deployment advertises a renderer', () => {
+  for (const prefix of ['/api/projects/p', '/api/multiuser/projects/p']) for (const format of ['pptx', 'pdf-image', 'image']) {
+    const path = `${prefix}/export/${format}`;
+    expect(studioRequestAvailable('POST', path, (lane) => lane === 'delivery', true), path).toBe(true);
+    expect(studioRequestAvailable('POST', path, (lane) => lane === 'delivery', false), path).toBe(false);
+    expect(studioRequestAvailable('POST', path, () => false, true), path).toBe(false);
+    expect(studioRequestAvailable('GET', path, () => true, true), path).toBe(false);
+    expect(matchMultiUserRoute('POST', path).every(({ entry }) => entry.routeClass === 'owner-scoped-project'), path).toBe(true);
+  }
+  expect(studioRequestAvailable('POST', '/api/projects/p/export/pdf', () => true, true)).toBe(false);
 });

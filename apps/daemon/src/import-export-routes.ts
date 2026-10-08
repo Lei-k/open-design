@@ -31,6 +31,7 @@ import {
 } from './artifacts/standalone-html.js';
 import {
   buildDeckRenderInput,
+  screenshotRenderClientError,
   buildScreenshotPdf,
   buildScreenshotPptx,
   decodeSlideDataUrls,
@@ -719,10 +720,6 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
     };
   }
 
-  function isNoSlideDeckRenderError(rendered: { ok: boolean; error?: string }): boolean {
-    return !rendered.ok && typeof rendered.error === 'string' && /no slide surfaces found/i.test(rendered.error);
-  }
-
   function scopedProjectPreviewBaseHref(
     projectId: string,
     fileName: string,
@@ -756,32 +753,6 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
       metadata,
     );
     return result.content;
-  }
-
-  function screenshotRenderClientError(
-    rendered: { ok: boolean; error?: string; errorCode?: string },
-    format: 'pptx' | 'pdf' | 'image',
-  ): { message: string; status: 400 | 422 } | null {
-    if (rendered.ok) return null;
-    if (rendered.errorCode === 'NO_SLIDES' || (format === 'pptx' && isNoSlideDeckRenderError(rendered))) {
-      return {
-        status: 422,
-        message: 'this artifact is not a slide deck — export it as PDF or an image instead',
-      };
-    }
-    if (rendered.errorCode === 'SLIDE_INDEX_OUT_OF_RANGE') {
-      return {
-        status: 422,
-        message: rendered.error || 'slide index is out of range',
-      };
-    }
-    if (rendered.errorCode === 'PAGE_TOO_TALL') {
-      return {
-        status: 422,
-        message: rendered.error || 'page is too tall to export as one image',
-      };
-    }
-    return null;
   }
 
   async function handleStandaloneHtmlExport(

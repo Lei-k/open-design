@@ -41,6 +41,8 @@ export interface StudioRuntimeCapabilities {
   features: Record<StudioParityLaneId, StudioAvailability>;
   /** Server-owned choices; absent on older deployments. */
   executionSources?: StudioExecutionSource[];
+  /** The deployment renders PDF/PPTX/PNG exports server-side (#66); absent means not configured. */
+  renderedExports?: boolean;
 }
 
 export interface StudioRouteParity {
@@ -134,6 +136,8 @@ export function parseStudioRuntimeCapabilities(value: unknown): StudioRuntimeCap
     || !(choice.source === 'personal_subscription' && choice.agentId === 'codex'
       || choice.source === 'company_pool' && choice.agentId === 'openai'))
     || new Set(choices.map((choice) => choice.source)).size !== choices.length)) return null;
+  if (studio.renderedExports !== undefined && typeof studio.renderedExports !== 'boolean') return null;
   return { schemaVersion: 1, shell: studio.shell!, features,
-    ...(choices !== undefined ? { executionSources: choices.map((choice) => ({ ...choice })) } : {}) };
+    ...(choices !== undefined ? { executionSources: choices.map((choice) => ({ ...choice })) } : {}),
+    ...(studio.renderedExports !== undefined ? { renderedExports: studio.renderedExports } : {}) };
 }

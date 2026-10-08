@@ -5,12 +5,13 @@ import { withdrawStudioResources } from './studio-resources';
 type Scope = {
   session: CookieSession; generation: number; abort: AbortController; storage: Map<string, string>;
   messageIdPrefix: string | null; usable: (lane: StudioParityLaneId) => boolean; lastRecheck: number;
+  renderedExports: boolean;
 };
 // undefined is the original local runtime; null is a withdrawn cookie runtime.
 let scope: Scope | null | undefined;
 
 export function activateStudioTransport(session: CookieSession, generation: number,
-  options: { messageIdPrefix?: string | undefined; usable?: (lane: StudioParityLaneId) => boolean } = {}): void {
+  options: { messageIdPrefix?: string | undefined; usable?: (lane: StudioParityLaneId) => boolean; renderedExports?: boolean } = {}): void {
   if (scope?.session === session && scope.generation === generation && !scope.abort.signal.aborted) return;
   // Called during render so children never fetch before activation (their
   // effects run first). Only the session's current generation may activate:
@@ -20,7 +21,8 @@ export function activateStudioTransport(session: CookieSession, generation: numb
   scope = null;
   withdrawStudioResources();
   const next: Scope = { session, generation, abort: new AbortController(), storage: new Map(),
-    messageIdPrefix: options.messageIdPrefix ?? null, usable: options.usable ?? (() => false), lastRecheck: 0 };
+    messageIdPrefix: options.messageIdPrefix ?? null, usable: options.usable ?? (() => false), lastRecheck: 0,
+    renderedExports: options.renderedExports === true };
   scope = next;
   session.bindResource(() => {
     next.abort.abort(); next.storage.clear();
@@ -45,7 +47,8 @@ const RUN_ACTION = /^\/api\/runs\/[^/]+\/(?:events|cancel|steer|feedback)$/;
  * daemon still authenticates and authorizes each request independently. Run
  * endpoints open only while the execution lane is usable for this actor. */
 export function studioRequestAvailable(method: string, path: string,
-  usable: (lane: StudioParityLaneId) => boolean = (lane) => scope?.usable(lane) ?? false): boolean {
+  usable: (lane: StudioParityLaneId) => boolean = (lane) => scope?.usable(lane) ?? false,
+  renderedExports: boolean = scope?.renderedExports ?? false): boolean {
   if (/^\/api\/(?:version|health)$/.test(path)) return method === 'GET';
   // Public, no-store deployment version (About → check for a newer deployment).
   if (path === '/api/version') return method === 'GET';
@@ -62,6 +65,8 @@ export function studioRequestAvailable(method: string, path: string,
     if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/archive$/.test(path)) return method === 'GET';
     if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/archive\/batch$/.test(path)) return method === 'POST';
     if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/export\/html$/.test(path)) return method === 'POST';
+    // Server-rendered formats exist only where the deployment configured a renderer (#66).
+    if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/export\/(?:pptx|pdf-image|image)$/.test(path)) return renderedExports && method === 'POST';
   }
   if (usable('home')) {
     if (path === '/api/import/files') return method === 'POST';

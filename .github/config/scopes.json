@@ -160,7 +160,7 @@
     {
       "id": "tools-pack-sources",
       "match": {
-        "prefixes": ["tools/pack/", "apps/packaged/", "apps/desktop/", "packages/release/", "packages/components/", "packages/host/", "packages/platform/", "packages/sidecar/", "packages/sidecar-proto/"],
+        "prefixes": ["tools/pack/", "apps/packaged/", "apps/desktop/", "packages/artifact-capture/", "packages/release/", "packages/components/", "packages/host/", "packages/platform/", "packages/sidecar/", "packages/sidecar-proto/"],
         "exclude": ["match://packaged-leaf"]
       },
       "effects": ["tools_pack_tests_required"], "confidence": "medium"

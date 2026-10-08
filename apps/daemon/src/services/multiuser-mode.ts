@@ -101,6 +101,24 @@ export interface MultiUserModeOptions {
    * bwrap cannot build the sandbox on this host.
    */
   personalSandbox?: { bwrapPath: string };
+  /**
+   * Server-side PDF/PPTX/PNG rendering for Studio exports (#66). Omitted means
+   * rendered exports are unavailable. An omitted executable uses Playwright's
+   * managed Chromium (development and tests).
+   */
+  studioRenderer?: StudioRendererOptions;
+}
+
+export interface StudioRendererOptions {
+  executablePath?: string;
+  /** Public hosts a render page may GET (fonts/CDNs); omitted = built-in list, [] = none. */
+  assetHosts?: readonly string[];
+  /** Chromium's OS sandbox; default on. */
+  sandbox?: boolean;
+  /** Confine Chromium with bubblewrap instead (required for Alpine/musl Chromium). */
+  bwrapPath?: string;
+  /** Vendored dom-to-pptx bundle for editable PPTX; omitted disables editable PPTX. */
+  domToPptxBundlePath?: string;
 }
 
 /** The only app-server the personal-subscription lane may spawn without the real-provider switch. */
@@ -134,6 +152,7 @@ export interface ResolvedMultiUserMode {
   poolClock?: () => number;
   /** How personal app-server children start; absent means the feature is off. */
   personalCodex?: ResolvedPersonalCodex;
+  studioRenderer?: StudioRendererOptions;
 }
 
 export class MultiUserModeRefusal extends Error {
@@ -221,7 +240,20 @@ export function resolveMultiUserMode(input: {
     ...(options.testMockAgentScript ? { testMockAgentScript: options.testMockAgentScript } : {}),
     ...(options.testCompanyOpenAIFetch ? { testCompanyOpenAIFetch: options.testCompanyOpenAIFetch } : {}),
     ...(options.poolClock ? { poolClock: options.poolClock } : {}),
-    ...(personalCodex ? { personalCodex } : {}) };
+    ...(personalCodex ? { personalCodex } : {}),
+    ...(options.studioRenderer ? { studioRenderer: resolveStudioRenderer(options.studioRenderer) } : {}) };
+}
+
+function resolveStudioRenderer(options: StudioRendererOptions): StudioRendererOptions {
+  const absolute = (value: unknown) => value === undefined || (typeof value === 'string' && path.isAbsolute(value));
+  const hostname = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+  if (!absolute(options.executablePath) || !absolute(options.domToPptxBundlePath) || !absolute(options.bwrapPath)
+    || (options.sandbox !== undefined && typeof options.sandbox !== 'boolean')
+    || (options.assetHosts !== undefined && (!Array.isArray(options.assetHosts) || options.assetHosts.length > 32
+      || options.assetHosts.some((host) => typeof host !== 'string' || !hostname.test(host))))) {
+    throw new MultiUserModeRefusal('studioRenderer needs absolute paths, a boolean sandbox and public DNS host names');
+  }
+  return { ...options, ...(options.assetHosts ? { assetHosts: [...options.assetHosts] } : {}) };
 }
 
 function resolvePersonalCodex(options: MultiUserModeOptions, repositoryRoot: string | undefined,

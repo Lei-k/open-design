@@ -438,9 +438,21 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
 
 ![Privacy for Web accounts](../../docs/design/studio-parity/privacy-off.png)
 
+## S31 — server-rendered PDF, PPTX and PNG exports (#66, #67, #68; decision 2026-10-08)
+
+- **One capture pipeline, two hosts.** The desktop's deck/page capture (`deck-capture.ts`, `static-capture.ts` and the printable-content wait) moved into the new pure package `@open-design/artifact-capture`. It drives an injected `CaptureRuntime` (window + image surface). The desktop installs Electron's `BrowserWindow`/`nativeImage` from thin re-export modules, so its behavior and the 51 desktop test files are unchanged. The daemon installs `render/chromium-capture-runtime.ts`: Playwright-core pages, CDP for slide captures, `pngjs`/`sharp` images. Image encoders are now awaited in the shared code (Electron's synchronous values are awaited unchanged).
+- **Isolation.** Each render registers its captured project bytes under a private `https://render.od.invalid/<renderId>/` namespace. The page's router answers only that namespace and `data:`/`blob:` URLs, allows GETs to a fixed public font/CDN list (configurable, `[]` = none), and aborts everything else: loopback, private ranges, metadata, other origins and non-GET requests. Concurrent renders never share a resolver. Every render uses a fresh browser context (no downloads, service workers or popups). In the image, Chromium runs inside **bubblewrap**, because Alpine's Chromium cannot run its own seccomp sandbox (verified: musl's `pwritev2` is rejected). Only system files and the browser's profile are mounted (no data root, projects or credentials), and with no asset hosts the network namespace is unshared.
+- **Routes.** `POST /api/projects/:id/export/{pptx,pdf-image,image}` are owner-scoped rewrites to `routes/studio-render.ts`. The handler uses a bounded no-follow capture, an optional historical `versionId`, and the shared `buildDeckRenderInput`, `buildScreenshotPptx`/`Pdf` and error mapping (`screenshotRenderClientError` moved to `deck-export.ts`). Editable PPTX uses the vendored dom-to-pptx bundle when configured. It allows one render per actor and two per daemon, rechecks authority before releasing bytes, and returns 503 when the deployment has no renderer. Gate body policy `export-render`.
+- **Capability.** `StudioRuntimeCapabilities.renderedExports` (additive) is advertised to pilots when a renderer is configured. The transport opens the three routes only with a usable `delivery` lane **and** that flag. FileViewer shows PDF/PPTX/PNG (including historical-version PDF and image capture) through the server renderer; Share/publish stays host-only (#66 remainder).
+- **Deployment.** `multiuser.json` gains `renderer: { chromium, bwrap?, assetHosts?, sandbox?, domToPptxBundle? }` → `MultiUserModeOptions.studioRenderer`. The `multiuser` image adds `chromium`, Noto/CJK/emoji fonts and the dom-to-pptx bundle, and the example config enables it. Verified by building the image and rendering inside it with the compose security options (bubblewrap, no network namespace, sharp on musl). The launcher script is daemon data under the resolved data root.
+- **CLI.** `od export --format pptx|pdf|image` works unchanged over `--session-file`.
+- **Evidence.** Package unit tests. Daemon: `tests/render/chromium-capture.test.ts` (real slides, per-render assets, a loopback beacon and the metadata IP never reached, the bubblewrap launcher with unshared network) and `studio-render-http` (PPTX/PDF/PNG bytes, foreign/admin/missing parity, non-HTML, body refusals, planted link refused). Also the serve-config, CLI, transport-oracle, desktop (51 files) and tools-pack suites (the closure test caught the prebundle install list; two mac/win resource cases fail identically on the base because npm cannot pack in this environment). Browser: 13/13, with real PDF and editable-PPTX downloads from the Export menu.
+
+![Studio rendered exports](../../docs/design/studio-parity/export-rendered.png)
+
 ## 目前進度與續作順序 — 2026-10-07（S25 後）
 
-[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S30 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
+[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S31 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
 
 - 分支：`feat/studio-parity-foundation`；以 PR 最新 head 為準。先核對 git status/log 和 GitHub 最新 review，避免重做已交付項目。S18–S25 的實作、測試、限制與入口截圖見上文；本次依使用者要求階段性收尾並交接，並非 Epic 完成。
 - 已確認產品決定：公司池使用 OpenAI 官方 API；Vela 採使用者驗證的本人身份與服務端 Web account/member binding；native window、OS overlay 與 app installer/updater 的 Web 不適用決定，和 in-page pet 仍需交付項目保持分開。
@@ -449,7 +461,7 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
 - 下一批按 DAG 推進：
   - #64：automation templates/proposals/ingestion/crystallize、connector/MCP context，以及排程觸發的真實驗收。
   - #65：owner 預覽評論與 comment attachments 已於 S26 完成；剩餘 team comment 分享、presence、shared resources 與 verified Vela binding。
-  - #66：isolated PDF/PPTX/image renderer（需要部署端 headless Chromium，待產品／部署決定）、public share／deploy；historical-version HTML export 已於 S28 完成。
+  - #66：PDF/PPTX/PNG 由 S31 伺服器 renderer 完成；剩餘 public share／publish／deploy。
   - #63：Media、Live Artifacts、GenUI、research/critique（依 actor credential/background adapters）。
   - #61：design generation、asset packages、plugin/community/team catalogs。
   - #62：encrypted personal provider credentials、自動記憶、connectors/MCP、privacy、library。

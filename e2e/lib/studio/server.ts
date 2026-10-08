@@ -31,7 +31,10 @@ process.once('message', async (input: { dataRoot: string; appOrigin: string; pre
       bootstrapSecret: 'studio-browser-fixture-bootstrap-secret',
       auth: { passwordParams: { logN: 14, r: 8, p: 1 } },
       testCompanyOpenAIFetch: companyFetch,
-      testPersonalCodexAppServer: path.join(input.workspaceRoot, 'mocks/personal-codex-app-server.ts') },
+      testPersonalCodexAppServer: path.join(input.workspaceRoot, 'mocks/personal-codex-app-server.ts'),
+      // Server-rendered exports through Playwright's managed Chromium; no external asset hosts in tests.
+      studioRenderer: { assetHosts: [],
+        domToPptxBundlePath: path.join(input.workspaceRoot, 'apps/desktop/vendor/dom-to-pptx/dom-to-pptx.bundle.js.gz') } },
   });
   if (!started || typeof started !== 'object' || !('server' in started)) throw new Error('Missing daemon test host');
   let closing = false;
