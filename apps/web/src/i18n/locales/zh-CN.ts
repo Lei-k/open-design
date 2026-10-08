@@ -6,6 +6,8 @@ export const zhCN: Dict = {
   "studio.settingsReload": "重新加载设置",
   "studio.aboutDeployed": "服务器已部署版本 {version}，重新加载页面后生效。",
   "studio.aboutReloadPage": "重新加载页面",
+  "studio.aboutClearData": "清除此浏览器数据并退出登录",
+  "studio.aboutClearDataHint": "移除此浏览器为 Open Design 保存的数据并结束本次会话。你的项目和设置仍保留在服务器上。",
   "studio.settingsSaved": "已保存个人指令。",
   "studio.settingsError": "无法加载或保存个人指令。",
   "studio.settingsConflict": "另一个标签页已修改设置。请重新加载后再保存。",

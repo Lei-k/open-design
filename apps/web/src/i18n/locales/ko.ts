@@ -392,6 +392,8 @@ export const ko: Dict = {
   'studio.settingsReload': 'Reload saved settings',
   'studio.aboutDeployed': '버전 {version}이(가) 배포되었습니다. 페이지를 새로고침하면 적용됩니다.',
   'studio.aboutReloadPage': '페이지 새로고침',
+  'studio.aboutClearData': '이 브라우저 데이터 지우고 로그아웃',
+  'studio.aboutClearDataHint': '이 브라우저가 Open Design용으로 보관한 데이터를 삭제하고 이 세션을 종료합니다. 프로젝트와 설정은 서버에 그대로 남습니다.',
   'studio.settingsSaved': 'Account instructions saved.',
   'studio.settingsError': 'Could not load or save account instructions.',
   'studio.settingsConflict': 'Settings changed in another tab. Reload saved settings before saving again.',

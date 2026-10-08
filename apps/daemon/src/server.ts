@@ -948,6 +948,7 @@ import { registerStudioDesignCatalogRoutes } from './routes/studio-design-catalo
 import { registerStudioCatalogRoutes } from './routes/studio-catalog.js';
 import { registerStudioArchiveRoutes } from './routes/studio-archives.js';
 import { registerStudioCommentRoutes } from './routes/studio-comments.js';
+import { registerStudioPetRoutes } from './routes/studio-pets.js';
 import { registerStudioRoutineRoutes } from './routes/studio-routines.js';
 import { registerStudioProjectCreationRoutes } from './routes/studio-project-creation.js';
 import { registerMultiUserAgentAccountRoutes } from './routes/multiuser-agent-accounts.js';
@@ -17578,6 +17579,7 @@ export async function startServer({
   }) : null;
   if (multiUserMode) registerStudioArchiveRoutes(app, { db, projectsRoot: PROJECTS_DIR });
   if (multiUserMode) registerStudioCommentRoutes(app, { db });
+  if (multiUserMode) registerStudioPetRoutes(app, { bundledRoot: BUNDLED_PETS_DIR });
   if (multiUserMode) registerStudioProjectCreationRoutes(app, {
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR,
     readSkill: async (owner, id) => Boolean(await studioCatalog?.readSkills(owner, [id])),

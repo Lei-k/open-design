@@ -6,6 +6,8 @@ export const it: Dict = {
   "studio.settingsReload": "Reload saved settings",
   "studio.aboutDeployed": "Version {version} is deployed. Reload this page to use it.",
   "studio.aboutReloadPage": "Reload page",
+  "studio.aboutClearData": "Cancella i dati di questo browser ed esci",
+  "studio.aboutClearDataHint": "Rimuove ciò che questo browser conserva per Open Design e termina questa sessione. Progetti e impostazioni restano sul server.",
   "studio.settingsSaved": "Account instructions saved.",
   "studio.settingsError": "Could not load or save account instructions.",
   "studio.settingsConflict": "Settings changed in another tab. Reload saved settings before saving again.",

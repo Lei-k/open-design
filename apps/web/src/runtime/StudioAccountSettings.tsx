@@ -7,6 +7,7 @@ import { SkillsSection } from '../components/SkillsSection';
 import { MemorySection } from '../components/MemorySection';
 import { CustomInstructionsSection } from '../components/CustomInstructionsSection';
 import { NotificationsSection } from '../components/NotificationsSection';
+import { PetSettings } from '../components/pet/PetSettings';
 import { SettingsLanguageField } from '../components/SettingsLanguageField';
 import { SettingsAppearanceField } from '../components/SettingsAppearanceField';
 import { SettingsFrame, SettingsNavItem, SettingsSectionHeader } from '../components/SettingsFrame';
@@ -14,6 +15,7 @@ import type { SettingsSection } from '../components/SettingsDialog';
 import { studioFetch, studioRequestAvailable } from './studio-transport';
 import { withStudioAccountConfig } from './studio-account-preferences';
 import { bootVersion } from './studio-boot-version';
+import { clearStudioBrowserData } from './studio-browser-data';
 import type { AppConfig } from '../types';
 import { useStudioCapabilities, StudioUnavailable } from './studio-capabilities';
 
@@ -62,7 +64,7 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
     try {
       const response = await studioFetch('/api/app-config', { method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ customInstructions: instructions, accentColor: config.accentColor,
-          notifications: config.notifications, revision: settings.revision }) });
+          notifications: config.notifications, ...(config.pet ? { pet: config.pet } : {}), revision: settings.revision }) });
       if (!response.ok) { setStatus(response.status === 409 ? 'conflict' : 'error'); return; }
       const saved = await response.json() as StudioSettingsResponse;
       setSettings(saved); setConfig((current) => withStudioAccountConfig(current, saved.config));
@@ -120,6 +122,13 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
           </div>
           <NotificationsSection cfg={config} setCfg={setConfig} />
         </div>
+        {/* The in-page pet is an account preference; the OS overlay is Web-not-applicable (#67). */}
+        <div className="settings-general-block" data-testid="studio-settings-pet">
+          <div className="settings-general-block-head">
+            <h3>{t('pet.navTitle')}</h3>
+          </div>
+          <PetSettings cfg={config} setCfg={setConfig} />
+        </div>
       </section>
       {actions}
     </>}
@@ -138,6 +147,8 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
  * deployment itself stays an operator action. */
 function StudioAbout({ loaded: provided }: { loaded: AppVersionInfo | null }) {
   const t = useT();
+  const studio = useStudioCapabilities();
+  const [clearing, setClearing] = useState(false);
   const loaded = provided ?? bootVersion();
   const [state, setState] = useState<{ status: 'idle' | 'checking' | 'current' | 'deployed' | 'failed'; version?: string }>({ status: 'idle' });
   const check = async () => {
@@ -161,5 +172,11 @@ function StudioAbout({ loaded: provided }: { loaded: AppVersionInfo | null }) {
       {t(state.status === 'idle' ? 'settings.updateCheck' : 'settings.updateRecheck')}</Button>
     {state.status === 'deployed' ? <Button variant="primary" data-testid="studio-about-reload"
       onClick={() => window.location.reload()}>{t('studio.aboutReloadPage')}</Button> : null}
+    <div className="settings-general-block">
+      <p className="hint">{t('studio.aboutClearDataHint')}</p>
+      <Button variant="ghost" data-testid="studio-about-clear-data" disabled={clearing || !studio.session}
+        onClick={() => { if (!studio.session) return; setClearing(true); void clearStudioBrowserData(studio.session).finally(() => setClearing(false)); }}>
+        {t('studio.aboutClearData')}</Button>
+    </div>
   </section>;
 }

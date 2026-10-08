@@ -392,6 +392,8 @@ export const fa: Dict = {
   'studio.settingsReload': 'Reload saved settings',
   'studio.aboutDeployed': 'Version {version} is deployed. Reload this page to use it.',
   'studio.aboutReloadPage': 'Reload page',
+  'studio.aboutClearData': 'پاک کردن داده‌های این مرورگر و خروج',
+  'studio.aboutClearDataHint': 'آنچه این مرورگر برای Open Design نگه می‌دارد را حذف می‌کند و این نشست را پایان می‌دهد. پروژه‌ها و تنظیمات شما روی سرور می‌مانند.',
   'studio.settingsSaved': 'Account instructions saved.',
   'studio.settingsError': 'Could not load or save account instructions.',
   'studio.settingsConflict': 'Settings changed in another tab. Reload saved settings before saving again.',

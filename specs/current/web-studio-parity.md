@@ -399,9 +399,23 @@ pnpm --filter @open-design/daemon exec vitest run -c vitest.config.ts tests/auth
 
 ![Studio preview comments](../../docs/design/studio-parity/preview-comments.png)
 
+## S27 — in-page pet and clearing this browser's data (#67, #62, #68)
+
+- The in-page pet is an account preference: `pet` joins the closed `/api/app-config` Studio contract (`StudioPetPreference`, revision CAS, `null` resets). `isStudioPetPreference` refuses unknown keys, remote/host image URLs (only inline `data:image/png|webp|gif|jpeg;base64` up to 2 MiB) and malformed atlases. Studio Settings → General carries the shared Pets block exactly where desktop has it; the existing App overlay renders from the account preference, so a different account on the same browser sees its own (default) pet.
+- `GET /api/codex-pets` and `/api/codex-pets/:id/spritesheet` rewrite to `/api/multiuser/catalog/codex-pets*`, which list and serve only the pets bundled with the build (`userRoot: false`); the host `CODEX_HOME` pets and `POST /api/codex-pets/sync` (which writes there) stay blocked and the community sync button is hidden. The OS desktop overlay remains the approved Web-not-applicable item.
+- Settings → About adds "Clear this browser's data and sign out" (`clearStudioBrowserData`): deletes the origin CacheStorage, clears session/local storage, then logs out so the HttpOnly session is revoked on the server. Account data on the server is untouched. This is the Web equivalent of `browser.clearData` / `updater.clear-cache`.
+- CLI: `od config set pet --value-json '<json>'` / `od config unset pet` use the same endpoint; `od session logout` is the CLI counterpart of ending the session.
+- Evidence: `studio-settings-http` adds the pet case (bundled-only catalog with a planted host `CODEX_HOME` pet as negative control, traversal ids, sync blocked, unauthenticated 401, account round-trip, B default, seven malformed shapes); transport/route oracle 12 passed; web unit `studio-browser-data`; daemon auth 55 files / 511 passed; web runtime/multiuser/settings/i18n 2,606 passed; production HTTPS browser suite 13/13 including adopt → save → overlay → B without pet → clear data revokes the page's cookie while the account preference survives.
+
+![Studio pet settings](../../docs/design/studio-parity/pet-settings.png)
+
+![Studio pet overlay](../../docs/design/studio-parity/pet-overlay.png)
+
+![Clear this browser's data](../../docs/design/studio-parity/clear-browser-data.png)
+
 ## 目前進度與續作順序 — 2026-10-07（S25 後）
 
-[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S26 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
+[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S27 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
 
 - 分支：`feat/studio-parity-foundation`；以 PR 最新 head 為準。先核對 git status/log 和 GitHub 最新 review，避免重做已交付項目。S18–S25 的實作、測試、限制與入口截圖見上文；本次依使用者要求階段性收尾並交接，並非 Epic 完成。
 - 已確認產品決定：公司池使用 OpenAI 官方 API；Vela 採使用者驗證的本人身份與服務端 Web account/member binding；native window、OS overlay 與 app installer/updater 的 Web 不適用決定，和 in-page pet 仍需交付項目保持分開。
@@ -413,7 +427,7 @@ pnpm --filter @open-design/daemon exec vitest run -c vitest.config.ts tests/auth
   - #63：Media、Live Artifacts、GenUI、research/critique（依 actor credential/background adapters）。
   - #61：design generation、asset packages、plugin/community/team catalogs。
   - #62：encrypted personal provider credentials、自動記憶、connectors/MCP、privacy、library。
-  - #67：in-page pet、瀏覽器端清除本身份快取。
+  - #67：in-page pet 與清除本瀏覽器資料已於 S27 完成；剩餘逐項 host bridge 的 mobile/permission-denied/headless UX 驗收（#70）。
 - #53–#59 和 #68/#69 的尚欠驗收（完整 chat state matrix、replay/telemetry、background/artifact lineage、provider recording、rich headless flows）不因本批完成。最後執行 #70 同 build 單人/A/B、desktop/mobile、a11y/visual/performance、revocation/restart/rollback，再決定 rollout。
 - 關鍵邊界：pure contracts；actor authority 只由 server cookie 解析（背景工作用 `internalMultiUserResponse` 並由呼叫端提供 server-side authority）；admin 無 private-content bypass；standard aliases 不落入 host-global handler；async I/O/streams 重驗權限；resolved daemon data-root；新能力同 PR 同時接 HTTP/UI/CLI。新 route 同步 exact gate inventory、frontend allowlist 和跨 runtime negative oracle。
 - 維護入口：daemon `routes/studio-routines.ts`、`studio-archives.ts`（ZIP／HTML）、`studio-catalog.ts`（含資料夾匯入）、`studio-project-creation.ts`、`studio-*` settings 與 `http/multiuser-*`；Web shared App、`components/SettingsFrame.tsx`、`runtime/StudioAccountSettings.tsx`、`runtime/StudioAccountMenu.tsx`、`runtime/StudioExecutionSource.tsx`、FileViewer 與 `runtime/studio-*`；CLI `src/cli.ts`。聊天與 prompt 改動前讀現行 chat/prompt 規劃及 module guidance。

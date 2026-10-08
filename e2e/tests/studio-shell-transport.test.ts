@@ -219,3 +219,13 @@ it('opens owner preview comments only with a usable preview lane, and only where
       expect(studioRequestAvailable(method, path, () => true), `${method} ${path}`).toBe(false);
   }
 });
+
+it('opens only the bundled pet catalog with a usable settings lane; community sync stays closed', () => {
+  for (const path of ['/api/codex-pets', '/api/codex-pets/tux/spritesheet', '/api/multiuser/catalog/codex-pets', '/api/multiuser/catalog/codex-pets/tux/spritesheet']) {
+    expect(studioRequestAvailable('GET', path, (lane) => lane === 'settings'), path).toBe(true);
+    expect(studioRequestAvailable('GET', path, (lane) => lane !== 'settings'), path).toBe(false);
+    expect(matchMultiUserRoute('GET', path).every(({ entry }) => entry.routeClass === 'actor-scoped'), path).toBe(true);
+  }
+  expect(studioRequestAvailable('POST', '/api/codex-pets/sync', () => true)).toBe(false);
+  expect(matchMultiUserRoute('POST', '/api/codex-pets/sync').every(({ entry }) => entry.routeClass === 'blocked-in-multiuser')).toBe(true);
+});

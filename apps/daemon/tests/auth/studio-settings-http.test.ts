@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { STUDIO_DEFAULT_ACCENT_COLOR, STUDIO_DEFAULT_NOTIFICATIONS, STUDIO_DEFAULT_CODEX_MODEL } from '@open-design/contracts';
+import { STUDIO_DEFAULT_ACCENT_COLOR, STUDIO_DEFAULT_NOTIFICATIONS, STUDIO_DEFAULT_CODEX_MODEL, STUDIO_DEFAULT_PET } from '@open-design/contracts';
 import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts,
   startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
 import { PERSONAL_CODEX_MOCK, codexHome, linkCodex, setTurnMode, until } from './personal-codex-helpers.js';
@@ -54,7 +54,7 @@ async function finish(id: string) {
 it('isolates config, rejects host fields and stale revisions, and persists only actor preferences', async () => {
   for (const user of [a, b, admin]) {
     const response = await daemon.request({ path: '/api/app-config', cookie: user.cookie });
-    expect(response.json).toEqual({ config: { customInstructions: '', accentColor: STUDIO_DEFAULT_ACCENT_COLOR, notifications: STUDIO_DEFAULT_NOTIFICATIONS, codexModel: STUDIO_DEFAULT_CODEX_MODEL }, revision: 0 });
+    expect(response.json).toEqual({ config: { customInstructions: '', accentColor: STUDIO_DEFAULT_ACCENT_COLOR, notifications: STUDIO_DEFAULT_NOTIFICATIONS, codexModel: STUDIO_DEFAULT_CODEX_MODEL, pet: STUDIO_DEFAULT_PET }, revision: 0 });
     expect(response.text).not.toContain('HOST_');
   }
   const saved = await instructions('A_INSTRUCTION_MARKER');
@@ -89,6 +89,48 @@ it('persists portable notification intent, preserves omitted fields and rejects 
     body: { revision: saved.json.revision, notifications: null, accentColor: null } });
   expect(reset.status).toBe(200);
   expect(reset.json.config).toEqual({ ...current.config, accentColor: STUDIO_DEFAULT_ACCENT_COLOR, notifications: STUDIO_DEFAULT_NOTIFICATIONS });
+});
+
+it('keeps the in-page pet an account preference and serves only bundled pets, never the host Codex home', async () => {
+  const hostHome = path.join(root, 'host-codex-home');
+  mkdirSync(path.join(hostHome, 'pets', 'host-private-pet'), { recursive: true });
+  writeFileSync(path.join(hostHome, 'pets', 'host-private-pet', 'pet.json'), JSON.stringify({ displayName: 'HOST_PRIVATE_PET' }));
+  writeFileSync(path.join(hostHome, 'pets', 'host-private-pet', 'spritesheet.png'), 'HOST_PRIVATE_BYTES');
+  const previous = process.env.CODEX_HOME; process.env.CODEX_HOME = hostHome;
+  try {
+    const catalog = await daemon.request({ path: '/api/codex-pets', cookie: a.cookie });
+    expect(catalog.status, catalog.text).toBe(200);
+    expect(catalog.json.rootDir).toBe('');
+    expect(catalog.json.pets.length).toBeGreaterThan(0);
+    expect(catalog.json.pets.every((pet: { bundled: boolean }) => pet.bundled)).toBe(true);
+    expect(catalog.text).not.toContain('HOST_PRIVATE_PET'); expect(catalog.text).not.toContain(hostHome);
+    const first = catalog.json.pets[0].id as string;
+    const sheet = await daemon.request({ path: `/api/codex-pets/${first}/spritesheet`, cookie: a.cookie });
+    expect(sheet.status).toBe(200); expect(sheet.headers['content-type']).toMatch(/^image\//);
+    for (const id of ['host-private-pet', '..', '..%2F..%2Fetc']) {
+      expect((await daemon.request({ path: `/api/codex-pets/${id}/spritesheet`, cookie: a.cookie })).status).toBe(404);
+    }
+    expect((await daemon.request({ method: 'POST', path: '/api/codex-pets/sync', cookie: a.cookie, body: {} })).status).toBeGreaterThanOrEqual(400);
+    expect((await daemon.request({ path: '/api/codex-pets' })).status).toBe(401);
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous;
+  }
+  const current = (await daemon.request({ path: '/api/app-config', cookie: a.cookie })).json;
+  const pet = { adopted: true, enabled: true, petId: 'custom', custom: { name: 'Pixel', glyph: '🐾', accent: '#87ea5c', greeting: 'Hi!',
+    imageUrl: 'data:image/png;base64,iVBORw0KGgo=', frames: 1, fps: 6, atlas: { cols: 8, rows: 9, rowsDef: [{ index: 0, id: 'idle', frames: 6, fps: 6 }] } } };
+  const saved = await daemon.request({ method: 'PUT', path: '/api/app-config', cookie: a.cookie, body: { revision: current.revision, pet } });
+  expect(saved.status, saved.text).toBe(200);
+  expect(saved.json.config).toEqual({ ...current.config, pet });
+  expect((await daemon.request({ path: '/api/app-config', cookie: b.cookie })).json.config.pet).toEqual(STUDIO_DEFAULT_PET);
+  for (const bad of [{ ...pet, ownerId: b.id }, { ...pet, custom: { ...pet.custom, imageUrl: 'https://tracker.example/pet.png' } },
+    { ...pet, custom: { ...pet.custom, imageUrl: 'file:///etc/passwd' } }, { ...pet, custom: { ...pet.custom, accent: 'url(x)' } },
+    { ...pet, custom: { ...pet.custom, imageUrl: `data:image/png;base64,${'A'.repeat(2 * 1024 * 1024 + 1)}` } },
+    { ...pet, custom: { ...pet.custom, atlas: { cols: 8, rows: 9, rowsDef: [{ index: 0, id: 'idle', frames: 6, fps: 6, path: '/x' }] } } },
+    { ...pet, enabled: 'yes' }]) {
+    expect((await daemon.request({ method: 'PUT', path: '/api/app-config', cookie: a.cookie, body: { revision: saved.json.revision, pet: bad } })).status).toBe(400);
+  }
+  const reset = await daemon.request({ method: 'PUT', path: '/api/app-config', cookie: a.cookie, body: { revision: saved.json.revision, pet: null } });
+  expect(reset.json.config.pet).toEqual(STUDIO_DEFAULT_PET);
 });
 
 it('isolates manual entries, tree, index and profile; foreign equals missing including for admin', async () => {

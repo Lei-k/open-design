@@ -638,10 +638,14 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'PUT /api/project-locations',
     'POST /api/project-locations/scan',
     'POST /api/import/folder',
-    'GET /api/codex-pets',
     'POST /api/codex-pets/sync',
-    'GET /api/codex-pets/:id/spritesheet',
   ]),
+  // In-page pet (#67): bundled pets only; host CODEX_HOME pets and the sync that writes there stay host-owned.
+  ...['GET /api/codex-pets', 'GET /api/codex-pets/:id/spritesheet'].flatMap((key) => {
+    const alias = key.replace('/api/codex-pets', '/api/multiuser/catalog/codex-pets');
+    return [...group('actor-scoped', 'bundled in-page pet catalog; no host CODEX_HOME pets', [key], { rewriteTo: alias.slice(alias.indexOf(' ') + 1) }),
+      ...group('actor-scoped', 'bundled pet catalog alias', [alias])];
+  }),
   ...blocked(R_HOST_OPS, [
     'GET /api/daemon/status',
     'GET /api/daemon/db',

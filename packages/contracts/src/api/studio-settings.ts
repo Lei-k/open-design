@@ -7,6 +7,62 @@ export interface StudioSettingsConfig {
   notifications: StudioNotificationPreferences;
   /** Model for runs on the account's personal Codex subscription. */
   codexModel: StudioCodexModelChoice;
+  /** In-page pet (#67). The OS desktop overlay is Web-not-applicable. */
+  pet: StudioPetPreference;
+}
+
+/** Mirrors the App's pet config. `custom.imageUrl` is an inline image data
+ * URL (an adopted bundled atlas or the user's own upload), never a host path
+ * or remote URL. */
+export interface StudioPetPreference {
+  adopted: boolean;
+  enabled: boolean;
+  petId: string;
+  custom: {
+    name: string;
+    glyph: string;
+    accent: string;
+    greeting: string;
+    imageUrl?: string;
+    frames?: number;
+    fps?: number;
+    atlas?: { cols: number; rows: number; rowsDef: Array<{ index: number; id: string; frames: number; fps: number }> };
+  };
+}
+export const STUDIO_PET_IMAGE_MAX_CHARS = 2 * 1024 * 1024;
+export const STUDIO_DEFAULT_PET: Readonly<StudioPetPreference> = {
+  adopted: false, enabled: false, petId: 'mochi',
+  custom: { name: 'Buddy', glyph: '🦄', accent: '#353535', greeting: 'Hi! I am here whenever you need me.' },
+};
+
+const boundedText = (value: unknown, max: number) => typeof value === 'string' && value.length <= max && !value.includes('\0');
+const smallInt = (value: unknown, min: number, max: number) => Number.isSafeInteger(value) && Number(value) >= min && Number(value) <= max;
+/** Closed shape check for an account pet; refuses unknown keys and remote images. */
+export function isStudioPetPreference(value: unknown): value is StudioPetPreference {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const pet = value as Record<string, unknown>;
+  if (Object.keys(pet).some((key) => !['adopted', 'enabled', 'petId', 'custom'].includes(key))
+      || typeof pet.adopted !== 'boolean' || typeof pet.enabled !== 'boolean' || !boundedText(pet.petId, 128)) return false;
+  const custom = pet.custom as Record<string, unknown> | null;
+  if (!custom || typeof custom !== 'object' || Array.isArray(custom)
+      || Object.keys(custom).some((key) => !['name', 'glyph', 'accent', 'greeting', 'imageUrl', 'frames', 'fps', 'atlas'].includes(key))
+      || !boundedText(custom.name, 80) || !boundedText(custom.glyph, 16) || !boundedText(custom.greeting, 280)
+      || typeof custom.accent !== 'string' || !/^#[0-9a-fA-F]{3,8}$/.test(custom.accent)) return false;
+  if (custom.imageUrl !== undefined && (typeof custom.imageUrl !== 'string' || custom.imageUrl.length > STUDIO_PET_IMAGE_MAX_CHARS
+      || !/^data:image\/(?:png|webp|gif|jpeg);base64,[A-Za-z0-9+/]+=*$/.test(custom.imageUrl))) return false;
+  if (custom.frames !== undefined && !smallInt(custom.frames, 1, 64)) return false;
+  if (custom.fps !== undefined && !smallInt(custom.fps, 1, 60)) return false;
+  if (custom.atlas !== undefined) {
+    const atlas = custom.atlas as Record<string, unknown> | null;
+    if (!atlas || typeof atlas !== 'object' || Array.isArray(atlas) || Object.keys(atlas).some((key) => !['cols', 'rows', 'rowsDef'].includes(key))
+        || !smallInt(atlas.cols, 1, 64) || !smallInt(atlas.rows, 1, 64) || !Array.isArray(atlas.rowsDef) || atlas.rowsDef.length > 64) return false;
+    if (!atlas.rowsDef.every((row: unknown) => {
+      const def = row as Record<string, unknown> | null;
+      return !!def && typeof def === 'object' && Object.keys(def).every((key) => ['index', 'id', 'frames', 'fps'].includes(key))
+        && smallInt(def.index, 0, 63) && boundedText(def.id, 64) && smallInt(def.frames, 0, 64) && smallInt(def.fps, 0, 60);
+    })) return false;
+  }
+  return true;
 }
 
 /** Choices a personal Codex subscription run may request per turn. `default`
@@ -40,7 +96,7 @@ export const STUDIO_DEFAULT_ACCENT_COLOR = '#353535';
 export const STUDIO_DEFAULT_NOTIFICATIONS: Readonly<StudioNotificationPreferences> = {
   soundEnabled: false, successSoundId: 'ding', failureSoundId: 'buzz', desktopEnabled: false,
 };
-export const STUDIO_SETTINGS_FIELDS = ['customInstructions', 'accentColor', 'notifications', 'codexModel'] as const;
+export const STUDIO_SETTINGS_FIELDS = ['customInstructions', 'accentColor', 'notifications', 'codexModel', 'pet'] as const;
 
 export interface StudioSettingsResponse {
   config: StudioSettingsConfig;
@@ -77,6 +133,7 @@ export function parseStudioSettingsWrite(value: unknown): StudioSettingsWrite | 
     if (typeof choice !== 'object' || Array.isArray(choice) || Object.keys(choice).length !== 2
         || !isStudioCodexModel(choice.model) || !isStudioCodexReasoning(choice.reasoning)) return null;
   }
+  if (body.pet !== undefined && body.pet !== null && !isStudioPetPreference(body.pet)) return null;
   return body as StudioSettingsWrite;
 }
 

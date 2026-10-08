@@ -392,6 +392,8 @@ export const pl: Dict = {
   'studio.settingsReload': 'Reload saved settings',
   'studio.aboutDeployed': 'Version {version} is deployed. Reload this page to use it.',
   'studio.aboutReloadPage': 'Reload page',
+  'studio.aboutClearData': 'Wyczyść dane tej przeglądarki i wyloguj',
+  'studio.aboutClearDataHint': 'Usuwa dane, które ta przeglądarka przechowuje dla Open Design, i kończy tę sesję. Projekty i ustawienia pozostają na serwerze.',
   'studio.settingsSaved': 'Account instructions saved.',
   'studio.settingsError': 'Could not load or save account instructions.',
   'studio.settingsConflict': 'Settings changed in another tab. Reload saved settings before saving again.',

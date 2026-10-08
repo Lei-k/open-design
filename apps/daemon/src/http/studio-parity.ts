@@ -20,7 +20,7 @@ const DOMAINS: Readonly<Record<string, StudioParityLaneId>> = {
   workspace: 'collaboration', workspaces: 'collaboration',
   deploy: 'delivery', 'social-share': 'delivery', finalize: 'delivery', handoff: 'delivery',
   dialog: 'web-host', 'dir-exists': 'web-host', 'recent-dirs': 'web-host', editors: 'web-host',
-  system: 'web-host', 'project-locations': 'web-host', import: 'home', 'codex-pets': 'web-host',
+  system: 'web-host', 'project-locations': 'web-host', import: 'home', 'codex-pets': 'settings',
   daemon: 'web-host', diagnostics: 'web-host', metrics: 'web-host', github: 'web-host', 'whats-new': 'web-host',
   'preview': 'preview', upload: 'composer', artifacts: 'preview',
   strategies: 'execution', chat: 'execution', runs: 'execution',
@@ -40,7 +40,7 @@ export function studioLaneForRoute(entry: Pick<MultiUserRouteClassification, 'me
   if (domain === 'multiuser') {
     if (parts[2] === 'import') return 'home';
     if (parts[2] === 'settings') return 'settings';
-    if (parts[2] === 'catalog') return 'catalogs';
+    if (parts[2] === 'catalog') return parts[3] === 'codex-pets' ? 'settings' : 'catalogs';
     if (parts[2] === 'design-catalog') return 'catalogs';
     if (parts[2] === 'routines') return 'automations';
     if (path.includes('/archive') || path.includes('/export/')) return 'delivery';
@@ -101,7 +101,7 @@ export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
   automations: 'Pilot automations: account-owned routines with schedules, manual runs, history and per-dispatch authority on personal Codex or the company pool; templates, proposals, ingestion, crystallize and plugin/connector context are pending (#64).',
   delivery: 'Pilot delivery: owned project/folder/batch ZIP downloads and one-file HTML exports from captured bytes with design handoff; PDF, PPTX, image, historical-version export, public publish and cloud delivery are pending (#66).',
   home: 'Pilot Home: Prototype, Deck, Other, immutable saved templates, project copies and browser ZIP/directory imports; live artifacts, media and Figma import are pending (#60).',
-  settings: 'Pilot settings: account appearance/notification preferences, instructions, manual memory and profile injection; full navigation, providers, automatic extraction, verification, connectors, MCP and library are pending (#62).',
+  settings: 'Pilot settings: account appearance/notification preferences, in-page pet (bundled catalog), instructions, manual memory and profile injection; full navigation, providers, automatic extraction, verification, connectors, MCP and library are pending (#62).',
   catalogs: 'Pilot catalogs: bundled templates/craft, account text and folder skills, captured skill packages with company script/binary tools, and versioned design documents; design generation/asset packages, plugins and team catalogs are pending (#61).',
 };
 

@@ -33,6 +33,8 @@ export interface Dict {
   'studio.settingsReload': string;
   'studio.aboutDeployed': string;
   'studio.aboutReloadPage': string;
+  'studio.aboutClearData': string;
+  'studio.aboutClearDataHint': string;
   'studio.settingsSaved': string;
   'studio.settingsError': string;
   'studio.settingsConflict': string;

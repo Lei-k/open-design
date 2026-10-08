@@ -94,6 +94,8 @@ export function studioRequestAvailable(method: string, path: string,
     const settingsPath = path.replace(/^\/api\/multiuser\/settings\/config$/, '/api/app-config')
       .replace(/^\/api\/multiuser\/settings\/memory(?=\/|$)/, '/api/memory');
     if (settingsPath === '/api/app-config') return method === 'GET' || method === 'PUT';
+    // In-page pet (#67): the bundled catalog only; community sync stays host-owned.
+    if (/^\/api\/(?:multiuser\/catalog\/)?codex-pets(?:\/[^/]+\/spritesheet)?$/.test(path)) return method === 'GET';
     if (settingsPath === '/api/memory') return method === 'GET' || method === 'POST';
     if (/^\/api\/memory\/(?:tree|events|system-prompt)$/.test(settingsPath)) return method === 'GET';
     if (settingsPath === '/api/memory/index') return method === 'PUT';

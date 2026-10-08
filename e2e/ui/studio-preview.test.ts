@@ -590,3 +590,60 @@ test('[P1] Studio owner comments on a preview element, sends it to the agent and
   await expect(frame.getByRole('heading', { name: 'Owner headline' })).toBeVisible({ timeout: T.long });
   expect((await studio.request('GET', `/api/projects/${projectId}/conversations/${conversationId}/comments`, studio.b.cookie)).status).toBe(404);
 });
+
+test('[P1] Studio adopts a bundled in-page pet as an account preference that follows the account, not the browser', async ({ page, browser, studio }, info) => {
+  await page.goto(`${studio.origin}/settings`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.getByTestId('studio-settings-nav-general').click({ timeout: T.long });
+  const petBlock = page.getByTestId('studio-settings-pet');
+  await expect(petBlock).toBeVisible();
+  // Bundled catalog only: the host community sync is not offered.
+  await expect(petBlock.getByRole('button', { name: /sync/i })).toHaveCount(0);
+  const card = petBlock.locator('.pet-codex-card').filter({ hasText: 'Tux' });
+  await expect(card).toBeVisible({ timeout: T.long });
+  await card.hover();
+  await card.getByRole('button', { name: 'Adopt', exact: true }).click();
+  await expect(petBlock.locator('.pet-codex-grid').getByRole('button', { name: 'Adopted', exact: true })).toHaveCount(1, { timeout: T.long });
+  await petBlock.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: info.outputPath('studio-pet-settings-entry.png'), animations: 'disabled' });
+  const saved = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === '/api/app-config');
+  await page.getByTestId('studio-instructions-save').click();
+  expect((await saved).status()).toBe(200);
+  const stored = (await studio.request('GET', '/api/app-config', studio.a.cookie)).json.config.pet;
+  expect(stored).toMatchObject({ adopted: true, enabled: true });
+  expect(stored.custom.imageUrl).toMatch(/^data:image\//);
+  await page.goto(`${studio.origin}/`);
+  const overlay = page.getByRole('complementary', { name: 'Pet companion' });
+  await expect(overlay).toBeVisible({ timeout: T.long });
+  await page.screenshot({ path: info.outputPath('studio-pet-overlay.png'), animations: 'disabled' });
+  // About → clear this browser's data: storage is emptied and the page's own session is revoked server-side.
+  const cookieHeader = (await page.context().cookies(studio.origin)).map((cookie) => `${cookie.name}=${cookie.value}`).join('; ');
+  expect((await studio.request('GET', '/api/auth/me', cookieHeader)).status).toBe(200);
+  await page.evaluate(() => { localStorage.setItem('od-test-marker', '1'); sessionStorage.setItem('od-test-marker', '1'); });
+  await page.goto(`${studio.origin}/settings`);
+  await page.getByTestId('studio-settings-nav-about').click({ timeout: T.long });
+  await page.getByTestId('studio-about-clear-data').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: info.outputPath('studio-clear-data-entry.png'), animations: 'disabled' });
+  await page.getByTestId('studio-about-clear-data').click();
+  await expect(page.locator('input[name="username"]')).toBeVisible({ timeout: T.long });
+  expect(await page.evaluate(() => [localStorage.getItem('od-test-marker'), sessionStorage.getItem('od-test-marker')])).toEqual([null, null]);
+  expect((await studio.request('GET', '/api/auth/me', cookieHeader)).status).toBe(401);
+  // The account's server-side preference survives a browser clear.
+  expect((await studio.request('GET', '/api/app-config', studio.a.cookie)).json.config.pet.adopted).toBe(true);
+  // Another account in a fresh browser sees its own default (no pet).
+  const other = await browser.newContext({ ignoreHTTPSErrors: true });
+  try {
+    const b = await other.newPage();
+    await b.goto(`${studio.origin}/`);
+    await b.locator('input[name="username"]').fill(studio.b.username);
+    await b.locator('input[name="password"]').fill(studio.b.password);
+    const verified = b.waitForResponse((response) => new URL(response.url()).pathname === '/api/app-config' && response.status() === 200);
+    await b.getByRole('button', { name: 'Sign in', exact: true }).click();
+    expect((await (await verified).json()).config.pet.adopted).toBe(false);
+    await expect(b.getByRole('button', { name: 'Create project', exact: true })).toBeVisible({ timeout: T.long });
+    await expect(b.getByRole('complementary', { name: 'Pet companion' })).toHaveCount(0);
+    expect((await studio.request('GET', '/api/app-config', studio.b.cookie)).json.config.pet.adopted).toBe(false);
+  } finally { await other.close(); }
+});
