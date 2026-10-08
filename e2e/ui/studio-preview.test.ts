@@ -150,6 +150,39 @@ test('[P1] Studio Home Image project generates an image on the account key, bill
   await page.screenshot({ path: info.outputPath('studio-media-image-run.png') });
 });
 
+test('[P1] Studio owner publishes a public link served from the preview origin, immutable until republished, and revokes it', async ({ page, browser, studio }, info) => {
+  const projectId = studioProjectId();
+  expect((await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Public link acceptance' })).status).toBe(200);
+  expect((await studio.request('POST', `/api/projects/${projectId}/files`, studio.a.cookie,
+    { name: 'launch.html', content: '<!doctype html><html><body><h1>Public launch page</h1></body></html>' })).status).toBe(200);
+  await page.goto(`${studio.origin}/projects/${projectId}/files/launch.html`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  const share = page.locator('.chrome-share-menu').getByRole('button', { name: 'Share', exact: true });
+  await expect(share).toBeVisible({ timeout: T.long });
+  await share.click();
+  const published = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/publish-public'));
+  await page.getByRole('menuitem', { name: 'Get a share link' }).click();
+  const response = await published;
+  expect(response.status(), await response.text()).toBe(200);
+  const { url } = await response.json();
+  expect(new URL(url).origin).toBe(new URL(studio.previewOrigin).origin);
+  await expect(page.locator('.chrome-publish-url')).toHaveText(url);
+  await page.screenshot({ path: info.outputPath('studio-public-link-entry.png') });
+  // An anonymous browser (no cookies) opens it on the preview origin.
+  const anonymous = await browser.newContext({ ignoreHTTPSErrors: true });
+  try {
+    const visitor = await anonymous.newPage();
+    await visitor.goto(url);
+    await expect(visitor.locator('h1')).toHaveText('Public launch page');
+    await visitor.screenshot({ path: info.outputPath('studio-public-link-visitor.png') });
+    await page.getByRole('button', { name: 'Stop sharing' }).click();
+    await expect(page.locator('.chrome-publish-url')).toHaveCount(0);
+    expect((await visitor.goto(url))?.status()).toBe(404);
+  } finally { await anonymous.close(); }
+});
+
 test('[P1] Studio saves a private template in FileViewer and creates its captured files from Home', async ({ page, studio }, info) => {
   const sourceId = studioProjectId();
   expect((await studio.request('POST', '/api/projects', studio.a.cookie, { id: sourceId, name: 'Browser template source' })).status).toBe(200);

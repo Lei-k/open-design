@@ -426,6 +426,22 @@ it('stores the account\'s own OpenAI key through stdin, runs on it with --execut
     .toMatchObject({ configured: false, last4: null });
 }, 40_000);
 
+it('publishes, lists and revokes a deployment-local public link through od project', async () => {
+  const session = path.join(root, 'cli-public-session');
+  success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', alice.username,
+    '--password-file', '-', '--session-file', session, '--json'], alice.password + '\n'));
+  const made = success(await cli(['project', 'create', '--name', 'CLI public', '--session-file', session, '--json']));
+  const id = made.project.id;
+  expect((await daemon.request({ method: 'POST', path: `/api/projects/${id}/files`, cookie: alice.cookie, body: { name: 'page.html', content: '<h1>Public CLI</h1>' } })).status).toBe(200);
+  const published = success(await cli(['project', 'publish-public-link', id, '--path', 'page.html', '--session-file', session, '--json']));
+  expect(published).toMatchObject({ fileName: 'page.html' });
+  expect(published.url).toMatch(/\/api\/multiuser\/public\/[A-Za-z0-9_-]{32}\/page\.html$/);
+  expect(success(await cli(['project', 'public-links', id, '--session-file', session, '--json'])).links).toHaveLength(1);
+  expect(success(await cli(['project', 'revoke-public-link', id, '--path', 'page.html', '--url', published.url, '--session-file', session, '--json'])))
+    .toMatchObject({ ok: true, slug: published.slug });
+  expect(success(await cli(['project', 'public-links', id, '--session-file', session, '--json'])).links).toEqual([]);
+});
+
 it('edits account instructions and manual profile through stdin and isolates B', async () => {
   const first = path.join(root, 'cli-settings-a'); const second = path.join(root, 'cli-settings-b');
   for (const [user, file] of [[alice, first], [bob, second]] as const) {

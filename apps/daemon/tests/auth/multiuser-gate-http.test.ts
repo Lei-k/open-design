@@ -98,6 +98,15 @@ const S5_OWNER_FILE_ROUTES = [
   'owner-scoped-project GET /api/projects/:id/workspace-artifacts/:aid',
   'owner-scoped-project DELETE /^\\/api\\/projects\\/([^/]+)\\/raw\\/(.+)$/u',
   'owner-scoped-project DELETE /api/projects/:id/files/:name',
+  // #66 deployment-local public links.
+  'owner-scoped-project GET /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)\\/publish-public$/u',
+  'owner-scoped-project POST /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)\\/publish-public$/u',
+  'owner-scoped-project DELETE /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)\\/publish-public$/u',
+  'owner-scoped-project GET /api/multiuser/projects/:id/public-links',
+  'owner-scoped-project GET /api/multiuser/projects/:id/public-links/:path',
+  'owner-scoped-project POST /api/multiuser/projects/:id/public-links/:path',
+  'owner-scoped-project DELETE /api/multiuser/projects/:id/public-links/:path',
+  'preview-capability GET /api/multiuser/public/:slug/*path',
   'owner-scoped-project DELETE /api/projects/:id/folders',
   'owner-scoped-project GET /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)$/u',
   'owner-scoped-project GET /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)\\/versions$/u',
@@ -395,7 +404,7 @@ describe('route classification covers the real inventory', () => {
       } else expect(entry?.routeClass, pattern.path).toBe('blocked-in-multiuser');
     }
     for (const blockedPattern of ['GET /^\\/api\\/projects\\/([^/]+)\\/preview\\/([^/]+)\\/(.+)$/u', 'GET /^\\/api\\/projects\\/([^/]+)\\/powered\\/(.+)$/u',
-      'OPTIONS /^\\/api\\/projects\\/([^/]+)\\/raw\\/(.+)$/u', 'POST /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)\\/publish-public$/u']) {
+      'OPTIONS /^\\/api\\/projects\\/([^/]+)\\/raw\\/(.+)$/u']) {
       expect(byKey.get(blockedPattern)?.routeClass, blockedPattern).toBe('blocked-in-multiuser');
     }
     expect(daemon.patternRouteInventory.length).toBeGreaterThan(0);

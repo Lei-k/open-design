@@ -7900,7 +7900,9 @@ function HtmlViewer({
   const [publishFailureKey, setPublishFailureKey] = useState<PublicFilePublishFailureKey | null>(null);
   const filePublished = publishedFileUrl.length > 0;
   // Public links need a signed-in workspace (any type); see canPublishPublicFile.
-  const canPublishPublic = canPublishPublicFile(workspaceContext);
+  // Studio publishes deployment-local links for the project owner (#66).
+  const studioPublicLinks = useStudioRequestAvailable()('POST', `/api/projects/${projectId}/files/${encodeURIComponent(file.name)}/publish-public`);
+  const canPublishPublic = studio.hostServices ? canPublishPublicFile(workspaceContext) : studioPublicLinks && !collab.isSharedNonOwner;
   const publicFileRequestSeqRef = useRef(0);
   const publicFileIdentityRef = useRef({ projectId, fileName: file.name });
   // False when closed; otherwise records which entry opened the modal so the
@@ -15074,7 +15076,7 @@ function HtmlViewer({
   // A view-only Studio member reads the comments but cannot add any.
   const commentCreateAllowed = commentsUsable && collab.canComment !== false;
   const [archiveDownloading, setArchiveDownloading] = useState(false);
-  const rawCanShare = studio.hostServices && deliveryUsable && source !== null && isShareableArtifact;
+  const rawCanShare = (studio.hostServices || canPublishPublic) && deliveryUsable && source !== null && isShareableArtifact;
   const canRenderExports = rendererExports && deliveryUsable && source !== null && isShareableArtifact && !viewerOnly;
   const rawCanDownload = deliveryUsable && source !== null && (isShareableArtifact || isMarkdownArtifact);
   const canShare = rawCanShare && !viewerOnly;
@@ -17270,11 +17272,13 @@ function HtmlViewer({
                               <SocialShareGrid share={activeProjectSocialShare} />
                             </>
                           ) : null}
+                          {studio.hostServices ? <>
                           <div className="share-menu-divider" />
                           <div className="share-menu-section-label" role="presentation">
                             {t('fileViewer.shareMenuPublishOnline')}
                           </div>
-                          {DEPLOY_PROVIDER_OPTIONS.map((option) => (
+                          </> : null}
+                          {(studio.hostServices ? DEPLOY_PROVIDER_OPTIONS : []).map((option) => (
                             <button
                               key={option.id}
                               type="button"

@@ -90,7 +90,9 @@ it('opens owner file endpoints only with a usable files lane, and only where the
     expect(matches.length, `${method} ${path}`).toBeGreaterThan(0);
     expect(matches.every(({ entry }) => entry.routeClass === 'owner-scoped-project'), `${method} ${path}`).toBe(true);
   }
-  for (const [method, path] of [['POST', '/api/projects/p/files/a.html/publish-public'],
+  // Public links are the delivery lane (#66), not files: closed with only the files lane.
+  expect(studioRequestAvailable('POST', '/api/projects/p/files/a.html/publish-public', (lane) => lane === 'files')).toBe(false);
+  for (const [method, path] of [
     ['OPTIONS', '/api/projects/p/raw/a.txt'], ['GET', '/api/projects/p/powered/a.js'], ['PUT', '/api/projects/p/files']]) {
     expect(studioRequestAvailable(method!, path!, () => true), `${method} ${path}`).toBe(false);
   }
@@ -245,6 +247,21 @@ it('opens the account provider key only with a usable execution lane and never a
   }
   for (const [method, path] of [['PUT', '/api/multiuser/settings/provider-keys/anthropic'], ['DELETE', '/api/multiuser/settings/provider-keys/openai'],
     ['GET', '/api/multiuser/settings/provider-keys/openai'], ['GET', '/api/admin/pool/openai'], ['PUT', '/api/media/config'], ['GET', '/api/provider/models']] as const) {
+    expect(studioRequestAvailable(method, path, () => true), `${method} ${path}`).toBe(false);
+  }
+});
+
+it('opens deployment-local public links only with a usable delivery lane and never deploy or social share', () => {
+  for (const [method, path] of [['GET', '/api/projects/p/files/site%2Findex.html/publish-public'], ['POST', '/api/projects/p/files/index.html/publish-public'],
+    ['DELETE', '/api/projects/p/files/index.html/publish-public'], ['GET', '/api/multiuser/projects/p/public-links']] as const) {
+    expect(studioRequestAvailable(method, path, (lane) => lane === 'delivery'), `${method} ${path}`).toBe(true);
+    // GET/DELETE share their shape with owner file routes the files lane already opens.
+    if (method === 'POST' || path.endsWith('/public-links')) expect(studioRequestAvailable(method, path, (lane) => lane !== 'delivery'), `${method} ${path}`).toBe(false);
+    expect(matchMultiUserRoute(method, path).every(({ entry }) => entry.routeClass === 'owner-scoped-project'), path).toBe(true);
+  }
+  expect(matchMultiUserRoute('GET', '/api/multiuser/public/abc/index.html').every(({ entry }) => entry.routeClass === 'preview-capability')).toBe(true);
+  for (const [method, path] of [['POST', '/api/projects/p/deploy'], ['GET', '/api/deploy/config'], ['POST', '/api/social-share'],
+    ['GET', '/api/multiuser/public/abc/index.html']] as const) {
     expect(studioRequestAvailable(method, path, () => true), `${method} ${path}`).toBe(false);
   }
 });

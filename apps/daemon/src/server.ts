@@ -945,6 +945,7 @@ import { registerRunRoutes } from './routes/runs.js';
 import { registerMultiUserRunRoutes } from './routes/multiuser-runs.js';
 import { registerMultiUserDesignRoutes } from './routes/multiuser-design.js';
 import { registerStudioSettingsRoutes } from './routes/studio-settings.js';
+import { registerStudioPublicLinkRoutes } from './routes/studio-public-links.js';
 import { registerStudioDesignCatalogRoutes } from './routes/studio-design-catalog.js';
 import { registerStudioCatalogRoutes } from './routes/studio-catalog.js';
 import { registerStudioArchiveRoutes } from './routes/studio-archives.js';
@@ -5345,6 +5346,14 @@ export async function startServer({
     _scope: TeamMirrorPullScope,
     _version: number,
   ): Promise<void> => {};
+  // Multi-user public links (#66): the state read shares its path shape with
+  // the owner file-bytes and collab-sync routes, so forward it to the Studio
+  // alias before they see it. The gate has already authorized the owner.
+  if (multiUserMode) app.get(/^\/api\/projects\/([^/]+)\/files\/(.+)\/publish-public$/u, (req, _res, next) => {
+    const params = req.params as unknown as Record<string, string>;
+    req.url = `/api/multiuser/projects/${encodeURIComponent(params[0] ?? '')}/public-links/${encodeURIComponent(params[1] ?? '')}`;
+    next();
+  });
   const collabSyncRoutes = registerCollabSyncRoutes(app, {
     collab,
     publicFilePublicationStore: createSqlitePublicFilePublicationStore(db),
@@ -17687,6 +17696,10 @@ export async function startServer({
   if (multiUserRuns) multiUserFront?.setCompanyPoolAvailable(() => multiUserRuns.openaiPoolAvailable);
   if (multiUserRuns) multiUserFront?.setIsRunOwner(multiUserRuns.isRunOwner);
   if (multiUserRuns) multiUserFront?.setCancelProjectRuns(multiUserRuns.cancelProjectRuns);
+  const studioPublicLinks = multiUserMode ? registerStudioPublicLinkRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, previewOrigin: multiUserMode.previewOrigin,
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
+  }) : null;
   const studioSharing = multiUserMode ? registerStudioSharingRoutes(app, {
     db, dataRoot: RUNTIME_DATA_DIR, emitProjectEvent,
     ...(multiUserRuns ? { cancelProjectRuns: multiUserRuns.cancelProjectRuns } : {}),
@@ -18323,6 +18336,7 @@ export async function startServer({
       void studioRenderHost?.close();
       multiUserDesign?.close();
       studioSharing?.close();
+      studioPublicLinks?.close();
       multiUserFront?.close();
       void personalCodex?.shutdown();
       void multiUserRuns?.shutdown();
@@ -18338,6 +18352,7 @@ export async function startServer({
         await multiUserRuns.shutdown();
         multiUserDesign?.close();
       studioSharing?.close();
+      studioPublicLinks?.close();
       }
       amrTerminalReportDelivery.stop();
       clearTerminalTelemetryFallbackTimers();

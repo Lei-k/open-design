@@ -460,6 +460,7 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
     && Buffer.byteLength(body.index) <= 64 * 1024 && !body.index.includes('\0');
   if (policy === 'studio-memory-config') return only(['enabled', 'profileEnabled'])
     && Object.values(body).every((value) => typeof value === 'boolean');
+  if (policy === 'public-link-revoke') return only(['slug']) && (body.slug === undefined || typeof body.slug === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(body.slug));
   if (policy === 'provider-key') return only(['revision', 'apiKey', 'model']) && Number.isSafeInteger(body.revision)
     && (body.apiKey === undefined || body.apiKey === null || typeof body.apiKey === 'string' && body.apiKey.length <= 4096)
     && (body.model === undefined || typeof body.model === 'string' && body.model.length <= 128);

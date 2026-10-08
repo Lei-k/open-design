@@ -45,7 +45,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'project-duplicate' | 'template-save' | 'project-share' | 'provider-key' | 'presence-heartbeat' | 'presence-leave' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'project-duplicate' | 'template-save' | 'project-share' | 'provider-key' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -386,6 +386,24 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)\/versions$/u, ['id', 'path']],
     ['GET', /^\/api\/projects\/([^/]+)\/text-preview\/(.+)$/u, ['id', 'path']],
   ], { projectParam: 'id' }),
+  // Deployment-local public links (#66): the owner publishes an immutable capture; no external relay.
+  ...regexGroup('owner-scoped-project', 'owner publishes, reads or revokes a public link to a captured file; served only from the preview origin', [
+    ['POST', /^\/api\/projects\/([^/]+)\/files\/(.+)\/publish-public$/u, ['id', 'path']],
+  ], { projectParam: 'id', rewriteTo: '/api/multiuser/projects/:id/public-links/:path', bodyPolicy: 'empty' }),
+  // GET also matches the owner file-bytes pattern, so it cannot carry a gate alias; the
+  // server forwards it to the alias handler ahead of the file routes (see server.ts).
+  ...regexGroup('owner-scoped-project', 'owner reads the public link state of a file', [
+    ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)\/publish-public$/u, ['id', 'path']],
+  ], { projectParam: 'id' }),
+  ...regexGroup('owner-scoped-project', 'owner revokes a public link', [
+    ['DELETE', /^\/api\/projects\/([^/]+)\/files\/(.+)\/publish-public$/u, ['id', 'path']],
+  ], { projectParam: 'id', rewriteTo: '/api/multiuser/projects/:id/public-links/:path', bodyPolicy: 'public-link-revoke', maxBodyBytes: 1024 }),
+  ...group('owner-scoped-project', 'owner public link list and per-file publication; captured bytes only', [
+    'GET /api/multiuser/projects/:id/public-links', 'GET /api/multiuser/projects/:id/public-links/:path'], { projectParam: 'id' }),
+  ...group('owner-scoped-project', 'owner publishes an immutable capture of one file and its referenced assets', [
+    'POST /api/multiuser/projects/:id/public-links/:path'], { projectParam: 'id', bodyPolicy: 'empty' }),
+  ...group('owner-scoped-project', 'owner revokes a public link', ['DELETE /api/multiuser/projects/:id/public-links/:path'],
+    { projectParam: 'id', bodyPolicy: 'public-link-revoke', maxBodyBytes: 1024 }),
   ...regexGroup('owner-scoped-project', 'owner file delete by path', [
     ['DELETE', /^\/api\/projects\/([^/]+)\/raw\/(.+)$/u, ['id', 'path']],
   ], { projectParam: 'id' }),
@@ -469,9 +487,6 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'POST /api/projects/:id/plugins/share-tasks',
   ]),
   ...nonStringBlocked(R_PROJECT_FILES, [
-    ['POST', /^\/api\/projects\/([^/]+)\/files\/(.+)\/publish-public$/u],
-    ['DELETE', /^\/api\/projects\/([^/]+)\/files\/(.+)\/publish-public$/u],
-    ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)\/publish-public$/u],
     ['GET', /^\/api\/projects\/([^/]+)\/preview\/([^/]+)\/(.+)$/u],
     ['OPTIONS', /^\/api\/projects\/([^/]+)\/raw\/(.+)$/u],
     ['OPTIONS', /^\/api\/projects\/([^/]+)\/powered\/(.+)$/u],
@@ -493,6 +508,9 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
   ]),
   ...group('preview-capability', 'cookie-free preview origin; handler validates the owner/session-bound short-lived scope', [
     'GET /api/multiuser/projects/:id/preview/:scope/*path',
+  ]),
+  ...group('preview-capability', 'cookie-free public link on the preview origin; unguessable slug; captured bytes of an active owner only', [
+    'GET /api/multiuser/public/:slug/*path',
   ]),
   ...group('admin-only', 'per-account Studio pilot metadata; handler validates revision and closed body', [
     'GET /api/admin/users/:id/studio-pilot',

@@ -43,7 +43,7 @@ export function studioLaneForRoute(entry: Pick<MultiUserRouteClassification, 'me
     if (parts[2] === 'catalog') return parts[3] === 'codex-pets' ? 'settings' : 'catalogs';
     if (parts[2] === 'design-catalog') return 'catalogs';
     if (parts[2] === 'routines') return 'automations';
-    if (path.includes('/archive') || path.includes('/export/')) return 'delivery';
+    if (path.includes('/archive') || path.includes('/export/') || path.includes('/public-links') || parts[2] === 'public') return 'delivery';
     if (/\/(?:shares|access|presence)(?:\/|$)/.test(path)) return 'collaboration';
     if (path.includes('/preview') || path.includes('/comments')) return 'preview';
     return parts[2] === 'projects' ? 'projects' : null;
@@ -100,7 +100,7 @@ export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
   preview: 'Pilot preview: opaque HTML/deck/media previews, manual edit, inspect, comments shared with project members and immutable artifact snapshots/thumbnails; renderer covers and complete browser acceptance are pending (#59).',
   files: 'Pilot files: owner file list, read, write, upload, rename, delete, folders, search and versions; public publish and resumable large uploads are pending (#58).',
   automations: 'Pilot automations: account-owned routines with schedules, manual runs, history and per-dispatch authority on personal Codex or the company pool; templates, proposals, ingestion, crystallize and plugin/connector context are pending (#64).',
-  delivery: 'Pilot delivery: owned project/folder/batch ZIP downloads and one-file HTML exports (current or historical version) from captured bytes with design handoff, and server-rendered PDF/PPTX/PNG where the deployment configured a renderer; public publish and cloud delivery are pending (#66).',
+  delivery: 'Pilot delivery: owned project/folder/batch ZIP downloads and one-file HTML exports (current or historical version) from captured bytes with design handoff, server-rendered PDF/PPTX/PNG where the deployment configured a renderer, and deployment-local public links to captured files on the preview origin; cloud deploy is pending (#66).',
   home: 'Pilot Home: Prototype, Deck, Other, Image/Video/Audio on an OpenAI source, immutable saved templates, project copies and browser ZIP/directory imports; live artifacts, HyperFrames and Figma import are pending (#60).',
   settings: 'Pilot settings: account appearance/notification preferences, in-page pet (bundled catalog), instructions, manual memory and profile injection; full navigation, providers, automatic extraction, verification, connectors, MCP and library are pending (#62).',
   collaboration: 'Pilot collaboration: owner-managed view/comment/edit sharing with other accounts of this deployment, members, presence and shared comments with server-stamped authors; revocation closes open streams and stops turns. Shared design systems/skills/plugins and live chat mirroring are pending (#65).',

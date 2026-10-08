@@ -7080,6 +7080,8 @@ async function runProject(args) {
                                           Revoke that account's access.
   od project leave <id> [--json]          Give up access shared with you.
   od project presence <id> [--json]       Who has the project open now.
+  od project publish-public-link <id> --path <file> [--json]
+  od project public-links <id> [--json]
   od project revoke-public-link <id> --path <file> --url <public-url>
                     Revoke a public file link whose local publication record
                     was lost during an older daemon restart or upgrade.
@@ -7307,6 +7309,35 @@ Common options:
       );
       return;
     }
+    // Deployment-local public links on a multi-user Studio (#66), same endpoints as FileViewer.
+    case 'publish-public-link': {
+      const id = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
+      const filePath = typeof flags.path === 'string' ? flags.path.trim() : '';
+      if (!id || !filePath) {
+        console.error('Usage: od project publish-public-link <id> --path <file> [--json]');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/files/${encodeURIComponent(filePath)}/publish-public`,
+        { method: 'POST', headers: workspaceHeaders });
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      console.log(`[project] published ${data.fileName}: ${data.url}`);
+      return;
+    }
+    case 'public-links': {
+      const id = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
+      if (!id) {
+        console.error('Usage: od project public-links <id> [--json]');
+        process.exit(2);
+      }
+      const resp = await fetch(`${base}/api/multiuser/projects/${encodeURIComponent(id)}/public-links`, { headers: workspaceHeaders });
+      if (!resp.ok) return structuredHttpFailure(resp);
+      const data = await resp.json();
+      if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+      for (const link of data.links ?? []) console.log(`${link.fileName}\t${link.url}`);
+      return;
+    }
     case 'revoke-public-link': {
       const id = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
       const filePath = typeof flags.path === 'string' ? flags.path.trim() : '';
@@ -7316,7 +7347,7 @@ Common options:
         const parsed = new URL(publicUrl);
         const match = parsed.pathname.match(
           /^\/api\/v1\/public\/snapshots\/([^/]+)(?:\/|$)/u,
-        );
+        ) ?? parsed.pathname.match(/^\/api\/multiuser\/public\/([A-Za-z0-9_-]+)(?:\/|$)/u);
         slug = match?.[1] ? decodeURIComponent(match[1]) : '';
       } catch {
         slug = '';

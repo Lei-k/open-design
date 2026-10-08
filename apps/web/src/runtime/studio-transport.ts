@@ -65,6 +65,9 @@ export function studioRequestAvailable(method: string, path: string,
     if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/archive$/.test(path)) return method === 'GET';
     if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/archive\/batch$/.test(path)) return method === 'POST';
     if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/export\/html$/.test(path)) return method === 'POST';
+    // Deployment-local public links (#66): owner publish/read/revoke; served only from the preview origin.
+    if (/^\/api\/projects\/[^/]+\/files\/.+\/publish-public$/.test(path)) return ['GET', 'POST', 'DELETE'].includes(method);
+    if (/^\/api\/multiuser\/projects\/[^/]+\/public-links$/.test(path)) return method === 'GET';
     // Server-rendered formats exist only where the deployment configured a renderer (#66).
     if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/export\/(?:pptx|pdf-image|image)$/.test(path)) return renderedExports && method === 'POST';
   }
