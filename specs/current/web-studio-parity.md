@@ -413,9 +413,15 @@ pnpm --filter @open-design/daemon exec vitest run -c vitest.config.ts tests/auth
 
 ![Clear this browser's data](../../docs/design/studio-parity/clear-browser-data.png)
 
+## S28 — version-store link refusal and historical HTML export (#58, #66, #68)
+
+- **Security fix (found while scoping #66).** The version store (`.file-versions/`) lives in the worker-writable project tree, and its reads used plain `readFile`. A personal run could replace a version's content file, the per-file store or `.file-versions` itself with a link to daemon data; the owner's `GET …/versions/:id` then returned those bytes (red test: the response carried the planted file's content) and restore could copy them into the working file. `versionRootFor` now refuses a store chain containing a link or a non-directory for every version operation, and manifest/content reads go through an `O_NOFOLLOW` descriptor that must be a single-link regular file resolving inside the store (Linux `/proc/self/fd` check). Single-user behavior is unchanged for normal stores. A broader audit of project-tree reads reachable from Studio routes was started in parallel; its findings are tracked in the next slice.
+- **Historical HTML export.** `export-html` accepts `versionId` (`^[A-Za-z0-9-]{1,64}$`): the entry HTML comes from the (now link-safe) version store and same-project assets from the bounded no-follow capture, exactly the single-user semantics. Unknown versions are 404, foreign/admin stay 404. FileViewer already passes the viewed version; CLI `od project export-html … --version-id <id>`.
+- Evidence: `studio-files-http` link-planting case (content link, per-file store link with forged manifest, store root link; read, list and restore) red before / green after; 149 existing version/route tests; `studio-archives-http` historical export; CLI case.
+
 ## 目前進度與續作順序 — 2026-10-07（S25 後）
 
-[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S27 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
+[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S28 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
 
 - 分支：`feat/studio-parity-foundation`；以 PR 最新 head 為準。先核對 git status/log 和 GitHub 最新 review，避免重做已交付項目。S18–S25 的實作、測試、限制與入口截圖見上文；本次依使用者要求階段性收尾並交接，並非 Epic 完成。
 - 已確認產品決定：公司池使用 OpenAI 官方 API；Vela 採使用者驗證的本人身份與服務端 Web account/member binding；native window、OS overlay 與 app installer/updater 的 Web 不適用決定，和 in-page pet 仍需交付項目保持分開。
@@ -423,7 +429,7 @@ pnpm --filter @open-design/daemon exec vitest run -c vitest.config.ts tests/auth
 - 下一批按 DAG 推進：
   - #64：automation templates/proposals/ingestion/crystallize、connector/MCP context，以及排程觸發的真實驗收。
   - #65：owner 預覽評論與 comment attachments 已於 S26 完成；剩餘 team comment 分享、presence、shared resources 與 verified Vela binding。
-  - #66：isolated PDF/PPTX/image renderer、historical-version export、public share／deploy。
+  - #66：isolated PDF/PPTX/image renderer（需要部署端 headless Chromium，待產品／部署決定）、public share／deploy；historical-version HTML export 已於 S28 完成。
   - #63：Media、Live Artifacts、GenUI、research/critique（依 actor credential/background adapters）。
   - #61：design generation、asset packages、plugin/community/team catalogs。
   - #62：encrypted personal provider credentials、自動記憶、connectors/MCP、privacy、library。

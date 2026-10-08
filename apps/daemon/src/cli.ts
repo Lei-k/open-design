@@ -277,7 +277,7 @@ const PROJECT_STRING_FLAGS = new Set([
   'source', 'out', 'root',
   'execution-source',
   'tabs-json', 'files-json', 'active-file',
-  'last-event-id', 'question-answer',
+  'last-event-id', 'question-answer', 'version-id',
 ]);
 const PROJECT_RESOURCE_STRING_FLAGS = new Set([
   ...PROJECT_STRING_FLAGS,
@@ -7051,7 +7051,7 @@ async function runProject(args) {
   od project duplicate <id> [--name "<title>"] [--json]
                     Duplicate a project and copy its Design Files.
   od project archive <id> --out <path> [--root <relative-dir> | --files-json <path|->] [--json]
-  od project export-html <id> --path <entry.html> --out <path> [--title <text>] [--json]
+  od project export-html <id> --path <entry.html> --out <path> [--title <text>] [--version-id <id>] [--json]
                     Download an owned ZIP and verify its SHA-256 receipt.
   od project import-zip <path> [--json]
                     Upload a design ZIP as an owned managed project.
@@ -7410,15 +7410,16 @@ Common options:
       const id = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
       const fileName = flags.path;
       if (!id || typeof fileName !== 'string' || !fileName || typeof flags.out !== 'string' || !flags.out) {
-        console.error('Usage: od project export-html <id> --path <entry.html> --out <path> [--title <text>] [--json]'); process.exit(2);
+        console.error('Usage: od project export-html <id> --path <entry.html> --out <path> [--title <text>] [--version-id <id>] [--json]'); process.exit(2);
       }
       const response = await fetch(`${base}/api/projects/${encodeURIComponent(id)}/export/html`, { method: 'POST',
         headers: { ...workspaceHeaders, 'content-type': 'application/json' },
-        body: JSON.stringify({ fileName, ...(typeof flags.title === 'string' ? { title: flags.title } : {}) }) });
+        body: JSON.stringify({ fileName, ...(typeof flags.title === 'string' ? { title: flags.title } : {}),
+          ...(typeof flags['version-id'] === 'string' ? { versionId: flags['version-id'] } : {}) }) });
       if (!response.ok) return structuredHttpFailure(response);
       const bytes = Buffer.from(await response.arrayBuffer());
       writeFileSync(flags.out, bytes, { flag: 'wx', mode: 0o600 });
-      const result = { projectId: id, entry: fileName, path: flags.out, bytes: bytes.length,
+      const result = { projectId: id, entry: fileName, ...(typeof flags['version-id'] === 'string' ? { versionId: flags['version-id'] } : {}), path: flags.out, bytes: bytes.length,
         externalDependencies: Number(response.headers.get('x-open-design-external-dependencies') ?? 0) };
       if (flags.json) return process.stdout.write(JSON.stringify(result) + '\n');
       console.log(`[project] exported ${fileName} to ${flags.out} (${bytes.length} bytes)`);

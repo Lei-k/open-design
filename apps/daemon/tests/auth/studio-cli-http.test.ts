@@ -111,6 +111,11 @@ describe('same Studio APIs through remote od sessions', () => {
     expect(html).toMatchObject({ projectId, entry: 'index.html', path: htmlOutput, externalDependencies: 0 });
     expect(readFileSync(htmlOutput, 'utf8')).toContain('CLI captured version');
     expect((await cli(['project', 'export-html', projectId, '--path', 'index.html', '--out', htmlOutput, '--session-file', session, '--json'])).code).not.toBe(0);
+    const versions = await daemon.request({ path: `/api/projects/${projectId}/files/index.html/versions`, cookie: alice.cookie });
+    const firstVersion = (versions.json.versions as Array<{ id: string }>)[0]!.id;
+    const versionOutput = path.join(root, 'cli-owned-export-version.html');
+    expect(success(await cli(['project', 'export-html', projectId, '--path', 'index.html', '--out', versionOutput,
+      '--version-id', firstVersion, '--session-file', session, '--json']))).toMatchObject({ versionId: firstVersion, path: versionOutput });
 
     const { default: JSZip } = await import('jszip'); const zip = new JSZip(); zip.file('index.html', 'CLI archive original');
     const downloaded = await JSZip.loadAsync(readFileSync(archiveOutput));

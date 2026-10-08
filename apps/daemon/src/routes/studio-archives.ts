@@ -9,6 +9,7 @@ import path from 'node:path';
 import { addDesignArchiveMetadata, mimeFor, validateProjectPath } from '../projects.js';
 import { sanitizeArchiveFilename } from '../projects/archive-filename.js';
 import { captureStudioProject } from '../projects/studio-snapshot.js';
+import { readProjectFileVersion } from '../project-file-versions.js';
 import { ProjectOwnershipStore } from '../storage/project-ownership.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { bindMultiUserStream, multiUserStreamAllowed } from '../http/multiuser-stream.js';
@@ -88,10 +89,16 @@ export function registerStudioArchiveRoutes(app: Express, input: { db: Database.
     if (active.has(owner!) || active.size >= 4) return sendApiError(res, 429, 'RATE_LIMITED', 'export busy; retry later');
     active.add(owner!);
     try {
-      const { fileName, title } = req.body as { fileName: string; title?: string | null };
+      const { fileName, title, versionId } = req.body as { fileName: string; title?: string | null; versionId?: string };
       const entryPath = safePath(fileName);
       const files = new Map(captureStudioProject(input.projectsRoot, id).map((file) => [file.name, file.bytes]));
-      const entry = files.get(entryPath);
+      let entry = files.get(entryPath);
+      if (versionId) {
+        // The version store refuses planted links; assets still come from the bounded capture.
+        const version = await readProjectFileVersion(input.projectsRoot, id, entryPath, versionId).catch(() => null);
+        if (!version) return sendApiError(res, 404, 'VERSION_NOT_FOUND', 'version not found');
+        entry = Buffer.from(version.content, 'utf8');
+      }
       if (!entry) return sendApiError(res, 404, 'FILE_NOT_FOUND', 'HTML entry not found');
       if (!mimeFor(entryPath).startsWith('text/html')) return sendApiError(res, 415, 'UNSUPPORTED_MEDIA_TYPE', 'standalone export only supports HTML entry files');
       const bundled = await bundleStandaloneHtml({ entryPath, html: entry.toString('utf8'),

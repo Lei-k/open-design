@@ -400,10 +400,12 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   const sessionMode = body.sessionMode === undefined || (typeof body.sessionMode === 'string' && ['design', 'chat', 'plan'].includes(body.sessionMode));
   if (policy === 'archive-batch') return only(['files']) && Array.isArray(body.files) && body.files.length > 0
     && body.files.length <= 500 && body.files.every(projectPathText);
-  // Current-version export only: a historical versionId would bundle today's dependencies.
   // Field-level routine validation needs ownership checks and lives in the route.
   if (policy === 'studio-routine') return only(['name', 'prompt', 'schedule', 'target', 'skillId', 'agentId', 'context', 'enabled']);
-  if (policy === 'export-html') return only(['fileName', 'title']) && projectPathText(body.fileName) && optionalText(body.title, 200);
+  // A historical versionId bundles that version's HTML with the project's current
+  // same-project assets, exactly like the single-user export.
+  if (policy === 'export-html') return only(['fileName', 'title', 'versionId']) && projectPathText(body.fileName) && optionalText(body.title, 200)
+    && (body.versionId === undefined || typeof body.versionId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(body.versionId));
   if (policy === 'comment-upsert' || policy === 'comment-status' || policy === 'comment-anchor' || policy === 'comment-reorder') {
     return studioCommentBodyAllowed(policy, body);
   }

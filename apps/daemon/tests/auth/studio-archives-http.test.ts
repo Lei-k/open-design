@@ -186,3 +186,20 @@ it('exports one-file HTML from captured owner bytes on the standard route and re
     expect((await download(id, a, '/export/html', body)).status).toBeGreaterThanOrEqual(400);
   }
 });
+
+it('exports a historical version of an owned HTML entry with current same-project assets', async () => {
+  const id = await project();
+  await write(id, 'index.html', '<link rel="stylesheet" href="style.css"><h1>Version one</h1>');
+  await write(id, 'style.css', 'h1 { color: rgb(9, 8, 7); }');
+  const listed = await daemon.request({ path: `/api/projects/${id}/files/index.html/versions`, cookie: a.cookie });
+  expect(listed.status, listed.text).toBe(200);
+  const first = (listed.json.versions as Array<{ id: string }>)[0]!;
+  await write(id, 'index.html', '<link rel="stylesheet" href="style.css"><h1>Version two</h1>');
+  const historical = await download(id, a, '/export/html', { fileName: 'index.html', versionId: first.id });
+  expect(historical.status, await historical.clone().text()).toBe(200);
+  const html = await historical.text();
+  expect(html).toContain('Version one'); expect(html).not.toContain('Version two'); expect(html).toContain('rgb(9, 8, 7)');
+  expect((await download(id, a, '/export/html', { fileName: 'index.html', versionId: randomUUID() })).status).toBe(404);
+  expect((await download(id, b, '/export/html', { fileName: 'index.html', versionId: first.id })).status).toBe(404);
+  expect((await download(id, a, '/export/html', { fileName: 'index.html', versionId: '../x' })).status).toBe(400);
+});
