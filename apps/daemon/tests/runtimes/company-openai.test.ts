@@ -87,7 +87,10 @@ it('checks withdrawn authority after provider completion before executing a queu
   await expect(readFile(path.join(root, 'owner/late.html'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 it('fails incomplete streams and does not forward upstream error bodies', async () => {
-  await expect(turn(async () => new Response('private provider error', { status: 401 }))).rejects.toThrow('company_provider_failed');
+  // Coarse, secret-free classes only (#62/#63): auth and rate limits are told apart, the body never travels.
+  await expect(turn(async () => new Response('private provider error', { status: 401 }))).rejects.toThrow(/^provider_auth_rejected$/);
+  await expect(turn(async () => new Response('private provider error', { status: 429 }))).rejects.toThrow(/^provider_rate_limited$/);
+  await expect(turn(async () => new Response('private provider error', { status: 500 }))).rejects.toThrow(/^company_provider_failed$/);
   await expect(turn(async () => new Response('data: {"type":"response.output_text.delta","delta":"partial"}\n\n',
     { headers: { 'content-type': 'text/event-stream' } }))).rejects.toThrow('company_response_incomplete');
 });

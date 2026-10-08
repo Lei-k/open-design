@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts, startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
+import { cleanupIsolatedDataRoot, loadIsolatedServerModule, login, multiUserOptions, provisionAccounts, startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
 import { PERSONAL_CODEX_MOCK, codexHome, linkCodex, setTurnMode } from './personal-codex-helpers.js';
 
 let daemon: StartedMultiUserDaemon;
@@ -432,7 +432,9 @@ it('publishes, lists and revokes a deployment-local public link through od proje
     '--password-file', '-', '--session-file', session, '--json'], alice.password + '\n'));
   const made = success(await cli(['project', 'create', '--name', 'CLI public', '--session-file', session, '--json']));
   const id = made.project.id;
-  expect((await daemon.request({ method: 'POST', path: `/api/projects/${id}/files`, cookie: alice.cookie, body: { name: 'page.html', content: '<h1>Public CLI</h1>' } })).status).toBe(200);
+  // Earlier cases revoke alice's harness cookie; write through a fresh session.
+  const cookie = await login(daemon, alice.username, alice.password);
+  expect((await daemon.request({ method: 'POST', path: `/api/projects/${id}/files`, cookie, body: { name: 'page.html', content: '<h1>Public CLI</h1>' } })).status).toBe(200);
   const published = success(await cli(['project', 'publish-public-link', id, '--path', 'page.html', '--session-file', session, '--json']));
   expect(published).toMatchObject({ fileName: 'page.html' });
   expect(published.url).toMatch(/\/api\/multiuser\/public\/[A-Za-z0-9_-]{32}\/page\.html$/);
