@@ -489,9 +489,40 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
 
 ![Member view with presence and shared comments](../../docs/design/studio-parity/share-member-view.png)
 
+## S33 — each account's own encrypted OpenAI key (#62, #63, #55, #68; decision 2026-10-08)
+
+- **Custody.** `storage/personal-provider-keys.ts` keeps one OpenAI key per account in `multiuser_personal_provider_keys`. AES-256-GCM with a per-account key derived (HKDF) from the deployment master key, authenticated against the account and provider, so a row copied onto another account does not open. The master key is `OD_CREDENTIAL_MASTER_KEY` (32 bytes, base64 or hex) when set, otherwise a generated 0600 file under the resolved data root. Reads return only `configured`, `last4`, the chosen model and revisions; the audit table records actions, never values. No admin route reads this table.
+- **Source.** New execution source `personal_api_key` (`agentId: 'openai-byok'`), advertised to pilot accounts unless the deployment sets `personalProviderKeys: false`. Turns run in the existing OpenAI worker loop with the account's key and model, outside the company worker quota, with their own host slot ceiling (4). The conversation pins to the source; the company pool is a mismatch, never a fallback. Replacing or removing the key stops queued and running turns. Provider 401/403 and 429 become `MULTIUSER_PROVIDER_KEY_REJECTED` / `MULTIUSER_PROVIDER_RATE_LIMITED`; missing keys are `MULTIUSER_PROVIDER_KEY_MISSING`. Provider bodies are never kept.
+- **Migration.** The `multiuser_runs.execution_source` CHECK is widened by a one-time table rebuild that keeps every row, index and binding trigger (migration test).
+- **Surfaces.** Settings → Agent accounts → "Your OpenAI API key" (write-only input, model, remove). The composer lists "OpenAI · your API key". CLI: `od account key get|set|remove` (key from a private file or stdin, never argv) and `od run start --execution-source personal_api_key`.
+- **Evidence.** `studio-provider-keys-http` (write-only, per-account sealing, copied-row refusal, admin surfaces, pinned runs, no company quota, rejection/rate-limit codes, removal stopping a running turn), migration test, CLI case, transport oracle, browser case (save in Settings, run, reload pinned).
+
+## S34 — media generation inside OpenAI turns (#63, #60, #57)
+
+- OpenAI turns (company pool or the account's own key) carry `generate_image` (gpt-image-1, PNG), `generate_speech` (gpt-4o-mini-tts, MP3) and `generate_video` (sora-2, MP4, polled within the turn) functions (`runtimes/studio-media.ts`). Each calls the provider with the turn's own key, so the bill follows the turn's source. Output is written only into the run's project through the descriptor-checked writer (64 MiB ceiling, hidden and traversal paths refused, magic bytes checked). Usage lands on the run as `output.media`. Failures reach the model as secret-free codes.
+- Studio Home enables Image, Video and Audio project types when the `generation` lane is usable (an OpenAI source exists). Media projects default to an OpenAI source and hide personal Codex, which the server also refuses there (Codex has no media functions). Settings → Media describes models and billing. CLI: `od project create --kind image|video|audio`.
+- Evidence: `studio-media-http` (image/speech/video on the account key, project-only writes, refusals, provider auth error not echoed), CLI case, browser case (Home → Image → generated file opens in the workspace with an immutable chat card).
+- Remaining for #63: Live Artifacts (connector credentials), GenUI (no web mount upstream), research (Tavily key custody) and critique theater.
+
+## S35 — deployment-local public links (#66; decision 2026-10-08)
+
+- `routes/studio-public-links.ts`. The owner publishes a file; the daemon captures it and the same-project assets it references (`src`/`href`/`poster`/`url()`) through the no-follow project capture, stores the bundle under the data root and serves it from the cookie-free preview origin at `/api/multiuser/public/<32-char slug>/…` under a sandboxing CSP and `noindex`. Nothing else in the project is reachable. Later edits never change a link; republishing replaces it; revoking, deleting the project or disabling the owner ends it. Grantees (even editors) and admins cannot publish. No external relay.
+- The standard `…/files/:path/publish-public` routes rewrite to the alias; the GET state read is forwarded ahead of collab-sync because it shares the owner file-bytes path shape.
+- Web: FileViewer's Share menu shows "Get a share link" for owners in Studio; cloud deploy options stay hidden. CLI: `od project publish-public-link|public-links|revoke-public-link`.
+- Evidence: `studio-public-links-http` (preview-origin only, referenced assets only, traversal, immutability, republish, revoke, owner-only incl. editors, symlink refusal, disabled owner), gate inventory, CLI case, transport oracle, browser case (anonymous visitor opens the link; Stop sharing returns 404).
+- Remaining for #66: cloud deploy (Vercel/Cloudflare with per-account tokens), finalize/handoff on the turn's key.
+
+![Own key in Settings](../../docs/design/studio-parity/own-key-settings.png)
+
+![Home media entry](../../docs/design/studio-parity/media-home-entry.png)
+
+![Generated image in the workspace](../../docs/design/studio-parity/media-image-run.png)
+
+![Public link in the Share menu](../../docs/design/studio-parity/public-link-entry.png)
+
 ## 目前進度與續作順序 — 2026-10-07（S25 後）
 
-[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S32 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
+[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S35 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
 
 - 分支：`feat/studio-parity-foundation`；以 PR 最新 head 為準。先核對 git status/log 和 GitHub 最新 review，避免重做已交付項目。S18–S25 的實作、測試、限制與入口截圖見上文；本次依使用者要求階段性收尾並交接，並非 Epic 完成。
 - 已確認產品決定：公司池使用 OpenAI 官方 API；Vela 採使用者驗證的本人身份與服務端 Web account/member binding；native window、OS overlay 與 app installer/updater 的 Web 不適用決定，和 in-page pet 仍需交付項目保持分開。
@@ -500,10 +531,10 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
 - 下一批按 DAG 推進：
   - #64：automation templates/proposals/ingestion/crystallize、connector/MCP context，以及排程觸發的真實驗收。
   - #65：S32 完成同部署帳號間專案分享（view/comment/edit、presence、共享評論、撤銷即時生效）；剩餘 team catalogs（design systems/skills/plugins 共享，併 #61）與他人執行中 turn 的即時鏡像；依決定不接 Vela。
-  - #66：PDF/PPTX/PNG 由 S31 伺服器 renderer 完成；剩餘 public share／publish／deploy。
-  - #63：Media、Live Artifacts、GenUI、research/critique（依 actor credential/background adapters）。
+  - #66：PDF/PPTX/PNG 由 S31 伺服器 renderer 完成；S35 完成部署內公開連結；剩餘雲端 deploy（每帳號 token）與 finalize/handoff。
+  - #63：S33 每帳號加密 OpenAI key、S34 媒體生成（圖片/旁白/影片）完成；剩餘 Live Artifacts、GenUI、research、critique。
   - #61：design generation、asset packages、plugin/community/team catalogs。
-  - #62：encrypted personal provider credentials、自動記憶、connectors/MCP、privacy、library。
+  - #62：S33 完成 encrypted personal provider credentials；剩餘自動記憶、connectors/MCP、library。
   - #67：in-page pet 與清除本瀏覽器資料已於 S27 完成；剩餘逐項 host bridge 的 mobile/permission-denied/headless UX 驗收（#70）。
 - #53–#59 和 #68/#69 的尚欠驗收（完整 chat state matrix、replay/telemetry、background/artifact lineage、provider recording、rich headless flows）不因本批完成。最後執行 #70 同 build 單人/A/B、desktop/mobile、a11y/visual/performance、revocation/restart/rollback，再決定 rollout。
 - 關鍵邊界：pure contracts；actor authority 只由 server cookie 解析（背景工作用 `internalMultiUserResponse` 並由呼叫端提供 server-side authority）；admin 無 private-content bypass；standard aliases 不落入 host-global handler；async I/O/streams 重驗權限；resolved daemon data-root；新能力同 PR 同時接 HTTP/UI/CLI。新 route 同步 exact gate inventory、frontend allowlist 和跨 runtime negative oracle。
