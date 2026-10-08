@@ -217,3 +217,42 @@ it('never reveals daemon filesystem paths through project or file responses', as
   }
   expect(responses[0]!.json.resolvedDir).toBeNull();
 });
+
+it('never follows worker-planted links inside the version store (cross-tenant read)', async () => {
+  const { projectId } = await project();
+  expect((await write(projectId, 'page.html', '<p>owner v1</p>')).status).toBe(200);
+  expect((await daemon.request({ method: 'POST', path: `/api/projects/${projectId}/files/page.html/versions`, cookie: a.cookie, body: { label: 'v1' } })).status).toBeLessThan(300);
+  const listed = await daemon.request({ path: `/api/projects/${projectId}/files/page.html/versions`, cookie: a.cookie });
+  const version = (listed.json.versions as Array<{ id: string }>).at(-1)!;
+  // Something only the daemon may read (another account's runtime data lives beside it).
+  const secret = path.join(root, 'other-tenant-secret.txt');
+  writeFileSync(secret, 'OTHER_TENANT_SECRET');
+  const store = path.join(root, 'projects', projectId, '.file-versions');
+  const { readdirSync, rmSync, renameSync, cpSync } = await import('node:fs');
+  const key = readdirSync(store)[0]!;
+  const content = readdirSync(path.join(store, key)).find((name) => name.endsWith(`-${version.id}.html`))!;
+  // 1. The content file replaced by a link to daemon data.
+  rmSync(path.join(store, key, content)); symlinkSync(secret, path.join(store, key, content));
+  const read = await daemon.request({ path: `/api/projects/${projectId}/files/page.html/versions/${version.id}`, cookie: a.cookie });
+  expect(read.text).not.toContain('OTHER_TENANT_SECRET');
+  expect(read.status).toBeGreaterThanOrEqual(400);
+  const restore = await daemon.request({ method: 'POST', path: `/api/projects/${projectId}/files/page.html/versions/${version.id}/restore`, cookie: a.cookie });
+  expect(restore.text).not.toContain('OTHER_TENANT_SECRET');
+  const working = await daemon.request({ path: `/api/projects/${projectId}/files/page.html`, cookie: a.cookie });
+  expect(working.text).not.toContain('OTHER_TENANT_SECRET');
+  // 2. The whole per-file store replaced by a link to a directory holding a forged manifest.
+  const forged = path.join(root, 'forged-store');
+  cpSync(path.join(store, key), forged, { recursive: true, dereference: false });
+  rmSync(path.join(store, key), { recursive: true });
+  symlinkSync(forged, path.join(store, key));
+  for (const route of [`/files/page.html/versions/${version.id}`, '/files/page.html/versions']) {
+    const response = await daemon.request({ path: `/api/projects/${projectId}${route}`, cookie: a.cookie });
+    expect(response.text).not.toContain('OTHER_TENANT_SECRET');
+  }
+  rmSync(path.join(store, key)); renameSync(forged, path.join(store, key));
+  // 3. The store root itself as a link.
+  renameSync(store, `${store}.real`); symlinkSync(`${store}.real`, store);
+  const viaRoot = await daemon.request({ path: `/api/projects/${projectId}/files/page.html/versions/${version.id}`, cookie: a.cookie });
+  expect(viaRoot.text).not.toContain('OTHER_TENANT_SECRET');
+  expect(viaRoot.status).toBeGreaterThanOrEqual(400);
+});

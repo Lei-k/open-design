@@ -7,7 +7,8 @@ import type {
   ProjectFileVersionSource,
 } from '@open-design/contracts';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { constants, lstatSync } from 'node:fs';
+import { mkdir, open, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { isSafeId, kindFor, mimeFor, resolveProjectDir, validateProjectPath } from './projects.js';
@@ -91,9 +92,44 @@ function fileVersionKey(fileName: string): string {
   return createHash('sha256').update(fileName).digest('hex').slice(0, 24);
 }
 
+/**
+ * The version store lives inside the project tree, which agent runs may
+ * write. Every operation therefore refuses a store whose `.file-versions` or
+ * per-file directory is a link (or not a directory): following one would let
+ * a planted link turn a version read, restore or write into a read or write
+ * of daemon data outside the project.
+ */
 function versionRootFor(projectsRoot: string, projectId: string, fileName: string): string {
   if (!isSafeId(projectId)) throw new Error('invalid project id');
-  return path.join(projectsRoot, projectId, VERSION_ROOT, fileVersionKey(fileName));
+  const store = path.join(projectsRoot, projectId, VERSION_ROOT);
+  const root = path.join(store, fileVersionKey(fileName));
+  for (const directory of [store, root]) {
+    let entry;
+    try { entry = lstatSync(directory); } catch (err) { if (errorCode(err) === 'ENOENT') break; throw err; }
+    if (entry.isSymbolicLink() || !entry.isDirectory()) throw codedError('version store refused', 'EACCES');
+  }
+  return root;
+}
+
+const VERSION_STORE_FILE_MAX_BYTES = 64 * 1024 * 1024;
+/** Read one store file without following a link, refusing devices, hard
+ * links and (on Linux) a descriptor that resolves outside the store. */
+async function readVersionStoreFile(root: string, name: string): Promise<string> {
+  const target = path.join(root, name);
+  if (path.dirname(target) !== root) throw codedError('version store refused', 'EACCES');
+  const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.nlink !== 1 || info.size > VERSION_STORE_FILE_MAX_BYTES) throw codedError('version store refused', 'EACCES');
+    if (process.platform === 'linux') {
+      const { realpath } = await import('node:fs/promises');
+      const [actual, expected] = await Promise.all([realpath(`/proc/self/fd/${handle.fd}`), realpath(root)]);
+      if (actual !== path.join(expected, name)) throw codedError('version store refused', 'EACCES');
+    }
+    return await handle.readFile('utf8');
+  } finally {
+    await handle.close();
+  }
 }
 
 function versionLockKey(projectsRoot: string, projectId: string, fileName: string): string {
@@ -359,7 +395,7 @@ async function readVersionManifestState(
   fileName: string,
 ): Promise<VersionManifestState> {
   try {
-    const raw = await readFile(path.join(versionRootFor(projectsRoot, projectId, fileName), VERSION_MANIFEST), 'utf8');
+    const raw = await readVersionStoreFile(versionRootFor(projectsRoot, projectId, fileName), VERSION_MANIFEST);
     return normalizeManifestState(JSON.parse(raw) as unknown, fileName);
   } catch (err) {
     if (errorCode(err) === 'ENOENT') return { entries: [], currentVersionId: null };
@@ -466,7 +502,7 @@ export async function readProjectFileVersion(
   if (!entry) {
     throw codedError('version not found', 'ENOENT');
   }
-  const content = await readFile(path.join(versionRootFor(projectsRoot, projectId, safeName), entry.contentPath), 'utf8');
+  const content = await readVersionStoreFile(versionRootFor(projectsRoot, projectId, safeName), entry.contentPath);
   return {
     version: publicVersion(entry, state.currentVersionId),
     content,
@@ -693,7 +729,7 @@ async function ensureCurrentProjectFileVersionUnlocked(
       : null;
     if (current?.contentPath) {
       try {
-        const prior = await readFile(path.join(versionRootFor(projectsRoot, projectId, safeName), current.contentPath), 'utf8');
+        const prior = await readVersionStoreFile(versionRootFor(projectsRoot, projectId, safeName), current.contentPath);
         if (prior === text) {
           const source = inferVersionSource(
             options.source,
