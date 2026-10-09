@@ -138,8 +138,13 @@ CMD ["node", "apps/daemon/dist/cli.js", "--no-open"]
 # can supply an already-verified standalone release directory instead:
 #   --build-context codex-release=<dir containing bin/codex>
 FROM ${NODE_IMAGE} AS codex-download
-ARG CODEX_VERSION=0.154.0
-ARG CODEX_SHA256=d7e18b2597ae8f242f5f31ee9e90deef48dbc9edd634d9868fb6435d08c07f02
+# Keep this current: the model catalog and the app-server tool protocol move
+# with the CLI. A Codex this image pins too far back cannot start its workspace
+# tools for the current models (they declare `shell_type: unified_exec`) and
+# does not accept the app-server dynamic tools Studio advertises, so a turn
+# reports that its tools failed to start and changes nothing.
+ARG CODEX_VERSION=0.162.1
+ARG CODEX_SHA256=86f268d81b898f3e144c5ecff2ad2fda2c5802e042d6195b72538fe0fa125057
 RUN set -eu; \
     [ "$(uname -m)" = "x86_64" ] || { echo "the multiuser target pins the x86_64 Codex release" >&2; exit 1; }; \
     mkdir -p /out/bin; \
