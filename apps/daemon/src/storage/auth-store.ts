@@ -48,6 +48,9 @@ const BOOTSTRAP_META_KEY = 'bootstrap_completed_at';
 /** Stored in `password_hash` while no password is usable; never parses as a hash. */
 export const NO_PASSWORD_HASH = '';
 
+/** The shell an account gets before an administrator decides otherwise. */
+export const STUDIO_PILOT_DEFAULT = true;
+
 const PASSWORD_STATES: ReadonlySet<string> = new Set<AuthPasswordState>(['set', 'setup_required', 'reset_required']);
 const CREDENTIAL_PURPOSES: ReadonlySet<string> = new Set<AuthSetupCredentialPurpose>(['setup', 'reset']);
 
@@ -427,9 +430,19 @@ export class AuthStore {
     return this.db.prepare('DELETE FROM auth_setup_credentials WHERE account_id = ?').run(accountId).changes;
   }
 
+  /**
+   * Studio is the default shell for a signed-in account (owner decision
+   * 2026-10-09). An account only runs the legacy multi-user shell when an
+   * administrator wrote that choice down: a row with `enabled = 0`. An absent
+   * row is "never decided", which is now Studio.
+   *
+   * This is a default, not a rollout: the lanes an account then sees are still
+   * `pilot`, never `supported`, and the legacy shell stays one admin toggle
+   * away per account until #70's acceptance closes.
+   */
   getStudioPilot(accountId: string): StudioPilotState {
     const row = this.db.prepare('SELECT enabled, revision FROM auth_studio_pilots WHERE account_id = ?').get(accountId) as { enabled: number; revision: number } | undefined;
-    return { studioPilot: row?.enabled === 1, revision: row?.revision ?? 0 };
+    return { studioPilot: row ? row.enabled === 1 : STUDIO_PILOT_DEFAULT, revision: row?.revision ?? 0 };
   }
 
   /** Caller holds the immediate transaction after checking the expected revision. */

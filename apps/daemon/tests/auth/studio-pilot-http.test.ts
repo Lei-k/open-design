@@ -18,18 +18,23 @@ beforeAll(async () => {
 afterAll(async () => { await daemon?.close(); cleanupIsolatedDataRoot(); });
 const route = (id: string) => `/api/admin/users/${id}/studio-pilot`;
 
-it('defaults off, changes only the target effective shell, and rejects stale writes without auditing them', async () => {
+it('defaults to Studio, changes only the target effective shell, and rejects stale writes without auditing them', async () => {
+  // Studio is the default shell (owner decision 2026-10-09); an administrator
+  // opts a single account back to the legacy one, and can undo that.
   const initial = await daemon.request({ path: route(alice.id), cookie: admin.cookie });
   expect(initial.status).toBe(200);
-  expect(initial.json).toEqual({ studioPilot: false, revision: 0 });
+  expect(initial.json).toEqual({ studioPilot: true, revision: 0 });
   const before = await daemon.request({ path: '/api/auth/me', cookie: alice.cookie });
-  expect(before.json.studio.shell).toBe('legacy-multiuser');
-  const set = await daemon.request({ method: 'PUT', path: route(alice.id), cookie: admin.cookie, body: { studioPilot: true, revision: 0 } });
+  expect(before.json.studio.shell).toBe('studio');
+  expect((await daemon.request({ method: 'PUT', path: route(alice.id), cookie: admin.cookie, body: { studioPilot: false, revision: 0 } })).json)
+    .toEqual({ studioPilot: false, revision: 1 });
+  expect((await daemon.request({ path: '/api/auth/me', cookie: alice.cookie })).json.studio.shell).toBe('legacy-multiuser');
+  const set = await daemon.request({ method: 'PUT', path: route(alice.id), cookie: admin.cookie, body: { studioPilot: true, revision: 1 } });
   expect(set.status).toBe(200);
-  expect(set.json).toEqual({ studioPilot: true, revision: 1 });
+  expect(set.json).toEqual({ studioPilot: true, revision: 2 });
   const own = await daemon.request({ path: '/api/auth/me', cookie: alice.cookie });
   expect(own.json.studio.shell).toBe('studio');
-  expect(own.json.studioRevision).toBe(1);
+  expect(own.json.studioRevision).toBe(2);
   // The pilot opens only its declared lanes, as `pilot` (or `admin-disabled`
   // when server policy is off), never as deployment-wide `supported`.
   for (const [lane, feature] of Object.entries(own.json.studio.features) as Array<[string, { status: string; reason?: string }]>) {
@@ -39,15 +44,18 @@ it('defaults off, changes only the target effective shell, and rejects stale wri
     if (lane !== 'baseline') expect(feature.reason).toBeTruthy();
   }
   expect(own.json.studioMessageIdPrefix).toBe(studioMessageIdPrefix(alice.id));
-  expect(before.json.studioMessageIdPrefix).toBeUndefined();
-  expect((await daemon.request({ path: '/api/auth/me', cookie: bob.cookie })).json.studio.shell).toBe('legacy-multiuser');
+  expect(before.json.studioMessageIdPrefix).toBe(studioMessageIdPrefix(alice.id));
+  // Another account is untouched by alice's two writes.
+  expect((await daemon.request({ path: '/api/auth/me', cookie: bob.cookie })).json.studio.shell).toBe('studio');
+  // The public version call has no actor, so it keeps the conservative shell.
   expect((await daemon.request({ path: '/api/version' })).json.version.capabilities.studio.shell).toBe('legacy-multiuser');
   expect((await daemon.request({ method: 'PUT', path: route(alice.id), cookie: admin.cookie, body: { studioPilot: false, revision: 0 } })).status).toBe(409);
   const audit = await daemon.request({ path: '/api/auth/audit', cookie: admin.cookie });
   expect(audit.json.events.filter((event: { action: string }) => event.action === 'studio_pilot_update')).toEqual([
-    expect.objectContaining({ actorAccountId: admin.id, targetAccountId: alice.id, metadata: { studioPilot: true, revision: 1 } }),
+    expect.objectContaining({ actorAccountId: admin.id, targetAccountId: alice.id, metadata: { studioPilot: true, revision: 2 } }),
+    expect.objectContaining({ actorAccountId: admin.id, targetAccountId: alice.id, metadata: { studioPilot: false, revision: 1 } }),
   ]);
-  expect((await daemon.request({ method: 'PUT', path: route(alice.id), cookie: admin.cookie, body: { studioPilot: false, revision: 1 } })).json).toEqual({ studioPilot: false, revision: 2 });
+  expect((await daemon.request({ method: 'PUT', path: route(alice.id), cookie: admin.cookie, body: { studioPilot: false, revision: 2 } })).json).toEqual({ studioPilot: false, revision: 3 });
   expect((await daemon.request({ path: '/api/auth/me', cookie: alice.cookie })).json.studio.shell).toBe('legacy-multiuser');
 });
 
@@ -75,7 +83,7 @@ it('checks admin authority before target lookup, rejects client identity and enf
       headers: { 'content-type': 'application/json' }, rawBody });
     expect(response.status).toBe(400);
   }
-  expect((await daemon.request({ path: route(bob.id), cookie: admin.cookie })).json).toEqual({ studioPilot: false, revision: 0 });
+  expect((await daemon.request({ path: route(bob.id), cookie: admin.cookie })).json).toEqual({ studioPilot: true, revision: 0 });
   for (const method of ['GET', 'PUT']) expect(matchMultiUserRoute(method, route(alice.id)).map(({ entry }) => entry.routeClass)).toEqual(['admin-only']);
   const pilot = await daemon.request({ path: route(alice.id), cookie: admin.cookie });
   expect((await daemon.request({ method: 'PUT', path: route(alice.id), cookie: admin.cookie, body: { studioPilot: true, revision: pilot.json.revision } })).status).toBe(200);

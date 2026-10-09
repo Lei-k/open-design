@@ -26,7 +26,9 @@ async function pilot(user: Principal, studioPilot: boolean) {
   const revision = pilotRevision.get(user.id) ?? 0;
   const result = await daemon.request({ method: 'PUT', path: `/api/admin/users/${user.id}/studio-pilot`, cookie: admin.cookie, body: { studioPilot, revision } });
   expect(result.status, result.text).toBe(200);
-  pilotRevision.set(user.id, revision + 1);
+  // Studio is the default shell, so asking for the state it already has is a
+  // no-op that keeps the revision; track what the server returned.
+  pilotRevision.set(user.id, result.json.revision);
 }
 beforeAll(async () => {
   ({ dataRoot: root } = await loadIsolatedServerModule());

@@ -67,9 +67,19 @@ export function isStudioPetPreference(value: unknown): value is StudioPetPrefere
 
 /** Choices a personal Codex subscription run may request per turn. `default`
  * leaves the choice to the user's own Codex account. The company pool's model
- * is admin-owned and is not an account preference. */
-export const STUDIO_CODEX_MODELS = ['default', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.1-codex-mini', 'gpt-5-codex'] as const;
-export const STUDIO_CODEX_REASONING = ['default', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+ * is admin-owned and is not an account preference.
+ *
+ * These mirror the listed (`visibility: "list"`) catalog of the Codex release
+ * the deployment ships, newest first, and the union of the reasoning levels
+ * those models accept. They are a hand-copied snapshot, which is why Studio
+ * kept offering a GPT-5 catalog after Codex had moved to GPT-6: desktop reads
+ * the live catalog with `codex debug models` (`parseCodexDebugModels`), and
+ * serving that per account is the standing follow-up. A stored choice outside
+ * these lists degrades to `default` on read rather than failing a turn, so
+ * trimming a retired id is safe. */
+export const STUDIO_CODEX_MODELS = ['default', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna',
+  'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'] as const;
+export const STUDIO_CODEX_REASONING = ['default', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 export interface StudioCodexModelChoice {
   model: (typeof STUDIO_CODEX_MODELS)[number];
   reasoning: (typeof STUDIO_CODEX_REASONING)[number];

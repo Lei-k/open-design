@@ -224,18 +224,19 @@ it('refuses skill folders without SKILL.md, with hidden or traversal paths, or w
 
 it('applies an allowed per-turn Codex model and effort, and refuses unknown choices and company overrides', async () => {
   const target = await project();
-  const chosen = await run(target, 'use a chosen model', { model: 'gpt-5.4', reasoning: 'high' });
+  const chosen = await run(target, 'use a chosen model', { model: 'gpt-6-astra', reasoning: 'high' });
   expect(chosen.status, chosen.text).toBe(202);
   await finish(chosen.json.runId);
   const evidence = JSON.parse(readFileSync(path.join(codexHome(root, a.id), 'mock-turn-evidence.json'), 'utf8'));
-  expect(evidence).toMatchObject({ model: 'gpt-5.4', effort: 'high' });
+  expect(evidence).toMatchObject({ model: 'gpt-6-astra', effort: 'high' });
   const defaulted = await run(target, 'account default', { model: 'default', reasoning: null });
   expect(defaulted.status, defaulted.text).toBe(202);
   await finish(defaulted.json.runId);
   const second = JSON.parse(readFileSync(path.join(codexHome(root, a.id), 'mock-turn-evidence.json'), 'utf8'));
   expect(second.model).toBeUndefined();
   expect(second.effort).toBeUndefined();
-  for (const extra of [{ model: 'gpt-unknown' }, { reasoning: 'max' }, { model: 42 }]) {
+  // `minimal` left the catalog with the GPT-6 models; an unlisted level is refused like an unlisted model.
+  for (const extra of [{ model: 'gpt-unknown' }, { reasoning: 'minimal' }, { model: 42 }]) {
     expect((await run(target, 'refused choice', extra)).status).toBe(400);
   }
   expect((await run(target, 'tier stays default only', { serviceTier: 'fast' })).status).toBe(403);
@@ -245,11 +246,11 @@ it('persists the account Codex model preference with revision checks and keeps i
   const current = await daemon.request({ path: '/api/app-config', cookie: a.cookie });
   expect(current.json.config.codexModel).toEqual({ model: 'default', reasoning: 'default' });
   const saved = await daemon.request({ method: 'PUT', path: '/api/app-config', cookie: a.cookie,
-    body: { revision: current.json.revision, codexModel: { model: 'gpt-5.5', reasoning: 'medium' } } });
+    body: { revision: current.json.revision, codexModel: { model: 'gpt-6.1-sol', reasoning: 'medium' } } });
   expect(saved.status, saved.text).toBe(200);
-  expect(saved.json.config.codexModel).toEqual({ model: 'gpt-5.5', reasoning: 'medium' });
+  expect(saved.json.config.codexModel).toEqual({ model: 'gpt-6.1-sol', reasoning: 'medium' });
   expect((await daemon.request({ path: '/api/app-config', cookie: b.cookie })).json.config.codexModel).toEqual({ model: 'default', reasoning: 'default' });
-  for (const codexModel of [{ model: 'gpt-unknown', reasoning: 'low' }, { model: 'gpt-5.5' }, { model: 'gpt-5.5', reasoning: 'low', extra: 1 }]) {
+  for (const codexModel of [{ model: 'gpt-unknown', reasoning: 'low' }, { model: 'gpt-6.1-sol' }, { model: 'gpt-6.1-sol', reasoning: 'low', extra: 1 }]) {
     expect((await daemon.request({ method: 'PUT', path: '/api/app-config', cookie: a.cookie, body: { revision: saved.json.revision, codexModel } })).status).toBe(400);
   }
   const reset = await daemon.request({ method: 'PUT', path: '/api/app-config', cookie: a.cookie, body: { revision: saved.json.revision, codexModel: null } });

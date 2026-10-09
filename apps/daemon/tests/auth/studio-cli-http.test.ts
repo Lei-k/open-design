@@ -220,11 +220,18 @@ describe('same Studio APIs through remote od sessions', () => {
     success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', admin.username,
       '--password-file', '-', '--session-file', file, '--json'], admin.password + '\n'));
     const get = ['admin', 'studio-pilot', 'get', alice.id, '--session-file', file, '--json'];
-    expect(success(await cli(get))).toEqual({ studioPilot: false, revision: 0 });
-    const set = ['admin', 'studio-pilot', 'set', alice.id, '--enabled', 'true', '--revision', '0', '--session-file', file, '--json'];
-    expect(success(await cli(set))).toEqual({ studioPilot: true, revision: 1 });
+    // Studio is the default shell; the toggle writes an administrator's opt-out.
+    expect(success(await cli(get))).toEqual({ studioPilot: true, revision: 0 });
+    const off = ['admin', 'studio-pilot', 'set', alice.id, '--enabled', 'false', '--revision', '0', '--session-file', file, '--json'];
+    expect(success(await cli(off))).toEqual({ studioPilot: false, revision: 1 });
+    expect((await cli(off)).code).not.toBe(0);
+    const set = ['admin', 'studio-pilot', 'set', alice.id, '--enabled', 'true', '--revision', '1', '--session-file', file, '--json'];
+    expect(success(await cli(set))).toEqual({ studioPilot: true, revision: 2 });
     expect((await cli(set)).code).not.toBe(0);
     expect(success(await cli(['session', 'me', '--session-file', aFile, '--json'])).studio.shell).toBe('studio');
+    // B keeps the default until an administrator says otherwise, and reads legacy once one does.
+    expect(success(await cli(['session', 'me', '--session-file', bFile, '--json'])).studio.shell).toBe('studio');
+    success(await cli(['admin', 'studio-pilot', 'set', bob.id, '--enabled', 'false', '--revision', '0', '--session-file', file, '--json']));
     expect(success(await cli(['session', 'me', '--session-file', bFile, '--json'])).studio.shell).toBe('legacy-multiuser');
     expect((await cli(['admin', 'studio-pilot', 'get', alice.id, '--session-file', bFile, '--json'])).code).not.toBe(0);
   }, 40_000);
@@ -329,10 +336,10 @@ describe('same Studio APIs through remote od sessions', () => {
       '--prompt-file', '-', '--session-file', aFile, '--json'], 'CLI initial project brief'));
     expect(target.project).toMatchObject({ skillId: id, pendingPrompt: 'CLI initial project brief' });
     const started = success(await cli(['run', 'start', '--project', target.project.id, '--conversation', target.conversationId,
-      '--execution-source', 'personal_subscription', '--skill', id, '--model', 'gpt-5.4-mini', '--reasoning', 'low',
+      '--execution-source', 'personal_subscription', '--skill', id, '--model', 'gpt-6-sol', '--reasoning', 'low',
       '--prompt-file', '-', '--session-file', aFile, '--json'], 'use my skill'));
     expect((await cli(['run', 'watch', started.runId, '--session-file', aFile, '--json'])).code).toBe(0);
-    expect(JSON.parse(readFileSync(path.join(codexHome(root, alice.id), 'mock-turn-evidence.json'), 'utf8'))).toMatchObject({ model: 'gpt-5.4-mini', effort: 'low' });
+    expect(JSON.parse(readFileSync(path.join(codexHome(root, alice.id), 'mock-turn-evidence.json'), 'utf8'))).toMatchObject({ model: 'gpt-6-sol', effort: 'low' });
     const messages = success(await cli(['conversation', 'messages', target.conversationId, '--project', target.project.id, '--session-file', aFile, '--json']));
     expect(messages.messages.find((message: { role: string }) => message.role === 'assistant').content).toContain('CLI_SKILL_UPDATED');
     expect((await cli(['skill', 'uninstall', id, '--session-file', bFile, '--json'])).code).not.toBe(0);

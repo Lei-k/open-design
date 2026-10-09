@@ -14,12 +14,13 @@ beforeEach(async () => {
   user = opened.service.resolveSession((await opened.service.login({ username: 'pilot-user', password: 'synthetic-user-password-77' })).session.token)!;
 });
 afterEach(() => { vi.restoreAllMocks(); opened.store.close(); root.cleanup(); });
-it('persists the default-off flag and revision over repeated schema reopen without revoking sessions', () => {
-  expect(opened.service.getOwnStudioPilot(user)).toEqual({ studioPilot: false, revision: 0 });
-  opened.service.updateStudioPilot(admin, user.accountId, { studioPilot: true, revision: 0 });
+it('persists an administrator\'s opt-out and revision over repeated schema reopen without revoking sessions', () => {
+  // Studio is the default shell; only a written decision turns it off.
+  expect(opened.service.getOwnStudioPilot(user)).toEqual({ studioPilot: true, revision: 0 });
+  opened.service.updateStudioPilot(admin, user.accountId, { studioPilot: false, revision: 0 });
   for (let i = 0; i < 3; i++) {
     opened.store.close(); opened = openTestAuth(root.dataRoot, clock);
-    expect(opened.service.getOwnStudioPilot(user)).toEqual({ studioPilot: true, revision: 1 });
+    expect(opened.service.getOwnStudioPilot(user)).toEqual({ studioPilot: false, revision: 1 });
     expect(opened.service.getOwnAccount(user).active).toBe(true);
     expect(opened.service.isBootstrapRequired()).toBe(false);
   }
