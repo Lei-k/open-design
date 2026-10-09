@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { cleanupIsolatedDataRoot, loadIsolatedServerModule, login, multiUserOptions, provisionAccounts, startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
 import { PERSONAL_CODEX_MOCK, codexHome, linkCodex, setTurnMode } from './personal-codex-helpers.js';
+import { FIXTURE_PLUGIN_ID, PIPELINE_ONLY_PLUGIN_ID, installStudioFixturePlugin } from './studio-plugin-fixture.js';
 
 let daemon: StartedMultiUserDaemon;
 let alice: Principal;
@@ -419,20 +420,28 @@ describe('same Studio APIs through remote od sessions', () => {
   it('lists, shows and applies bundled plugins with Web availability through od plugin; B and unavailable plugins are refused (#61)', async () => {
     const listed = success(await cli(['plugin', 'list', '--bundled', '--session-file', aFile, '--json']));
     expect(listed.total).toBeGreaterThan(100);
-    const share = listed.plugins.find((plugin: { id: string }) => plugin.id === 'od-share-to-community');
-    expect(share).toMatchObject({ fsPath: '', availability: { applicable: true, reasons: [] } });
-    expect(listed.plugins.filter((plugin: { availability: { applicable: boolean } }) => !plugin.availability.applicable).length).toBeGreaterThan(100);
+    // Studio turns run no pipeline stages: no bundled plugin is applicable today.
+    expect(listed.plugins.filter((plugin: { availability: { applicable: boolean } }) => plugin.availability.applicable)).toEqual([]);
+    const share = listed.plugins.find((plugin: { id: string }) => plugin.id === PIPELINE_ONLY_PLUGIN_ID);
+    expect(share).toMatchObject({ fsPath: '', availability: { applicable: false, reasons: [{ code: 'pipeline' }] } });
     const unavailable = success(await cli(['plugin', 'show', 'image-template-vr-headset-exploded-view-poster', '--session-file', aFile, '--json']));
     expect(unavailable.availability).toMatchObject({ applicable: false, reasons: expect.arrayContaining([{ code: 'unknown-atom', subject: 'image-generate' }]) });
     const made = success(await cli(['project', 'create', '--name', 'CLI plugins', '--session-file', aFile, '--json']));
     const pid = made.project.id as string;
-    const applied = success(await cli(['plugin', 'apply', 'od-share-to-community', '--project', pid, '--session-file', aFile, '--json']));
-    expect(applied).toMatchObject({ ok: true, projectId: pid, appliedPlugin: { pluginId: 'od-share-to-community', snapshotId: applied.snapshotId } });
+    const pipeline = await cli(['plugin', 'apply', PIPELINE_ONLY_PLUGIN_ID, '--project', pid, '--session-file', aFile, '--json']);
+    expect(pipeline.code).not.toBe(0);
+    expect(pipeline.stderr).toContain('MULTIUSER_CAPABILITY_UNAVAILABLE');
+    expect(pipeline.stderr).toContain('pipeline');
     const refused = await cli(['plugin', 'apply', 'image-template-vr-headset-exploded-view-poster', '--project', pid, '--session-file', aFile, '--json']);
     expect(refused.code).not.toBe(0);
     expect(refused.stderr).toContain('MULTIUSER_CAPABILITY_UNAVAILABLE');
     expect(refused.stderr).toContain('image-generate');
-    const foreign = await cli(['plugin', 'apply', 'od-share-to-community', '--project', pid, '--session-file', bFile, '--json']);
+    // Apply itself, through a test-only applicable row the same registry evaluates.
+    installStudioFixturePlugin(root);
+    expect(success(await cli(['plugin', 'show', FIXTURE_PLUGIN_ID, '--session-file', aFile, '--json'])).availability).toEqual({ applicable: true, reasons: [] });
+    const applied = success(await cli(['plugin', 'apply', FIXTURE_PLUGIN_ID, '--project', pid, '--session-file', aFile, '--json']));
+    expect(applied).toMatchObject({ ok: true, projectId: pid, appliedPlugin: { pluginId: FIXTURE_PLUGIN_ID, snapshotId: applied.snapshotId } });
+    const foreign = await cli(['plugin', 'apply', FIXTURE_PLUGIN_ID, '--project', pid, '--session-file', bFile, '--json']);
     expect(foreign.code).not.toBe(0);
     expect(foreign.stderr).toContain('PROJECT_NOT_FOUND');
     const install = await cli(['plugin', 'install', '--source', 'github:example/plugin', '--session-file', aFile, '--json']);

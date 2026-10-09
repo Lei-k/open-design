@@ -3899,10 +3899,18 @@ async function applyPluginFilters(plugins, flags, query) {
   return result.entries;
 }
 
+/**
+ * Write plugin command output and resolve once stdout accepted it. The
+ * dispatcher exits right after a handler returns, so a large body (the bundled
+ * catalog is several MB; a manifest or apply result can be large too) must
+ * reach the pipe before that.
+ */
+function writePluginStdout(text) {
+  return new Promise((resolve) => { process.stdout.write(text, () => resolve(undefined)); });
+}
+
 function emitPluginList({ entries, json, emptyMessage, showRank }) {
   if (json) {
-    // The dispatcher exits right after the handler; a large catalog (the
-    // bundled one is several MB) must reach the pipe before that.
     const text = JSON.stringify({
       total: entries.length,
       plugins: entries.map((e) => ({
@@ -3910,7 +3918,7 @@ function emitPluginList({ entries, json, emptyMessage, showRank }) {
         ...(showRank ? { matched: e.matched, rank: e.rank } : {}),
       })),
     }, null, 2) + '\n';
-    return new Promise((resolve) => { process.stdout.write(text, () => resolve(undefined)); });
+    return writePluginStdout(text);
   }
   if (entries.length === 0) {
     console.log(emptyMessage ?? 'No plugins matched.');
@@ -3944,8 +3952,7 @@ async function runPluginInfo(rest) {
   const resp = await pluginFetch(flags, url);
   if (resp.ok && !flags.version) {
     const data = await resp.json();
-    process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-    return;
+    return writePluginStdout(JSON.stringify(data, null, 2) + '\n');
   }
   const mpResp = await pluginFetch(flags, `${base}/api/marketplaces`);
   if (mpResp.ok) {
@@ -3955,8 +3962,7 @@ async function runPluginInfo(rest) {
       flags.version ? `${id}@${flags.version}` : id,
     );
     if (resolved) {
-      process.stdout.write(JSON.stringify({ marketplace: resolved }, null, 2) + '\n');
-      return;
+      return writePluginStdout(JSON.stringify({ marketplace: resolved }, null, 2) + '\n');
     }
   }
   if (!resp.ok) {
@@ -3964,7 +3970,7 @@ async function runPluginInfo(rest) {
     process.exit(1);
   }
   const data = await resp.json();
-  process.stdout.write(JSON.stringify(data, null, 2) + '\n');
+  return writePluginStdout(JSON.stringify(data, null, 2) + '\n');
 }
 
 function resolveMarketplacePluginFromList(marketplaces, specifier) {
@@ -4935,19 +4941,16 @@ async function runPluginApply(rest) {
     return exitWithStructuredError({ code: 'daemon-not-running', message: typeof data?.error === 'string' ? data.error : `HTTP ${resp.status}` });
   }
   if (flags.json) {
-    process.stdout.write(JSON.stringify(data, null, 2) + '\n');
-    return;
+    return writePluginStdout(JSON.stringify(data, null, 2) + '\n');
   }
   const snap = data?.appliedPlugin;
-  if (snap) {
-    console.log(`[apply] ${snap.pluginId}@${snap.pluginVersion} digest=${snap.manifestSourceDigest.slice(0, 12)}…`);
-    console.log(`[apply] context: ${(data.contextItems ?? []).map((c) => `${c.kind}:${c.id ?? c.name ?? c.path}`).join(', ')}`);
-    if (Array.isArray(data.warnings) && data.warnings.length > 0) {
-      for (const w of data.warnings) console.log(`[apply] warn: ${w}`);
-    }
-  } else {
-    console.log(JSON.stringify(data));
-  }
+  if (!snap) return writePluginStdout(JSON.stringify(data) + '\n');
+  const lines = [
+    `[apply] ${snap.pluginId}@${snap.pluginVersion} digest=${snap.manifestSourceDigest.slice(0, 12)}…`,
+    `[apply] context: ${(data.contextItems ?? []).map((c) => `${c.kind}:${c.id ?? c.name ?? c.path}`).join(', ')}`,
+    ...(Array.isArray(data.warnings) ? data.warnings.map((w) => `[apply] warn: ${w}`) : []),
+  ];
+  return writePluginStdout(lines.join('\n') + '\n');
 }
 
 async function runPluginDuplicate(rest) {

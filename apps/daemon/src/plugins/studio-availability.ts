@@ -7,6 +7,11 @@
 // (`ensureCoreQualityStages`). A plugin is applicable only when every step,
 // atom, capability and context item it declares runs in a Studio turn; nothing
 // is keyed by plugin id. Declarations that do not parse fail closed.
+//
+// Studio turns have no stage runner today (`pipelines: false`): a turn carries
+// the captured plugin block and SKILL.md, never the ordered stages. Any
+// non-empty pipeline is therefore its own `pipeline` reason, whatever its
+// atoms; applying it would silently drop the stages it declares.
 
 import type {
   InstalledPluginRecord,
@@ -126,6 +131,7 @@ export function evaluateStudioPluginAvailability(
       mode: typeof decl.mode === 'string' ? decl.mode : undefined,
       source: resolution.source,
     });
+    if ((pipeline?.stages.length ?? 0) > 0 && !web.pipelines) add({ code: 'pipeline' });
     for (const stage of pipeline?.stages ?? []) {
       if ((stage.repeat || stage.until) && !web.pipelineDevloop) add({ code: 'pipeline-devloop', subject: stage.id });
       for (const atom of stage.atoms ?? []) {

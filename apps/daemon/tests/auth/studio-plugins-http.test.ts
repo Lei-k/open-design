@@ -9,6 +9,11 @@
 //   changes that project, an admitted run or a conversation pin.
 // - Host-global install/upgrade/uninstall, marketplace fetch, doctor and trust
 //   are refused with the typed capability code.
+// - Review repairs: Studio turns run no pipeline stages, so no bundled plugin
+//   is applicable today (F1); apply is covered with a test-only fixture row
+//   evaluated by the same registry. A turn whose plugin choice read the live
+//   project pin, empty or not, is refused when the pin changes before its
+//   commit, on every execution source (F2).
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -16,20 +21,49 @@ import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts,
   startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
-import { PERSONAL_CODEX_MOCK, codexHome, linkCodex } from './personal-codex-helpers.js';
+import { PERSONAL_CODEX_MOCK, codexHome, linkCodex, until } from './personal-codex-helpers.js';
+import { FIXTURE_PLUGIN_ID, FIXTURE_SKILL_MARKER, PIPELINE_ONLY_PLUGIN_ID, installStudioFixturePlugin } from './studio-plugin-fixture.js';
 
-const APPLICABLE = 'od-share-to-community';
+/** Test-only applicable plugin (see studio-plugin-fixture.ts); no bundled plugin is applicable on Web today. */
+const APPLICABLE = FIXTURE_PLUGIN_ID;
+/** Bundled, and unavailable on Web only because Studio turns do not run its pipeline. */
+const PIPELINE_ONLY = PIPELINE_ONLY_PLUGIN_ID;
 const REPO_ROOT = path.resolve('../..');
+
+/**
+ * Research fixture: a turn's paid search runs after plugin selection and
+ * before the admission commit. While `researchHold` is set every search waits
+ * on it, so a test can change the project's applied plugin inside that window.
+ */
+let researchHold: Promise<void> | null = null;
+let researchCalls = 0;
+const tavily: typeof fetch = async () => {
+  researchCalls += 1;
+  if (researchHold) await researchHold;
+  return Response.json({ answer: 'PLUGIN_RACE_FINDINGS', results: [{ title: 'Note', url: 'https://example.test/note', content: 'note' }] });
+};
+const openai: typeof fetch = async () => new Response(`data: ${JSON.stringify({ type: 'response.completed', response: {
+  output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Noted.' }] }] } })}\n\n`,
+{ headers: { 'content-type': 'text/event-stream' } });
 
 let daemon: StartedMultiUserDaemon; let root: string;
 let a: Principal; let b: Principal; let admin: Principal;
 beforeAll(async () => {
   ({ dataRoot: root } = await loadIsolatedServerModule());
-  daemon = await startMultiUserDaemon(multiUserOptions({ testPersonalCodexAppServer: PERSONAL_CODEX_MOCK }));
+  daemon = await startMultiUserDaemon(multiUserOptions({ testPersonalCodexAppServer: PERSONAL_CODEX_MOCK,
+    testTavilyFetch: tavily, testCompanyOpenAIFetch: openai }));
   const accounts = await provisionAccounts(daemon, ['plugins-a', 'plugins-b']);
   [a, b] = accounts.users as [Principal, Principal]; admin = accounts.admin;
   await linkCodex(daemon, root, a, 'plugins-a@example.test');
   await linkCodex(daemon, root, b, 'plugins-b@example.test');
+  const pool = await daemon.request({ path: '/api/admin/pool/openai', cookie: admin.cookie });
+  expect((await daemon.request({ method: 'PUT', path: '/api/admin/pool/openai', cookie: admin.cookie, body: {
+    revision: pool.json.provider.revision, model: 'company-model', enabled: true, capacity: 2, apiKey: 'sk-plugins-race-fixture-0123456789' } })).status).toBe(200);
+  expect((await daemon.request({ method: 'PUT', path: '/api/multiuser/settings/provider-keys/tavily', cookie: a.cookie,
+    body: { revision: 0, apiKey: 'tvly-plugins-a-fixture-0123456789' } })).status).toBe(200);
+  expect((await daemon.request({ method: 'PUT', path: '/api/multiuser/settings/provider-keys/openai', cookie: a.cookie,
+    body: { revision: 0, apiKey: 'sk-plugins-a-own-fixture-0123456789' } })).status).toBe(200);
+  installStudioFixturePlugin(root);
 }, 180_000);
 afterAll(async () => { await daemon?.close(); cleanupIsolatedDataRoot(); });
 
@@ -78,7 +112,11 @@ describe('Studio bundled plugin catalog', () => {
     expect((await catalog(a, '/api/multiuser/catalog/plugins')).map((plugin) => plugin.id)).toEqual(listed.map((plugin) => plugin.id));
 
     const byId = new Map(listed.map((plugin) => [plugin.id, plugin]));
-    // Declared steps decide availability: file-read/file-write run on Web.
+    // Studio turns run no pipeline stages: a pipeline of Web atoms (file-read,
+    // file-write) is still unavailable, with the typed `pipeline` reason.
+    expect(byId.get(PIPELINE_ONLY)?.availability).toEqual({ applicable: false, reasons: [{ code: 'pipeline' }] });
+    // No bundled plugin is applicable today; only the test-only fixture row is.
+    expect(listed.filter((plugin) => plugin.availability.applicable).map((plugin) => plugin.id)).toEqual([APPLICABLE]);
     expect(byId.get(APPLICABLE)?.availability).toEqual({ applicable: true, reasons: [] });
     // A live-artifact template: its declared atom and the critique loop the
     // apply pipeline adds do not run in Studio turns, and both are named.
@@ -97,6 +135,7 @@ describe('Studio bundled plugin catalog', () => {
     expect(detail.status, detail.text).toBe(200);
     expect(detail.json).toMatchObject({ id: APPLICABLE, fsPath: '', availability: { applicable: true, reasons: [] } });
     expect(detail.text.includes(REPO_ROOT)).toBe(false);
+    expect(detail.text.includes(root)).toBe(false);
     expect((await request(a, 'GET', '/api/plugins/no-such-plugin')).status).toBe(404);
     expect((await request(null, 'GET', '/api/plugins')).status).toBe(401);
   });
@@ -137,7 +176,8 @@ describe('Studio bundled plugin catalog', () => {
   it('refuses an unavailable plugin server-side with its typed reasons and persists nothing', async () => {
     const target = await project(a);
     const listed = await catalog(a);
-    const unavailable = listed.find((plugin) => !plugin.availability.applicable)!;
+    const unavailable = listed.find((plugin) => plugin.id === PIPELINE_ONLY)!;
+    expect(unavailable.availability.reasons).toEqual([{ code: 'pipeline' }]);
     const before = withDb((db) => (db.prepare('SELECT COUNT(*) AS n FROM applied_plugin_snapshots').get() as { n: number }).n);
     const refused = await apply(a, unavailable.id, { projectId: target.projectId });
     expect(refused.status, refused.text).toBe(403);
@@ -160,7 +200,7 @@ describe('Studio bundled plugin catalog', () => {
     expect(first).toContain('## Active plugin');
     expect(first).toContain(`${APPLICABLE}@`);
     // The plugin-local SKILL.md body is captured with it.
-    expect(first).toContain('generated-plugin/');
+    expect(first).toContain(FIXTURE_SKILL_MARKER);
     // A turn naming another snapshot is refused rather than silently swapped.
     expect((await turn(a, target, { appliedPluginSnapshotId: randomUUID() })).status).toBe(409);
     expect((await turn(a, target, { context: { pluginIds: ['some-other-plugin'] } })).status).toBe(409);
@@ -200,11 +240,11 @@ describe('Studio bundled plugin catalog', () => {
       ['POST', '/api/plugins/install', { source: 'github:example/plugin' }],
       ['POST', '/api/plugins/upload-zip', {}],
       ['POST', '/api/plugins/upload-folder', {}],
-      ['POST', `/api/plugins/${APPLICABLE}/upgrade`, {}],
-      ['POST', `/api/plugins/${APPLICABLE}/uninstall`, {}],
-      ['POST', `/api/plugins/${APPLICABLE}/doctor`, {}],
-      ['POST', `/api/plugins/${APPLICABLE}/trust`, { capabilities: ['subprocess'] }],
-      ['POST', `/api/plugins/${APPLICABLE}/apply-local`, { source: '/tmp/x' }],
+      ['POST', `/api/plugins/${PIPELINE_ONLY}/upgrade`, {}],
+      ['POST', `/api/plugins/${PIPELINE_ONLY}/uninstall`, {}],
+      ['POST', `/api/plugins/${PIPELINE_ONLY}/doctor`, {}],
+      ['POST', `/api/plugins/${PIPELINE_ONLY}/trust`, { capabilities: ['subprocess'] }],
+      ['POST', `/api/plugins/${PIPELINE_ONLY}/apply-local`, { source: '/tmp/x' }],
       ['POST', '/api/marketplaces', { url: 'https://example.test/marketplace.json' }],
       ['POST', '/api/marketplaces/official/refresh', {}],
       ['POST', '/api/marketplaces/official/trust', { trust: 'trusted' }],
@@ -229,4 +269,64 @@ describe('Studio bundled plugin catalog', () => {
     const missing = await request(a, 'GET', '/api/marketplaces/no-such-marketplace');
     expect(missing.status).toBe(404);
   });
+  it.each([
+    { agentId: 'codex', executionSource: 'personal_subscription' },
+    { agentId: 'openai', executionSource: 'company_pool' },
+    { agentId: 'openai-byok', executionSource: 'personal_api_key' },
+  ])('refuses a turn whose project plugin pin changed while admission yielded ($executionSource)', async (source) => {
+    const conversationRows = (conversationId: string) => withDb((db) => ({
+      runs: (db.prepare('SELECT COUNT(*) AS n FROM multiuser_runs WHERE conversation_id = ?').get(conversationId) as { n: number }).n,
+      messages: (db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?').get(conversationId) as { n: number }).n,
+    }));
+    const pluginOf = (runId: string) => withDb((db) => (JSON.parse((db.prepare('SELECT request_json FROM multiuser_runs WHERE id = ?')
+      .get(runId) as { request_json: string }).request_json) as { pluginSnapshot?: { snapshotId: string } }).pluginSnapshot?.snapshotId ?? null);
+    const settled = (runId: string, label: string) => until(() => request(a, 'GET', `/api/runs/${runId}`),
+      (r) => ['succeeded', 'failed', 'canceled'].includes(r.json.status), `${label}: run settles`, 30_000);
+    // `before`: the project pin when the turn is admitted (the conversation has no plugin of its own).
+    const cases: Array<{ label: string; before: boolean; change: boolean }> = [
+      { label: 'pin replaced', before: true, change: true },
+      { label: 'empty pin -> applied', before: false, change: true },
+      { label: 'control, empty pin', before: false, change: false },
+      { label: 'control, pinned', before: true, change: false },
+    ];
+    for (const item of cases) {
+      const label = `${source.executionSource} / ${item.label}`;
+      const target = await project(a);
+      const applyNow = async () => {
+        const applied = await apply(a, APPLICABLE, { projectId: target.projectId });
+        expect(applied.status, `${label}: ${applied.text}`).toBe(200);
+        return applied.json.snapshotId as string;
+      };
+      const initial = item.before ? await applyNow() : null;
+      let release!: () => void;
+      researchHold = new Promise<void>((resolve) => { release = resolve; });
+      const callsBefore = researchCalls;
+      let changed: string | null = null;
+      try {
+        const pending = request(a, 'POST', '/api/runs', { ...target, ...source, message: 'Plugin race',
+          clientRequestId: `plugin-race-${randomUUID()}`, research: { enabled: true, query: 'race' } });
+        // Plugin selection already read the project pin; the commit has not happened.
+        await until(() => researchCalls, (count) => count > callsBefore, `${label}: held search`);
+        if (item.change) changed = await applyNow();
+        release(); researchHold = null;
+        const reply = await pending;
+        if (!item.change) {
+          expect(reply.status, `${label}: ${reply.text}`).toBe(202);
+          expect(pluginOf(reply.json.runId), label).toBe(initial);
+          await settled(reply.json.runId, label);
+          continue;
+        }
+        expect(reply.status, `${label}: ${reply.text}`).toBe(409);
+        expect(reply.json.error.code, label).toBe('CONFLICT');
+        expect(reply.json?.runId, label).toBeUndefined();
+        expect(conversationRows(target.conversationId), label).toEqual({ runs: 0, messages: 0 });
+      } finally { release(); researchHold = null; }
+      // Nothing was dropped: the next turn takes the project's current plugin
+      // (after a refusal) or keeps the plugin its conversation captured.
+      const retry = await request(a, 'POST', '/api/runs', { ...target, ...source, message: 'Plugin race retry' });
+      expect(retry.status, `${label}: ${retry.text}`).toBe(202);
+      expect(pluginOf(retry.json.runId), label).toBe(item.change ? changed : initial);
+      await settled(retry.json.runId, label);
+    }
+  }, 120_000);
 });

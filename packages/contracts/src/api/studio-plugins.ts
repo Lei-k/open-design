@@ -19,6 +19,10 @@ import type { InstalledPluginRecord } from '../plugins/installed.js';
  *   `<question-form>` clarifications render and continue on every source.
  *   TodoWrite is personal-Codex only, so it is not listed.
  * - `capabilities`: manifest `od.capabilities` entries the turn honours.
+ * - `pipelines`: a stage runner. Studio turns capture the plugin block and
+ *   SKILL.md only; they neither run a plugin's ordered stages nor render the
+ *   active stage, so any pipeline apply would run (declared or scenario
+ *   fallback, repeating or not) is unavailable until they do.
  * - `pipelineDevloop`: repeat/until stages need the devloop scheduler and
  *   stage workers, which Studio turns do not run.
  * - `context`: captured into the immutable apply snapshot. Only the plugin's
@@ -28,6 +32,7 @@ import type { InstalledPluginRecord } from '../plugins/installed.js';
 export interface StudioWebPluginCapabilities {
   atoms: readonly string[];
   capabilities: readonly string[];
+  pipelines: boolean;
   pipelineDevloop: boolean;
   strategy: boolean;
   genui: boolean;
@@ -44,6 +49,7 @@ export interface StudioWebPluginCapabilities {
 export const STUDIO_WEB_PLUGIN_CAPABILITIES: StudioWebPluginCapabilities = {
   atoms: ['discovery-question-form', 'file-edit', 'file-read', 'file-write'],
   capabilities: ['fs:read', 'fs:write', 'prompt:inject'],
+  pipelines: false,
   pipelineDevloop: false,
   strategy: false,
   genui: false,
@@ -57,6 +63,8 @@ export const STUDIO_WEB_PLUGIN_CAPABILITIES: StudioWebPluginCapabilities = {
  * Why a plugin cannot be applied by a Web account.
  * - `atom`: a first-party atom the turn does not run (`subject` = atom id).
  * - `unknown-atom`: an atom the first-party catalog does not define.
+ * - `pipeline`: apply would run a pipeline (declared or scenario fallback)
+ *   and Studio turns have no stage runner. The stage atoms are reported too.
  * - `pipeline-devloop`: a repeat/until stage (`subject` = stage id).
  * - `strategy`: an OD Next strategy binding.
  * - `genui`: a declared or derived GenUI surface (`subject` = surface id).
@@ -68,7 +76,7 @@ export const STUDIO_WEB_PLUGIN_CAPABILITIES: StudioWebPluginCapabilities = {
  * - `source`: not a bundled plugin (`subject` = source kind).
  */
 export type StudioPluginUnavailableCode =
-  | 'atom' | 'unknown-atom' | 'pipeline-devloop' | 'strategy' | 'genui'
+  | 'atom' | 'unknown-atom' | 'pipeline' | 'pipeline-devloop' | 'strategy' | 'genui'
   | 'connector' | 'mcp' | 'capability' | 'context' | 'manifest' | 'source';
 
 export interface StudioPluginUnavailableReason {

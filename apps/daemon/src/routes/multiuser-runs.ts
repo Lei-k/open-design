@@ -492,20 +492,28 @@ export function registerMultiUserRunRoutes(app: Express, input: {
    * the project's current apply snapshot. A request may confirm that choice,
    * or switch the conversation to the project's current snapshot by naming
    * it; any other snapshot or plugin id is a conflict, never a substitution.
-   * `fresh` marks a live read of the project pin, re-decided before commit.
+   *
+   * `projectPin` is set whenever the choice depended on the live project pin,
+   * including when that pin was empty and the turn carries no plugin: it holds
+   * the snapshot id observed (or null). `pluginStillPinned` re-decides it right
+   * before the commit, so a plugin applied, replaced or withdrawn while the
+   * admission yielded is a 409 rather than a turn that silently runs without
+   * (or with a stale) plugin. A conversation's own captured plugin and a
+   * question's inherited one do not depend on the project pin.
    */
   type PluginSnapshot = Omit<StudioPluginCapture, 'projectId'>;
   const pluginSnapshotOf = (request: Record<string, unknown> | null): PluginSnapshot | null => {
     const value = request?.pluginSnapshot as PluginSnapshot | undefined;
     return value && typeof value.snapshotId === 'string' && typeof value.prompt === 'string' && typeof value.pluginId === 'string' ? value : null;
   };
+  type PluginSelection = { plugin: PluginSnapshot | null; projectPin?: { snapshotId: string | null } };
   const selectPlugin = (owner: string, target: { projectId: string; conversationId: string }, fields: PersonalRunFields, question?: RunRow):
-    { plugin: PluginSnapshot | null; fresh: boolean } | false => {
+    PluginSelection | false => {
     const matches = (plugin: PluginSnapshot | null) => (fields.appliedPluginSnapshotId === null || plugin?.snapshotId === fields.appliedPluginSnapshotId)
       && (fields.pluginIds.length === 0 || plugin?.pluginId === fields.pluginIds[0]);
     if (question) {
       const inherited = pluginSnapshotOf(storedRequest(question.request_json));
-      return matches(inherited) ? { plugin: inherited, fresh: false } : false;
+      return matches(inherited) ? { plugin: inherited } : false;
     }
     const previous = db.prepare(`SELECT request_json FROM ${table} WHERE owner_account_id = ? AND conversation_id = ? AND json_valid(request_json)
       AND json_extract(request_json, '$.pluginSnapshot.snapshotId') IS NOT NULL ORDER BY queue_seq DESC LIMIT 1`)
@@ -515,11 +523,17 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const current = project ? { snapshotId: project.snapshotId, pluginId: project.pluginId, pluginVersion: project.pluginVersion,
       manifestSourceDigest: project.manifestSourceDigest, prompt: project.prompt, promptSha256: project.promptSha256 } : null;
     const chosen = fields.appliedPluginSnapshotId !== null && current?.snapshotId === fields.appliedPluginSnapshotId ? current : pinned ?? current;
-    return matches(chosen) ? { plugin: chosen, fresh: chosen !== null && chosen === current } : false;
+    if (!matches(chosen)) return false;
+    // `chosen === current` also holds when both are null: no conversation pin, no project pin.
+    return chosen === current ? { plugin: chosen, projectPin: { snapshotId: current?.snapshotId ?? null } } : { plugin: chosen };
   };
-  /** Synchronous with the commit: a freshly read project pin must still be the project's and usable by the actor. */
-  const pluginStillPinned = (owner: string, projectId: string, selection: { plugin: PluginSnapshot | null; fresh: boolean }) =>
-    !selection.fresh || input.plugins?.projectPin(projectId, owner)?.snapshotId === selection.plugin?.snapshotId;
+  /**
+   * Synchronous with the commit (no await between it and the insert): a
+   * selection that read the live project pin, empty or not, still sees the
+   * same snapshot there, usable by the actor.
+   */
+  const pluginStillPinned = (owner: string, projectId: string, selection: PluginSelection) =>
+    !selection.projectPin || (input.plugins?.projectPin(projectId, owner)?.snapshotId ?? null) === selection.projectPin.snapshotId;
   const refusePlugin = (res: Response) => sendApiError(res, 409, 'CONFLICT', 'the plugin does not match this project\'s applied plugin');
   const withPlugin = (prompt: string, plugin: PluginSnapshot | null) => plugin ? `${prompt}\n\n---\n\n${plugin.prompt}` : prompt;
   const selectSkills = (fields: PersonalRunFields, projectId: string, fixed: boolean, question: boolean): string[] => {

@@ -1102,9 +1102,13 @@ test('[P1] Studio team catalogs: the owner shares a private skill and design doc
   } finally { await other.close(); }
 });
 
-test('[P1] Studio bundled plugins: unavailable plugins show their Web reason, the owner applies an applicable one in the composer, B cannot', async ({ page, studio }, info) => {
+test('[P1] Studio bundled plugins: every plugin shows its Web availability, unavailable ones are neither offered nor applied, B cannot apply onto A', async ({ page, studio }, info) => {
+  // S41 review repair F1: Studio turns run no pipeline stages, so no bundled
+  // plugin is applicable today. Apply itself is covered by the daemon suite
+  // (studio-plugins-http) through a test-only row; this case proves the
+  // availability and refusal path in the running product.
   await studio.linkCodex(studio.a);
-  await studio.configureTurn(studio.a, { promptReplyMarkers: ['generated-plugin/'] });
+  await studio.configureTurn(studio.a, { reply: 'Plugin-free turn complete.' });
   await page.goto(`${studio.origin}/plugins`);
   await page.locator('input[name="username"]').fill(studio.a.username);
   await page.locator('input[name="password"]').fill(studio.a.password);
@@ -1118,47 +1122,52 @@ test('[P1] Studio bundled plugins: unavailable plugins show their Web reason, th
   await expect(unavailable).toContainText('live-artifact');
   // Host flows are not offered: no create, no install, no Home hand-off.
   await expect(page.locator('.plugin-marketplace__create')).toHaveCount(0);
-  await page.screenshot({ path: info.outputPath('studio-plugins-web-availability.png'), animations: 'disabled' });
+  // A pipeline of Web atoms is still unavailable: the stages would not run.
   await search.fill('Share to community');
-  await expect(page.getByTestId('plugin-web-availability-od-share-to-community')).toHaveAttribute('data-applicable', 'true', { timeout: T.long });
+  const share = page.getByTestId('plugin-web-availability-od-share-to-community');
+  await expect(share).toHaveAttribute('data-applicable', 'false', { timeout: T.long });
+  await expect(share).toContainText('Not available on Web');
+  await expect(share).toContainText('pipeline');
+  await page.screenshot({ path: info.outputPath('studio-plugins-web-availability.png'), animations: 'disabled' });
 
-  // The owner applies it from a project composer; the turn captures it.
+  // The project composer offers no unavailable plugin, and a turn carries none.
   const projectId = studioProjectId();
   const made = await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Plugin project' });
   expect(made.status, made.text).toBe(200);
+  const catalogRead = page.waitForResponse((result) => result.request().method() === 'GET'
+    && new URL(result.url()).pathname === '/api/plugins', { timeout: T.long });
   await page.goto(`${studio.origin}/projects/${projectId}`);
+  expect((await catalogRead).status()).toBe(200);
   const composer = page.getByTestId('chat-composer-input');
   await expect(composer).toBeVisible({ timeout: T.long });
-  const applied = page.waitForResponse((result) => result.request().method() === 'POST'
-    && new URL(result.url()).pathname === '/api/plugins/od-share-to-community/apply');
   await composer.fill('@Share');
-  await page.getByRole('option').filter({ hasText: 'Share to community' }).click({ timeout: T.long });
-  const applyResponse = await applied;
-  expect(applyResponse.status()).toBe(200);
-  const snapshotId = (await applyResponse.json()).snapshotId as string;
-  expect(applyResponse.request().postDataJSON()).toMatchObject({ projectId });
-  // An unavailable plugin is never offered in the composer.
-  await composer.press('End');
-  await composer.pressSequentially(' Package this work.');
-  await page.screenshot({ path: info.outputPath('studio-plugin-composer-chip.png'), animations: 'disabled' });
+  await expect(page.getByRole('option').filter({ hasText: 'Share to community' })).toHaveCount(0);
+  await composer.fill('Package this work.');
   const admitted = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/runs');
   await page.getByTestId('chat-send').click();
   const started = await admitted;
   expect(started.status()).toBe(202);
-  expect(started.request().postDataJSON()).toMatchObject({ appliedPluginSnapshotId: snapshotId, context: { pluginIds: ['od-share-to-community'] } });
-  await expect(page.locator('body')).toContainText('generated-plugin/', { timeout: T.long });
-  const evidence = await studio.turnEvidence(studio.a);
-  expect(String(evidence.message)).toContain('## Active plugin');
+  const sent = started.request().postDataJSON() as { appliedPluginSnapshotId?: string | null; context?: { pluginIds?: string[] } };
+  expect(sent.appliedPluginSnapshotId ?? null).toBeNull();
+  expect(sent.context?.pluginIds ?? []).toEqual([]);
+  await expect(page.locator('body')).toContainText('Plugin-free turn complete.', { timeout: T.long });
+  expect(String((await studio.turnEvidence(studio.a)).message)).not.toContain('## Active plugin');
 
-  // B sees the same catalog but can neither apply onto A's project nor read its snapshot.
+  // Apply is refused server-side with the typed reason, and nothing is pinned.
+  const refused = await studio.request('POST', '/api/plugins/od-share-to-community/apply', studio.a.cookie, { projectId });
+  expect(refused.status).toBe(403);
+  expect(refused.json.error).toMatchObject({ code: 'MULTIUSER_CAPABILITY_UNAVAILABLE', details: { pluginId: 'od-share-to-community', reasons: [{ code: 'pipeline' }] } });
+  const magazine = await studio.request('POST', '/api/plugins/example-article-magazine/apply', studio.a.cookie, { projectId });
+  expect(magazine.status).toBe(403);
+  expect(magazine.json.error.code).toBe('MULTIUSER_CAPABILITY_UNAVAILABLE');
+  expect((await studio.request('GET', `/api/projects/${projectId}`, studio.a.cookie)).json.project.appliedPluginSnapshotId ?? null).toBeNull();
+
+  // B sees the same catalog, and A's project is the same 404 as a missing one (ownership precedes availability).
   const missingProject = await studio.request('POST', '/api/plugins/od-share-to-community/apply', studio.b.cookie, { projectId: studioProjectId() });
   const foreign = await studio.request('POST', '/api/plugins/od-share-to-community/apply', studio.b.cookie, { projectId });
   expect(foreign.status).toBe(404);
   expect(foreign.text).toBe(missingProject.text);
-  expect((await studio.request('GET', `/api/applied-plugins/${snapshotId}`, studio.b.cookie)).status).toBe(404);
-  expect((await studio.request('GET', `/api/applied-plugins/${snapshotId}`, studio.a.cookie)).status).toBe(200);
-  const refused = await studio.request('POST', '/api/plugins/example-article-magazine/apply', studio.a.cookie, { projectId });
-  expect(refused.status).toBe(403);
-  expect(refused.json.error.code).toBe('MULTIUSER_CAPABILITY_UNAVAILABLE');
-  expect((await studio.request('GET', '/api/plugins', studio.b.cookie)).json.plugins.length).toBeGreaterThan(100);
+  const bCatalog = (await studio.request('GET', '/api/plugins', studio.b.cookie)).json.plugins as Array<{ availability: { applicable: boolean } }>;
+  expect(bCatalog.length).toBeGreaterThan(100);
+  expect(bCatalog.filter((plugin) => plugin.availability.applicable)).toEqual([]);
 });

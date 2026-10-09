@@ -61,6 +61,9 @@ it('reads availability only from a well-formed Studio record and keeps desktop r
   expect(studioPluginOffered(record('no', unavailable))).toBe(false);
   expect(studioPluginAvailability(record('bad', { applicable: 'yes', reasons: [] }))).toBeNull();
   expect(studioPluginReasonTokens(unavailable.reasons as never)).toEqual(['live-artifact', 'critique-theater', 'critique ↻', 'subprocess', '+1']);
+  // Review repair F1: a pipeline Studio turns cannot run is named on its own.
+  expect(studioPluginReasonTokens([{ code: 'pipeline' }])).toEqual(['pipeline']);
+  expect(studioPluginOffered(record('pipeline', { applicable: false, reasons: [{ code: 'pipeline' }] }))).toBe(false);
 });
 
 it('shows why a plugin is not available on Web, and where an applicable one is applied', () => {
