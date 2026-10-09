@@ -93,6 +93,21 @@ afterEach(async () => {
 afterAll(async () => { await daemon?.close(); cleanupIsolatedDataRoot(); });
 
 describe('personal subscription run lane', () => {
+  it.each([
+    ['[mock-tool-startup-failure]', 'failed'],
+    ['text-only answer', 'succeeded'],
+    ['[mock-tool-startup-failure] [mock-write=recovered.html]', 'succeeded'],
+  ])('verifies workspace delivery for %s → %s', async (message, expected) => {
+    const project = await newProject(alice);
+    const accepted = await personal(alice, message!, project);
+    expect(accepted.status, accepted.text).toBe(202);
+    const run = await finished(alice, accepted.json.run.id);
+    expect(run.status).toBe(expected);
+    if (expected === 'failed') expect(run.output.reason).toBe('MULTIUSER_RUN_TOOLS_UNAVAILABLE');
+    const transcript = await daemon.request({ path: `/api/projects/${project.id}/conversations/${project.conversationId}/messages`, cookie: alice.cookie });
+    expect(transcript.json.messages.some((m: { role: string; content: string }) => m.role === 'assistant' && m.content.length > 0)).toBe(true);
+  });
+
   it('pins built-in design inputs, sends the stable prompt once, and reports artifact diffs', async () => {
     const project = await newProject(alice);
     const catalog = await daemon.request({ path: '/api/multiuser/design-catalog', cookie: alice.cookie });

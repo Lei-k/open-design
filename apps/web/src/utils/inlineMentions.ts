@@ -15,6 +15,12 @@ export interface InlineMentionEntity {
   title?: string;
 }
 
+/** Identity and text range of one serialized pill, in occurrence order. */
+export interface InlineMentionOccurrence extends InlineMentionEntity {
+  start: number;
+  end: number;
+}
+
 export type InlineMentionPart =
   | {
       kind: 'text';

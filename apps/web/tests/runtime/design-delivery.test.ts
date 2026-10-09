@@ -6,6 +6,19 @@ import {
 } from '../../src/runtime/design-delivery';
 
 describe('resolveDesignDeliveryOutcome', () => {
+  it('does not celebrate failed tool startup as a report-only result, but accepts recovered delivery', () => {
+    const input = { sessionMode: 'design' as const, runStatus: 'succeeded' as const, content: 'Tools could not start.',
+      events: [{ kind: 'tool_result' as const, toolUseId: 'tool', content: '', isError: true, startupFailed: true }],
+      producedFileCount: 0, traceObjectFileCount: 0 };
+    expect(resolveDesignDeliveryOutcome(input)).toBe('delivery_failed');
+    expect(resolveDesignDeliveryOutcome({ ...input, producedFileCount: 1 })).toBe('delivered');
+    expect(resolveDesignDeliveryOutcome({ ...input, artifactCount: 1 })).toBe('delivered');
+    expect(resolveDesignDeliveryOutcome({ ...input, events: [] })).toBe('report_only');
+    const question = '<question-form id="brief">{"questions":[{"id":"surface","label":"Which surface?"}]}</question-form>';
+    expect(designDeliveryVerificationPending({ ...input, content: question, events: [] })).toBe(false);
+    expect(designDeliveryVerificationPending({ ...input, content: question })).toBe(true);
+    expect(designDeliveryVerificationPending({ ...input, producedFiles: [], traceObjectFiles: [] })).toBe(false);
+  });
   it('treats a text answer without any file-write attempt as a report-only result', () => {
     // Image analysis / report-only audits legitimately end with prose and no
     // new project file (#5714, #5718). Only fail delivery when the agent

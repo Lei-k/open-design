@@ -3200,6 +3200,10 @@ export interface Dict {
   'chat.runError.personalUnavailableMessage': string;
   'chat.runError.title.personalRunFailed': string;
   'chat.runError.personalRunFailedMessage': string;
+  'chat.runError.title.codexVersion': string;
+  'chat.runError.title.toolsUnavailable': string;
+  'chat.runError.codexVersionMessage': string;
+  'chat.runError.toolsUnavailableMessage': string;
   'chat.runError.outputInvalidMessage': string;
   'chat.runError.runtimeConfigMessage': string;
   /** S05 的正文。同样没有插值槽。 */

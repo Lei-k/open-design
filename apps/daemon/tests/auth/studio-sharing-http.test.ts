@@ -290,38 +290,55 @@ describe('project sharing between accounts', () => {
   });
 
   it('suspends project grants and collaborators\' runs on owner deactivation, and restores grants on reactivation', async () => {
-    const t = await sharedProject([[viewer, 'view'], [editor, 'edit']]);
+    const t = await sharedProject([[viewer, 'view'], [commenter, 'comment'], [editor, 'edit']]);
     const cid = await conversation(t, editor);
     // 2_000 ms is the mock's ceiling; a longer delay is refused as an invalid request.
     const started = await run(t, cid, editor, 2_000);
     expect(started.status, started.text).toBe(202);
     const runId = started.json.run.id as string;
     await until(async () => ['running', 'queued'].includes(await runStatus(runId, editor)));
+    const streams = await Promise.all([viewer, commenter, editor].map((user) => new Promise<http.IncomingMessage>((resolve, reject) => {
+      const { port } = new URL(daemon.baseUrl);
+      const request = http.request({ host: '127.0.0.1', port: Number(port), path: `/api/projects/${t.id}/events`, headers: { cookie: user.cookie } }, (res) => {
+        expect(res.statusCode).toBe(200); res.resume(); resolve(res);
+      });
+      request.on('error', reject); request.end();
+    })));
+    const closed = streams.map((stream) => new Promise<void>((resolve) => stream.once('close', resolve)));
     const patch = (active: boolean) => daemon.request({ method: 'PATCH', path: `/api/auth/users/${owner.id}`, cookie: admin.cookie, body: { active } });
     try {
       expect((await patch(false)).status).toBe(200);
-      for (const user of [viewer, editor, admin]) {
+      await Promise.all(closed);
+      for (const user of [viewer, commenter, editor, admin]) {
         for (const url of [`/api/projects/${t.id}`, `/api/projects/${t.id}/files`, `/api/projects/${t.id}/raw/index.html`,
           `/api/projects/${t.id}/conversations/${cid}/messages`, `/api/multiuser/projects/${t.id}/access`,
-          `/api/projects/${t.id}/presence`, `/api/runs/${runId}`]) {
-          expect((await daemon.request({ path: url, cookie: user.cookie })).status, url).toBe(404);
+          `/api/projects/${t.id}/presence`, `/api/projects/${t.id}/events`, `/api/runs/${runId}`]) {
+          const refused = await daemon.request({ path: url, cookie: user.cookie });
+          const missing = await daemon.request({ path: url.replace(t.id, randomUUID()).replace(runId, randomUUID()), cookie: user.cookie });
+          expect(refused.status, url).toBe(404);
+          expect(refused.text, url).toBe(missing.text);
         }
         expect(JSON.stringify((await daemon.request({ path: '/api/projects', cookie: user.cookie })).json)).not.toContain(t.id);
         const runs = await daemon.request({ path: `/api/runs?projectId=${t.id}`, cookie: user.cookie });
         expect(runs.json.runs).toEqual([]);
         expect(runs.json.awaitingInputProjectIds).not.toContain(t.id);
       }
+      expect((await comment(t, commenter, 'inactive owner comment')).status).toBe(404);
+      expect((await daemon.request({ method: 'POST', path: `/api/projects/${t.id}/files`, cookie: editor.cookie,
+        body: { name: 'inactive.md', content: 'refused' } })).status).toBe(404);
+      expect((await daemon.request({ path: `/api/projects/${t.id}/preview-url?file=index.html`, cookie: viewer.cookie })).status).toBe(404);
       expect((await run(t, cid, editor)).status).toBe(404);
       expect((await daemon.request({ method: 'POST', path: `/api/projects/${t.id}/conversations`, cookie: editor.cookie,
         body: { title: 'inactive owner' } })).status).toBe(404);
     } finally {
+      for (const stream of streams) stream.destroy();
       expect((await patch(true)).status).toBe(200);
       owner.cookie = await login(daemon, owner.username, owner.password);
     }
     await until(async () => (await runStatus(runId, editor)) === 'canceled');
     const access = await daemon.request({ path: `/api/multiuser/projects/${t.id}/access`, cookie: editor.cookie });
     expect(access.json.role).toBe('edit');
-    expect(access.json.members.map((member: { accountId: string }) => member.accountId).sort()).toEqual([owner.id, viewer.id, editor.id].sort());
+    expect(access.json.members.map((member: { accountId: string }) => member.accountId).sort()).toEqual([owner.id, viewer.id, commenter.id, editor.id].sort());
     expect((await daemon.request({ path: `/api/projects/${t.id}/files`, cookie: viewer.cookie })).status).toBe(200);
   });
 });

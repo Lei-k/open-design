@@ -35,11 +35,13 @@ import { studioWindowLocalStorage } from '../studio-transport';
  * 单条不合格(附件没有 path、注释没有正文、id 不是字符串)→ 只丢那一条。
  * 草稿是便利设施,不是数据源;宁可少回来几个芯片,也不能让输入框打不开。
  */
+import type { InlineMentionOccurrence } from '../../utils/inlineMentions';
 import type { ChatAttachment, ChatCommentAttachment, WorkspaceContextItem } from '@open-design/contracts';
 import type { ChatQuote } from './quote-selection';
 
 /** 一次待发送负载里除正文以外的部分。 */
 export interface ComposerDraftExtras {
+  mentions?: InlineMentionOccurrence[];
   attachments: ChatAttachment[];
   commentAttachments: ChatCommentAttachment[];
   quotes: ChatQuote[];
@@ -83,7 +85,8 @@ const EMPTY_EXTRAS: ComposerDraftExtras = {
 
 /** 空负载不落盘 —— 存一个 `{}` 只会让「从没存过」和「存过但是空的」分不开。 */
 export function composerDraftExtrasAreEmpty(extras: ComposerDraftExtras): boolean {
-  return extras.attachments.length === 0
+  return (extras.mentions?.length ?? 0) === 0
+    && extras.attachments.length === 0
     && extras.commentAttachments.length === 0
     && extras.quotes.length === 0
     && extras.context.skillIds.length === 0
@@ -195,6 +198,13 @@ export function sanitizeComposerDraftExtras(raw: unknown): ComposerDraftExtras {
     attachments: sanitizeAttachments(row.attachments),
     commentAttachments: sanitizeCommentAttachments(row.commentAttachments),
     quotes: sanitizeQuotes(row.quotes),
+    mentions: Array.isArray(row.mentions) ? row.mentions.filter((item): item is InlineMentionOccurrence => {
+      if (!item || typeof item !== 'object') return false;
+      const m = item as Record<string, unknown>;
+      return typeof m.id === 'string' && !!m.id && typeof m.label === 'string' && typeof m.token === 'string'
+        && ['skill', 'plugin', 'mcp', 'connector', 'file', 'workspace'].includes(String(m.kind))
+        && Number.isSafeInteger(m.start) && Number(m.start) >= 0 && Number.isSafeInteger(m.end) && Number(m.end) > Number(m.start);
+    }).slice(0, DRAFT_MAX_CONTEXT_ITEMS) : [],
     context: {
       skillIds: stringArray(context.skillIds, DRAFT_MAX_CONTEXT_ITEMS),
       mcpServerIds: stringArray(context.mcpServerIds, DRAFT_MAX_CONTEXT_ITEMS),

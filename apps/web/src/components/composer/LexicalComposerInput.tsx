@@ -1,5 +1,7 @@
 'use client';
 
+import type { InlineMentionOccurrence } from '../../utils/inlineMentions';
+
 import {
   forwardRef,
   useEffect,
@@ -144,6 +146,7 @@ export interface LexicalComposerInputProps {
   // = composerMentionEntities; used both to render existing @tokens as pills
   // (via setText/seed) and to fold plain-text @tokens into the present list.
   knownEntities: InlineMentionEntity[];
+  initialMentions?: readonly InlineMentionOccurrence[];
   // Fires on every editor change with the serialized plain text + the entities
   // currently referenced by the text (MentionNodes + plain @tokens matched
   // against knownEntities). `ambiguous` lists, in order, plain @tokens that
@@ -153,6 +156,7 @@ export interface LexicalComposerInputProps {
     plainText: string,
     present: InlineMentionEntity[],
     ambiguous: Array<{ kind: InlineMentionKind; token: string }>,
+    mentions?: InlineMentionOccurrence[],
   ): void;
   // Mention / slash trigger state derived from the caret position. Either side
   // is null when no trigger is active.
@@ -201,6 +205,7 @@ export interface LexicalComposerInputHandle {
    * token means (e.g. a restored draft's selected skill ids), one per occurrence.
    */
   setText(text: string, options?: { prefer?: readonly InlineMentionEntity[] }): void;
+  removeMention(kind: InlineMentionKind, id: string, removePlainToken?: (text: string) => string): boolean;
   clear(): void;
   focus(): void;
   insertText(text: string): void;
@@ -654,9 +659,9 @@ function OnChangePlugin({
         // safe. (Only OnChangePlugin is guarded this way — TriggerPlugin MUST
         // still run on selection-only updates to drive the @/slash popover.)
         if (dirtyElements.size === 0 && dirtyLeaves.size === 0) return;
-        const { text, present, plainText } = serializeComposer(editorState);
+        const { text, present, plainText, mentions } = serializeComposer(editorState);
         const folded = foldPresentEntities(plainText, present, entitiesRef.current);
-        onChangeRef.current(text, folded, ambiguousMentionTokens(plainText, entitiesRef.current));
+        onChangeRef.current(text, folded, ambiguousMentionTokens(plainText, entitiesRef.current), mentions);
       },
     );
   }, [editor]);
@@ -698,9 +703,11 @@ function foldPresentEntities(
 function SeedingPlugin({
   draft,
   entities,
+  initialMentions,
 }: {
   draft: string;
   entities: InlineMentionEntity[];
+  initialMentions?: readonly InlineMentionOccurrence[];
 }) {
   const [editor] = useLexicalComposerContext();
   const lastSeeded = useRef<string | null>(null);
@@ -710,8 +717,9 @@ function SeedingPlugin({
     const current = serializeComposer(editor.getEditorState()).text;
     if (draft === current) return; // user-typed → no reseed → caret preserved
     if (draft === lastSeeded.current) return; // StrictMode double-invoke guard
+    const initial = lastSeeded.current === null;
     lastSeeded.current = draft;
-    setComposerFromText(editor, draft, entitiesRef.current);
+    setComposerFromText(editor, draft, entitiesRef.current, [], initial ? initialMentions : []);
   }, [draft, editor]);
   return null;
 }
@@ -785,6 +793,29 @@ export const LexicalComposerInput = forwardRef<
         const editor = editorRef.current;
         if (!editor) return;
         setComposerFromText(editor, text, knownEntitiesRef.current, options?.prefer);
+      },
+      removeMention(kind, id, removePlainToken) {
+        const editor = editorRef.current;
+        if (!editor) return false;
+        let removed = false;
+        editor.update(() => {
+          for (const block of $getRoot().getChildren()) {
+            if (!$isElementNode(block)) continue;
+            for (const child of block.getChildren()) {
+              if ($isMentionNode(child)) {
+                if (child.getEntity().kind === kind && child.getEntity().id === id) {
+                  child.remove(); removed = true;
+                }
+              } else if ($isTextNode(child) && removePlainToken) {
+                const text = removePlainToken(child.getTextContent());
+                if (text !== child.getTextContent()) {
+                  child.setTextContent(text); removed = true;
+                }
+              }
+            }
+          }
+        }, { discrete: true });
+        return removed;
       },
       clear() {
         const editor = editorRef.current;
@@ -899,7 +930,7 @@ export const LexicalComposerInput = forwardRef<
         inputDisabled={inputDisabled}
       />
       <PastePlugin onPasteFiles={onPasteFiles} />
-      <SeedingPlugin draft={draft} entities={knownEntities} />
+      <SeedingPlugin draft={draft} entities={knownEntities} initialMentions={props.initialMentions} />
       <EditablePlugin editable={!inputDisabled} />
     </LexicalComposer>
   );

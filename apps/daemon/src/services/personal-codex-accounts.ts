@@ -35,6 +35,7 @@ import type {
 } from '@open-design/contracts';
 import { attachCodexAppServerSession, type CodexSandboxMode } from '../agent-protocol/codex-app-server/session.js';
 import { AppServerAccountClient, closeChild, spawnAppServer, type AppServerEnvironment } from '../integrations/codex-app-server-account.js';
+import { assertPersonalCodexVersion } from './personal-codex-version.js';
 import type { PersonalSandbox } from './personal-sandbox.js';
 
 type Json = Record<string, unknown>;
@@ -155,9 +156,11 @@ export function runPersonalCodexTurn(input: AppServerEnvironment & {
   onAgentEvent?: (event: Json) => void;
   /** Called synchronously from the child's close event, before `done` settles. */
   onDone?: (result: PersonalTurnResult) => void;
+  dynamicToolsPrompt?: string;
   dynamicTools?: import('../agent-protocol/codex-app-server/session.js').CodexAppServerSessionOptions['dynamicTools'];
   onDynamicToolCall?: (name: string, args: Json) => unknown;
 }): { child: ChildProcessWithoutNullStreams; done: Promise<PersonalTurnResult>; interrupt(): void } {
+  if (input.command[1] === 'app-server') assertPersonalCodexVersion(input.command[0], input.dataRoot);
   const child = spawnAppServer(input);
   let text = '';
   let textBytes = 0;
@@ -181,7 +184,7 @@ export function runPersonalCodexTurn(input: AppServerEnvironment & {
     child, prompt: input.prompt, cwd: input.cwd, sandboxMode: input.sandboxMode,
     model: input.model ?? null, reasoning: input.reasoning ?? null,
     resumeSessionId: input.resumeThreadId, resumeSessionOwned: input.resumeThreadId !== null,
-    ...(input.dynamicTools && input.onDynamicToolCall ? { dynamicTools: input.dynamicTools, onDynamicToolCall: input.onDynamicToolCall } : {}),
+    ...(input.dynamicTools && input.onDynamicToolCall ? { dynamicTools: input.dynamicTools, dynamicToolsPrompt: input.dynamicToolsPrompt, onDynamicToolCall: input.onDynamicToolCall } : {}),
     onAgentEvent: (event) => {
       input.onAgentEvent?.(event);
       if (event.type === 'text_delta' && typeof event.delta === 'string') {
@@ -433,6 +436,11 @@ export class PersonalCodexAccounts {
     if (fs.existsSync(home)) lockDown(home);
   }
 
+  /** Real deployment binaries are probed once per path/mtime before login or run admission. */
+  assertSupportedVersion(): void {
+    if (this.command?.[1] === 'app-server') assertPersonalCodexVersion(this.command[0], this.dataRoot);
+  }
+
   /** How personal runs start an app-server child: the command and its sandbox (if any). */
   appServerLaunch(): { command: readonly [string, ...string[]]; sandbox: PersonalSandbox | null } | null {
     return this.command ? { command: this.command, sandbox: this.sandbox } : null;
@@ -452,6 +460,7 @@ export class PersonalCodexAccounts {
   // ---- login state machine -----------------------------------------------------
 
   async startLogin(ownerId: string): Promise<PersonalLoginAttempt> {
+    this.assertSupportedVersion();
     if (!this.enabled || !this.command) throw new PersonalAccountError(403, 'MULTIUSER_PERSONAL_DISABLED', 'personal subscriptions are not enabled on this server');
     if (this.unlinking.has(ownerId)) throw new PersonalAccountError(409, 'MULTIUSER_PERSONAL_BUSY', 'the personal account is being unlinked');
     const id = randomBytes(32).toString('base64url');
@@ -867,6 +876,7 @@ export class PersonalCodexAccounts {
   /** `account/read` (+ rate limits) from a fresh app-server on a persisted login home; null on any failure. */
   private async readPersistedIdentity(loginHome: string): Promise<{ read: Json; limits: Json | null } | null> {
     if (!this.command) return null;
+    this.assertSupportedVersion();
     const client = new AppServerAccountClient({ command: this.command, sandbox: this.sandbox, codexHome: loginHome, home: loginHome,
       temp: path.join(loginHome, 'tmp'), cwd: loginHome, dataRoot: this.dataRoot });
     try {
@@ -997,9 +1007,13 @@ export class PersonalCodexAccounts {
       const home = personalCodexHome(this.dataRoot, ownerId);
       if (this.command && fs.existsSync(home)) {
         // Best effort local logout; this is not a provider-side revocation.
-        const client = new AppServerAccountClient({ command: this.command, sandbox: this.sandbox, codexHome: home, home, temp: home, cwd: home, dataRoot: this.dataRoot });
-        try { await client.initialize(); await client.request('account/logout', null, 3_000); } catch { /* deletion below is authoritative */ }
-        await client.close();
+        let client: AppServerAccountClient | undefined;
+        try {
+          this.assertSupportedVersion();
+          client = new AppServerAccountClient({ command: this.command, sandbox: this.sandbox, codexHome: home, home, temp: home, cwd: home, dataRoot: this.dataRoot });
+          await client.initialize(); await client.request('account/logout', null, 3_000);
+        } catch { /* deletion below is authoritative */ }
+        await client?.close();
       }
       // Every copy of this owner's state goes before the row: the active home (with any
       // retained credential inside it) and a home set aside by a failed switch.

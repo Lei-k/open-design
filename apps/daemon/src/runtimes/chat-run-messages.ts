@@ -681,6 +681,7 @@ function unboundedAgentPayloadToPersistedAgentEvent(data: unknown): PersistedAge
       toolUseId: data.toolUseId,
       content: String(data.content ?? ''),
       isError: Boolean(data.isError),
+      ...(data.startupFailed === true ? { startupFailed: true } : {}),
       ...(typeof data.completedAt === 'number' && Number.isFinite(data.completedAt)
         ? { completedAt: data.completedAt }
         : {}),

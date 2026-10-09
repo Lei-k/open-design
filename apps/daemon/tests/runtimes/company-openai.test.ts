@@ -249,3 +249,29 @@ it.each([
   expect(events).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'tool_use', id: 'bad', name: 'plan_update_refused' }),
     expect.objectContaining({ type: 'tool_result', toolUseId: 'bad', isError: true })]));
 });
+
+
+it.each(['company_pool', 'personal_api_key'])('projects script startup failures through the delivery invariant on %s', async (source) => {
+  const captured = buildStudioSkillPackage('script-fixture', [{ path: 'scripts/build.py', bytes: Buffer.from('print("design")'), executable: false }]);
+  const projection = new PersonalRunEvents(path.join(root, 'owner'), [root], () => {});
+  let step = 0;
+  const result = await turn(async () => step++ === 0 ? completed([
+    call('run_skill_script', { skillId: captured.id, path: 'scripts/build.py', args: [] }, 'startup'),
+  ]) : completed([], 'The script could not start.'), {
+    apiKey: `${source}-fixture-secret`, skillPackages: [captured],
+    runSkillScript: async () => ({ exitCode: null, timedOut: false, stdout: '', stderr: 'sandbox unavailable' }),
+    onAgentEvent: (event: Record<string, unknown>) => projection.accept(event),
+  });
+  expect(result.files).toEqual([]);
+  expect(projection.toolStartupFailed).toBe(true);
+});
+
+it('does not classify a missing project file as a workspace-tool startup failure', async () => {
+  let request = 0;
+  const events: Record<string, unknown>[] = [];
+  await turn(async () => request++ === 0
+    ? completed([call('read_project_file', { path: 'missing.txt' }, 'missing')])
+    : completed([], 'That file does not exist.'), { onAgentEvent: (event: Record<string, unknown>) => events.push(event) });
+  expect(events.find((event) => event.type === 'tool_result')).toMatchObject({ isError: true });
+  expect(events.some((event) => event.startupFailed === true)).toBe(false);
+});

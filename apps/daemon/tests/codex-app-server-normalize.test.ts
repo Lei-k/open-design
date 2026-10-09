@@ -457,8 +457,26 @@ describe('codex app-server -> OpenDesign event normalization', () => {
           name: 'mcp__echofacts__echo_fact',
           input: { topic: 'cats' },
         },
-        { type: 'tool_result', toolUseId: 'x1', content: 'denied', isError: true },
+        { type: 'tool_result', toolUseId: 'x1', content: 'denied', isError: true, startupFailed: true },
       ]);
+    });
+
+    it('does not mark a returned MCP tool error as a startup failure', () => {
+      const { events } = drive([{
+        method: 'item/completed',
+        params: {
+          ...THREAD,
+          item: {
+            type: 'mcpToolCall', id: 'x2', server: 'echofacts', tool: 'echo_fact',
+            arguments: {}, status: 'failed',
+            result: { content: [{ type: 'text', text: 'invalid topic' }], isError: true },
+            error: { message: 'invalid topic' },
+          },
+        },
+      }]);
+      const result = events.find((event) => event.type === 'tool_result');
+      expect(result).toMatchObject({ type: 'tool_result', toolUseId: 'x2', isError: true });
+      expect(result).not.toHaveProperty('startupFailed');
     });
 
     /*

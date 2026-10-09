@@ -1,4 +1,4 @@
-// Test-only stand-in for `codex app-server` (pinned protocol: codex 0.160.0),
+// Test-only stand-in for `codex app-server` (pinned protocol: codex 0.162.1),
 // used by the multi-user personal-subscription tests (#18). JSON-RPC 2.0, one
 // frame per line on stdio. It never opens a network connection, never talks to
 // a provider and never reads host credentials: every bit of state lives in the
@@ -113,6 +113,10 @@ async function turn(id: number, params: Json): Promise<void> {
   if (mode === 'auth-invalid') return failed('unauthorized: provider session expired', 'unauthorized');
   if (mode === 'workspace') return failed('Your workspace does not allow this client', 'unauthorized');
   if (mode === 'model-error') return failed('Requested model is unavailable: FAKE_S3_SECRET at /host/private/s3', 'badRequest');
+  if (text.includes('[mock-tool-startup-failure]')) {
+    notify('item/completed', { threadId, turnId, item: { type: 'commandExecution', id: 'failed-start',
+      command: 'fixture-tool', status: 'failed', exitCode: null, aggregatedOutput: 'failed to spawn workspace tool' } });
+  }
   const record = readJson(threadFile(threadId)) ?? { turns: 0 };
   record.turns = Number(record.turns ?? 0) + 1;
   fs.writeFileSync(threadFile(threadId), JSON.stringify(record));
@@ -204,7 +208,7 @@ function handle(frame: Json): void {
   if (id === null) return; // `initialized` and other client notifications
   const fail = (code: number, message: string) => send({ id, error: { code, message } });
   switch (method) {
-    case 'initialize': return send({ id, result: { userAgent: 'codex_mock/0.160.0 (mock)' } });
+    case 'initialize': return send({ id, result: { userAgent: 'codex_mock/0.162.1 (mock)' } });
     case 'account/login/start': {
       if (params.type !== 'chatgptDeviceCode') return fail(-32602, 'mock supports chatgptDeviceCode only');
       const code = randomBytes(4).toString('hex').toUpperCase();

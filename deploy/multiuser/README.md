@@ -83,6 +83,7 @@ Before inviting anyone beyond the deployment owner, complete the #48/#8 gate wit
 
 - `docker compose build` builds `deploy/Dockerfile --target multiuser`. Without a build, Compose pulls `${OPEN_DESIGN_MULTIUSER_IMAGE:-neil0628/open-design:multiuser-latest}`.
 - The image pins the official Codex release (`CODEX_VERSION`, verified by `CODEX_SHA256`) at `/opt/codex/bin/codex`, plus `bubblewrap` and CA certificates. **Keep that pin current.** The model catalog and the app-server tool protocol move with the CLI: on a Codex that is too far back, a turn on a current model answers something like *"workspace tools failed to start … Studio artifact tools are unavailable"* and changes nothing, because those models declare `shell_type: unified_exec` and the build cannot start the tools. Rebuild (`docker compose build --no-cache od`) after bumping it.
+- Personal Codex requires **0.162.1 or newer** (the image pin chosen for `unified_exec` and dynamic tools); older or unverifiable binaries refuse login/runs with `MULTIUSER_CODEX_UNSUPPORTED_VERSION`.
 - The per-run bubblewrap filesystem is the personal run's command boundary. Inside it, OpenDesign disables Codex's redundant nested Linux sandbox so file tools work on unprivileged container hosts. The child can still write only its own `CODEX_HOME`, run home/temp, and project; the daemon data and every other account remain outside its filesystem.
 - A local build can use an already-installed standalone release instead of downloading: `--build-context codex-release=<dir containing bin/codex>`.
 

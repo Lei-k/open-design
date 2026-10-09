@@ -1181,6 +1181,8 @@ type PersistedAgentEventBody =
       toolUseId: string;
       content: string;
       isError: boolean;
+      /** Provider or host reported that the workspace tool could not start. */
+      startupFailed?: boolean;
       /** See {@link AgentEventPayloadTruncation}. */
       truncated?: AgentEventPayloadTruncation;
       /**
@@ -1497,4 +1499,9 @@ export interface ChatTaskExecutionAnalytics {
   taskRunIndex: number;
   recoveryActionType?: TrackingRunRecoveryActionType;
   recoveryActionInstanceId?: string;
+}
+
+/** A workspace-tool startup failure may settle successfully only with verified changed files or an artifact. */
+export function workspaceToolsUnavailable(startupFailed: boolean, changedFileCount: number, artifactCount: number): boolean {
+  return startupFailed && changedFileCount === 0 && artifactCount === 0;
 }

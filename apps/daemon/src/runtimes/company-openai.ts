@@ -129,7 +129,7 @@ export async function runCompanyOpenAITurn(input: {
     for (const call of calls) {
       check();
       if (typeof call.call_id !== 'string' || typeof call.name !== 'string' || typeof call.arguments !== 'string') throw new Error('company_invalid_tool');
-      let result: unknown; let failed = false; let planPublished = false;
+      let result: unknown; let failed = false; let startupFailed = false; let planPublished = false;
       try {
         const args = JSON.parse(call.arguments) as Json;
         if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('invalid tool arguments');
@@ -179,7 +179,9 @@ export async function runCompanyOpenAITurn(input: {
           files.add(args.destination); result = { copied: args.destination };
         } else if (call.name === 'run_skill_script' && input.runSkillScript && typeof args.skillId === 'string' && safePath(args.path)
           && Array.isArray(args.args) && Object.keys(args).every((key) => ['skillId', 'path', 'args'].includes(key))) {
-          check(); result = await input.runSkillScript({ skillId: args.skillId, path: args.path, args: args.args as string[], signal });
+          check();
+          const script = await input.runSkillScript({ skillId: args.skillId, path: args.path, args: args.args as string[], signal });
+          result = script; failed = script.exitCode !== 0; startupFailed = script.exitCode === null && !script.timedOut;
         } else if (call.name === 'list_project_files' && Object.keys(args).length === 0) {
           result = listCompanyProjectFiles(input.projectsRoot, input.projectId);
         } else if (call.name === 'read_project_file' && safePath(args.path) && Object.keys(args).every((key) => key === 'path')) {
@@ -190,11 +192,13 @@ export async function runCompanyOpenAITurn(input: {
           files.add(args.path); result = { written: args.path };
         } else throw new Error('unsupported tool');
         check();
-      } catch {
-        check(); failed = true; result = { error: 'PROJECT_TOOL_REFUSED' };
+      } catch (error) {
+        check(); failed = true;
+        // Validation refusals and a command's nonzero exit are not startup failures.
+        startupFailed = call.name === 'run_skill_script' && ['ENOENT', 'EACCES', 'EPERM', 'ENOEXEC'].includes(String((error as NodeJS.ErrnoException | null)?.code)); result = { error: 'PROJECT_TOOL_REFUSED' };
         if (call.name === 'update_plan' && !planPublished) emit({ type: 'tool_use', id: call.call_id, name: 'plan_update_refused', input: {} });
       }
-      emit({ type: 'tool_result', toolUseId: call.call_id, isError: failed, content: typeof result === 'string' ? result : JSON.stringify(result) });
+      emit({ type: 'tool_result', toolUseId: call.call_id, isError: failed, ...(startupFailed ? { startupFailed: true } : {}), content: typeof result === 'string' ? result : JSON.stringify(result) });
       history.push({ type: 'function_call_output', call_id: call.call_id, output: typeof result === 'string' ? result : JSON.stringify(result) });
     }
   }

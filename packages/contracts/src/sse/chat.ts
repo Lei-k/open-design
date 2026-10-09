@@ -417,7 +417,7 @@ type DaemonAgentPayloadBody =
       /** Bounded preview of the output produced so far, when the agent streams it. */
       output?: string;
     }
-  | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean; completedAt?: number }
+  | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean; startupFailed?: boolean; completedAt?: number }
   | { type: 'usage'; usage?: { input_tokens?: number; output_tokens?: number }; costUsd?: number; durationMs?: number; stopReason?: string | null }
   /**
    * Per-request token usage for one model request inside a run. Emitted once

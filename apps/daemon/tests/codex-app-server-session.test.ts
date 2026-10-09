@@ -69,9 +69,9 @@ function harness(overrides: Record<string, unknown> = {}) {
 }
 
 /** Walk the handshake up to (and including) the `turn/start` request. */
-function completeHandshake(child: FakeChild, threadId = 'th-1') {
+function completeHandshake(child: FakeChild, threadId = 'th-1', userAgent = 'codex/0.162.1') {
   const init = child.sent('initialize');
-  child.say({ jsonrpc: '2.0', id: init?.id, result: { userAgent: 'codex/0.149.1' } });
+  child.say({ jsonrpc: '2.0', id: init?.id, result: { userAgent } });
   const start = child.sent('thread/start') ?? child.sent('thread/resume');
   child.say({
     jsonrpc: '2.0',
@@ -83,6 +83,47 @@ function completeHandshake(child: FakeChild, threadId = 'th-1') {
 
 describe('daemon-owned dynamic tools', () => {
   const tools = [{ name: 'live_artifacts_list', description: 'List this project', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }];
+  it.each(['codex/0.154.0', 'codex/unknown', 'codex/0.154.0 client/0.162.1', 'codex/0.162.1'])('negotiates tools and their prompt together from %s', (userAgent) => {
+    const h = harness({ dynamicTools: tools, dynamicToolsPrompt: 'LIVE_ARTIFACT_INSTRUCTIONS', onDynamicToolCall: vi.fn() });
+    completeHandshake(h.child, 'th-1', userAgent);
+    const supported = userAgent === 'codex/0.162.1';
+    expect(h.child.sent('thread/start')!.params.dynamicTools).toEqual(supported ? tools : undefined);
+    expect(h.child.sent('turn/start')!.params.input[0].text).toBe(supported ? 'hello codexLIVE_ARTIFACT_INSTRUCTIONS' : 'hello codex');
+  });
+  it.each([
+    { type: 'commandExecution', id: 'startup', command: 'pwd', status: 'failed', exitCode: null },
+    { type: 'dynamicToolCall', id: 'startup', tool: 'live_artifacts_list', status: 'failed', contentItems: null, success: null },
+    { type: 'mcpToolCall', id: 'startup', server: 'fixture', tool: 'read', status: 'failed', result: null, error: { message: 'startup failed' } },
+  ])('preserves structured startup failure evidence for $type', (item) => {
+    const h = harness(); completeHandshake(h.child);
+    h.child.say({ method: 'item/completed', params: { threadId: 'th-1', turnId: 'turn-1', item } });
+    expect(h.agentEvents).toContainEqual(expect.objectContaining({ type: 'tool_result', isError: true, startupFailed: true }));
+  });
+  it('does not classify a command with an exit code as a startup failure', () => {
+    const h = harness(); completeHandshake(h.child);
+    h.child.say({ method: 'item/completed', params: { threadId: 'th-1', turnId: 'turn-1', item: {
+      type: 'commandExecution', id: 'exited', command: 'false', status: 'failed', exitCode: 1,
+    } } });
+    expect(h.agentEvents.find((event) => event.type === 'tool_result')).not.toHaveProperty('startupFailed');
+  });
+  it('bounds startup notifications to the active thread and keeps safe evidence', () => {
+    const h = harness(); completeHandshake(h.child);
+    h.child.say({ method: 'turn/started', params: { threadId: 'th-1', turn: { id: 'turn-1' } } });
+    h.child.say({ method: 'mcpServer/startupStatus/updated', params: { threadId: 'foreign', name: 'fixture', status: 'failed', error: 'PRIVATE_PATH' } });
+    expect(h.agentEvents.filter((event) => event.type === 'tool_result')).toHaveLength(0);
+    h.child.say({ method: 'mcpServer/startupStatus/updated', params: { threadId: 'th-1', name: 'fixture', status: 'failed', error: 'PRIVATE_PATH' } });
+    expect(h.agentEvents).toContainEqual(expect.objectContaining({ type: 'tool_result', isError: true, startupFailed: true }));
+    expect(JSON.stringify(h.agentEvents)).not.toContain('PRIVATE_PATH');
+  });
+  it('keeps MCP startup evidence before a thread exists and ignores ready status', () => {
+    const h = harness();
+    h.child.say({ method: 'mcpServer/startupStatus/updated', params: { name: 'fixture', status: 'ready', threadId: null } });
+    expect(h.agentEvents).toHaveLength(0);
+    h.child.say({ method: 'mcpServer/startupStatus/updated', params: { name: 'fixture', status: 'failed', threadId: null, error: 'PRIVATE_PATH' } });
+    completeHandshake(h.child);
+    expect(h.agentEvents).toContainEqual(expect.objectContaining({ type: 'tool_result', startupFailed: true }));
+    expect(JSON.stringify(h.agentEvents)).not.toContain('PRIVATE_PATH');
+  });
   it.each([null, 'th-1'])('advertises tools on start/resume and answers a bounded matching call: %s', (resumeSessionId) => {
     const execute = vi.fn(() => ({ artifacts: [] })); const h = harness({ dynamicTools: tools, onDynamicToolCall: execute, resumeSessionId });
     expect(h.child.sent('initialize')!.params.capabilities.experimentalApi).toBe(true);
@@ -113,13 +154,16 @@ describe('daemon-owned dynamic tools', () => {
     const execute = vi.fn(() => { throw new Error('PRIVATE_HOST_PATH'); }); const h = harness({ dynamicTools: tools, onDynamicToolCall: execute }); completeHandshake(h.child);
     h.child.say({ id: 900, method: 'item/tool/call', params: { threadId: 'th-1', turnId: 'turn', callId: 'call-1', tool: 'live_artifacts_list', arguments: {} } });
     expect(JSON.stringify(h.child.frames())).not.toContain('PRIVATE_HOST_PATH'); expect(execute).toHaveBeenCalledOnce();
+    const refusal = h.agentEvents.find((event) => event.type === 'tool_result');
+    expect(refusal).toMatchObject({ isError: true });
+    expect(refusal).not.toHaveProperty('startupFailed');
     h.session.abort();
     h.child.say({ id: 901, method: 'item/tool/call', params: { threadId: 'th-1', turnId: 'turn', callId: 'call-2', tool: 'live_artifacts_list', arguments: {} } });
     expect(execute).toHaveBeenCalledOnce();
   });
   it.each(['completed', 'failed', 'interrupted'])('refuses tools while archiving after terminal %s', (status) => {
     const execute = vi.fn(() => ({})); const h = harness({ manageThreadVisibility: true, dynamicTools: tools, onDynamicToolCall: execute });
-    h.child.say({ id: h.child.sent('initialize')!.id, result: { userAgent: 'open-design/0.153.4' } });
+    h.child.say({ id: h.child.sent('initialize')!.id, result: { userAgent: 'open-design/0.162.1' } });
     h.child.say({ id: h.child.sent('thread/start')!.id, result: { thread: { id: 'th-1' } } });
     h.child.say({ id: h.child.sent('turn/start')!.id, result: { turn: { id: 'turn-1' } } });
     if (status === 'interrupted') h.session.abort();

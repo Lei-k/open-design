@@ -63,6 +63,16 @@ afterEach(() => {
 });
 
 describe('LexicalComposerInput', () => {
+  it('removes legacy plain tokens without deleting another kind of same-name pill', async () => {
+    const { ref, getByTestId } = setup({ draft: '@Deck Builder @legacy' });
+    await waitFor(() => expect(getByTestId('chat-composer-input').querySelector('.composer-inline-mention')).not.toBeNull());
+    act(() => {
+      ref.current?.removeMention('mcp', 'legacy', (text) => text.replace('@legacy', '').replace('@Deck Builder', ''));
+    });
+    expect(ref.current?.getText()).toBe('@Deck Builder ');
+    expect(getByTestId('chat-composer-input').querySelector('.composer-inline-mention--skill')).not.toBeNull();
+  });
+
   it('mounts the contenteditable with the expected testid', () => {
     const { getByTestId } = setup();
     const editable = getByTestId('chat-composer-input');

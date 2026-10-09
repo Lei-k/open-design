@@ -199,26 +199,34 @@ describe('Studio bundled plugin catalog', () => {
         .toBe('PINNED_SHARED_PLUGIN_SKILL');
     }
   });
-  it.each(sources)('rechecks inherited project defaults after asynchronous admission on $executionSource', async (source) => {
-    const resource = await request(a, 'POST', '/api/skills/import', { name: `Defaults ${randomUUID()}`, body: 'DEFAULT_SKILL' });
-    expect(resource.status, resource.text).toBe(201);
-    const id = resource.json.skill.id as string;
-    for (const initial of [null, id]) {
-      const target = await project(a);
-      withDb((db) => db.prepare('UPDATE projects SET skill_id = ? WHERE id = ?').run(initial, target.projectId));
-      let release!: () => void;
-      researchHold = new Promise<void>((resolve) => { release = resolve; });
-      const beforeCalls = researchCalls;
-      const pending = turn(a, target, { ...source, research: { enabled: true, query: `defaults ${randomUUID()}` } });
-      try {
-        await until(() => researchCalls, (count) => count > beforeCalls, 'admission at held research');
-        withDb((db) => db.prepare('UPDATE projects SET skill_id = ? WHERE id = ?').run(initial ? null : id, target.projectId));
-      } finally { researchHold = null; release(); }
-      const refused = await pending;
-      expect(refused.status, refused.text).toBe(409);
-      expect(refused.json.error).toMatchObject({ code: 'CONFLICT', message: 'project defaults changed during admission' });
-      expect(withDb((db) => db.prepare('SELECT id FROM multiuser_runs WHERE conversation_id = ?').all(target.conversationId))).toEqual([]);
-      expect(withDb((db) => db.prepare('SELECT id FROM messages WHERE conversation_id = ?').all(target.conversationId))).toEqual([]);
+  it.each(sources)('rechecks all nullable project-default transitions after held admission on $executionSource', async (source) => {
+    for (const kind of ['skill', 'design'] as const) {
+      const create = async () => {
+        const made = kind === 'skill'
+          ? await request(a, 'POST', '/api/skills/import', { name: `Defaults ${randomUUID()}`, body: 'DEFAULT_SKILL' })
+          : await request(a, 'POST', '/api/design-systems', { title: `Defaults ${randomUUID()}`, body: '# Default\nDEFAULT_DESIGN' });
+        expect(made.status, made.text).toBe(201);
+        return (kind === 'skill' ? made.json.skill.id : made.json.designSystem.id) as string;
+      };
+      const first = await create(); const other = await create();
+      const column = kind === 'skill' ? 'skill_id' : 'design_system_id';
+      for (const [initial, changed] of [[null, first], [first, other], [first, null]]) {
+        const target = await project(a);
+        withDb((db) => db.prepare(`UPDATE projects SET ${column} = ? WHERE id = ?`).run(initial, target.projectId));
+        let release!: () => void;
+        researchHold = new Promise<void>((resolve) => { release = resolve; });
+        const beforeCalls = researchCalls;
+        const pending = turn(a, target, { ...source, research: { enabled: true, query: `defaults ${randomUUID()}` } });
+        try {
+          await until(() => researchCalls, (count) => count > beforeCalls, 'admission at held research');
+          withDb((db) => db.prepare(`UPDATE projects SET ${column} = ? WHERE id = ?`).run(changed, target.projectId));
+        } finally { researchHold = null; release(); }
+        const refused = await pending;
+        expect(refused.status, `${kind}: ${initial} → ${changed}: ${refused.text}`).toBe(409);
+        expect(refused.json.error).toMatchObject({ code: 'CONFLICT', message: 'project defaults changed during admission' });
+        expect(withDb((db) => db.prepare('SELECT id FROM multiuser_runs WHERE conversation_id = ?').all(target.conversationId))).toEqual([]);
+        expect(withDb((db) => db.prepare('SELECT id FROM messages WHERE conversation_id = ?').all(target.conversationId))).toEqual([]);
+      }
     }
   });
 

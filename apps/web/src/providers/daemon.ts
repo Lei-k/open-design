@@ -2786,6 +2786,7 @@ function translateAgentEventBody(data: DaemonAgentPayload): AgentEvent | null {
       toolUseId: data.toolUseId,
       content: String(data.content ?? ''),
       isError: Boolean(data.isError),
+      ...(data.startupFailed === true ? { startupFailed: true } : {}),
       ...(typeof data.completedAt === 'number' ? { completedAt: data.completedAt } : {}),
     };
   }

@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
-import { API_ERROR_CODES, STUDIO_RESEARCH_MAX_SOURCES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
+import { workspaceToolsUnavailable, API_ERROR_CODES, STUDIO_RESEARCH_MAX_SOURCES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
 import { PersonalRunEvents } from '../runtimes/personal-run-events.js';
 import { formatProjectAttachmentHint, normalizeCommentAttachments, renderCommentAttachmentHint, resolveSafeProjectAttachments } from '../runtimes/chat-prompt-inputs.js';
 import { renderRunContextPrompt } from '../runtimes/chat-run-context.js';
@@ -29,7 +29,7 @@ import { diffRunArtifacts, snapshotProjectArtifacts, snapshotProjectArtifactsAsy
 import { createChatArtifactBlobStore } from '../chat-artifacts/blob-store.js';
 import { captureRunChatArtifactSnapshots } from '../chat-artifacts/run-capture.js';
 import { codexResolvedSandboxMode } from '../runtimes/defs/codex.js';
-import { PROBLEM_ERRORS, runPersonalCodexTurn, type PersonalCodexAccounts } from '../services/personal-codex-accounts.js';
+import { PROBLEM_ERRORS, PersonalAccountError, runPersonalCodexTurn, type PersonalCodexAccounts } from '../services/personal-codex-accounts.js';
 import type { PersonalRunLaneControls } from './multiuser-agent-accounts.js';
 import type { MultiUserDesignRoutes } from './multiuser-design.js';
 import { CompanyOpenAIConfigError, CompanyOpenAIStore } from '../storage/company-openai.js';
@@ -1141,6 +1141,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 { projectId: next.project_id, messageId, runId: next.id, projectRoot: realCwd, touchedPaths: files.map((file) => path.join(realCwd, file)) });
               if (!authorized()) { finish(next.id, 'canceled'); return; }
               key.saveHistory(JSON.stringify(result.input));
+              if (workspaceToolsUnavailable(projection.toolStartupFailed, files.length, projection.artifactCount)) {
+                finish(next.id, 'failed', { reason: 'MULTIUSER_RUN_TOOLS_UNAVAILABLE', files, producedFiles, usage }); return;
+              }
               finish(next.id, 'succeeded', { files, producedFiles, usage, ...(progress ? { pipeline: progress } : {}),
                 ...(mediaUsage.images || mediaUsage.speechCharacters || mediaUsage.videoSeconds ? { media: mediaUsage } : {}) });
             }).catch((error: unknown) => {
@@ -1234,6 +1237,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           continue;
         }
         // Re-validate the binding at dispatch: same account, same credential version, still usable.
+        try { personal.assertSupportedVersion(); } catch {
+          finish(next.id, 'failed', { reason: 'MULTIUSER_CODEX_UNSUPPORTED_VERSION' }); continue;
+        }
         const account = personal.usableAccount(next.owner_account_id);
         const session = personalSession(next.conversation_id);
         if (!account || account.id !== next.personal_account_id || account.credentialVersion !== next.credential_version ||
@@ -1292,8 +1298,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
               const turn = runPersonalCodexTurn({
                 command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
                 ...(skillRoot ? { skillPackages: skillRoot } : {}),
-                prompt: `${stageCount === 1 ? prompt : userPrompt}${input.liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : ''}${directive}`, resumeThreadId,
-                ...(liveArtifacts ? { dynamicTools: STUDIO_LIVE_ARTIFACT_TOOLS.map(({ properties, required, ...tool }) => ({ ...tool,
+                prompt: `${stageCount === 1 ? prompt : userPrompt}${directive}`, resumeThreadId,
+                ...(liveArtifacts ? { dynamicToolsPrompt: STUDIO_LIVE_ARTIFACT_PROMPT, dynamicTools: STUDIO_LIVE_ARTIFACT_TOOLS.map(({ properties, required, ...tool }) => ({ ...tool,
                   inputSchema: { type: 'object', properties, required: [...required], additionalProperties: false } })),
                   onDynamicToolCall: (name: string, args: Record<string, unknown>) => liveArtifacts.execute(name, args) } : {}),
                 ...(isStudioCodexModel(request?.model) ? { model: request.model } : {}),
@@ -1360,6 +1366,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             }
             if (settled()) return;
             if (result.ok) {
+              if (workspaceToolsUnavailable(projection.toolStartupFailed, files.length, projection.artifactCount)) {
+                return finish(runId, 'failed', { reason: 'MULTIUSER_RUN_TOOLS_UNAVAILABLE', files, producedFiles });
+              }
               projection.flush();
               if (includeStable && stablePromptHash) {
                 db.prepare(`UPDATE multiuser_personal_sessions SET stable_prompt_hash = ?, updated_at = ?
@@ -1369,18 +1378,18 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             }
             if (result.problem) personal.recordProblem(owner, accountId, result.problem);
             finish(runId, 'failed', { reason: result.problem ? PROBLEM_ERRORS[result.problem].code : 'MULTIUSER_PERSONAL_RUN_FAILED', files, producedFiles });
-          }).catch(() => {
+          }).catch((error: unknown) => {
             if (storesClosed || row(runId)?.status !== 'active') return;
             // Same reason ladder as `settled()` above: a turn that REJECTS
             // because the daemon is stopping is still a shutdown cancel, not
             // a provider failure.
             if (shuttingDown) { finish(runId, 'canceled', { reason: 'daemon_shutdown' }); return; }
             finish(runId, !allowed() ? 'canceled' : 'failed', { reason: sourceInvalidated.has(runId)
-              ? 'MULTIUSER_PERSONAL_UNAVAILABLE' : 'MULTIUSER_PERSONAL_RUN_FAILED' });
+              ? 'MULTIUSER_PERSONAL_UNAVAILABLE' : error instanceof PersonalAccountError ? error.code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
           });
-        } catch {
+        } catch (error) {
           // A rolled-back start stays queued; a committed start keeps its turn and worker timestamps.
-          if (!children.has(runId)) finish(runId, 'failed', { reason: 'MULTIUSER_PERSONAL_RUN_FAILED' });
+          if (!children.has(runId)) finish(runId, 'failed', { reason: error instanceof PersonalAccountError ? error.code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
         }
       }
     } finally {
@@ -1640,6 +1649,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (fixedDesign && ((fields.skillId !== null && fields.skillId !== fixedDesign.skillId)
           || (fields.designSystemId !== null && fields.designSystemId !== fixedDesign.designSystemId))) {
       return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
+    }
+    try { personal?.assertSupportedVersion(); } catch (error) {
+      if (error instanceof PersonalAccountError) return sendApiError(res, error.status, error.code, error.message);
+      throw error;
     }
     const pins = projectPins(fields, target.projectId, Boolean(fixedDesign), Boolean(question));
     const fixedCapture = fixedDesign ? await captureFixedDesign(owner, target.conversationId, fixedDesign) : null;

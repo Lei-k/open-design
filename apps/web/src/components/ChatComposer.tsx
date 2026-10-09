@@ -103,6 +103,7 @@ import {
   mentionTokenPresent,
   retainMentionedSelections,
   type InlineMentionEntity,
+  type InlineMentionOccurrence,
   type InlineMentionKind,
 } from '../utils/inlineMentions';
 import { workspaceContextLinkedDir, workspaceContextLinkedDirs } from './workspace-context';
@@ -652,6 +653,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
      * 这个 useRef 跟着重建,所以「按会话隔离」是挂载边界保证的,不靠这里判。
      */
     const restoredExtrasRef = useRef(loadComposerDraftExtras(draftStorageKey));
+    const draftMentionsRef = useRef<InlineMentionOccurrence[]>(restoredExtrasRef.current.mentions ?? []);
     const [placeholderScenario, setPlaceholderScenario] = useState<PlaceholderScenario | null>(null);
     const composerRootRef = useRef<HTMLDivElement | null>(null);
     const pendingSessionModeRef = useRef<ChatSessionMode | null>(null);
@@ -1103,6 +1105,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
      */
     useEffect(() => {
       saveComposerDraftExtras(draftStorageKey, {
+        mentions: draftMentionsRef.current,
         attachments: staged,
         commentAttachments: stagedVisualComments,
         quotes: quotes ?? [],
@@ -1118,6 +1121,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
       });
     }, [
       draftStorageKey,
+      draft,
       staged,
       stagedVisualComments,
       quotes,
@@ -2115,32 +2119,32 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
       applyDesignToolboxDraft(prompt);
     }
 
+    function removeStagedMention(kind: InlineMentionKind, id: string, label: string) {
+      // Legacy plain tokens lack identity. Remove a label only if it names one entity.
+      const matches = composerMentionEntities.filter((entity) => entity.label === label);
+      const labels = [id, ...(matches.length === 1 ? [label] : [])];
+      editorRef.current?.removeMention(kind, id, (text) => stripInlineMentionLabels(text, labels));
+    }
+
     function removeStagedSkill(id: string) {
       trackComposerBar({ element: 'context_remove', resource_kind: 'skill', resource_id: id });
-      const skill = stagedSkills.find((s) => s.id === id) ?? null;
+      const skill = stagedSkills.find((s) => s.id === id);
       setStagedSkills((prev) => prev.filter((s) => s.id !== id));
-      const labels = [id, skill?.name ?? ''];
-      replaceEditorDraft(stripInlineMentionLabels(draft, labels));
+      removeStagedMention('skill', id, skill?.name ?? '');
     }
 
     function removeStagedMcpServer(id: string) {
       trackComposerBar({ element: 'context_remove', resource_kind: 'mcp', resource_id: id });
-      const server = stagedMcpServers.find((item) => item.id === id) ?? null;
+      const server = stagedMcpServers.find((item) => item.id === id);
       setStagedMcpServers((prev) => prev.filter((item) => item.id !== id));
-      replaceEditorDraft(stripInlineMentionLabels(draft, [
-        id,
-        server?.label ?? '',
-      ]));
+      removeStagedMention('mcp', id, server?.label ?? '');
     }
 
     function removeStagedConnector(id: string) {
       trackComposerBar({ element: 'context_remove', resource_kind: 'connector', resource_id: id });
-      const connector = stagedConnectors.find((item) => item.id === id) ?? null;
+      const connector = stagedConnectors.find((item) => item.id === id);
       setStagedConnectors((prev) => prev.filter((item) => item.id !== id));
-      replaceEditorDraft(stripInlineMentionLabels(draft, [
-        id,
-        connector?.name ?? '',
-      ]));
+      removeStagedMention('connector', id, connector?.name ?? '');
     }
 
     function workspaceContextDirStillReferenced(id: string, dir: string): boolean {
@@ -2808,7 +2812,9 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
       text: string,
       present: InlineMentionEntity[],
       ambiguous: Array<{ kind: InlineMentionKind; token: string }> = [],
+      mentions: InlineMentionOccurrence[] = [],
     ) {
+      draftMentionsRef.current = mentions;
       draftRef.current = text;
       setDraft(text);
       const set = new Set(present.map((e) => `${e.kind}:${e.id}`));
@@ -3575,6 +3581,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
               }
               title={activeFileDisplayName ?? composerPlaceholder ?? t('chat.composerPlaceholder')}
               knownEntities={composerMentionEntities}
+              initialMentions={restoredExtrasRef.current.mentions}
               onChange={handleEditorChange}
               onTrigger={handleEditorTrigger}
               onEnterSend={() => void submit()}

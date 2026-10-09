@@ -38,6 +38,7 @@
  * Streaming itself does not require the experimental capability.
  */
 import { createCodexAppServerNormalizer } from './normalize.js';
+import { codexDynamicToolsSupported } from './capabilities.js';
 import { codexHistoryCapabilities } from './thread-cleanup.js';
 
 type JsonObject = Record<string, unknown>;
@@ -83,6 +84,8 @@ export interface CodexAppServerSessionOptions {
   onPromptSendStart?: () => void;
   onPromptSendEnd?: () => void;
   onTurnComplete?: () => void;
+  /** Instructions appended only after the running server negotiates these tools. */
+  dynamicToolsPrompt?: string;
   /** Explicit daemon-owned tools only; approvals and arbitrary server requests remain refused. */
   dynamicTools?: readonly { name: string; description: string; inputSchema: JsonObject }[];
   onDynamicToolCall?: (name: string, args: JsonObject) => unknown;
@@ -183,6 +186,7 @@ export function attachCodexAppServerSession(
   let protectsLegacyHistory = false;
   let archiveTimer: ReturnType<typeof setTimeout> | undefined;
   const ownsThread = !resumeSessionId || opts.resumeSessionOwned === true;
+  let dynamicToolsSupported = false;
   let patchStreaming = false;
   let activeTurnId: string | null = null;
   const toolCalls = new Set<string>();
@@ -248,7 +252,7 @@ export function attachCodexAppServerSession(
     const params: JsonObject = {
       threadId,
       input: [
-        { type: 'text', text: prompt, text_elements: [] },
+        { type: 'text', text: prompt + (dynamicToolsSupported ? opts.dynamicToolsPrompt ?? '' : ''), text_elements: [] },
         ...(opts.imagePaths ?? []).map((path) => ({ type: 'localImage', path })),
       ],
       summary: REASONING_SUMMARY,
@@ -281,7 +285,7 @@ export function attachCodexAppServerSession(
       cwd,
       sandbox: sandboxMode,
       approvalPolicy: APPROVAL_POLICY_NEVER,
-      ...(opts.dynamicTools && opts.onDynamicToolCall ? { dynamicTools: opts.dynamicTools } : {}),
+      ...(dynamicToolsSupported ? { dynamicTools: opts.dynamicTools } : {}),
       ...(patchStreaming ? { config: { 'features.apply_patch_streaming_events': true } } : {}),
     };
     const onThread = (result: JsonObject) => {
@@ -374,7 +378,7 @@ export function attachCodexAppServerSession(
         const tool = opts.dynamicTools.find((item) => item.name === params.tool);
         const callId = params.callId;
         let success = false; let text = 'Dynamic tool refused';
-        if (tool && promptSent && !terminalReceived && !aborted && !fatalReported && params.threadId === threadId && typeof params.turnId === 'string'
+        if (dynamicToolsSupported && tool && promptSent && !terminalReceived && !aborted && !fatalReported && params.threadId === threadId && typeof params.turnId === 'string'
           && (activeTurnId === null || params.turnId === activeTurnId) && typeof callId === 'string' && callId.length > 0 && callId.length <= 160
           && toolCalls.size < 128 && !toolCalls.has(callId) && isRecord(params.arguments)
           && Buffer.byteLength(JSON.stringify(params.arguments)) <= 512 * 1024) {
@@ -401,6 +405,25 @@ export function attachCodexAppServerSession(
         error: { code: -32601, message: `unsupported request: ${frame.method}` },
       });
       return;
+    }
+    if (frame.method === 'mcpServer/startupStatus/updated') {
+      const params = isRecord(frame.params) ? frame.params : {};
+      // MCP may initialize before thread/start, with no thread or turn id.
+      if (!terminalReceived && params.status === 'failed' && (params.threadId == null || params.threadId === threadId)) {
+        onAgentEvent({ type: 'tool_result', toolUseId: 'mcp-startup',
+          isError: true, startupFailed: true, content: 'Workspace tool startup failed' });
+      }
+      return;
+    }
+    if (frame.method === 'item/completed') {
+      const params = isRecord(frame.params) ? frame.params : {};
+      const item = isRecord(params.item) ? params.item : {};
+      if (!terminalReceived && params.threadId === threadId && (!activeTurnId || params.turnId === activeTurnId)
+        && item.type === 'dynamicToolCall' && item.status === 'failed' && item.contentItems == null) {
+        onAgentEvent({ type: 'tool_result', toolUseId: typeof item.id === 'string' ? item.id : 'dynamic-startup',
+          isError: true, startupFailed: true, content: 'Workspace tool startup failed' });
+        return;
+      }
     }
     if (frame.method === 'thread/started') {
       const params = isRecord(frame.params) ? frame.params : {};
@@ -508,6 +531,7 @@ export function attachCodexAppServerSession(
       supportsPaginatedHistory = opts.manageThreadVisibility === true && capabilities.paginated;
       protectsLegacyHistory = opts.manageThreadVisibility === true && capabilities.legacy;
       patchStreaming = supportsPatchStreaming(result.userAgent);
+      dynamicToolsSupported = Boolean(opts.dynamicTools && opts.onDynamicToolCall) && codexDynamicToolsSupported(result.userAgent);
       notify('initialized', {});
       openThread();
     },

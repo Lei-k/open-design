@@ -115,6 +115,41 @@ describe('same-name skills in the Composer', () => {
     expect(await sentSkillIds(onSend)).toEqual([SHARED.id]);
   });
 
+  it.each([OWN.id, SHARED.id])('removes only staged chip %s among same-name skills', async (removed) => {
+    const { onSend } = renderComposer();
+    await flushMounts();
+    await typeAndSettle('@brand'); await pick(0);
+    await waitFor(() => expect(pills()).toHaveLength(1));
+    await appendInComposer('@brand'); await pick(0);
+    await waitFor(() => expect(pills()).toHaveLength(2));
+    // Staged contexts expose each removal through its accessible label.
+    const buttons = within(screen.getByTestId('staged-contexts')).getAllByRole('button', { name: /remove|移除|移出/i });
+    fireEvent.click(buttons[removed === OWN.id ? 0 : 1]!);
+    const retained = removed === OWN.id ? SHARED.id : OWN.id;
+    await waitFor(() => expect(pillIds()).toEqual([retained]));
+    expect(await sentSkillIds(onSend)).toEqual([retained]);
+  });
+
+  it.each([OWN.id, SHARED.id])('restores two occurrence ids through reload and async catalog, then deletes %s', async (removed) => {
+    const ref = createRef<ChatComposerHandle>(); const onSend = vi.fn();
+    const props = { projectId: 'project-1', projectFiles: [], streaming: false, onEnsureProject: async () => 'project-1', onSend, onStop: vi.fn(), draftStorageKey: KEY };
+    const first = render(<ChatComposer ref={ref} {...props} skills={SKILLS} />);
+    await flushMounts();
+    // Deliberately select in reverse catalog order: ids cannot be recovered from selection order.
+    await typeAndSettle('@brand'); await pick(1);
+    await waitFor(() => expect(pills()).toHaveLength(1));
+    await appendInComposer('@brand'); await pick(0);
+    await waitFor(() => expect(pillIds()).toEqual([SHARED.id, OWN.id]));
+    first.unmount();
+    const restored = render(<ChatComposer {...props} skills={[]} />);
+    await flushMounts();
+    restored.rerender(<ChatComposer {...props} skills={SKILLS} />);
+    await waitFor(() => expect(pillIds()).toEqual([SHARED.id, OWN.id]));
+    await deletePill(removed);
+    const retained = removed === OWN.id ? SHARED.id : OWN.id;
+    expect(await sentSkillIds(onSend)).toEqual([retained]);
+  });
+
   it('restores a refreshed draft to the saved skill id, not the first same-name entry', async () => {
     window.localStorage.setItem(KEY, '@brand-voice tighten the copy');
     saveComposerDraftExtras(KEY, { attachments: [], commentAttachments: [], quotes: [],

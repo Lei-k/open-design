@@ -38,6 +38,8 @@ function prefix(text: string, bytes: number): string {
 export class PersonalRunEvents {
   text = '';
   errorDetail: CodexErrorDetail | null = null;
+  toolStartupFailed = false;
+  artifactCount = 0;
   truncated = false;
   private count = 0;
   private bytes = 0;
@@ -136,6 +138,9 @@ export class PersonalRunEvents {
   accept(event: Record<string, unknown>): void {
     stampToolTiming(event, this.clock);
     const type = event.type;
+    if (type === 'tool_result' && event.startupFailed === true) this.toolStartupFailed = true;
+    if ((type === 'live_artifact' && ['created', 'updated'].includes(String(event.action)))
+      || (type === 'live_artifact_refresh' && event.phase === 'succeeded')) this.artifactCount += 1;
     if (type === 'error') this.errorDetail ??= parseCodexErrorDetail(event.codexErrorInfo);
     if ((type === 'text_delta' || type === 'thinking_delta') && typeof event.delta === 'string') {
       if (this.pendingType !== type) this.flush();
@@ -197,6 +202,7 @@ export class PersonalRunEvents {
     }
     if (type === 'tool_result') data = { type, toolUseId: identifier(event.toolUseId),
       content: `[Tool output omitted by ${this.policy} privacy policy]`, isError: event.isError === true,
+      ...(event.startupFailed === true ? { startupFailed: true } : {}),
       redacted: this.redacted(['content']), ...(typeof event.completedAt === 'number' ? { completedAt: event.completedAt } : {}) };
     if (type === 'usage') {
       const usage = record(event.usage);

@@ -123,6 +123,7 @@ function toExecItem(item: JsonObject): JsonObject | null {
         command: str(item.command),
         aggregated_output: str(item.aggregatedOutput),
         exit_code: num(item.exitCode) ?? null,
+        ...(item.status === 'failed' && num(item.exitCode) === undefined ? { startup_failed: true } : {}),
         status: str(item.status),
       };
     case 'fileChange': {
@@ -162,6 +163,7 @@ function toExecItem(item: JsonObject): JsonObject | null {
         arguments: isRecord(item.arguments) ? item.arguments : {},
         result: item.result ?? null,
         error: isRecord(item.error) ? item.error : null,
+        ...(item.status === 'failed' && item.result == null ? { startup_failed: true } : {}),
         status: str(item.status),
       };
     case 'webSearch':

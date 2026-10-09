@@ -6,7 +6,7 @@ import {
   type LexicalEditor,
 } from 'lexical';
 import { $createMentionNode } from './MentionNode';
-import { buildInlineMentionParts, type InlineMentionEntity } from '../../utils/inlineMentions';
+import { buildInlineMentionParts, type InlineMentionEntity, type InlineMentionOccurrence, type InlineMentionPart } from '../../utils/inlineMentions';
 
 // Rebuild the whole editor from a plain `@token` string. Known `@token`
 // runs (matched against `entities`) become atomic MentionNodes; everything
@@ -20,6 +20,7 @@ export function setComposerFromText(
   text: string,
   entities: InlineMentionEntity[],
   prefer: readonly InlineMentionEntity[] = [],
+  mentions: readonly InlineMentionOccurrence[] = [],
 ): void {
   // One pool for the whole draft, so each preferred entity claims one occurrence.
   const claimable = [...prefer];
@@ -34,14 +35,22 @@ export function setComposerFromText(
       root.clear();
       const p = $createParagraphNode();
       const lines = text.split('\n');
+      let offset = 0;
       lines.forEach((line, i) => {
         if (i > 0) p.append($createLineBreakNode());
-        if (!line) return;
-        const parts = buildInlineMentionParts(line, entities, { highlightUnknown: false, prefer: claimable });
-        if (!parts) {
-          p.append($createTextNode(line));
-          return;
+        const parts: InlineMentionPart[] = [];
+        let cursor = 0;
+        for (const mention of mentions) {
+          const start = mention.start - offset; const end = mention.end - offset;
+          if (start < cursor || end > line.length || end <= start || line.slice(start, end) !== mention.token) continue;
+          const gap = line.slice(cursor, start);
+          parts.push(...(buildInlineMentionParts(gap, entities, { highlightUnknown: false, prefer: claimable }) ?? [{ kind: 'text' as const, text: gap }]));
+          parts.push({ kind: 'mention', entity: mention, text: mention.token! });
+          cursor = end;
         }
+        const tail = line.slice(cursor);
+        parts.push(...(buildInlineMentionParts(tail, entities, { highlightUnknown: false, prefer: claimable }) ?? [{ kind: 'text' as const, text: tail }]));
+        offset += line.length + 1;
         for (const part of parts) {
           const claimed = part.kind === 'mention' ? claimable.indexOf(part.entity) : -1;
           if (claimed !== -1) claimable.splice(claimed, 1);

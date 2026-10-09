@@ -7,10 +7,11 @@ import {
   type EditorState,
 } from 'lexical';
 import { $isMentionNode } from './MentionNode';
-import type { InlineMentionEntity } from '../../utils/inlineMentions';
+import type { InlineMentionEntity, InlineMentionOccurrence } from '../../utils/inlineMentions';
 
 export interface SerializedComposer {
   text: string;
+  mentions: InlineMentionOccurrence[];
   /** Entities backed by an actual MentionNode currently in the tree. */
   present: InlineMentionEntity[];
   /**
@@ -29,6 +30,8 @@ export interface SerializedComposer {
 export function serializeComposer(state: EditorState): SerializedComposer {
   return state.read(() => {
     const present: InlineMentionEntity[] = [];
+    const mentions: InlineMentionOccurrence[] = [];
+    let offset = 0;
     const blocks: string[] = [];
     const plainBlocks: string[] = [];
     for (const block of $getRoot().getChildren()) {
@@ -36,12 +39,14 @@ export function serializeComposer(state: EditorState): SerializedComposer {
         // Stray non-paragraph block (shouldn't happen): fall back to its text.
         blocks.push(block.getTextContent());
         plainBlocks.push(block.getTextContent());
+        offset += block.getTextContent().length + 1;
         continue;
       }
       let line = '';
       let plain = '';
       for (const child of block.getChildren()) {
         if ($isMentionNode(child)) {
+          mentions.push({ ...child.getEntity(), start: offset + line.length, end: offset + line.length + child.getToken().length, token: child.getToken() });
           line += child.getToken();
           plain += ' ';
           present.push(child.getEntity());
@@ -56,9 +61,10 @@ export function serializeComposer(state: EditorState): SerializedComposer {
           plain += child.getTextContent();
         }
       }
+      offset += line.length + 1;
       blocks.push(line);
       plainBlocks.push(plain);
     }
-    return { text: blocks.join('\n'), present, plainText: plainBlocks.join('\n') };
+    return { text: blocks.join('\n'), mentions, present, plainText: plainBlocks.join('\n') };
   });
 }
