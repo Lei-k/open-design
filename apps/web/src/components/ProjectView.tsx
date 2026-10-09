@@ -2620,6 +2620,13 @@ export function ProjectView({
     () => conversations.find((conversation) => conversation.id === activeConversationId) ?? null,
     [conversations, activeConversationId],
   );
+  // S45: a Studio member may read another author's conversation. `studioCanWrite`
+  // is server-computed, so a loaded conversation that withholds it is a settled
+  // denial and may be stated as such; an unloaded one is unknown authority and
+  // only closes the write gate (see the access-error ladder below).
+  const studioConversationViewerOnly = Boolean(
+    studio.actor && activeConversation && activeConversation.studioCanWrite !== true,
+  );
   const currentConversationReadOnly = projectMutationReadOnly
     || Boolean(studio.actor && activeConversation?.studioCanWrite !== true);
   // Team collaboration: persist a comment that drifted to `lost` so its ghost
@@ -3665,7 +3672,7 @@ export function ProjectView({
     || (activeConversationId && failedMessagesConversationId === activeConversationId)
   ) {
     currentConversationAccessError = 'messages-unavailable';
-  } else if (projectCollab.writerAuthority === 'denied' || currentConversationReadOnly) {
+  } else if (projectCollab.writerAuthority === 'denied' || studioConversationViewerOnly) {
     currentConversationAccessError = 'read-only';
   }
   const currentConversationActionDisabledRef = useRef(currentConversationActionDisabled);

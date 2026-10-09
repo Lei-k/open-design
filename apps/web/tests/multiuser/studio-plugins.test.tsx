@@ -41,6 +41,13 @@ it('opens the catalog, apply, applied snapshots and read-only marketplaces only 
     expect(studioRequestAvailable('GET', `${prefix}/applied-plugins/snap-1`, catalogs)).toBe(true);
     expect(studioRequestAvailable('GET', `${prefix}/marketplaces`, catalogs)).toBe(true);
     expect(studioRequestAvailable('GET', `${prefix}/marketplaces/official/plugins`, catalogs)).toBe(true);
+    // S54: shipped bundled HTML previews and named examples are readable through
+    // the same lane, independently of whether the plugin can be applied.
+    expect(studioRequestAvailable('GET', `${prefix}/plugins/od-share-to-community/preview`, catalogs)).toBe(true);
+    expect(studioRequestAvailable('HEAD', `${prefix}/plugins/od-share-to-community/preview`, catalogs)).toBe(true);
+    expect(studioRequestAvailable('GET', `${prefix}/plugins/od-share-to-community/example/landing`, catalogs)).toBe(true);
+    expect(studioRequestAvailable('GET', `${prefix}/plugins/od-share-to-community/preview`, (() => false) as never)).toBe(false);
+    expect(studioRequestAvailable('POST', `${prefix}/plugins/od-share-to-community/preview`, catalogs)).toBe(false);
     expect(studioRequestAvailable('GET', `${prefix}/plugins`, (() => false) as never)).toBe(false);
     expect(studioRequestAvailable('POST', `${prefix}/plugins`, catalogs)).toBe(false);
     expect(studioRequestAvailable('GET', `${prefix}/plugins/x/apply`, catalogs)).toBe(false);
@@ -48,8 +55,8 @@ it('opens the catalog, apply, applied snapshots and read-only marketplaces only 
   for (const [method, path] of [['POST', '/api/plugins/install'], ['POST', '/api/plugins/upload-zip'], ['POST', '/api/plugins/x/upgrade'],
     ['POST', '/api/plugins/x/uninstall'], ['POST', '/api/plugins/x/doctor'], ['POST', '/api/plugins/x/trust'], ['POST', '/api/plugins/x/apply-local'],
     ['POST', '/api/plugins/x/duplicate-project'], ['POST', '/api/marketplaces'], ['POST', '/api/marketplaces/official/refresh'],
-    ['DELETE', '/api/marketplaces/official'], ['GET', '/api/plugins/stats'], ['GET', '/api/plugins/events'], ['GET', '/api/applied-plugins'],
-    ['GET', '/api/plugins/x/preview']] as const) {
+    ['DELETE', '/api/marketplaces/official'], ['GET', '/api/plugins/stats'], ['GET', '/api/plugins/events'],
+    ['GET', '/api/applied-plugins'], ['GET', '/api/plugins/x/preview/raw']] as const) {
     expect(studioRequestAvailable(method, path, (() => true) as never), `${method} ${path}`).toBe(false);
   }
 });
