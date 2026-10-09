@@ -901,10 +901,12 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
   ...([
     ['GET /api/plugins', 'the bundled catalog with Web availability; host installs and paths are never listed'],
     ['GET /api/plugins/:id', 'one bundled plugin with Web availability; non-bundled ids are missing'],
+    // The gallery's availability probe is a HEAD; `collectCandidates` reads
+    // HEAD as GET, so these two entries classify it. A separate HEAD entry
+    // would be a classification with no registration (Express answers HEAD
+    // from the GET handler), which startup refuses.
     ['GET /api/plugins/:id/preview', 'captured bundled HTML source or a session-bound isolated preview; no host asset proxy'],
-    ['HEAD /api/plugins/:id/preview', 'bundled preview availability probe; no redirect or capability creation'],
     ['GET /api/plugins/:id/example/:name', 'one captured bundled HTML example or a session-bound isolated preview'],
-    ['HEAD /api/plugins/:id/example/:name', 'bundled example availability probe; no capability creation'],
     ['POST /api/plugins/:id/apply', 'owner-only apply onto the actor\'s own project; unavailable plugins refused with typed reasons'],
     ['GET /api/applied-plugins/:snapshotId', 'a Studio apply snapshot for a member of its project; foreign and missing are one 404'],
     ['GET /api/marketplaces', 'read-only marketplace listings without host paths; fetch and changes stay refused'],
@@ -1107,7 +1109,14 @@ export function findUnclassifiedRegistrations(registrations: readonly RouteRegis
 /** Classified keys that the live inventory does not register (sorted). */
 export function findStaleClassifications(registrations: readonly RouteRegistrationLike[]): string[] {
   const registered = new Set(registrations.map((r) => routeKey(r.method, r.path)));
-  return MULTIUSER_ROUTE_CLASSIFICATION.filter((entry) => !registered.has(entry.key)).map((entry) => entry.key).sort();
+  // A reviewed alias never reaches a handler at the path the client called:
+  // the gate rewrites `req.url` to `rewriteTo` before Express routes it. What
+  // has to exist is therefore the destination, which is also the only handler
+  // a stale alias could expose.
+  return MULTIUSER_ROUTE_CLASSIFICATION
+    .filter((entry) => !registered.has(entry.rewriteTo ? routeKey(entry.method, entry.rewriteTo) : entry.key))
+    .map((entry) => entry.key)
+    .sort();
 }
 
 /**

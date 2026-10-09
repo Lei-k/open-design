@@ -444,6 +444,31 @@ describe('route classification covers the real inventory', () => {
       'public-web GET /settings',
       'public-web GET /setup',
       'public-web GET /workspace-settings',
+      // S52/S53 (#63): canonical Studio Live Artifacts; the standard path is the alias.
+      'actor-scoped GET /api/live-artifacts',
+      'actor-scoped POST /api/live-artifacts',
+      'actor-scoped GET /api/live-artifacts/:artifactId',
+      'actor-scoped PATCH /api/live-artifacts/:artifactId',
+      'actor-scoped DELETE /api/live-artifacts/:artifactId',
+      'actor-scoped GET /api/live-artifacts/:artifactId/preview',
+      'actor-scoped GET /api/live-artifacts/:artifactId/refreshes',
+      'actor-scoped POST /api/live-artifacts/:artifactId/refresh',
+      'actor-scoped GET /api/multiuser/live-artifacts',
+      'actor-scoped POST /api/multiuser/live-artifacts',
+      'actor-scoped GET /api/multiuser/live-artifacts/:artifactId',
+      'actor-scoped PATCH /api/multiuser/live-artifacts/:artifactId',
+      'actor-scoped DELETE /api/multiuser/live-artifacts/:artifactId',
+      'actor-scoped GET /api/multiuser/live-artifacts/:artifactId/preview',
+      'actor-scoped GET /api/multiuser/live-artifacts/:artifactId/refreshes',
+      'actor-scoped POST /api/multiuser/live-artifacts/:artifactId/refresh',
+      // S54 (#61): captured bundled HTML previews and named examples.
+      'actor-scoped GET /api/plugins/:id/preview',
+      'actor-scoped GET /api/plugins/:id/example/:name',
+      'actor-scoped GET /api/multiuser/catalog/plugins/:id/preview',
+      'actor-scoped GET /api/multiuser/catalog/plugins/:id/example/:name',
+      // Cookie-free capability reads on the dedicated preview origin (#39).
+      'preview-capability GET /api/multiuser/live-artifact-preview/:scope',
+      'preview-capability GET /api/multiuser/plugin-preview/:scope/*path',
     ]].sort());
   });
 
