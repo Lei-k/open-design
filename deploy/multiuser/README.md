@@ -6,7 +6,7 @@ What a deployment gets:
 
 - Username/password sign-in, an admin area for accounts and audit, and private design projects, conversations, generated files, and previews per user.
 - **Personal Codex subscriptions.** Each user links their own ChatGPT plan through the official Codex device-code login and runs Codex on it. Every Codex child runs in a per-run bubblewrap sandbox.
-- **No company pool.** The shared company pool has no real provider yet (#14), so the server reports it unavailable and refuses company runs.
+- **Provider sources.** Besides personal subscriptions, an administrator can configure the shared OpenAI company pool (Admin → pool: model, capacity and the server-held API key), and each user can save their own OpenAI key in Settings → Agent accounts and run on it. A user's own key is write-only and never readable by an administrator. Real-provider acceptance for both is still outstanding (#14).
 
 Single-user Docker deployment is `../docker-compose.yml`. Do not mix the two: the single-user daemon's shared `OD_API_TOKEN` is not per-user authorization, and the multi-user launcher refuses to start next to it.
 
@@ -37,7 +37,7 @@ preview iframe ──▶ preview origin┘
 
 1. **Config.** Copy `multiuser.example.json` to `multiuser.json`.
    - Set `publicOrigin` to `https://<your domain>`, with the same host as `OD_DOMAIN` and no path.
-   - Create a second DNS A/AAAA record for the preview host, set `previewOrigin` to its exact HTTPS origin, and export the same host as `OD_PREVIEW_DOMAIN`. It must use a different hostname from `publicOrigin`; changing only the port would still send host cookies.
+   - Create a second DNS A/AAAA record for the preview host, set `previewOrigin` to its exact HTTPS origin, and put the same host in `.env` as `OD_PREVIEW_DOMAIN` (step 3). It must use a different hostname from `publicOrigin`; changing only the port would still send host cookies.
    - Keep `acknowledge` exactly as written. It records that this is a staging deployment.
    - To run without personal subscriptions, remove `personalCodex`. Then also remove the three `*=unconfined` entries from `security_opt` in `docker-compose.yml`.
    - `renderer` enables server-rendered PDF, PPTX and PNG exports in Studio (Chromium is in the image). Each render runs in a fresh headless browser context that can reach only the captured project bytes and GETs to a fixed list of public font/CDN hosts (Google Fonts, Tailwind CDN, jsDelivr, unpkg, cdnjs). Set `"assetHosts": []` to block those too (artifacts that load fonts or CSS from a CDN then render without them), or list your own hosts. The image's Alpine Chromium cannot run its own seccomp sandbox, so `bwrap` confines it with bubblewrap instead (the same unprivileged user namespaces as the personal-subscription sandbox): only system files and the browser's own profile are mounted — no daemon data, projects or credentials — and with `"assetHosts": []` it has no network namespace at all. Remove `renderer` to turn rendered exports off; the Export menu then offers HTML, Markdown and ZIP only.
@@ -46,22 +46,28 @@ preview iframe ──▶ preview origin┘
    openssl rand -hex 32 > secrets/bootstrap
    sudo chown 1001:1001 secrets/bootstrap && sudo chmod 400 secrets/bootstrap
    ```
-3. **Start.**
+3. **Environment.** Copy `.env.example` to `.env` and set `OD_DOMAIN` and
+   `OD_PREVIEW_DOMAIN` to the two hosts from step 1. Compose reads this file for
+   every command, `docker compose build` included, and refuses to run without
+   those two values.
    ```sh
-   export OD_DOMAIN=<your domain>
-   export OD_PREVIEW_DOMAIN=<your preview domain>
+   cp .env.example .env
+   ${EDITOR:-nano} .env
+   ```
+4. **Start.**
+   ```sh
    docker compose up -d
    docker compose logs -f od   # expect: "multi-user staging daemon listening on http://127.0.0.1:7456 for https://<domain>"
    ```
-4. **Create the first administrator.** There is no web form for this. Call the one-time bootstrap endpoint through the public HTTPS origin; the password must be at least 12 characters:
+5. **Create the first administrator.** There is no web form for this. Call the one-time bootstrap endpoint through the public HTTPS origin; the password must be at least 12 characters:
    ```sh
    curl -sS -X POST "https://$OD_DOMAIN/api/auth/bootstrap" \
      -H "Origin: https://$OD_DOMAIN" -H 'Content-Type: application/json' \
      -d "{\"bootstrapToken\":\"$(sudo cat secrets/bootstrap)\",\"username\":\"admin\",\"password\":\"<a long password>\"}"
    ```
    It answers `201` once; every later call is refused. Then remove `bootstrapSecretFile` from `multiuser.json`, delete `secrets/bootstrap`, and run `docker compose up -d` again. Sign in at `https://<your domain>/login`.
-5. **Add users** in Admin → Users. Each user sets their own password through the one-use link the admin hands over. There is no public registration.
-6. **Personal subscriptions.** Each user opens Settings → Agent accounts → Codex → Link my subscription, and completes the device-code sign-in on the official OpenAI page. ChatGPT may require device-code sign-in to be enabled in the user's security settings or by their workspace admin. Verification runs one minimal turn on the user's own plan, and only after explicit consent.
+6. **Add users** in Admin → Users. Each user sets their own password through the one-use link the admin hands over. There is no public registration.
+7. **Personal subscriptions.** Each user opens Settings → Agent accounts → Codex → Link my subscription, and completes the device-code sign-in on the official OpenAI page. ChatGPT may require device-code sign-in to be enabled in the user's security settings or by their workspace admin. Verification runs one minimal turn on the user's own plan, and only after explicit consent.
 
 ## Two-account staging acceptance
 
