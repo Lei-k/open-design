@@ -1941,8 +1941,10 @@ export function EntryShell({
             <div data-testid="entry-view-plugins" data-active={view === 'plugins' ? 'true' : 'false'} {...inactiveViewProps(view === 'plugins')}>
               <StudioLane lane="catalogs"><ExtensionsMarketplace
                 isActive={view === 'plugins'}
-                onCreatePlugin={startPluginAuthoring}
-                onUsePlugin={usePluginFromLibrary}
+                // Authoring and the Home plugin hand-off are host flows; Web accounts
+                // read the bundled catalog here and apply from a project composer (#61).
+                onCreatePlugin={studio.hostServices ? startPluginAuthoring : undefined}
+                onUsePlugin={studio.hostServices ? usePluginFromLibrary : undefined}
                 onUseSkill={useSkillFromLibrary}
               /></StudioLane>
             </div>
@@ -2005,7 +2007,7 @@ export function EntryShell({
               /></StudioLane>
             ) : null}
             {view === 'community' ? (
-              <StudioLane lane="catalogs"><CommunityView
+              <StudioLane lane="catalogs">{studio.hostServices ? <CommunityView
                 onRemixTemplate={({ templateId, prompt }) => {
                   // Remix carries the template's PROJECT along, not just its
                   // prompt: duplicate the plugin's example artifact into a
@@ -2084,7 +2086,11 @@ export function EntryShell({
                     projectKind: target.projectKind,
                   });
                 }}
-              /></StudioLane>
+              /> : (
+                // Remix, Use and the plugin hand-off are host flows. Web accounts
+                // browse the gallery read-only; details carry Web availability (#61).
+                <CommunityView />
+              )}</StudioLane>
             ) : null}
             {/* Team destinations — the entry shell owns the nav frame only; each
                 view is provided by another lane (B = members/board, D = team

@@ -1101,3 +1101,64 @@ test('[P1] Studio team catalogs: the owner shares a private skill and design doc
     await expect(b.locator('body')).toContainText('Team shared skill marker', { timeout: T.long });
   } finally { await other.close(); }
 });
+
+test('[P1] Studio bundled plugins: unavailable plugins show their Web reason, the owner applies an applicable one in the composer, B cannot', async ({ page, studio }, info) => {
+  await studio.linkCodex(studio.a);
+  await studio.configureTurn(studio.a, { promptReplyMarkers: ['generated-plugin/'] });
+  await page.goto(`${studio.origin}/plugins`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  // The shared Plugins page lists the bundled catalog with server-computed availability.
+  const search = page.getByRole('textbox', { name: 'Search expert suites' });
+  await search.fill('Magazine Article', { timeout: T.long });
+  const unavailable = page.getByTestId('plugin-web-availability-example-article-magazine');
+  await expect(unavailable).toHaveAttribute('data-applicable', 'false', { timeout: T.long });
+  await expect(unavailable).toContainText('Not available on Web');
+  await expect(unavailable).toContainText('live-artifact');
+  // Host flows are not offered: no create, no install, no Home hand-off.
+  await expect(page.locator('.plugin-marketplace__create')).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath('studio-plugins-web-availability.png'), animations: 'disabled' });
+  await search.fill('Share to community');
+  await expect(page.getByTestId('plugin-web-availability-od-share-to-community')).toHaveAttribute('data-applicable', 'true', { timeout: T.long });
+
+  // The owner applies it from a project composer; the turn captures it.
+  const projectId = studioProjectId();
+  const made = await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Plugin project' });
+  expect(made.status, made.text).toBe(200);
+  await page.goto(`${studio.origin}/projects/${projectId}`);
+  const composer = page.getByTestId('chat-composer-input');
+  await expect(composer).toBeVisible({ timeout: T.long });
+  const applied = page.waitForResponse((result) => result.request().method() === 'POST'
+    && new URL(result.url()).pathname === '/api/plugins/od-share-to-community/apply');
+  await composer.fill('@Share');
+  await page.getByRole('option').filter({ hasText: 'Share to community' }).click({ timeout: T.long });
+  const applyResponse = await applied;
+  expect(applyResponse.status()).toBe(200);
+  const snapshotId = (await applyResponse.json()).snapshotId as string;
+  expect(applyResponse.request().postDataJSON()).toMatchObject({ projectId });
+  // An unavailable plugin is never offered in the composer.
+  await composer.press('End');
+  await composer.pressSequentially(' Package this work.');
+  await page.screenshot({ path: info.outputPath('studio-plugin-composer-chip.png'), animations: 'disabled' });
+  const admitted = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/runs');
+  await page.getByTestId('chat-send').click();
+  const started = await admitted;
+  expect(started.status()).toBe(202);
+  expect(started.request().postDataJSON()).toMatchObject({ appliedPluginSnapshotId: snapshotId, context: { pluginIds: ['od-share-to-community'] } });
+  await expect(page.locator('body')).toContainText('generated-plugin/', { timeout: T.long });
+  const evidence = await studio.turnEvidence(studio.a);
+  expect(String(evidence.message)).toContain('## Active plugin');
+
+  // B sees the same catalog but can neither apply onto A's project nor read its snapshot.
+  const missingProject = await studio.request('POST', '/api/plugins/od-share-to-community/apply', studio.b.cookie, { projectId: studioProjectId() });
+  const foreign = await studio.request('POST', '/api/plugins/od-share-to-community/apply', studio.b.cookie, { projectId });
+  expect(foreign.status).toBe(404);
+  expect(foreign.text).toBe(missingProject.text);
+  expect((await studio.request('GET', `/api/applied-plugins/${snapshotId}`, studio.b.cookie)).status).toBe(404);
+  expect((await studio.request('GET', `/api/applied-plugins/${snapshotId}`, studio.a.cookie)).status).toBe(200);
+  const refused = await studio.request('POST', '/api/plugins/example-article-magazine/apply', studio.a.cookie, { projectId });
+  expect(refused.status).toBe(403);
+  expect(refused.json.error.code).toBe('MULTIUSER_CAPABILITY_UNAVAILABLE');
+  expect((await studio.request('GET', '/api/plugins', studio.b.cookie)).json.plugins.length).toBeGreaterThan(100);
+});

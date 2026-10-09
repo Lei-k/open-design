@@ -51,6 +51,7 @@ import { navigate } from '../router';
 import { fetchMcpServers } from "../state/mcp";
 import type { McpServerConfig, McpTemplate } from "../state/mcp";
 import { listPlugins } from "../state/projects";
+import { studioPluginOffered } from "../runtime/studio-plugins";
 import type { AppConfig, ChatAttachment, ChatCommentAttachment, Project, ProjectFile, ProjectMetadata, SkillSummary } from "../types";
 import { DEFAULT_UNSELECTED_SCENARIO_PLUGIN_ID } from '@open-design/contracts';
 import type {
@@ -1220,11 +1221,13 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
     // the full installed list available even when the project was created
     // from a pinned plugin, so users can switch or layer different plugin
     // context from the tools menu and @ picker.
+    // A Web account (#61) is offered only bundled plugins whose every declared
+    // step runs in its turns; the rest are listed with reasons on the Plugins page.
     const pluginsForComposer = useMemo<InstalledPluginRecord[]>(() => {
       const allowedKinds = new Set(['skill', 'scenario', 'bundle']);
       return installedPlugins.filter((p) => {
         const k = p.manifest?.od?.kind;
-        return !k || allowedKinds.has(k);
+        return (!k || allowedKinds.has(k)) && studioPluginOffered(p);
       });
     }, [installedPlugins]);
 

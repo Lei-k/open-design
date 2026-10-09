@@ -948,9 +948,11 @@ import { registerStudioSettingsRoutes } from './routes/studio-settings.js';
 import { registerStudioPublicLinkRoutes } from './routes/studio-public-links.js';
 import { registerStudioDesignCatalogRoutes } from './routes/studio-design-catalog.js';
 import { registerStudioCatalogRoutes } from './routes/studio-catalog.js';
+import { bundledScenarioRegistry } from './plugins/bundled-scenarios.js';
 import { registerStudioArchiveRoutes } from './routes/studio-archives.js';
 import { registerStudioSharingRoutes } from './routes/studio-sharing.js';
 import { registerStudioCatalogSharingRoutes } from './routes/studio-catalog-sharing.js';
+import { registerStudioPluginRoutes } from './routes/studio-plugins.js';
 import { registerStudioCommentRoutes } from './routes/studio-comments.js';
 import { registerStudioPetRoutes } from './routes/studio-pets.js';
 import { registerStudioRenderRoutes } from './routes/studio-render.js';
@@ -9714,34 +9716,13 @@ export async function startServer({
   // and run through their explicit pluginId path; they just don't get
   // to hijack a consumer plugin that omitted `od.pipeline`.
   function collectBundledScenarios() {
-    type ScenarioEntry = {
-      id: string;
-      taskKind: 'new-generation' | 'figma-migration' | 'code-migration' | 'tune-collab';
-      pipeline: NonNullable<NonNullable<import('@open-design/contracts').PluginManifest['od']>['pipeline']>;
-    };
-    const byTaskKind = new Map<ScenarioEntry['taskKind'], ScenarioEntry>();
     try {
-      const all = listInstalledPlugins(db);
-      for (const row of all) {
-        if (row.sourceKind !== 'bundled') continue;
-        const od = row.manifest.od;
-        if (!od || od.kind !== 'scenario') continue;
-        if (!od.pipeline || !Array.isArray(od.pipeline.stages) || od.pipeline.stages.length === 0) continue;
-        const taskKind = (od.taskKind ?? 'new-generation') as ScenarioEntry['taskKind'];
-        if (taskKind !== 'new-generation' && taskKind !== 'figma-migration' &&
-            taskKind !== 'code-migration' && taskKind !== 'tune-collab') continue;
-        const entry: ScenarioEntry = { id: row.id, taskKind, pipeline: od.pipeline };
-        const existing = byTaskKind.get(taskKind);
-        if (!existing || entry.id === `od-${taskKind}`) {
-          byTaskKind.set(taskKind, entry);
-        }
-      }
+      return bundledScenarioRegistry(listInstalledPlugins(db));
     } catch {
       // On a fresh install the table may not exist yet; surface no
       // scenarios rather than crash the apply path.
       return [];
     }
-    return Array.from(byTaskKind.values());
   }
 
   const readWorkspaceTeamPlugin = async (
@@ -17642,6 +17623,11 @@ export async function startServer({
     db, skillsRoot: SKILLS_DIR, listBuiltInSkills: async () => (await listSkills(SKILLS_DIR)).map((skill) => ({ ...skill, source: 'built-in' as const })),
     ...(studioCatalogSharing ? { sharing: studioCatalogSharing } : {}),
   }) : null;
+  // Bundled plugin catalog and owner-only apply (#61); availability from the Web capability registry.
+  const studioPlugins = multiUserMode ? registerStudioPluginRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, hostRoots: [PROJECT_ROOT, BUNDLED_PLUGINS_DIR],
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
+  }) : null;
   const studioDesignCatalog = multiUserMode ? registerStudioDesignCatalogRoutes(app, {
     ...(studioCatalogSharing ? { sharing: studioCatalogSharing } : {}),
     db, designSystemsRoot: DESIGN_SYSTEMS_DIR, promptTemplatesRoot: PROMPT_TEMPLATES_DIR, craftRoot: CRAFT_DIR,
@@ -17697,6 +17683,7 @@ export async function startServer({
     ...(studioCatalogSharing ? { catalogGrants: studioCatalogSharing.grants } : {}),
     ...(studioSettings ? { settings: studioSettings, memory: studioSettings.automation } : {}),
     ...(studioDesignCatalog ? { designCatalog: studioDesignCatalog } : {}),
+    ...(studioPlugins ? { plugins: studioPlugins } : {}),
   }) : null;
   // Account research on each account's own Tavily key (#63); never the host research key.
   if (multiUserRuns) registerStudioResearchRoutes(app, { research: multiUserRuns.research });
@@ -18356,6 +18343,7 @@ export async function startServer({
       multiUserDesign?.close();
       studioSharing?.close();
       studioCatalogSharing?.close();
+      studioPlugins?.close();
       studioPublicLinks?.close();
       multiUserFront?.close();
       void personalCodex?.shutdown();
@@ -18373,6 +18361,7 @@ export async function startServer({
         multiUserDesign?.close();
       studioSharing?.close();
       studioCatalogSharing?.close();
+      studioPlugins?.close();
       studioPublicLinks?.close();
       }
       amrTerminalReportDelivery.stop();

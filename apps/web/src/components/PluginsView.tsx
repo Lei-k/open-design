@@ -77,6 +77,8 @@ import {
 import { Icon } from './Icon';
 import { Toast } from './Toast';
 import { PluginDetailsModal } from './PluginDetailsModal';
+import { PluginWebAvailability } from './PluginWebAvailability';
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
 import { SkillDetailView } from './SkillDetailView';
 import { PluginsHomeSection } from './PluginsHomeSection';
 import { humanizeCategory } from './SkillsSection';
@@ -1038,6 +1040,9 @@ export function ExtensionsMarketplace({
 }: ExtensionsMarketplaceProps) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
+  // Installing from a marketplace is a host operation; Web accounts read the
+  // bundled catalog and apply from a project (#61), so no install row action.
+  const hostPluginInstall = useStudioCapabilities().hostServices;
   // My own member id, to keep the Personal tab to resources I actually own.
   const {
     context: workspaceContext,
@@ -1908,7 +1913,7 @@ export function ExtensionsMarketplace({
             accent: marketAccent(plugin.entry.name),
             action: installed
               ? { kind: 'try', record: installed }
-              : { kind: 'install', plugin },
+              : hostPluginInstall ? { kind: 'install', plugin } : { kind: 'none' },
             detail: installed
               ? { kind: 'plugin', record: installed }
               : { kind: 'available', plugin },
@@ -2006,6 +2011,7 @@ export function ExtensionsMarketplace({
     loadedMarketplaceIdentity,
     marketplaceIdentity,
     loadedSharedIdentity,
+    hostPluginInstall,
   ]);
 
   // Category chips are built from the cards actually in this scope, so the row
@@ -2271,6 +2277,7 @@ export function ExtensionsMarketplace({
                           <span>{t('pluginsView.statConnectors', { count: card.stats.connectors })}</span>
                         </span>
                       ) : null}
+                      {card.detail?.kind === 'plugin' ? <PluginWebAvailability record={card.detail.record} /> : null}
                     </span>
 
                     {card.action.kind === 'try' && onUsePlugin ? (

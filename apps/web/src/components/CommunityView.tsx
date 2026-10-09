@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import type { InstalledPluginRecord, ProjectKind } from '@open-design/contracts';
 import { useI18n } from '../i18n';
 import { listPlugins } from '../state/projects';
+import { navigate } from '../router';
 import {
   buildCommunityTemplates,
   COMMUNITY_MORE_TYPES,
@@ -282,8 +283,11 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
   };
   const canRemixTemplate = (template: TemplateDemo) => {
     const record = pluginById.get(template.id);
-    return !isPromptArtifact(template) && Boolean(record && canDuplicatePluginPreview(record));
+    return Boolean(onRemixTemplate) && !isPromptArtifact(template) && Boolean(record && canDuplicatePluginPreview(record));
   };
+  // A shell without any hand-off (a Web account, #61) browses read-only: no
+  // Use pill, and details open the plugin page that states Web availability.
+  const canUseTemplate = Boolean(onUsePrompt || onUsePlugin);
   const templateById = useCallback(
     (id: string) => templates.find((template) => template.id === id) ?? null,
     [templates],
@@ -301,6 +305,10 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
       ...workspaceDimensions,
     });
     const record = plugins.find((row) => row.id === template.id) ?? null;
+    if (!canUseTemplate && !onRemixTemplate) {
+      if (record) navigate({ kind: 'marketplace-detail', pluginId: record.id });
+      return;
+    }
     setDetailsRecord(record);
   };
   /** The detail modal's Use split action. Shells that own a Home hand-off
@@ -426,17 +434,19 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
                     )}
                   </button>
                 ) : null}
-                <button
-                  type="button"
-                  className="community-template-card__prompt-btn"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    handleCardUse(template);
-                  }}
-                >
-                  <Icon name="make-same" size={14} />
-                  {t('community.usePrompt')}
-                </button>
+                {canUseTemplate ? (
+                  <button
+                    type="button"
+                    className="community-template-card__prompt-btn"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      handleCardUse(template);
+                    }}
+                  >
+                    <Icon name="make-same" size={14} />
+                    {t('community.usePrompt')}
+                  </button>
+                ) : null}
               </div>
             </div>
             <footer className="community-template-card__foot">

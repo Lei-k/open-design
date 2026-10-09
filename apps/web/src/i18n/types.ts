@@ -1926,6 +1926,9 @@ export interface Dict {
   'pluginsView.categoriesAria': string;
   'pluginsView.statSkills': string;
   'pluginsView.statConnectors': string;
+  'pluginsView.webUnavailable': string;
+  'pluginsView.webUnavailableNeeds': string;
+  'pluginsView.webApplyFromProject': string;
   'pluginsView.uninstall': string;
   'pluginsView.uninstalling': string;
   'pluginsView.uninstallConfirm': string;

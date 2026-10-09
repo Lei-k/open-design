@@ -45,7 +45,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'studio-memory-rules-suggest' | 'studio-memory-extract' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'catalog-share' | 'provider-key' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'studio-memory-rules-suggest' | 'studio-memory-extract' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'catalog-share' | 'provider-key' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'studio-plugin-apply' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -104,13 +104,19 @@ export interface MultiUserRouteClassification {
    * {@link MULTIUSER_CONVERSATION_AUTHOR_PARAMS}.
    */
   conversationParam?: string;
+  /**
+   * blocked-in-multiuser only: the host capability a Web account is refused
+   * here. The gate answers `403 MULTIUSER_CAPABILITY_UNAVAILABLE` with
+   * `details: { capability, reason }` instead of the generic route refusal.
+   */
+  capabilityRefusal?: string;
 }
 
 export function routeKey(method: string, path: string): string {
   return `${method.toUpperCase()} ${path}`;
 }
 
-type EntryExtras = Pick<MultiUserRouteClassification, 'projectParam' | 'runParam' | 'agentAccountParam' | 'bodyPolicy' | 'nonStringPath' | 'catchAll' | 'untrustedContent' | 'maxBodyBytes' | 'rewriteTo'>;
+type EntryExtras = Pick<MultiUserRouteClassification, 'projectParam' | 'runParam' | 'agentAccountParam' | 'bodyPolicy' | 'nonStringPath' | 'catchAll' | 'untrustedContent' | 'maxBodyBytes' | 'rewriteTo' | 'capabilityRefusal'>;
 
 function group(
   routeClass: MultiUserRouteClass,
@@ -127,6 +133,9 @@ function group(
 }
 
 const blocked = (reason: string, keys: readonly string[]) => group('blocked-in-multiuser', reason, keys);
+/** Blocked for everyone, answered with a typed capability refusal (see `capabilityRefusal`). */
+const refused = (capability: string, reason: string, keys: readonly string[]) =>
+  group('blocked-in-multiuser', reason, keys, { capabilityRefusal: capability });
 
 function nonStringBlocked(
   reason: string,
@@ -877,36 +886,50 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'GET /api/design-systems/:id/archive',
     'POST /api/design-systems/:id/sync-assets',
   ]),
-  ...blocked(R_PLUGINS, [
-    'GET /api/plugins',
-    'GET /api/plugins/stats',
-    'GET /api/plugins/:id',
+  // Bundled plugin catalog and apply (#61, S41). Every account reads the same
+  // bundled catalog with computed Web availability; apply is owner-only onto
+  // the actor's own project and refuses unavailable plugins with typed reasons.
+  ...([
+    ['GET /api/plugins', 'the bundled catalog with Web availability; host installs and paths are never listed'],
+    ['GET /api/plugins/:id', 'one bundled plugin with Web availability; non-bundled ids are missing'],
+    ['POST /api/plugins/:id/apply', 'owner-only apply onto the actor\'s own project; unavailable plugins refused with typed reasons'],
+    ['GET /api/applied-plugins/:snapshotId', 'a Studio apply snapshot for a member of its project; foreign and missing are one 404'],
+    ['GET /api/marketplaces', 'read-only marketplace listings without host paths; fetch and changes stay refused'],
+    ['GET /api/marketplaces/:id', 'one read-only marketplace listing without host paths'],
+    ['GET /api/marketplaces/:id/plugins', 'read-only marketplace entries without host paths'],
+  ] as const).flatMap(([key, reason]) => {
+    const alias = key.replace('/api/', '/api/multiuser/catalog/');
+    const extras = key.startsWith('POST ') ? { bodyPolicy: 'studio-plugin-apply' as const, maxBodyBytes: 192 * 1024 } : {};
+    return [...group('actor-scoped', reason, [key], { ...extras, rewriteTo: alias.slice(alias.indexOf(' ') + 1) }),
+      ...group('actor-scoped', `${reason} (Studio alias)`, [alias], extras)];
+  }),
+  ...refused('plugin-install', 'installing, upgrading or removing host plugins changes the catalog every account shares; Web accounts apply bundled plugins only', [
     'POST /api/plugins/upload-zip',
     'POST /api/plugins/upload-folder',
     'POST /api/plugins/install',
     'POST /api/plugins/:id/uninstall',
     'POST /api/plugins/:id/upgrade',
     'POST /api/plugins/:id/apply-local',
-    'POST /api/plugins/:id/apply',
+  ]),
+  ...refused('plugin-doctor', 'plugin doctor inspects host plugin folders and connectors', ['POST /api/plugins/:id/doctor']),
+  ...refused('plugin-trust', 'plugin trust grants host capabilities for every account', ['POST /api/plugins/:id/trust']),
+  ...refused('plugin-scripts', 'publishing runs untrusted plugin scripts and host GitHub credentials', ['POST /api/plugins/:id/share-project']),
+  ...refused('plugin-marketplace', 'adding, refreshing, trusting or removing marketplaces fetches third-party sources for every account', [
+    'POST /api/marketplaces',
+    'DELETE /api/marketplaces/:id',
+    'POST /api/marketplaces/:id/refresh',
+    'POST /api/marketplaces/:id/trust',
+  ]),
+  ...blocked(R_PLUGINS, [
+    'GET /api/plugins/stats',
     'POST /api/plugins/:id/duplicate-project',
-    'POST /api/plugins/:id/share-project',
-    'POST /api/plugins/:id/doctor',
-    'POST /api/plugins/:id/trust',
     'GET /api/plugins/:id/preview',
     'GET /api/plugins/:id/example/:name',
     'GET /api/plugins/:id/asset/*splat',
-    'GET /api/applied-plugins/:snapshotId',
     'GET /api/applied-plugins/:snapshotId/canon',
     'GET /api/applied-plugins',
     'POST /api/applied-plugins/export',
     'POST /api/applied-plugins/prune',
-    'GET /api/marketplaces',
-    'POST /api/marketplaces',
-    'GET /api/marketplaces/:id',
-    'DELETE /api/marketplaces/:id',
-    'POST /api/marketplaces/:id/refresh',
-    'POST /api/marketplaces/:id/trust',
-    'GET /api/marketplaces/:id/plugins',
   ]),
   ...blocked('external/marketing fetches; not needed by the minimum set', [
     'GET /api/community/discord',

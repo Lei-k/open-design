@@ -33,6 +33,8 @@ import { localizePluginDescription, localizePluginTitle } from './plugins-home/l
 import { useAnalytics } from '../analytics/provider';
 import { trackPluginDetailClick } from '../analytics/events';
 import { Icon } from './Icon';
+import { PluginWebAvailability } from './PluginWebAvailability';
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
 import { PluginMetaSections } from './plugin-details/PluginMetaSections';
 import { buildPluginInstallCommand } from './plugin-details/PluginShareMenu';
 import { localizePluginChrome } from '../i18n/plugin-content';
@@ -189,6 +191,7 @@ export function PluginDetailView(props: Props) {
     : null;
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
+  const studio = useStudioCapabilities();
   const [plugin, setPlugin] = useState<InstalledPluginRecord | null>(null);
   const [error, setError] = useState<{ kind: 'load' | 'apply'; message: string } | null>(null);
   const [applying, setApplying] = useState(false);
@@ -495,15 +498,18 @@ export function PluginDetailView(props: Props) {
       </section>
 
       <footer className="plugin-suite-detail__section">
-        <Button
-          variant="primary"
-          className="plugin-detail__use"
-          onClick={onUse}
-          disabled={applying}
-          data-testid="plugin-detail-use"
-        >
-          {applying ? t('pluginCard.applying') : t('preview.usePlugin')}
-        </Button>
+        {/* Web accounts apply from a project composer (#61); the Home hand-off is host-only. */}
+        {studio.hostServices ? (
+          <Button
+            variant="primary"
+            className="plugin-detail__use"
+            onClick={onUse}
+            disabled={applying}
+            data-testid="plugin-detail-use"
+          >
+            {applying ? t('pluginCard.applying') : t('preview.usePlugin')}
+          </Button>
+        ) : <PluginWebAvailability record={plugin} />}
       </footer>
     </section>
   );

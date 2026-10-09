@@ -416,6 +416,30 @@ describe('same Studio APIs through remote od sessions', () => {
     expect((await cli(['skill', 'unshare', skillId, bob.username, '--session-file', aFile, '--json'])).code).not.toBe(0);
   }, 60_000);
 
+  it('lists, shows and applies bundled plugins with Web availability through od plugin; B and unavailable plugins are refused (#61)', async () => {
+    const listed = success(await cli(['plugin', 'list', '--bundled', '--session-file', aFile, '--json']));
+    expect(listed.total).toBeGreaterThan(100);
+    const share = listed.plugins.find((plugin: { id: string }) => plugin.id === 'od-share-to-community');
+    expect(share).toMatchObject({ fsPath: '', availability: { applicable: true, reasons: [] } });
+    expect(listed.plugins.filter((plugin: { availability: { applicable: boolean } }) => !plugin.availability.applicable).length).toBeGreaterThan(100);
+    const unavailable = success(await cli(['plugin', 'show', 'image-template-vr-headset-exploded-view-poster', '--session-file', aFile, '--json']));
+    expect(unavailable.availability).toMatchObject({ applicable: false, reasons: expect.arrayContaining([{ code: 'unknown-atom', subject: 'image-generate' }]) });
+    const made = success(await cli(['project', 'create', '--name', 'CLI plugins', '--session-file', aFile, '--json']));
+    const pid = made.project.id as string;
+    const applied = success(await cli(['plugin', 'apply', 'od-share-to-community', '--project', pid, '--session-file', aFile, '--json']));
+    expect(applied).toMatchObject({ ok: true, projectId: pid, appliedPlugin: { pluginId: 'od-share-to-community', snapshotId: applied.snapshotId } });
+    const refused = await cli(['plugin', 'apply', 'image-template-vr-headset-exploded-view-poster', '--project', pid, '--session-file', aFile, '--json']);
+    expect(refused.code).not.toBe(0);
+    expect(refused.stderr).toContain('MULTIUSER_CAPABILITY_UNAVAILABLE');
+    expect(refused.stderr).toContain('image-generate');
+    const foreign = await cli(['plugin', 'apply', 'od-share-to-community', '--project', pid, '--session-file', bFile, '--json']);
+    expect(foreign.code).not.toBe(0);
+    expect(foreign.stderr).toContain('PROJECT_NOT_FOUND');
+    const install = await cli(['plugin', 'install', '--source', 'github:example/plugin', '--session-file', aFile, '--json']);
+    expect(install.code).not.toBe(0);
+    expect(`${install.stdout}${install.stderr}`).toContain('MULTIUSER_CAPABILITY_UNAVAILABLE');
+  }, 60_000);
+
   it('honors server revocation and logs B out without printing or retaining credentials', async () => {
     const revoked = await daemon.request({ method: 'POST', path: `/api/auth/users/${alice.id}/sessions/revoke`, cookie: admin.cookie, body: {} });
     expect(revoked.status).toBe(200);

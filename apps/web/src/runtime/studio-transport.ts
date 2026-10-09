@@ -97,6 +97,15 @@ export function studioRequestAvailable(method: string, path: string,
     if ((skillPath === '/api/skills/import' || skillPath === '/api/skills/import-files') && method === 'POST') return true;
     if (/^\/api\/skills\/[^/]+$/.test(skillPath)) return ['GET', 'PUT', 'DELETE'].includes(method);
     if (/^\/api\/skills\/[^/]+\/files$/.test(skillPath)) return method === 'GET';
+    // Bundled plugins (#61): the catalog with Web availability, owner-only apply onto an
+    // owned project, applied snapshots and read-only marketplaces. Install, upgrade,
+    // marketplace changes, doctor and trust stay closed. On the standard prefix the
+    // static `stats`/`events` siblings keep their own (closed) routes, as on the daemon.
+    if (catalogPath === '/api/plugins') return method === 'GET';
+    const plugin = /^\/api\/plugins\/([^/]+)(\/apply)?$/.exec(catalogPath);
+    if (plugin && !(path.startsWith('/api/plugins/') && ['stats', 'events'].includes(plugin[1]!))) return plugin[2] ? method === 'POST' : method === 'GET';
+    if (/^\/api\/applied-plugins\/[^/]+$/.test(catalogPath)) return method === 'GET';
+    if (catalogPath === '/api/marketplaces' || /^\/api\/marketplaces\/[^/]+(?:\/plugins)?$/.test(catalogPath)) return method === 'GET';
   }
   if (usable('automations')) {
     const routinePath = path.replace(/^\/api\/multiuser\/routines(?=\/|$)/, '/api/routines');

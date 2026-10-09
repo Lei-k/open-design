@@ -124,7 +124,7 @@ it('opens only reviewed text skill operations with a usable catalog lane', () =>
     }
   }
   for (const [method, path] of [['POST', '/api/skills/install'], ['GET', '/api/skills/s/assets/file'],
-    ['POST', '/api/skills/s/examples'], ['GET', '/api/plugins'], ['POST', '/api/design-systems/install']]) {
+    ['POST', '/api/skills/s/examples'], ['POST', '/api/plugins/install'], ['POST', '/api/design-systems/install']]) {
     expect(studioRequestAvailable(method!, path!, () => true), path).toBe(false);
   }
 });
@@ -363,5 +363,35 @@ it('opens team catalog grants only with usable catalogs and collaboration lanes,
   for (const path of ['/api/workspace/skills/s/share', '/api/workspace/design-systems/d/share']) {
     expect(studioRequestAvailable('POST', path, () => true), path).toBe(false);
     expect(matchMultiUserRoute('POST', path).every(({ entry }) => entry.routeClass === 'blocked-in-multiuser'), path).toBe(true);
+  }
+});
+
+it('opens the bundled plugin catalog, owner apply, applied snapshots and read-only marketplaces exactly where the daemon classifies them (#61)', () => {
+  const catalogs = (lane: string) => lane === 'catalogs';
+  for (const prefix of ['/api', '/api/multiuser/catalog']) {
+    for (const [method, suffix] of [['GET', '/plugins'], ['GET', '/plugins/test-id'], ['POST', '/plugins/test-id/apply'],
+      ['GET', '/applied-plugins/test-id'], ['GET', '/marketplaces'], ['GET', '/marketplaces/test-id'], ['GET', '/marketplaces/test-id/plugins']] as const) {
+      const path = prefix + suffix;
+      expect(studioRequestAvailable(method, path, catalogs), `${method} ${path}`).toBe(true);
+      expect(studioRequestAvailable(method, path, () => false), `${method} ${path}`).toBe(false);
+      const matches = matchMultiUserRoute(method, path);
+      expect(matches.length, `${method} ${path}`).toBe(1);
+      expect(matches[0]!.entry.routeClass, `${method} ${path}`).toBe('actor-scoped');
+    }
+  }
+  // Host-global plugin operations: closed in the transport, typed refusals at the gate.
+  for (const [method, path] of [['POST', '/api/plugins/install'], ['POST', '/api/plugins/upload-folder'], ['POST', '/api/plugins/test-id/upgrade'],
+    ['POST', '/api/plugins/test-id/uninstall'], ['POST', '/api/plugins/test-id/doctor'], ['POST', '/api/plugins/test-id/trust'],
+    ['POST', '/api/plugins/test-id/apply-local'], ['POST', '/api/plugins/test-id/share-project'], ['POST', '/api/marketplaces'],
+    ['POST', '/api/marketplaces/test-id/refresh'], ['POST', '/api/marketplaces/test-id/trust'], ['DELETE', '/api/marketplaces/test-id']] as const) {
+    expect(studioRequestAvailable(method, path, () => true), `${method} ${path}`).toBe(false);
+    const matches = matchMultiUserRoute(method, path);
+    expect(matches.length, `${method} ${path}`).toBe(1);
+    expect(matches[0]!.entry, `${method} ${path}`).toMatchObject({ routeClass: 'blocked-in-multiuser', capabilityRefusal: expect.any(String) });
+  }
+  // Static siblings of the detail route stay closed on both sides.
+  for (const path of ['/api/plugins/stats', '/api/plugins/events']) {
+    expect(studioRequestAvailable('GET', path, () => true), path).toBe(false);
+    expect(matchMultiUserRoute('GET', path).every(({ entry }) => entry.routeClass === 'blocked-in-multiuser'), path).toBe(true);
   }
 });

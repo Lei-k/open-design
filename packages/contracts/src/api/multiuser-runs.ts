@@ -56,11 +56,14 @@ export interface MultiUserRunRequest {
  *   personal native thread already holds earlier turns, so `message` is used
  *   only when `currentPrompt` is absent). `context` is honored only as
  *   `file`/`folder`/`design-files` workspace items with project-relative
- *   paths and private text skills; plugin/MCP/connector selections must be empty.
+ *   paths and private text skills; MCP/connector selections must be empty.
  *   `model`/`reasoning` must be null, `default` or one of `STUDIO_CODEX_MODELS`
  *   / `STUDIO_CODEX_REASONING`, and apply to this turn only. `research`
  *   (`{ enabled, query?, maxSources? }`) runs the account's own Tavily search
  *   at admission (see `studio-research.ts`); disabled research is a no-op.
+ *   `appliedPluginSnapshotId` and `context.pluginIds` (#61) may only confirm
+ *   the turn's plugin: the project's current Studio apply snapshot or the
+ *   conversation's captured one. Any other value is a 409, never a swap.
  * - `defaultOnly`: accepted only at the value the Studio sends when the
  *   capability is not used (empty list, null, `false`, or `design` mode).
  * - `notApplied`: accepted for request-shape compatibility and not applied:
@@ -72,9 +75,8 @@ export interface MultiUserRunRequest {
 export const MULTIUSER_PERSONAL_RUN_FIELD_POLICY = {
   honored: ['projectId', 'conversationId', 'agentId', 'executionSource', 'message', 'currentPrompt', 'userMessageId',
     'assistantMessageId', 'clientRequestId', 'skillId', 'skillIds', 'designSystemId', 'analyticsHints', 'attachments', 'context',
-    'model', 'reasoning', 'commentAttachments', 'research'],
-  defaultOnly: ['serviceTier',
-    'appliedPluginSnapshotId', 'sessionMode'],
+    'model', 'reasoning', 'commentAttachments', 'research', 'appliedPluginSnapshotId'],
+  defaultOnly: ['serviceTier', 'sessionMode'],
   notApplied: ['priorTranscript', 'locale', 'titleGeneration', 'mediaExecution'],
 } as const;
 

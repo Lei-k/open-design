@@ -2812,6 +2812,8 @@ async function runPlugin(args) {
     case 'stats':     return runPluginStats(rest);
     case 'sources':   return runPluginSources(rest);
     case 'info':      return runPluginInfo(rest);
+    // `show` reads the same detail (Studio accounts: one bundled plugin with Web availability).
+    case 'show':      return runPluginInfo(rest);
     case 'manifest':  return runPluginManifest(rest);
     case 'install':   return runPluginInstall(rest);
     case 'upgrade':   return runPluginUpgrade(rest);
@@ -3760,7 +3762,7 @@ Lists installed plugins. Filters AND together: --task-kind=code-migration
   }
   const data = await fetchPluginList(flags);
   const filtered = await applyPluginFilters(data?.plugins ?? [], flags);
-  emitPluginList({ entries: filtered, json: !!flags.json, emptyMessage: 'No plugins matched the filter.' });
+  await emitPluginList({ entries: filtered, json: !!flags.json, emptyMessage: 'No plugins matched the filter.' });
 }
 
 // Plan §3.Y1 — `od plugin search <query>`.
@@ -3784,7 +3786,7 @@ flags as 'od plugin list'.`);
   }
   const data = await fetchPluginList(flags);
   const filtered = await applyPluginFilters(data?.plugins ?? [], flags, query);
-  emitPluginList({
+  await emitPluginList({
     entries: filtered,
     json:    !!flags.json,
     emptyMessage: `No installed plugins matched "${query}".`,
@@ -3899,14 +3901,16 @@ async function applyPluginFilters(plugins, flags, query) {
 
 function emitPluginList({ entries, json, emptyMessage, showRank }) {
   if (json) {
-    process.stdout.write(JSON.stringify({
+    // The dispatcher exits right after the handler; a large catalog (the
+    // bundled one is several MB) must reach the pipe before that.
+    const text = JSON.stringify({
       total: entries.length,
       plugins: entries.map((e) => ({
         ...e.plugin,
         ...(showRank ? { matched: e.matched, rank: e.rank } : {}),
       })),
-    }, null, 2) + '\n');
-    return;
+    }, null, 2) + '\n';
+    return new Promise((resolve) => { process.stdout.write(text, () => resolve(undefined)); });
   }
   if (entries.length === 0) {
     console.log(emptyMessage ?? 'No plugins matched.');
@@ -3917,7 +3921,11 @@ function emitPluginList({ entries, json, emptyMessage, showRank }) {
     const tail = showRank && entry.matched.length > 0
       ? `  matched=[${entry.matched.join(',')}]`
       : '';
-    console.log(`${p.id}@${p.version}  trust=${p.trust}  source=${p.sourceKind}  title="${p.title}"${tail}`);
+    // Studio sessions (#61) carry Web availability; local daemons do not.
+    const web = p.availability
+      ? `  web=${p.availability.applicable ? 'applicable' : `unavailable(${p.availability.reasons.map((r) => r.subject ? `${r.code}:${r.subject}` : r.code).join(',')})`}`
+      : '';
+    console.log(`${p.id}@${p.version}  trust=${p.trust}  source=${p.sourceKind}  title="${p.title}"${web}${tail}`);
   }
 }
 
@@ -4919,7 +4927,12 @@ async function runPluginApply(rest) {
         data: { pluginId: id, missing: data.fields },
       });
     }
-    return structuredHttpFailure(resp);
+    // The body was already read above; report its typed error (e.g. a Studio
+    // MULTIUSER_CAPABILITY_UNAVAILABLE with the plugin's reasons) instead of re-reading it.
+    if (data?.error && typeof data.error === 'object' && typeof data.error.code === 'string') {
+      return exitWithStructuredError({ code: data.error.code, message: data.error.message ?? `HTTP ${resp.status}`, data: structuredErrorData(data.error) });
+    }
+    return exitWithStructuredError({ code: 'daemon-not-running', message: typeof data?.error === 'string' ? data.error : `HTTP ${resp.status}` });
   }
   if (flags.json) {
     process.stdout.write(JSON.stringify(data, null, 2) + '\n');
@@ -6213,12 +6226,18 @@ function printPluginHelp() {
   od plugin search <query> [--tag <t>]    Search installed plugins by id/title/desc/tag.
   od plugin stats [--json]                Inventory + snapshot health report.
   od plugin info <id>                     Print a plugin's manifest + trust state as JSON.
+  od plugin show <id>                     Same as info. With --session-file (multi-user Studio) the
+                                          catalog is the bundled one, each plugin with Web
+                                          availability; list --json includes it too.
   od plugin manifest <id>                 Print only the parsed manifest JSON (no wrapper).
   od plugin sources                       List distinct install sources + counts.
   od plugin install --source <path>       Install a plugin from a local folder (Phase 1).
   od plugin upgrade <id>                  Re-install a plugin from its recorded source.
   od plugin uninstall <id>                Remove a plugin from the registry + on-disk staging.
   od plugin apply <id> [--inputs <json>]  Compute an ApplyResult (preview) for a plugin.
+                                          With --session-file --project <id>: apply an applicable
+                                          bundled plugin to your own Studio project (immutable
+                                          snapshot); unavailable plugins are refused with reasons.
   od plugin duplicate <id> [--name <n>]   Copy a plugin HTML example into a new project
                                           without starting an agent run.
   od plugin doctor <id>                   Lint a plugin's manifest, atoms and resolved refs.

@@ -137,7 +137,7 @@ Remote origin 只接受 HTTPS，HTTP 只准 numeric loopback 的本地測試／�
 | #58 / S5 | Owner file list/read/write/upload/rename/delete/folders/search/versions/restore on the standard routes; reviewed RegExp routes matched by the gate; untrusted-content response policy; bounded writes; attachments and focused-file context in personal runs; shared FileWorkspace/FileViewer for pilots; no host paths in responses | non-ZIP exports (#66), public publish, resumable large uploads and per-project storage quota; S13 browser imports and S15 owned ZIP are implemented | `pilot`，非 `supported` |
 | #56 / #57 / S4 | Pilot actors send through the shared `ProjectView → ChatPane → ChatComposer`；question-form、reload reattach、stop、retry、queue、feedback 與 typed failure copy 由真實 browser harness 驗證 | S5 attachments, S8 private skills, S11 design documents and S21 per-turn personal Codex model/effort are implemented; real-provider recordings and full chat state matrix remain | `pilot`，非 `supported` |
 | #60 / S13–S14 | shared project setup and Home prompt → exactly one run; actor-owned immutable templates, duplicate and browser ZIP/directory imports; matching CLI commands | Live Artifact/Media/Figma, complete carousel/type parity and remaining Home acceptance | `pilot`，非 `supported` |
-| #61 / S11/S13/S17/S18/S20/S40 | bundled design/prompt templates and craft; actor design documents, revisions, safe previews and captured execution versions; immutable actor template snapshots; captured skill packages (bundled and private folder imports) with personal read-only mounts and company copy/offline-script tools; fixed-design conversations capture their packages; team catalogs (owner-managed use grants on private skills and documents between accounts, captured at admission); shared create/editor/catalog/composer and CLI | design generation, design asset packages, plugin/community management | `pilot`，非 `supported` |
+| #61 / S11/S13/S17/S18/S20/S40/S41 | bundled design/prompt templates and craft; actor design documents, revisions, safe previews and captured execution versions; immutable actor template snapshots; captured skill packages (bundled and private folder imports) with personal read-only mounts and company copy/offline-script tools; fixed-design conversations capture their packages; team catalogs (owner-managed use grants on private skills and documents between accounts, captured at admission); bundled plugin catalog with computed Web availability and owner-only apply of applicable plugins as immutable project snapshots (S41); read-only marketplace/community listings; shared create/editor/catalog/composer and CLI | design generation, design asset packages, plugin previews, plugins whose pipelines/atoms/strategies Studio turns do not run (459/460 bundled today) | `pilot`，非 `supported` |
 | #62 / S10/S16/S19/S21/S25/S38 | shared Settings frame and section navigation; instructions, manual and opt-in automatic memory (turn-source extraction, rule verification, per-account history), appearance/notification and personal Codex model preferences, About/version; HTTP A/B/admin negatives, CLI and shared Settings browser workflow | connectors, MCP, library and memory from connected apps (account OpenAI/Tavily keys in S33/S37, privacy in S30, automatic memory in S38) | `pilot`，非 `supported` |
 | #63 / S33/S34/S37 | OpenAI turns on the company pool or the account's own key carry image/speech/video functions billed to the turn's source; research search on each account's own encrypted Tavily key (standalone and with a turn), usage recorded per account; shared Home/Settings/composer and CLI | Live Artifacts, GenUI, critique and real-provider/EC2 acceptance | `pilot`，非 `supported` |
 | #66 / S15/S23 | captured owned project/folder/batch ZIP, SHA-256 receipt and standard design handoff metadata; one-file HTML export bundled from captured owner bytes; shared viewer/file download and CLI | isolated PDF/PPTX/image renderers, historical-version export binding, public share, cloud deploy/finalize/handoff | `pilot`，非 `supported` |
@@ -680,9 +680,52 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
 
 ![A shared skill in the grantee's catalog](../../docs/design/studio-parity/catalog-shared-badge.png)
 
-## 目前進度與續作順序 — 2026-10-09（S40 後）
+## S41 — bundled plugin catalog and apply on Web (#61, #57, #68; decision 2026-10-09)
 
-[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S40 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
+- **Decision (option b).** A Web account applies a bundled plugin only when every step it declares runs in a Studio turn. All other bundled plugins stay listed, marked unavailable with typed reasons. Nothing is applied by dropping what it declares. Third-party installs, marketplace fetch, untrusted scripts, `doctor` and `trust` stay refused.
+- **Capability evaluator.** `STUDIO_WEB_PLUGIN_CAPABILITIES` (contracts) is the one registry of what Studio turns run today. It lists the atoms `discovery-question-form`, `file-read`, `file-write` and `file-edit`, the capabilities `prompt:inject`, `fs:read` and `fs:write`, and the plugin's own `SKILL.md` as capturable context. It has no devloop, strategy, GenUI, connectors, MCP, assets, craft, design-system or skill refs, and accepts bundled sources only. TodoWrite is personal-Codex only, so it is not listed.
+  - `plugins/studio-availability.ts` evaluates each manifest against the registry. It uses the pipeline apply would run: the declared one, or the bundled scenario fallback (`plugins/bundled-scenarios.ts`, now shared with desktop apply), plus the plan/critique floor (`ensureCoreQualityStages`).
+  - Reasons are typed: `atom`, `unknown-atom`, `pipeline-devloop`, `strategy`, `genui`, `connector`, `mcp`, `capability`, `context`, `manifest`, `source`. Malformed declarations fail closed. No plugin id appears anywhere; adding a capability to the registry opens every plugin that needed only it.
+- **Routes.** `routes/studio-plugins.ts`. The standard paths are `actor-scoped` rewrites to `/api/multiuser/catalog/…`:
+  - `GET /api/plugins[/:id]`: bundled rows only, each with `availability`. `fsPath` is empty and `source` reads `bundled:<id>`, so no host path appears.
+  - `POST /api/plugins/:id/apply` (body policy `studio-plugin-apply`: `projectId`, scalar `inputs`, empty `grantCaps`, `locale`): owner-only. S32 keeps project settings with the owner, so an editor is refused too. Foreign, shared and missing projects are one 404, for the admin as well. An unavailable plugin is `403 MULTIUSER_CAPABILITY_UNAVAILABLE` with `details.reasons`, and nothing is written.
+  - `GET /api/applied-plugins/:snapshotId`: the project owner, or a grantee while the owner is active; otherwise 404.
+  - `GET /api/marketplaces[/:id[/plugins]]`: read-only listings with host paths removed.
+  - Install, upload, upgrade, uninstall, `apply-local`, `doctor`, `trust`, `share-project` and marketplace add/refresh/trust/remove stay `blocked-in-multiuser` and now answer `403 MULTIUSER_CAPABILITY_UNAVAILABLE` with `details.capability` (`plugin-install`, `plugin-doctor`, `plugin-trust`, `plugin-scripts`, `plugin-marketplace`). Previews, examples, assets, stats, duplicate, canon, export and prune remain plain blocked.
+- **Snapshot.** Apply runs the single-user `applyPlugin` on a path-free record and reads the plugin's own `SKILL.md` through a bounded, no-follow, single-link descriptor read. It renders the prompt once (plugin block plus the skill), then rechecks the session, ownership and catalog row synchronously before one transaction. That transaction writes `createSnapshot` + `linkSnapshotToProject` and an immutable `studio_plugin_applications` row (snapshot JSON, prompt, SHA-256; an update trigger aborts). Removing or upgrading the bundled plugin changes neither the project pin nor its snapshot.
+- **Turns.** `appliedPluginSnapshotId` moved to `honored`; `context.pluginIds` is accepted.
+  - A question answer inherits its source turn's plugin.
+  - A conversation keeps the plugin its turns captured. A conversation without one takes the project's current snapshot, or switches to it when the request names it.
+  - Any other snapshot or plugin id is `409 CONFLICT`, never a swap.
+  - The captured prompt is appended to the stable prompt on personal Codex, the company pool and the account's own key, and stored as `pluginSnapshot` in the run. A freshly read project pin is re-decided synchronously before the admission commit.
+  - Editors' turns inherit the owner's applied plugin only while the owner is active. Removing the chip in the composer does not unpin it; the next turn still uses the project pin, as on desktop.
+- **Web.** The shared Plugins page (`ExtensionsMarketplace`) and plugin page show `PluginWebAvailability`: "Not available on Web · Needs: live-artifact, critique-theater, …", or "Apply it from a project composer". In Studio, authoring, install and the Home hand-off are not offered (`hostServices`), and Community is read-only. The Composer offers only applicable plugins; picking one applies it to the current project and shows the existing plugin chip. The transport opens these routes with the `catalogs` lane; `stats` and `events` stay closed on the standard prefix, as on the daemon. Three i18n keys were added in all 19 locales.
+- **CLI.** `od plugin list --json` (availability included; JSON awaits the stdout flush before exit), `od plugin show|info <id>` and `od plugin apply <id> --project <id>` over `--session-file`. A refused apply now reports the server's typed code and reasons instead of `daemon-not-running`.
+- **Evidence.**
+  - Counts from the evaluator on the bundled tree: 461 manifests; the OD Next strategy package is not a catalog plugin, so 460 plugins (13 atoms) are listed. 1 is applicable (`od-share-to-community`) and 459 unavailable; 0 of 13 atoms. The brief's figure of 470 does not match this tree.
+  - Plugins carrying each reason (one plugin may have several):
+    - atoms: `live-artifact` 343, `critique-theater` 331, `todo-write` 326, `media-video` 25, `direction-picker` 17, `handoff` 6, `token-map` 4, `patch-edit` 3, `code-import`/`design-extract`/`figma-extract`/`media-audio`/`media-image` 2 each, `build-test`/`diff-review`/`rewrite-plan` 1 each.
+    - `unknown-atom`: `image-generate` 45, `video-generate` 40.
+    - `pipeline-devloop`: `critique` 330, plus 1 each for `review-plugin` and `verify`.
+    - `context`: `assets` 413, `design-system` 316, `craft` 38, `skill-ref` 1.
+    - `capability`: `media:video-generate` 63, `media:image-generate` 45, `network` 5, `subprocess` 5, `bash` 2, `media:image|video|audio` 2 each, and 1 each for `shell`, `pipeline:*` and `connector:figma`.
+    - Also `connector:figma` 1 and `genui` 1.
+  - Tests:
+    - Daemon: `plugins-studio-availability` (5) and `studio-plugins-http` (6), red on `f5ff4962` and green after. Also gate inventory, route-classes (2 new), the CLI case and the updated admission refusal.
+    - Desktop: single-user plugin suites 86 files / 673 tests, unchanged.
+    - Web: `studio-plugins` (4) plus the touched component suites. Transport oracle, and the HTTPS browser case: unavailable reason on the Plugins page → Composer apply → turn captures the plugin → B and the admin refused.
+- **Remaining.**
+  - Running plugin pipelines, the devloop and GenUI, plus Live Artifacts, critique, media atoms, assets, craft and design-system context in Studio turns. Each of these opens plugins as the registry gains it.
+  - Plugin previews/examples on the preview origin, per-turn (rather than project) plugin selection, and plugin inputs forms.
+  - `od-share-to-community`'s `SKILL.md` prose suggests host `od plugin`/`gh` commands that Web turns cannot run. Its declared steps (read, write) do run.
+
+![Bundled plugins with Web availability](../../docs/design/studio-parity/plugins-web-availability.png)
+
+![Applied plugin chip in the Studio composer](../../docs/design/studio-parity/plugin-composer-chip.png)
+
+## 目前進度與續作順序 — 2026-10-09（S41 後）
+
+[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S41 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
 
 - 分支：`feat/studio-parity-foundation`；以 PR 最新 head 為準。先核對 git status/log 和 GitHub 最新 review，避免重做已交付項目。S18–S25 的實作、測試、限制與入口截圖見上文；本次依使用者要求階段性收尾並交接，並非 Epic 完成。
 - 已確認產品決定：公司池使用 OpenAI 官方 API；Vela 採使用者驗證的本人身份與服務端 Web account/member binding；native window、OS overlay 與 app installer/updater 的 Web 不適用決定，和 in-page pet 仍需交付項目保持分開。
@@ -693,8 +736,8 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
   - #65：S32 完成同部署帳號間專案分享（view/comment/edit、presence、共享評論、撤銷即時生效）；S40 完成 private skills／design documents 的 team catalogs（use grant、admission capture、撤銷不改已 pin 的對話）；剩餘 plugins 共享與他人執行中 turn 的即時鏡像；依決定不接 Vela。
   - #66：PDF/PPTX/PNG 由 S31 伺服器 renderer 完成；S35 完成部署內公開連結；剩餘雲端 deploy（每帳號 token）與 finalize/handoff。
   - #63：S33 每帳號加密 OpenAI key、S34 媒體生成（圖片/旁白/影片）、S37 每帳號 Tavily research 完成；剩餘 Live Artifacts、GenUI、critique。
-  - #61：S40 完成 skills／design documents 的 team catalogs；剩餘 design generation、asset packages、plugin/community catalogs。
-  - S41（bundled plugin catalog 與 apply）待產品決定，尚未實作。Bundled plugins 中除 13 個 atoms 外，全部是帶 pipeline 與 scenario 策略的 `kind: scenario`。331/470 需要 `live-artifact`，另有 `critique-theater`、`handoff`、`figma-extract`、`code-import` 等 atoms。Studio turns 不走 OD Next，也不執行 plugin pipelines。需決定 Web 帳號「套用 bundled plugin」的語意：(a) 只捕捉 prompt context（skill、assets、design system、craft）並明示 pipeline／atoms／策略不在 Web 執行；(b) 只開放 atoms 全部可在 Web 執行的 plugins，其餘列為 unavailable 並附原因；(c) 先把 plugin pipelines／OD Next 策略移植進 Studio turns。Marketplace／community 的唯讀列表與第三方安裝的拒絕不受此影響。
+  - #61：S40 完成 skills／design documents 的 team catalogs；S41 完成 bundled plugin catalog（依能力計算 Web 可用性）與 owner-only apply；剩餘 design generation、asset packages、plugin previews，以及 Studio turns 尚未能執行的 pipelines／atoms／策略。
+  - S41（2026-10-09 產品決定 b）：Web 帳號只能套用每個宣告步驟（pipeline、atoms、strategy）都能在 Studio turn 執行的 bundled plugin；其餘列出並附 typed reasons。可用性由 `STUDIO_WEB_PLUGIN_CAPABILITIES` 對 manifest 計算，不逐一硬編。目前 460 個 bundled plugins 中 1 個可套用（`od-share-to-community`）、459 個不可用；能力落地後自動開放。套用為 owner-only、immutable project snapshot；第三方安裝、marketplace fetch、doctor、trust 以 typed capability code 拒絕。見 S41。
   - #62：S33/S37 完成每帳號 OpenAI/Tavily 加密金鑰；S38 完成自動記憶（opt-in、依回合來源計費、驗證與歷史）；剩餘 connectors/MCP、library、connected-app 記憶。
   - #67：in-page pet 與清除本瀏覽器資料已於 S27 完成；剩餘逐項 host bridge 的 mobile/permission-denied/headless UX 驗收（#70）。
 - #53–#59 和 #68/#69 的尚欠驗收（完整 chat state matrix、replay/telemetry、background/artifact lineage、provider recording、rich headless flows）不因本批完成。最後執行 #70 同 build 單人/A/B、desktop/mobile、a11y/visual/performance、revocation/restart/rollback，再決定 rollout。

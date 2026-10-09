@@ -29,7 +29,7 @@
 
 import type Database from 'better-sqlite3';
 import type { Express, Request, RequestHandler, Response } from 'express';
-import { STUDIO_AUTOMATION_INGESTION_FIELDS, STUDIO_AUTOMATION_PROPOSAL_FIELDS, STUDIO_MEMORY_CONFIG_FIELDS, STUDIO_MEMORY_EXTRACT_FIELDS, parseStudioMessageFeedback, parseStudioSettingsWrite, type StudioProjectShareSummary } from '@open-design/contracts';
+import { STUDIO_AUTOMATION_INGESTION_FIELDS, STUDIO_AUTOMATION_PROPOSAL_FIELDS, STUDIO_MEMORY_CONFIG_FIELDS, STUDIO_MEMORY_EXTRACT_FIELDS, isStudioPluginApplyRequest, parseStudioMessageFeedback, parseStudioSettingsWrite, type StudioProjectShareSummary } from '@open-design/contracts';
 import { sendApiError } from './api-errors.js';
 import { setMultiUserStreamAuthority } from './multiuser-stream.js';
 import { clearedSessionCookie, readSessionCookie, registerAuthRoutes } from '../routes/auth.js';
@@ -254,9 +254,20 @@ export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
       case 'not-found':
         sendApiError(res, 404, 'NOT_FOUND', 'not found');
         return;
-      case 'blocked':
+      case 'blocked': {
+        // A reviewed host capability (S41: plugin install, marketplace fetch,
+        // doctor, trust, scripts) answers with its typed refusal when every
+        // match names the same one; everything else keeps the generic refusal.
+        const refusals = new Set(matches.map((match) => match.entry.routeClass === 'blocked-in-multiuser' ? match.entry.capabilityRefusal ?? '' : ''));
+        const capability = refusals.size === 1 ? [...refusals][0]! : '';
+        if (capability) {
+          sendApiError(res, 403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'this capability is not available to Web accounts',
+            { details: { capability, reason: matches[0]!.entry.reason } });
+          return;
+        }
         sendApiError(res, 403, 'FORBIDDEN', 'this route is not available in multi-user mode');
         return;
+      }
       case 'forbidden':
         sendApiError(res, 403, 'FORBIDDEN', 'admin role required');
         return;
@@ -422,6 +433,8 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   const only = (fields: readonly string[]) => Object.keys(body).every((key) => fields.includes(key));
   const optionalText = (value: unknown, max: number) => value === undefined || value === null || (typeof value === 'string' && value.length <= max);
   const sessionMode = body.sessionMode === undefined || (typeof body.sessionMode === 'string' && ['design', 'chat', 'plan'].includes(body.sessionMode));
+  // #61: a project, scalar inputs and an empty capability grant; the plugin and ownership are checked by the route.
+  if (policy === 'studio-plugin-apply') return isStudioPluginApplyRequest(body);
   if (policy === 'archive-batch') return only(['files']) && Array.isArray(body.files) && body.files.length > 0
     && body.files.length <= 500 && body.files.every(projectPathText);
   // Field-level routine validation needs ownership checks and lives in the route.

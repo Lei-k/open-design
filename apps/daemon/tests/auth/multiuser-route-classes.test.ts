@@ -305,3 +305,45 @@ describe('decideMultiUserAccess', () => {
     expect(decideMultiUserAccess({ matches, actor: actor('user', 'user-1'), isProjectOwner: owns }).kind).toBe('project-not-found');
   });
 });
+
+describe('S41 bundled plugin routes (#61)', () => {
+  it('opens the catalog, owner-only apply and read-only marketplaces; host operations are typed refusals', () => {
+    const resolved = (method: string, path: string) => matchMultiUserRoute(method, path).map((match) => match.entry);
+    for (const [method, path, alias] of [
+      ['GET', '/api/plugins', '/api/multiuser/catalog/plugins'],
+      ['GET', '/api/plugins/od-share-to-community', '/api/multiuser/catalog/plugins/:id'],
+      ['POST', '/api/plugins/od-share-to-community/apply', '/api/multiuser/catalog/plugins/:id/apply'],
+      ['GET', '/api/applied-plugins/snap-1', '/api/multiuser/catalog/applied-plugins/:snapshotId'],
+      ['GET', '/api/marketplaces', '/api/multiuser/catalog/marketplaces'],
+      ['GET', '/api/marketplaces/official/plugins', '/api/multiuser/catalog/marketplaces/:id/plugins'],
+    ] as const) {
+      const [entry, ...rest] = resolved(method, path);
+      expect(rest, path).toEqual([]);
+      expect(entry, path).toMatchObject({ routeClass: 'actor-scoped', rewriteTo: alias });
+    }
+    // Static siblings keep their own (blocked) class by precedence.
+    expect(resolved('GET', '/api/plugins/stats').map((entry) => entry.routeClass)).toEqual(['blocked-in-multiuser']);
+    expect(resolved('GET', '/api/plugins/events').map((entry) => entry.routeClass)).toEqual(['blocked-in-multiuser']);
+    for (const [method, path, capability] of [
+      ['POST', '/api/plugins/install', 'plugin-install'], ['POST', '/api/plugins/x/upgrade', 'plugin-install'],
+      ['POST', '/api/plugins/x/uninstall', 'plugin-install'], ['POST', '/api/plugins/upload-zip', 'plugin-install'],
+      ['POST', '/api/plugins/x/apply-local', 'plugin-install'], ['POST', '/api/plugins/x/doctor', 'plugin-doctor'],
+      ['POST', '/api/plugins/x/trust', 'plugin-trust'], ['POST', '/api/plugins/x/share-project', 'plugin-scripts'],
+      ['POST', '/api/marketplaces', 'plugin-marketplace'], ['POST', '/api/marketplaces/x/refresh', 'plugin-marketplace'],
+    ] as const) {
+      expect(resolved(method, path), path).toEqual([expect.objectContaining({ routeClass: 'blocked-in-multiuser', capabilityRefusal: capability })]);
+    }
+    expect(MULTIUSER_ROUTE_CLASSIFICATION.every((entry) => !entry.capabilityRefusal || entry.routeClass === 'blocked-in-multiuser')).toBe(true);
+  });
+
+  it('accepts only a project, scalar inputs, an empty grant and a locale on apply', () => {
+    const ok = (body: unknown) => multiUserBodyAllowed('studio-plugin-apply', body);
+    expect(ok({ projectId: 'p1' })).toBe(true);
+    expect(ok({ projectId: 'p1', inputs: { brand: 'Acme', count: 3, dark: true }, grantCaps: [], locale: 'en' })).toBe(true);
+    for (const body of [{}, { projectId: '' }, { projectId: 'p1', source: '/host' }, { projectId: 'p1', grantCaps: ['subprocess'] },
+      { projectId: 'p1', inputs: { nested: {} } }, { projectId: 'p1', inputs: { long: 'x'.repeat(4001) } },
+      { projectId: 'p1', inputs: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`k${i}`, i])) }, null, [], 'p1']) {
+      expect(ok(body), JSON.stringify(body)).toBe(false);
+    }
+  });
+});

@@ -10,6 +10,7 @@ export * from './api/studio-provider-keys.js';
 export * from './api/studio-public-links.js';
 export * from './api/studio-automations.js';
 export * from './api/studio-research.js';
+export * from './api/studio-plugins.js';
 export * from './api/design-system-document.js';
 export * from './api/strategy-rollout.js';
 export * from './api/agent-sessions.js';

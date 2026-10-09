@@ -45,6 +45,7 @@ import { createStudioSkillScriptRunner } from '../services/studio-skill-scripts.
 import type { PersonalSandbox } from '../services/personal-sandbox.js';
 import { internalMultiUserResponse, type InternalMultiUserResult } from '../http/multiuser-internal.js';
 import type { AuthActor } from '../services/auth-service.js';
+import type { StudioPluginCapture, StudioPlugins } from './studio-plugins.js';
 
 type RunRow = {
   id: string; owner_account_id: string; project_id: string; conversation_id: string;
@@ -113,6 +114,9 @@ type PersonalRunFields = {
   reasoning: string | null;
   /** `research.enabled` (#63): one search on the account's own key at admission; null when not asked. */
   research: { query: string | null; maxSources: number | undefined } | null;
+  /** #61: may only confirm the turn's applied plugin (project or conversation pin); never selects another. */
+  appliedPluginSnapshotId: string | null;
+  pluginIds: string[];
 };
 type FieldRefusal = { status: number; code: ApiErrorCode; message: string };
 /** A project-relative path: no root, drive, backslash, NUL, empty, `.` or `..` segment. */
@@ -155,7 +159,7 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
     || (userMessageId !== null && (!isStudioMessageIdInNamespace(userMessageId, messageIdPrefix) || !isStudioMessageIdInNamespace(assistantMessageId, messageIdPrefix)))) {
     return refuse(400, 'BAD_REQUEST', 'message ids must be a distinct pair in this account\'s namespace');
   }
-  if (!optionalKey(body.clientRequestId) || !['skillId', 'designSystemId'].every((key) => body[key] === undefined || body[key] === null || typeof body[key] === 'string')) {
+  if (!optionalKey(body.clientRequestId) || !optionalKey(body.appliedPluginSnapshotId) || !['skillId', 'designSystemId'].every((key) => body[key] === undefined || body[key] === null || typeof body[key] === 'string')) {
     return refuse(400, 'BAD_REQUEST', 'invalid run request');
   }
   const attachments = body.attachments ?? [];
@@ -184,9 +188,11 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
   if (context !== undefined && context !== null) {
     if (typeof context !== 'object' || Array.isArray(context)) return refuse(400, 'BAD_REQUEST', 'invalid run context');
     const record = context as Record<string, unknown>;
-    const selections = ['pluginIds', 'mcpServerIds', 'connectorIds'];
+    const selections = ['mcpServerIds', 'connectorIds'];
     if (record.skillIds !== undefined && !validSkillIds(record.skillIds)) return refuse(400, 'BAD_REQUEST', 'invalid skill selections');
-    if (Object.keys(record).some((key) => ![...selections, 'skillIds', 'workspaceItems'].includes(key))
+    if (record.pluginIds !== undefined && !(Array.isArray(record.pluginIds) && record.pluginIds.length <= 1
+      && record.pluginIds.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 256))) return refuse(400, 'BAD_REQUEST', 'invalid plugin selection');
+    if (Object.keys(record).some((key) => ![...selections, 'skillIds', 'pluginIds', 'workspaceItems'].includes(key))
       || selections.some((key) => record[key] !== undefined && !(Array.isArray(record[key]) && (record[key] as unknown[]).length === 0))) {
       return refuse(403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'not available for personal Studio runs: context selections');
     }
@@ -248,6 +254,8 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
     questionSourceRunId: answer ? sourceRunId as string : null,
     attachments: [...new Set(attachments as string[])],
     workspaceItems, commentAttachments, model, reasoning, research,
+    appliedPluginSnapshotId: (body.appliedPluginSnapshotId as string | null | undefined) ?? null,
+    pluginIds: ((context as { pluginIds?: string[] } | null)?.pluginIds ?? []),
   };
 }
 
@@ -343,6 +351,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   researchFetch?: typeof fetch;
   /** Account automatic memory (#62): heuristics at admission, extraction/verification after a turn. */
   memory?: StudioMemoryAutomation;
+  /** Bundled plugins applied to projects (#61): the project's immutable apply snapshot. */
+  plugins?: Pick<StudioPlugins, 'projectPin'>;
 }): { cancelAccountRuns(accountId: string): void; isRunOwner(runId: string, accountId: string): boolean;
   /** `accountId: null` stops every account's runs in the project. */
   cancelProjectRuns(accountId: string | null, projectId: string, conversationId?: string): Promise<() => void>;
@@ -475,6 +485,43 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       ...(fields.skillId === null && project?.skillId ? { skill: { projectId, id: project.skillId } } : {}),
     };
   };
+  /**
+   * The turn's applied plugin (#61), captured, never re-read: a question
+   * answer inherits its source turn's; otherwise the conversation keeps the
+   * plugin its turns already captured, and a conversation without one takes
+   * the project's current apply snapshot. A request may confirm that choice,
+   * or switch the conversation to the project's current snapshot by naming
+   * it; any other snapshot or plugin id is a conflict, never a substitution.
+   * `fresh` marks a live read of the project pin, re-decided before commit.
+   */
+  type PluginSnapshot = Omit<StudioPluginCapture, 'projectId'>;
+  const pluginSnapshotOf = (request: Record<string, unknown> | null): PluginSnapshot | null => {
+    const value = request?.pluginSnapshot as PluginSnapshot | undefined;
+    return value && typeof value.snapshotId === 'string' && typeof value.prompt === 'string' && typeof value.pluginId === 'string' ? value : null;
+  };
+  const selectPlugin = (owner: string, target: { projectId: string; conversationId: string }, fields: PersonalRunFields, question?: RunRow):
+    { plugin: PluginSnapshot | null; fresh: boolean } | false => {
+    const matches = (plugin: PluginSnapshot | null) => (fields.appliedPluginSnapshotId === null || plugin?.snapshotId === fields.appliedPluginSnapshotId)
+      && (fields.pluginIds.length === 0 || plugin?.pluginId === fields.pluginIds[0]);
+    if (question) {
+      const inherited = pluginSnapshotOf(storedRequest(question.request_json));
+      return matches(inherited) ? { plugin: inherited, fresh: false } : false;
+    }
+    const previous = db.prepare(`SELECT request_json FROM ${table} WHERE owner_account_id = ? AND conversation_id = ? AND json_valid(request_json)
+      AND json_extract(request_json, '$.pluginSnapshot.snapshotId') IS NOT NULL ORDER BY queue_seq DESC LIMIT 1`)
+      .get(owner, target.conversationId) as { request_json: string } | undefined;
+    const pinned = previous ? pluginSnapshotOf(storedRequest(previous.request_json)) : null;
+    const project = input.plugins?.projectPin(target.projectId, owner) ?? null;
+    const current = project ? { snapshotId: project.snapshotId, pluginId: project.pluginId, pluginVersion: project.pluginVersion,
+      manifestSourceDigest: project.manifestSourceDigest, prompt: project.prompt, promptSha256: project.promptSha256 } : null;
+    const chosen = fields.appliedPluginSnapshotId !== null && current?.snapshotId === fields.appliedPluginSnapshotId ? current : pinned ?? current;
+    return matches(chosen) ? { plugin: chosen, fresh: chosen !== null && chosen === current } : false;
+  };
+  /** Synchronous with the commit: a freshly read project pin must still be the project's and usable by the actor. */
+  const pluginStillPinned = (owner: string, projectId: string, selection: { plugin: PluginSnapshot | null; fresh: boolean }) =>
+    !selection.fresh || input.plugins?.projectPin(projectId, owner)?.snapshotId === selection.plugin?.snapshotId;
+  const refusePlugin = (res: Response) => sendApiError(res, 409, 'CONFLICT', 'the plugin does not match this project\'s applied plugin');
+  const withPlugin = (prompt: string, plugin: PluginSnapshot | null) => plugin ? `${prompt}\n\n---\n\n${plugin.prompt}` : prompt;
   const selectSkills = (fields: PersonalRunFields, projectId: string, fixed: boolean, question: boolean): string[] => {
     if (question) return fields.skillIds;
     const primary = fixed ? null : fields.skillId ?? getProject(db, projectId)?.skillId ?? null;
@@ -1491,6 +1538,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     }
     const fixedCapture = fixedDesign ? await captureFixedDesign(owner, target.conversationId, fixedDesign) : null;
     if (fixedDesign && !fixedCapture) return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
+    const pluginSelection = selectPlugin(owner, target, fields, question);
+    if (!pluginSelection) return refusePlugin(res);
+    const plugin = pluginSelection.plugin;
     const pins = projectPins(fields, target.projectId, Boolean(fixedDesign), Boolean(question));
     const freshShared: FreshSharedCapture[] = [];
     const designSnapshot = fixedCapture ? fixedCapture.design : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? getProject(db, target.projectId)?.designSystemId ?? null, question, pins.design, freshShared);
@@ -1520,7 +1570,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (inheritsSkills && typeof questionRequest?.stablePrompt !== 'string') composed = null;
     const lastDesign = db.prepare('SELECT request_json FROM multiuser_runs WHERE owner_account_id = ? AND conversation_id = ? ORDER BY queue_seq DESC LIMIT 1')
       .get(owner, target.conversationId) as { request_json: string | null } | undefined;
-    if (!inheritsSkills && !composed && (actorContext.userInstructions || actorContext.memoryBody || designSnapshot
+    if (!inheritsSkills && !composed && (actorContext.userInstructions || actorContext.memoryBody || designSnapshot || plugin
       || lastDesign && storedRequest(lastDesign.request_json)?.designSnapshot)) {
       const prompt = composeSystemPrompt({ agentId: 'codex', streamFormat: 'json-event-stream',
         executionProfile: 'filesystem', promptCoreVariant: 'slim', sessionMode: 'design', locale: 'en',
@@ -1543,6 +1593,11 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       composed = { prompt, hash: createHash('sha256').update(prompt).digest('hex'),
         selection: composed?.selection ?? { conversationId: target.conversationId, skillId: '', designSystemId: '', locale: 'en' } };
     }
+    // The applied plugin's captured prompt follows skills; an answer already carries it in its inherited prompt.
+    if (plugin && !question && composed) {
+      const prompt = withPlugin(composed.prompt, plugin);
+      composed = { ...composed, prompt, hash: createHash('sha256').update(prompt).digest('hex') };
+    }
     const skillSnapshots = inheritsSkills ? questionRequest?.skillSnapshots ?? [] : withFixedSkill(fixedCapture?.skill, selectedSkills);
     // No research is billed for a turn this account cannot run on its Codex link.
     if (fields.research && !personal.usableAccount(owner)) {
@@ -1559,6 +1614,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       ...(findings ? { research: { provider: 'tavily' } } : {}),
       ...(question ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId: question.id } } : {}),
       ...(designSnapshot ? { designSnapshot } : {}),
+      ...(plugin ? { pluginSnapshot: plugin } : {}),
       ...(composed ? { skillId: composed.selection.skillId, designSystemId: designSnapshot?.id ?? composed.selection.designSystemId,
         stablePrompt: composed.prompt, stablePromptHash: composed.hash } : {}) });
     // Prompt/catalog I/O yields: deletion or session revocation may have won
@@ -1593,6 +1649,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     // decided here, with no await before the commit below.
     const lostPersonal = lostSharedCapture(owner, freshShared);
     if (lostPersonal) return refuseLostSharedCapture(res, lostPersonal);
+    if (!pluginStillPinned(owner, target.projectId, pluginSelection)) return refusePlugin(res);
     const id = randomUUID();
     const createdAt = now();
     const queuedFrame = db.transaction(() => {
@@ -1678,6 +1735,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     }
     const fixedCapture = fixed && !question ? await captureFixedDesign(owner, target.conversationId, fixed) : null;
     if (fixed && !question && !fixedCapture) return sendApiError(res, 400, 'BAD_REQUEST', 'design selection unavailable');
+    const pluginSelection = selectPlugin(owner, target, fields, question);
+    if (!pluginSelection) return refusePlugin(res);
+    const plugin = pluginSelection.plugin;
     const pins = projectPins(fields, target.projectId, Boolean(fixed), Boolean(question));
     const freshShared: FreshSharedCapture[] = [];
     const designSnapshot = fixedCapture ? fixedCapture.design : fixed ? null : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? getProject(db, target.projectId)?.designSystemId ?? null, question, pins.design, freshShared);
@@ -1693,7 +1753,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (fixedCapture && !design) return sendApiError(res, 400, 'BAD_REQUEST', 'design selection unavailable');
     const stablePrompt = design?.prompt ?? composeSystemPrompt({ agentId: 'codex', streamFormat: 'json-event-stream',
       executionProfile: 'filesystem', promptCoreVariant: 'slim', sessionMode: 'design', locale: 'en', metadata: getProject(db, target.projectId)?.metadata, ...actorContext, ...designSnapshot?.prompt });
-    const prompt = question && typeof previousRequest?.stablePrompt === 'string' ? previousRequest.stablePrompt : stablePrompt + selected.map((skill) => `\n\n---\n\n## Composed skill — ${skill.name}\n\n${skill.body.trim()}`).join('');
+    const prompt = question && typeof previousRequest?.stablePrompt === 'string' ? previousRequest.stablePrompt
+      : withPlugin(stablePrompt + selected.map((skill) => `\n\n---\n\n## Composed skill — ${skill.name}\n\n${skill.body.trim()}`).join(''), plugin);
     // Research bills the account's own Tavily key whatever the turn's source; the recheck below covers this I/O.
     if (fields.research && !own && ledger.balance(owner).remainingMs === 0) return sendApiError(res, 429, 'MULTIUSER_QUOTA_EXHAUSTED', 'worker quota exhausted');
     const findings = await researchInstruction(owner, target.conversationId, fields, res);
@@ -1724,6 +1785,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     // decided here, with no await before the commit below.
     const lostOpenAI = lostSharedCapture(owner, freshShared);
     if (lostOpenAI) return refuseLostSharedCapture(res, lostOpenAI);
+    if (!pluginStillPinned(owner, target.projectId, pluginSelection)) return refusePlugin(res);
     const id = randomUUID(); const createdAt = now();
     const request = JSON.stringify({ message: fields.text, ...(instruction ? { instruction } : {}),
       ...(findings ? { research: { provider: 'tavily' } } : {}),
@@ -1732,6 +1794,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       skillIds: question ? capturedSkillIds : fields.skillIds,
       skillSnapshots: question ? previousRequest?.skillSnapshots ?? [] : withFixedSkill(fixedCapture?.skill, selected),
       ...(designSnapshot ? { designSnapshot, designSystemId: designSnapshot.id } : {}),
+      ...(plugin ? { pluginSnapshot: plugin } : {}),
       ...(question ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId: question.id } } : {}),
       attachments: fields.attachments, workspaceItems: fields.workspaceItems,
       ...(fields.commentAttachments.length ? { commentAttachments: fields.commentAttachments } : {}) });
