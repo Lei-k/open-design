@@ -86,6 +86,12 @@ interface CommunityViewProps {
     action: PluginUseAction,
     target: CommunityTemplateUseTarget,
   ) => void;
+  /** Browse the gallery without any hand-off (#61): a Studio account has no
+   *  host Remix/Use flow, so the pills are withheld and a card body opens the
+   *  plugin page that states Web availability. This must be stated by the
+   *  shell, not inferred from a missing callback: the desktop gallery renders
+   *  the pills whether or not its destination handlers are wired in. */
+  readOnly?: boolean;
 }
 
 /* Types whose artwork has no house format: user-shot photos, avatars, key art,
@@ -94,7 +100,7 @@ interface CommunityViewProps {
    ratio and reads better as an even grid. */
 const MASONRY_TYPES = new Set<TemplateType>(['Image', 'Video']);
 
-export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: CommunityViewProps) {
+export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin, readOnly = false }: CommunityViewProps) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
   const { context: workspaceContext } = useWorkspaceContext();
@@ -283,11 +289,9 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
   };
   const canRemixTemplate = (template: TemplateDemo) => {
     const record = pluginById.get(template.id);
-    return Boolean(onRemixTemplate) && !isPromptArtifact(template) && Boolean(record && canDuplicatePluginPreview(record));
+    return !readOnly && !isPromptArtifact(template) && Boolean(record && canDuplicatePluginPreview(record));
   };
-  // A shell without any hand-off (a Web account, #61) browses read-only: no
-  // Use pill, and details open the plugin page that states Web availability.
-  const canUseTemplate = Boolean(onUsePrompt || onUsePlugin);
+  const canUseTemplate = !readOnly;
   const templateById = useCallback(
     (id: string) => templates.find((template) => template.id === id) ?? null,
     [templates],
@@ -305,7 +309,7 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
       ...workspaceDimensions,
     });
     const record = plugins.find((row) => row.id === template.id) ?? null;
-    if (!canUseTemplate && !onRemixTemplate) {
+    if (readOnly) {
       if (record) navigate({ kind: 'marketplace-detail', pluginId: record.id });
       return;
     }

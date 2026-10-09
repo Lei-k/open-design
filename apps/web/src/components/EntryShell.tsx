@@ -2089,7 +2089,7 @@ export function EntryShell({
               /> : (
                 // Remix, Use and the plugin hand-off are host flows. Web accounts
                 // browse the gallery read-only; details carry Web availability (#61).
-                <CommunityView />
+                <CommunityView readOnly />
               )}</StudioLane>
             ) : null}
             {/* Team destinations — the entry shell owns the nav frame only; each
