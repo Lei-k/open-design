@@ -341,3 +341,27 @@ it('opens account research and the Tavily key only where the server advertises a
     expect(studioRequestAvailable(method, path, () => true, true, true), `${method} ${path}`).toBe(false);
   }
 });
+
+it('opens team catalog grants only with usable catalogs and collaboration lanes, and only where the daemon classifies them', () => {
+  const both = (lane: string) => lane === 'catalogs' || lane === 'collaboration';
+  for (const segment of ['skills', 'design-systems']) {
+    const item = `/api/multiuser/catalog/${segment}/test-id`;
+    for (const [method, path] of [['GET', `${item}/access`], ['DELETE', `${item}/access`], ['PUT', `${item}/shares`], ['DELETE', `${item}/shares/acct`]] as const) {
+      expect(studioRequestAvailable(method, path, both), `${method} ${path}`).toBe(true);
+      expect(studioRequestAvailable(method, path, (lane) => lane === 'catalogs'), `${method} ${path}`).toBe(false);
+      expect(studioRequestAvailable(method, path, (lane) => lane === 'collaboration'), `${method} ${path}`).toBe(false);
+      const matches = matchMultiUserRoute(method, path);
+      expect(matches.length, `${method} ${path}`).toBe(1);
+      expect(matches[0]!.entry.routeClass, `${method} ${path}`).toBe('actor-scoped');
+    }
+    for (const [method, path] of [['POST', `${item}/shares`], ['GET', `${item}/shares`], ['PUT', `${item}/access`], ['GET', `${item}/shares/acct`]] as const) {
+      expect(studioRequestAvailable(method, path, () => true), `${method} ${path}`).toBe(false);
+      expect(matchMultiUserRoute(method, path), `${method} ${path}`).toEqual([]);
+    }
+  }
+  // Vela team catalogs stay blocked.
+  for (const path of ['/api/workspace/skills/s/share', '/api/workspace/design-systems/d/share']) {
+    expect(studioRequestAvailable('POST', path, () => true), path).toBe(false);
+    expect(matchMultiUserRoute('POST', path).every(({ entry }) => entry.routeClass === 'blocked-in-multiuser'), path).toBe(true);
+  }
+});

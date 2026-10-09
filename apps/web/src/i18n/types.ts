@@ -87,6 +87,13 @@ export interface Dict {
   'studio.share.readonlyView': string;
   'studio.share.revoked': string;
   'studio.share.sharedBy': string;
+  'studio.share.roleUse': string;
+  'studio.share.skillTitle': string;
+  'studio.share.designSystemTitle': string;
+  'studio.share.catalogOwnerHint': string;
+  'studio.share.catalogMemberHint': string;
+  'studio.share.catalogLeave': string;
+  'studio.share.catalogLimit': string;
   'studio.settingsSaved': string;
   'studio.settingsError': string;
   'studio.settingsConflict': string;

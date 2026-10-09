@@ -29,6 +29,14 @@ export class StudioDesignSystems {
     const row = this.row(owner, id);
     return row ? JSON.parse(row.document_json) as DesignSystemDetail : null;
   }
+  /**
+   * A live document by id with its owner, whoever owns it. Only for callers
+   * that already decided the reader may use it (team catalog grants, #61/#65).
+   */
+  readLive(id: string): { ownerAccountId: string; document: DesignSystemDetail } | null {
+    const row = this.db.prepare('SELECT * FROM studio_design_systems WHERE id = ? AND deleted_at IS NULL').get(id) as Row | undefined;
+    return row ? { ownerAccountId: row.owner_account_id, document: JSON.parse(row.document_json) as DesignSystemDetail } : null;
+  }
   list(owner: string): DesignSystemDetail[] {
     return (this.db.prepare('SELECT document_json FROM studio_design_systems WHERE owner_account_id = ? AND deleted_at IS NULL ORDER BY id')
       .all(owner) as Pick<Row, 'document_json'>[]).map((row) => JSON.parse(row.document_json) as DesignSystemDetail);

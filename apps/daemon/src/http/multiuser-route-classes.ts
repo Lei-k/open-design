@@ -45,7 +45,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'studio-memory-rules-suggest' | 'studio-memory-extract' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'provider-key' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'studio-memory-rules-suggest' | 'studio-memory-extract' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'catalog-share' | 'provider-key' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -828,6 +828,19 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     const extras = bodyPolicy ? { bodyPolicy } : {};
     return [...group('actor-scoped', 'bundled reads and account-owned text skills; immutable revisions; no host registry access', [key], { ...extras, rewriteTo }),
       ...group('actor-scoped', 'actor catalog alias; same cookie authority and bounded skill body', [alias], extras)];
+  }),
+  // Team catalogs (#61/#65): the owner grants `use` of a private skill or design
+  // document to another active account; grantees read members and may leave.
+  // Missing, foreign and insufficient are one 404 in the handler.
+  ...['skills', 'design-systems'].flatMap((segment) => {
+    const base = `/api/multiuser/catalog/${segment}/:id`;
+    return [
+      ...group('actor-scoped', 'members of a private catalog item for its owner and grantees; foreign and missing are one 404', [`GET ${base}/access`]),
+      ...group('actor-scoped', 'a grantee removes its own use grant; the owner cannot leave', [`DELETE ${base}/access`], { bodyPolicy: 'empty' }),
+      ...group('actor-scoped', 'the owner grants use to an active account of this deployment, resolved server-side by username',
+        [`PUT ${base}/shares`], { bodyPolicy: 'catalog-share', maxBodyBytes: 4 * 1024 }),
+      ...group('actor-scoped', 'the owner revokes a use grant; admitted runs keep their captured version', [`DELETE ${base}/shares/:accountId`], { bodyPolicy: 'empty' }),
+    ];
   }),
   ...group('actor-scoped', 'bounded browser skill folder upload to an account-private immutable package; relative files only', ['POST /api/skills/import-files'],
     { bodyPolicy: 'multipart', maxBodyBytes: 8 * 1024 * 1024 + 65536 * 4 }),

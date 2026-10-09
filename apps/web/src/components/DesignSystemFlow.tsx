@@ -132,6 +132,7 @@ import type {
   TrackingDesignSystemsEntryFrom,
 } from '@open-design/contracts/analytics';
 import { useStudioCapabilities, useStudioRequestAvailable, StudioUnavailable } from '../runtime/studio-capabilities';
+import { StudioCatalogShareButton } from '../runtime/StudioShareDialog';
 import { useI18n } from '../i18n';
 import { useWorkspaceContext } from '../collab/useWorkspaceContext';
 import { workspaceIdentityCacheKey } from '../collab/workspace-identity';
@@ -2929,9 +2930,14 @@ export function DesignSystemDetailView({
               {t('dsFlow.tabDesignFiles')}
             </button>
           </div>
-          <Button variant="ghost" disabled={!studioUsesLocalServices()}>
-            {t('common.share')}
-          </Button>
+          {studioUsesLocalServices() ? (
+            <Button variant="ghost">
+              {t('common.share')}
+            </Button>
+          ) : system.source === 'user' ? (
+            // Studio accounts (#61/#65): use grants to other accounts of this deployment.
+            <StudioCatalogShareButton kind="design-system" resourceId={system.id} share={system.studioShare} />
+          ) : null}
         </header>
 
         {tab === 'system' ? (

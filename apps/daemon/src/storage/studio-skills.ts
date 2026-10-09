@@ -70,9 +70,19 @@ export class StudioSkills {
   }
   read(owner: string, id: string): (SkillDetail & { package?: StudioSkillPackage }) | null {
     const row = this.row(owner, id);
-    if (!row) return null;
+    return row ? this.detail(row) : null;
+  }
+  private detail(row: SkillRow): SkillDetail & { package?: StudioSkillPackage } {
     const resource = this.packageOf(row);
     return { ...this.summary(row), body: row.body, ...(resource ? { package: resource } : {}) };
+  }
+  /**
+   * A live skill by id with its owner, whoever owns it. Only for callers that
+   * already decided the reader may use it (team catalog grants, #61/#65).
+   */
+  readLive(id: string): { ownerAccountId: string; skill: SkillDetail & { package?: StudioSkillPackage } } | null {
+    const row = this.db.prepare('SELECT * FROM studio_skills WHERE id = ? AND deleted_at IS NULL').get(id) as SkillRow | undefined;
+    return row ? { ownerAccountId: row.owner_account_id, skill: this.detail(row) } : null;
   }
   private revision(row: SkillRow): void {
     this.db.prepare(`INSERT INTO studio_skill_revisions (skill_id, revision, body, description, triggers_json, created_at, package_json)

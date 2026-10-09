@@ -1,3 +1,5 @@
+import type { StudioCatalogShareSummary } from './studio-sharing.js';
+
 export type ModelCost = 'low' | 'medium' | 'high' | 'very_high';
 
 export type ModelCapability = 'standard' | 'advanced' | 'best_quality';
@@ -231,6 +233,8 @@ export interface SkillSummary {
   source?: SkillSource;
   /** Actor runtime can read a catalog entry before its executable assets are supported. Missing means available. */
   selectable?: boolean;
+  /** Multi-user Studio team catalogs (#61/#65): sharing between accounts. A read projection only. */
+  studioShare?: StudioCatalogShareSummary;
   previewType: string;
   designSystemRequired: boolean;
   defaultFor: string[];
@@ -366,6 +370,8 @@ export interface DesignSystemSummary {
    * treat a missing value (e.g. from the bulk list) as `true`.
    */
   canMutate?: boolean;
+  /** Multi-user Studio team catalogs (#61/#65): sharing between accounts. A read projection only. */
+  studioShare?: StudioCatalogShareSummary;
 }
 
 export interface DesignSystemDetail extends DesignSystemSummary {

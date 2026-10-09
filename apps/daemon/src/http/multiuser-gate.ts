@@ -447,6 +447,9 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
       && (body.versionId === undefined || typeof body.versionId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(body.versionId));
   }
   // #65: grantee by username (resolved server-side) and a role; nothing else.
+  // #61/#65: grantee by username (resolved server-side); `use` is the only catalog role.
+  if (policy === 'catalog-share') return only(['username', 'role']) && typeof body.username === 'string'
+    && body.username.length > 0 && body.username.length <= 64 && body.role === 'use';
   if (policy === 'project-share') return only(['username', 'role']) && typeof body.username === 'string'
     && body.username.length > 0 && body.username.length <= 64 && typeof body.role === 'string' && ['view', 'comment', 'edit'].includes(body.role);
   // Presence identity comes from the session; a client names only its tab and the file it shows.

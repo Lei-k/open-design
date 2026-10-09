@@ -28,6 +28,8 @@ import {
 import { useWorkspaceInvalidation } from '../collab/workspace-events';
 import { useWorkspaceSnapshotActivation } from '../collab/workspace-snapshot-activation';
 import { useStudioCapabilities } from '../runtime/studio-capabilities';
+import { StudioCatalogShareButton } from '../runtime/StudioShareDialog';
+import { ProjectShareBadge } from './ProjectShareBadge';
 
 // Functional skills only — design templates render in EntryView's
 // Templates tab and are managed under their own daemon registry. See
@@ -840,6 +842,7 @@ export function SkillsSection({ cfg, setCfg, onSkillsRefresh, onSkillsChanged }:
                 onCommitDelete={() => void commitDelete(skill.id)}
                 onCancelEdit={cancelDraft}
                 onSubmitEdit={() => void submitDraft()}
+                onSharingChanged={() => { void refresh(); onSkillsChanged?.(skill.id); }}
               />
             );
           })}
@@ -874,6 +877,8 @@ interface SkillRowProps {
   onCommitDelete: () => void;
   onCancelEdit: () => void;
   onSubmitEdit: () => void;
+  /** Team catalogs (#61/#65): grants changed or the actor left a shared skill. */
+  onSharingChanged: () => void;
 }
 
 function SkillRow({
@@ -901,13 +906,15 @@ function SkillRow({
   onCommitDelete,
   onCancelEdit,
   onSubmitEdit,
+  onSharingChanged,
 }: SkillRowProps) {
   const t = useT();
   const studio = useStudioCapabilities();
   const { locale } = useI18n();
   const summaryName = localizeSkillName(locale, skill) || skill.id;
   const summaryDescription = localizeSkillDescription(locale, skill);
-  const isTeamMirror = skill.teamSynced === true;
+  // A skill another account shared with this actor is for use only (#61/#65).
+  const isTeamMirror = skill.teamSynced === true || skill.studioShare?.role === 'use';
   const canDelete = getSkillSource(skill) === 'user' && !isTeamMirror;
   // Editing a built-in skill does not modify it in place — it writes a
   // user-owned shadow copy. Frame the affordance as creating a user override
@@ -943,7 +950,7 @@ function SkillRow({
                   {humanizeCategory(skill.category)}
                 </span>
               ) : null}
-              {skill.source === 'user' ? (
+              {skill.source === 'user' && !skill.studioShare ? (
                 <span
                   className="skills-row-summary-source"
                   title="User-imported skill"
@@ -951,6 +958,7 @@ function SkillRow({
                   user
                 </span>
               ) : null}
+              <ProjectShareBadge project={skill} testId="catalog-share-badge" />
             </span>
             {summaryDescription ? (
               <span className="skills-row-summary-desc">{summaryDescription}</span>
@@ -981,6 +989,9 @@ function SkillRow({
             </span>
           ) : (
             <>
+              {!studio.hostServices && getSkillSource(skill) === 'user' ? (
+                <StudioCatalogShareButton kind="skill" resourceId={skill.id} share={skill.studioShare} onChanged={onSharingChanged} />
+              ) : null}
               {!isTeamMirror && (studio.hostServices || !isBuiltIn) ? (
                 <Button
                   size="icon"

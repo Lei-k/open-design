@@ -351,7 +351,27 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   type DesignSnapshot = { id: string; hash: string; prompt: Pick<Parameters<typeof composeSystemPrompt>[0],
     'designSystemBody' | 'designSystemTitle' | 'designSystemUsageMd' | 'designSystemTokensCss' |
     'designSystemComponentsManifest' | 'designSystemFixtureHtml' | 'designSystemPullIndex' | 'designSystemImportMode'> };
-  const captureDesign = async (owner: string, conversationId: string, requestedId: string | null, question?: RunRow): Promise<DesignSnapshot | null | false> => {
+  /**
+   * Shared projects (#65): a member's turn may inherit the project's pinned
+   * private skill or design system without any catalog access, but only as
+   * the immutable version the project owner already admitted in that project.
+   * The member's own conversation pins it from then on. No live read of the
+   * owner's catalog happens for the member.
+   */
+  type ProjectPin = { projectId: string; id: string };
+  const ownerPinnedCapture = (actor: string, pin: ProjectPin | undefined, requestedId: string, kind: 'design' | 'skill'): Record<string, unknown> | null => {
+    if (!pin || pin.id !== requestedId) return null;
+    const projectOwner = projects.ownership.ownerOf(pin.projectId);
+    if (!projectOwner || projectOwner === actor) return null;
+    const row = (kind === 'design'
+      ? db.prepare(`SELECT request_json FROM multiuser_runs WHERE project_id = ? AND owner_account_id = ? AND json_valid(request_json)
+          AND json_extract(request_json, '$.designSnapshot.id') = ? ORDER BY queue_seq DESC LIMIT 1`)
+      : db.prepare(`SELECT request_json FROM multiuser_runs WHERE project_id = ? AND owner_account_id = ? AND json_valid(request_json)
+          AND EXISTS (SELECT 1 FROM json_each(request_json, '$.skillSnapshots') item WHERE json_extract(item.value, '$.id') = ?)
+          ORDER BY queue_seq DESC LIMIT 1`)).get(pin.projectId, projectOwner, requestedId) as { request_json: string } | undefined;
+    return row ? storedRequest(row.request_json) : null;
+  };
+  const captureDesign = async (owner: string, conversationId: string, requestedId: string | null, question?: RunRow, pin?: ProjectPin): Promise<DesignSnapshot | null | false> => {
     const previous = question ?? (requestedId === null ? undefined : db.prepare(`SELECT * FROM multiuser_runs
       WHERE owner_account_id = ? AND conversation_id = ? AND json_valid(request_json)
         AND json_extract(request_json, '$.designSnapshot.id') = ? ORDER BY queue_seq DESC LIMIT 1`)
@@ -363,7 +383,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       && (question && requestedId === null || requestedId === captured.id)) return captured;
     if (requestedId === null) return null;
     const system = await input.designCatalog?.readSystem(owner, requestedId);
-    if (!system?.body.trim()) return false;
+    if (!system?.body.trim()) {
+      const pinned = ownerPinnedCapture(owner, pin, requestedId, 'design')?.designSnapshot as DesignSnapshot | undefined;
+      return pinned && pinned.id === requestedId && typeof pinned.prompt?.designSystemBody === 'string' ? pinned : false;
+    }
     const assets = await input.designCatalog!.readSystemAssets(system.id);
     const prompt: DesignSnapshot['prompt'] = { designSystemBody: system.body, designSystemTitle: system.title,
       designSystemUsageMd: assets.usageMd, designSystemTokensCss: assets.tokensCss,
@@ -373,7 +396,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   };
 
   type SkillSnapshot = { id: string; name: string; body: string; mode?: Parameters<typeof composeSystemPrompt>[0]['skillMode']; hash: string; package?: StudioSkillPackage };
-  const captureSkills = async (owner: string, conversationId: string, ids: readonly string[]): Promise<SkillSnapshot[] | null> => {
+  const captureSkills = async (owner: string, conversationId: string, ids: readonly string[], pin?: ProjectPin): Promise<SkillSnapshot[] | null> => {
     if (ids.length > 12) return null;
     const snapshots: SkillSnapshot[] = [];
     for (const id of ids) {
@@ -388,7 +411,12 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         snapshots.push(snapshot); continue;
       }
       const skills = await input.catalog?.readSkills(owner, [id]);
-      if (!skills?.[0]) return null;
+      if (!skills?.[0]) {
+        const pinned = ownerPinnedCapture(owner, pin, id, 'skill')?.skillSnapshots;
+        const inherited = Array.isArray(pinned) ? pinned.find((item: SkillSnapshot) => item?.id === id) as SkillSnapshot | undefined : undefined;
+        if (!inherited || typeof inherited.body !== 'string' || typeof inherited.name !== 'string' || typeof inherited.hash !== 'string') return null;
+        snapshots.push(inherited); continue;
+      }
       const skill = skills[0];
       const text = { id: skill.id, name: skill.name, body: skill.body, mode: skill.mode, ...(skill.package ? { package: skill.package } : {}) };
       snapshots.push({ ...text, hash: createHash('sha256').update(JSON.stringify(text)).digest('hex') });
@@ -410,6 +438,15 @@ export function registerMultiUserRunRoutes(app: Express, input: {
    * body is already in the fixed stable prompt and is not composed twice. */
   const withFixedSkill = (fixed: SkillSnapshot | undefined, selected: SkillSnapshot[]): SkillSnapshot[] =>
     fixed ? [fixed, ...selected.filter((skill) => skill.id !== fixed.id)] : selected;
+  /** The project's own skill/design defaults a turn inherits (not explicit selections, fixed designs or answers). */
+  const projectPins = (fields: PersonalRunFields, projectId: string, fixed: boolean, question: boolean): { design?: ProjectPin; skill?: ProjectPin } => {
+    if (fixed || question) return {};
+    const project = getProject(db, projectId);
+    return {
+      ...(fields.designSystemId === null && project?.designSystemId ? { design: { projectId, id: project.designSystemId } } : {}),
+      ...(fields.skillId === null && project?.skillId ? { skill: { projectId, id: project.skillId } } : {}),
+    };
+  };
   const selectSkills = (fields: PersonalRunFields, projectId: string, fixed: boolean, question: boolean): string[] => {
     if (question) return fields.skillIds;
     const primary = fixed ? null : fields.skillId ?? getProject(db, projectId)?.skillId ?? null;
@@ -1426,7 +1463,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     }
     const fixedCapture = fixedDesign ? await captureFixedDesign(owner, target.conversationId, fixedDesign) : null;
     if (fixedDesign && !fixedCapture) return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
-    const designSnapshot = fixedCapture ? fixedCapture.design : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? getProject(db, target.projectId)?.designSystemId ?? null, question);
+    const pins = projectPins(fields, target.projectId, Boolean(fixedDesign), Boolean(question));
+    const designSnapshot = fixedCapture ? fixedCapture.design : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? getProject(db, target.projectId)?.designSystemId ?? null, question, pins.design);
     if (designSnapshot === false) return sendApiError(res, 404, 'NOT_FOUND', 'selected design system not found or unavailable');
     // Opt-in "remember: …" heuristics land before capture, so this turn already sees them (#62).
     await input.memory?.beforeTurn(owner, fields.text);
@@ -1461,7 +1499,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       composed = { prompt, hash: createHash('sha256').update(prompt).digest('hex'),
         selection: { conversationId: target.conversationId, skillId: '', designSystemId: '', locale: 'en' } };
     }
-    const selectedSkills = fields.skillIds.length && !inheritsSkills ? await captureSkills(owner, target.conversationId, fields.skillIds) : [];
+    const selectedSkills = fields.skillIds.length && !inheritsSkills ? await captureSkills(owner, target.conversationId, fields.skillIds, pins.skill) : [];
     if (!selectedSkills || fields.skillIds.length > 12) return sendApiError(res, 404, 'NOT_FOUND', 'selected skills not found or unavailable');
     if (selectedSkills.length) {
       // Resolve before queueing. Later edits/deletes cannot change this turn's
@@ -1607,9 +1645,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     }
     const fixedCapture = fixed && !question ? await captureFixedDesign(owner, target.conversationId, fixed) : null;
     if (fixed && !question && !fixedCapture) return sendApiError(res, 400, 'BAD_REQUEST', 'design selection unavailable');
-    const designSnapshot = fixedCapture ? fixedCapture.design : fixed ? null : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? getProject(db, target.projectId)?.designSystemId ?? null, question);
+    const pins = projectPins(fields, target.projectId, Boolean(fixed), Boolean(question));
+    const designSnapshot = fixedCapture ? fixedCapture.design : fixed ? null : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? getProject(db, target.projectId)?.designSystemId ?? null, question, pins.design);
     if (designSnapshot === false) return sendApiError(res, 404, 'NOT_FOUND', 'selected design system not found or unavailable');
-    const selected = !question && fields.skillIds.length ? await captureSkills(owner, target.conversationId, fields.skillIds) : [];
+    const selected = !question && fields.skillIds.length ? await captureSkills(owner, target.conversationId, fields.skillIds, pins.skill) : [];
     if (!selected) return sendApiError(res, 404, 'NOT_FOUND', 'selected skills not found or unavailable');
     // Opt-in "remember: …" heuristics land before capture, so this turn already sees them (#62).
     await input.memory?.beforeTurn(owner, fields.text);

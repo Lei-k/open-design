@@ -13,6 +13,7 @@ import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { multiUserStreamAllowed } from '../http/multiuser-stream.js';
 import { sendApiError } from '../http/api-errors.js';
 import { StudioDesignSystems } from '../storage/studio-design-systems.js';
+import type { StudioCatalogSharing } from './studio-catalog-sharing.js';
 
 export interface StudioDesignCatalog {
   readSystem(owner: string, id: string): Promise<DesignSystemDetail | null>;
@@ -25,8 +26,27 @@ export interface StudioDesignCatalog {
 export function registerStudioDesignCatalogRoutes(app: Express, input: {
   db: Database.Database; designSystemsRoot: string; promptTemplatesRoot: string; craftRoot: string;
   listBuiltInSystems(): Promise<DesignSystemSummary[]>; listBuiltInTemplates(): Promise<SkillInfo[]>;
+  /** Team catalogs (#61/#65): documents other accounts shared with the actor, for use only. */
+  sharing?: StudioCatalogSharing;
 }): StudioDesignCatalog {
   const store = new StudioDesignSystems(input.db);
+  const { sharing } = input;
+  /**
+   * A private document the actor may use: its own, or one shared with it.
+   * Shared documents are read-only for the grantee (`canMutate: false`) and
+   * carry the `studioShare` projection; every call re-reads the grant.
+   */
+  const readPrivate = (actor: string, id: string): DesignSystemDetail | null => {
+    const own = store.read(actor, id);
+    if (own) {
+      const studioShare = sharing?.projection('design-system', id, actor, actor);
+      return studioShare ? { ...own, studioShare } : own;
+    }
+    if (sharing?.grants.roleOf('design-system', id, actor) !== 'use') return null;
+    const shared = store.readLive(id);
+    return shared ? { ...shared.document, canMutate: false, isEditable: false,
+      studioShare: sharing.projection('design-system', id, shared.ownerAccountId, actor)! } : null;
+  };
   const prefix = '/api/multiuser/catalog';
   const handle = (operation: (req: Request, res: Response, owner: string) => unknown) => async (req: Request, res: Response) => {
     const owner = multiUserActorOf(res)?.accountId;
@@ -35,14 +55,22 @@ export function registerStudioDesignCatalogRoutes(app: Express, input: {
     catch { if (!res.headersSent && multiUserStreamAllowed(res)) sendApiError(res, 500, 'INTERNAL_ERROR', 'catalog operation failed'); }
   };
   const readSystem = async (owner: string, id: string): Promise<DesignSystemDetail | null> => {
-    if (id.startsWith('user:')) return store.read(owner, id);
+    if (id.startsWith('user:')) return readPrivate(owner, id);
     const builtin = (await input.listBuiltInSystems()).find((item) => item.source === 'built-in' && item.id === id);
     return builtin ? { ...builtin, canMutate: false, isEditable: false } : null;
   };
   app.get(`${prefix}/design-systems`, handle(async (_req, res, owner) => {
     const builtin = await input.listBuiltInSystems();
     if (!multiUserStreamAllowed(res)) return;
-    res.json({ designSystems: [...store.list(owner), ...builtin].map(({ body: _body, ...summary }) => summary) });
+    const own = store.list(owner);
+    const counts = sharing?.grants.memberCounts('design-system', own.map((system) => system.id)) ?? new Map<string, number>();
+    const shared = (sharing?.grants.sharedWith('design-system', owner) ?? []).flatMap(({ resourceId }) => {
+      const system = readPrivate(owner, resourceId);
+      return system ? [system] : [];
+    });
+    res.json({ designSystems: [...own.map((system) => counts.has(system.id)
+      ? { ...system, studioShare: { role: 'owner' as const, ownerUsername: sharing!.usernameOf(owner), memberCount: counts.get(system.id)! } } : system),
+    ...shared, ...builtin].map(({ body: _body, ...summary }) => summary) });
   }));
   app.post(`${prefix}/design-systems`, handle((req, res, owner) => {
     const system = store.create(owner, req.body as DesignSystemDocumentWrite);
@@ -60,7 +88,10 @@ export function registerStudioDesignCatalogRoutes(app: Express, input: {
     res.json({ ...system, designSystem: system });
   }));
   app.delete(`${prefix}/design-systems/:id`, handle((req, res, owner) => {
-    if (!store.delete(owner, String(req.params.id))) return sendApiError(res, 404, 'NOT_FOUND', 'editable design system not found');
+    const id = String(req.params.id);
+    if (!store.delete(owner, id)) return sendApiError(res, 404, 'NOT_FOUND', 'editable design system not found');
+    // Owner deletion ends every grant; runs and conversations that captured it keep their version.
+    sharing?.grants.removeAll('design-system', id);
     res.json({ ok: true });
   }));
   app.get(`${prefix}/design-systems/:id/revisions`, handle((req, res, owner) => {

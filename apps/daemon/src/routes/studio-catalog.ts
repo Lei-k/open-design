@@ -9,6 +9,7 @@ import { StudioSkills } from '../storage/studio-skills.js';
 import multer from 'multer';
 import { captureStudioSkill, type StudioSkillPackage } from '../services/studio-skill-packages.js';
 import { parseFrontmatter } from '../design-systems/frontmatter.js';
+import type { StudioCatalogSharing } from './studio-catalog-sharing.js';
 
 const SKILL_FILES = 250;
 const SKILL_FILE_BYTES = 4 * 1024 * 1024;
@@ -48,14 +49,32 @@ export interface StudioCatalog {
  */
 export function registerStudioCatalogRoutes(app: Express, input: {
   db: Database.Database; skillsRoot: string; listBuiltInSkills: () => Promise<SkillInfo[]>;
+  /** Team catalogs (#61/#65): skills other accounts shared with the actor, for use only. */
+  sharing?: StudioCatalogSharing;
 }): StudioCatalog {
   const store = new StudioSkills(input.db);
+  const { sharing } = input;
+  /**
+   * A private skill the actor may use: its own, or one shared with it. Shared
+   * entries carry the read-only `studioShare` projection; every call re-reads
+   * the grant, so a revoke applies to the next read, preview and admission.
+   */
+  const readPrivate = (actor: string, id: string): (SkillDetail & { package?: StudioSkillPackage }) | null => {
+    const own = store.read(actor, id);
+    if (own) {
+      const studioShare = sharing?.projection('skill', id, actor, actor);
+      return studioShare ? { ...own, studioShare } : own;
+    }
+    if (sharing?.grants.roleOf('skill', id, actor) !== 'use') return null;
+    const shared = store.readLive(id);
+    return shared ? { ...shared.skill, studioShare: sharing.projection('skill', id, shared.ownerAccountId, actor)! } : null;
+  };
   const builtinSummary = ({ dir: _dir, body: _body, ...skill }: SkillInfo): SkillSummary => ({
     ...skill, triggers: skill.triggers.filter((value): value is string => typeof value === 'string'),
     source: 'built-in', selectable: true, hasBody: typeof _body === 'string' && _body.length > 0,
   });
   const read = async (ownerId: string, id: string): Promise<(SkillDetail & { package?: StudioSkillPackage }) | null> => {
-    if (id.startsWith('studio-skill:')) return store.read(ownerId, id);
+    if (id.startsWith('studio-skill:')) return readPrivate(ownerId, id);
     const item = (await input.listBuiltInSkills()).find((skill) => skill.id === id);
     if (!item) return null;
     try { return { ...builtinSummary(item), ...captureStudioSkill(input.skillsRoot, item.dir, item.id) }; }
@@ -71,7 +90,17 @@ export function registerStudioCatalogRoutes(app: Express, input: {
   app.get(prefix, handle(async (_req, res, ownerId) => {
     const builtins = await input.listBuiltInSkills();
     if (!multiUserStreamAllowed(res)) return;
-    res.json({ skills: [...store.list(ownerId), ...builtins.map(builtinSummary)] });
+    const own = store.list(ownerId);
+    const counts = sharing?.grants.memberCounts('skill', own.map((skill) => skill.id)) ?? new Map<string, number>();
+    const shared = (sharing?.grants.sharedWith('skill', ownerId) ?? []).flatMap(({ resourceId }) => {
+      const skill = readPrivate(ownerId, resourceId);
+      if (!skill) return [];
+      const { body: _body, package: _package, ...summary } = skill;
+      return [summary];
+    });
+    res.json({ skills: [...own.map((skill) => counts.has(skill.id)
+      ? { ...skill, studioShare: { role: 'owner' as const, ownerUsername: sharing!.usernameOf(ownerId), memberCount: counts.get(skill.id)! } } : skill),
+    ...shared, ...builtins.map(builtinSummary)] });
   }));
   app.get(`${prefix}/:id`, handle(async (req, res, ownerId) => {
     const skill = await read(ownerId, String(req.params.id));
@@ -83,7 +112,7 @@ export function registerStudioCatalogRoutes(app: Express, input: {
   app.get(`${prefix}/:id/files`, handle(async (req, res, ownerId) => {
     const id = String(req.params.id);
     if (id.startsWith('studio-skill:')) {
-      const skill = store.read(ownerId, id);
+      const skill = readPrivate(ownerId, id);
       if (!skill) return sendApiError(res, 404, 'NOT_FOUND', 'skill not found');
       res.json({ files: skill.package?.files.map((file) => ({ path: file.path, kind: 'file', size: Buffer.byteLength(file.data, 'base64') }))
         ?? [{ path: 'SKILL.md', kind: 'file', size: Buffer.byteLength(skill.body) }] });
@@ -130,7 +159,10 @@ export function registerStudioCatalogRoutes(app: Express, input: {
     res.json({ skill });
   }));
   app.delete(`${prefix}/:id`, handle((req, res, ownerId) => {
-    if (!store.delete(ownerId, String(req.params.id))) return sendApiError(res, 404, 'NOT_FOUND', 'editable skill not found');
+    const id = String(req.params.id);
+    if (!store.delete(ownerId, id)) return sendApiError(res, 404, 'NOT_FOUND', 'editable skill not found');
+    // Owner deletion ends every grant; runs and conversations that captured it keep their version.
+    sharing?.grants.removeAll('skill', id);
     res.json({ ok: true });
   }));
   return { readSkills: async (ownerId, ids) => {

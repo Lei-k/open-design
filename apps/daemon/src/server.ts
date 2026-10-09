@@ -950,6 +950,7 @@ import { registerStudioDesignCatalogRoutes } from './routes/studio-design-catalo
 import { registerStudioCatalogRoutes } from './routes/studio-catalog.js';
 import { registerStudioArchiveRoutes } from './routes/studio-archives.js';
 import { registerStudioSharingRoutes } from './routes/studio-sharing.js';
+import { registerStudioCatalogSharingRoutes } from './routes/studio-catalog-sharing.js';
 import { registerStudioCommentRoutes } from './routes/studio-comments.js';
 import { registerStudioPetRoutes } from './routes/studio-pets.js';
 import { registerStudioRenderRoutes } from './routes/studio-render.js';
@@ -17633,10 +17634,16 @@ export async function startServer({
   const studioSettings = multiUserMode ? registerStudioSettingsRoutes(app, { db, dataRoot: RUNTIME_DATA_DIR,
     ...(multiUserMode.testCompanyOpenAIFetch ? { fetch: multiUserMode.testCompanyOpenAIFetch } : {}),
     ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}) }) : null;
+  // Team catalogs (#61/#65): owner-managed `use` grants on private skills and design documents.
+  const studioCatalogSharing = multiUserMode ? registerStudioCatalogSharingRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
+  }) : null;
   const studioCatalog = multiUserMode ? registerStudioCatalogRoutes(app, {
     db, skillsRoot: SKILLS_DIR, listBuiltInSkills: async () => (await listSkills(SKILLS_DIR)).map((skill) => ({ ...skill, source: 'built-in' as const })),
+    ...(studioCatalogSharing ? { sharing: studioCatalogSharing } : {}),
   }) : null;
   const studioDesignCatalog = multiUserMode ? registerStudioDesignCatalogRoutes(app, {
+    ...(studioCatalogSharing ? { sharing: studioCatalogSharing } : {}),
     db, designSystemsRoot: DESIGN_SYSTEMS_DIR, promptTemplatesRoot: PROMPT_TEMPLATES_DIR, craftRoot: CRAFT_DIR,
     listBuiltInSystems: () => listDesignSystems(DESIGN_SYSTEMS_DIR, { source: 'built-in', isEditable: false, defaultStatus: 'published' }),
     listBuiltInTemplates: () => listSkills(DESIGN_TEMPLATES_DIR),
@@ -18347,6 +18354,7 @@ export async function startServer({
       void studioRenderHost?.close();
       multiUserDesign?.close();
       studioSharing?.close();
+      studioCatalogSharing?.close();
       studioPublicLinks?.close();
       multiUserFront?.close();
       void personalCodex?.shutdown();
@@ -18363,6 +18371,7 @@ export async function startServer({
         await multiUserRuns.shutdown();
         multiUserDesign?.close();
       studioSharing?.close();
+      studioCatalogSharing?.close();
       studioPublicLinks?.close();
       }
       amrTerminalReportDelivery.stop();

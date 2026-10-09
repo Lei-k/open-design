@@ -457,6 +457,7 @@ const SUBCOMMAND_MAP = {
   skill: runSkills,
   skills: runSkills,
   'design-systems': runDesignSystems,
+  'design-system': runDesignSystems,
   resource: runResource,
   craft: runCraft,
   diagnostics: runDiagnostics,
@@ -10082,10 +10083,15 @@ async function runSkills(args) {
   od skill update <id> --prompt-file <path|-> [--description <text>] [--json]
   od skill import-folder <path> [--json]   (remote Studio session: SKILL.md plus side files as a private package)
   od skill uninstall <id>
+  od skill members <id> [--json]                Your role and everyone who may use a private skill
+  od skill share <id> <username> [--json]       Owner: let another account of this server use it
+  od skill unshare <id> <username> [--json]     Owner: revoke; admitted runs keep their captured version
+  od skill leave <id> [--json]                  Grantee: remove a skill shared with you
 
 \`od skills …\` remains an alias for compatibility.`);
     process.exit(args[0] ? 0 : 2);
   }
+  if (isCatalogShareSubcommand(args[0])) return runCatalogShare('skills', args[0], args.slice(1));
   if (args[0] === 'import-folder') return runSkillImportFolder(args.slice(1));
   if (args[0] === 'install' || args[0] === 'add') return runSkillInstall(args.slice(1));
   if (args[0] === 'uninstall' || args[0] === 'remove') return runSkillUninstall(args.slice(1));
@@ -10210,7 +10216,68 @@ async function runSkillUninstall(rest) {
 }
 async function runCraft(args)         { return runLibraryList('craft', args); }
 
+// A function declaration, not a const: dispatch runs at module top level before later consts initialize.
+function isCatalogShareSubcommand(sub) {
+  return sub === 'members' || sub === 'share' || sub === 'unshare' || sub === 'leave';
+}
+
+// Team catalogs between accounts of one multi-user deployment (#61/#65): the
+// owner of a private skill or design document lets another account use it.
+// Same endpoints as the Share dialog in Settings → Skills and Design systems.
+async function runCatalogShare(segment, sub, rest) {
+  const flags = parseFlags(rest, { string: LIBRARY_STRING_FLAGS, boolean: LIBRARY_BOOLEAN_FLAGS });
+  const [id, username] = positionalArgs(rest, LIBRARY_STRING_FLAGS);
+  const noun = segment === 'skills' ? 'skill' : 'design-system';
+  if (!id || ((sub === 'share' || sub === 'unshare') !== Boolean(username))) {
+    console.error(`Usage: od ${noun} members|leave <id> | share <id> <username> | unshare <id> <username> [--json]`);
+    process.exit(2);
+  }
+  const base = (await libraryDaemonUrl(flags)).replace(/\/$/, '');
+  const itemUrl = `${base}/api/multiuser/catalog/${segment}/${encodeURIComponent(id)}`;
+  const call = async (method, target, body) => {
+    let response;
+    try {
+      response = await fetch(target, { method, ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }) });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!response.ok) { await structuredHttpFailure(response); return null; }
+    return response.json();
+  };
+  const print = (value, line) => (flags.json ? process.stdout.write(JSON.stringify(value) + '\n') : console.log(line));
+  if (sub === 'members') {
+    const data = await call('GET', `${itemUrl}/access`);
+    if (!data) return;
+    if (flags.json) return print(data);
+    console.log(`you: ${data.role}`);
+    for (const member of data.members ?? []) console.log(`${member.username}\t${member.role}`);
+    return;
+  }
+  if (sub === 'leave') {
+    const data = await call('DELETE', `${itemUrl}/access`);
+    if (data) print(data, `[${noun}] left ${id}`);
+    return;
+  }
+  if (sub === 'share') {
+    const data = await call('PUT', `${itemUrl}/shares`, { username, role: 'use' });
+    if (data) print(data, `[${noun}] ${data.member.username} → ${data.member.role}`);
+    return;
+  }
+  // Revocation is by account id; resolve the username through the member list.
+  const access = await call('GET', `${itemUrl}/access`);
+  if (!access) return;
+  const member = (access.members ?? []).find((entry) => entry.username === username && entry.role !== 'owner');
+  if (!member) {
+    process.stderr.write(`${JSON.stringify({ ok: false, error: { code: 'NOT_FOUND', message: 'no such member' } })}\n`);
+    process.exit(1);
+  }
+  const data = await call('DELETE', `${itemUrl}/shares/${encodeURIComponent(member.accountId)}`);
+  if (data) print(data, `[${noun}] revoked ${username}`);
+}
+
 async function runDesignSystems(args) {
+  if (isCatalogShareSubcommand(args[0])) return runCatalogShare('design-systems', args[0], args.slice(1));
   if (['create', 'update', 'delete'].includes(args[0])) {
     const stringFlags = new Set([...LIBRARY_STRING_FLAGS, 'title', 'summary', 'category', 'surface', 'status', 'prompt', 'prompt-file']);
     const rest = args.slice(1);

@@ -1015,3 +1015,89 @@ test('[P1] Studio owner shares a project with another account: badge, presence, 
     await expect(b.getByTestId('project-share-badge')).toHaveCount(0);
   } finally { await other.close(); }
 });
+
+test('[P1] Studio team catalogs: the owner shares a private skill and design document, the grantee runs them, revoke removes them', async ({ page, browser, studio }, info) => {
+  const skill = await studio.request('POST', '/api/skills/import', studio.a.cookie, { name: 'Team brand voice', body: 'Team shared skill marker' });
+  expect(skill.status, skill.text).toBe(201);
+  const skillId = skill.json.skill.id as string;
+  const document = await studio.request('POST', '/api/design-systems', studio.a.cookie, { title: 'Team palette', body: '# Team palette\nTeam shared design marker\nPrimary color: #2a9d8f' });
+  expect(document.status, document.text).toBe(201);
+  const designId = document.json.designSystem.id as string;
+  // Owner: the Share entry on the skill row in shared Settings → Skills.
+  await page.goto(`${studio.origin}/settings`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.getByTestId('studio-settings-nav-skills').click();
+  const ownRow = page.getByTestId(`skill-row-${skillId}`);
+  await ownRow.getByTestId('studio-catalog-share-button').click({ timeout: T.long });
+  const dialog = page.getByTestId('studio-share-dialog');
+  await expect(dialog).toContainText('Share skill');
+  await expect(dialog.getByTestId('studio-share-role')).toHaveCount(0);
+  await dialog.getByTestId('studio-share-username').fill(studio.b.username);
+  await dialog.getByTestId('studio-share-submit').click();
+  await expect(dialog.getByTestId('studio-share-member')).toHaveCount(2, { timeout: T.medium });
+  await expect(dialog).toContainText('Can use');
+  await page.screenshot({ path: info.outputPath('studio-catalog-share-dialog.png'), animations: 'disabled' });
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(ownRow.getByTestId('catalog-share-badge')).toHaveText('Share · 2', { timeout: T.medium });
+  // Owner: the same dialog from the design-system detail.
+  await page.goto(`${studio.origin}/design-systems`);
+  await page.getByTestId(`design-system-card-${designId}`).click({ timeout: T.long });
+  await page.getByTestId(`design-system-detail-${designId}`).getByTestId('studio-catalog-share-button').click({ timeout: T.long });
+  await expect(dialog).toContainText('Share design system');
+  await dialog.getByTestId('studio-share-username').fill(studio.b.username);
+  await dialog.getByTestId('studio-share-submit').click();
+  await expect(dialog.getByTestId('studio-share-member')).toHaveCount(2, { timeout: T.medium });
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+
+  const other = await browser.newContext({ ignoreHTTPSErrors: true });
+  try {
+    const b = await other.newPage();
+    await studio.linkCodex(studio.b);
+    await studio.configureTurn(studio.b, { promptReplyMarkers: ['Team shared skill marker', 'Team shared design marker'] });
+    await b.goto(`${studio.origin}/settings`);
+    await b.locator('input[name="username"]').fill(studio.b.username);
+    await b.locator('input[name="password"]').fill(studio.b.password);
+    await b.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await b.getByTestId('studio-settings-nav-skills').click();
+    const sharedRow = b.getByTestId(`skill-row-${skillId}`);
+    await expect(sharedRow.getByTestId('catalog-share-badge')).toHaveText(`Shared by ${studio.a.username}`, { timeout: T.long });
+    await expect(sharedRow.getByTestId('skills-edit')).toHaveCount(0);
+    await expect(sharedRow.getByTestId('skills-delete')).toHaveCount(0);
+    await expect(sharedRow.getByTestId('studio-catalog-share-button')).toHaveText('Can use');
+    await b.screenshot({ path: info.outputPath('studio-catalog-shared-badge.png'), animations: 'disabled' });
+    // The grantee's own project pins the shared document; the composer selects the shared skill.
+    const projectId = studioProjectId();
+    const made = await studio.request('POST', '/api/projects', studio.b.cookie, { id: projectId, name: 'Shared catalog turn', designSystemId: designId });
+    expect(made.status, made.text).toBe(200);
+    await b.goto(`${studio.origin}/projects/${projectId}`);
+    const composer = b.getByTestId('chat-composer-input');
+    await expect(composer).toBeVisible({ timeout: T.long });
+    await composer.fill('@Team');
+    await b.getByRole('option').filter({ hasText: 'Team brand voice' }).click();
+    await composer.press('End');
+    await composer.pressSequentially(' Use the shared skill.');
+    const admitted = b.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/runs');
+    await b.getByTestId('chat-send').click();
+    const started = await admitted;
+    expect(started.status()).toBe(202);
+    expect(started.request().postDataJSON().context.skillIds).toContain(skillId);
+    await expect(b.locator('body')).toContainText('Team shared skill marker', { timeout: T.long });
+    await expect(b.locator('body')).toContainText('Team shared design marker', { timeout: T.long });
+    // Strangers and the admin see nothing; revocation applies to the next read and preview.
+    expect((await studio.request('GET', `/api/skills/${encodeURIComponent(skillId)}`, studio.admin.cookie)).status).toBe(404);
+    expect((await studio.request('GET', `/api/design-systems/${encodeURIComponent(designId)}/preview`, studio.b.cookie)).status).toBe(200);
+    for (const [segment, id] of [['skills', skillId], ['design-systems', designId]] as const) {
+      expect((await studio.request('DELETE', `/api/multiuser/catalog/${segment}/${encodeURIComponent(id)}/shares/${studio.b.id}`, studio.a.cookie, {})).status).toBe(200);
+    }
+    expect((await studio.request('GET', `/api/design-systems/${encodeURIComponent(designId)}/preview`, studio.b.cookie)).status).toBe(404);
+    await b.goto(`${studio.origin}/settings`);
+    await b.getByTestId('studio-settings-nav-skills').click();
+    await expect(b.getByTestId('skills-list')).toBeVisible({ timeout: T.long });
+    await expect(b.getByTestId(`skill-row-${skillId}`)).toHaveCount(0);
+    // The admitted conversation keeps its captured turn after the revoke.
+    await b.goto(`${studio.origin}/projects/${projectId}`);
+    await expect(b.locator('body')).toContainText('Team shared skill marker', { timeout: T.long });
+  } finally { await other.close(); }
+});

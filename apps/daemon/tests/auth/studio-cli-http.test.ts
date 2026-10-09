@@ -395,6 +395,27 @@ describe('same Studio APIs through remote od sessions', () => {
     expect((await cli(['memory', 'index', 'set', '--session-file', aFile, '--json'])).code).not.toBe(0);
   }, 40_000);
 
+  it('shares a private skill and design document for use and revokes them through od skill / od design-system (#61/#65)', async () => {
+    const skill = success(await cli(['skill', 'import', '--name', 'cli-shared-skill', '--prompt-file', '-', '--session-file', aFile, '--json'], 'CLI_SHARED_SKILL'));
+    const skillId = skill.skill.id as string;
+    const document = success(await cli(['design-system', 'create', '--title', 'CLI shared', '--prompt-file', '-', '--session-file', aFile, '--json'], '# CLI\nCLI_SHARED_DESIGN'));
+    const designId = (document.designSystem ?? document).id as string;
+    expect((await cli(['skill', 'members', skillId, '--session-file', bFile, '--json'])).code).not.toBe(0);
+    expect(success(await cli(['skill', 'share', skillId, bob.username, '--session-file', aFile, '--json'])).member).toMatchObject({ username: bob.username, role: 'use' });
+    expect(success(await cli(['design-system', 'share', designId, bob.username, '--session-file', aFile, '--json'])).member.role).toBe('use');
+    expect((await cli(['skill', 'share', skillId, alice.username, '--session-file', bFile, '--json'])).code).not.toBe(0);
+    const members = success(await cli(['skill', 'members', skillId, '--session-file', bFile, '--json']));
+    expect(members).toMatchObject({ role: 'use', owner: { username: alice.username } });
+    // (The full bundled list is asserted over HTTP; a large `--json` list can outrun the CLI's exit.)
+    expect(success(await cli(['skill', 'show', skillId, '--session-file', bFile, '--json']))).toMatchObject({ body: 'CLI_SHARED_SKILL',
+      studioShare: { role: 'use', ownerUsername: alice.username } });
+    success(await cli(['design-system', 'leave', designId, '--session-file', bFile, '--json']));
+    expect((await cli(['design-system', 'show', designId, '--session-file', bFile, '--json'])).code).not.toBe(0);
+    success(await cli(['skill', 'unshare', skillId, bob.username, '--session-file', aFile, '--json']));
+    expect((await cli(['skill', 'show', skillId, '--session-file', bFile, '--json'])).code).not.toBe(0);
+    expect((await cli(['skill', 'unshare', skillId, bob.username, '--session-file', aFile, '--json'])).code).not.toBe(0);
+  }, 60_000);
+
   it('honors server revocation and logs B out without printing or retaining credentials', async () => {
     const revoked = await daemon.request({ method: 'POST', path: `/api/auth/users/${alice.id}/sessions/revoke`, cookie: admin.cookie, body: {} });
     expect(revoked.status).toBe(200);

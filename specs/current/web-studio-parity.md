@@ -137,7 +137,7 @@ Remote origin 只接受 HTTPS，HTTP 只准 numeric loopback 的本地測試／�
 | #58 / S5 | Owner file list/read/write/upload/rename/delete/folders/search/versions/restore on the standard routes; reviewed RegExp routes matched by the gate; untrusted-content response policy; bounded writes; attachments and focused-file context in personal runs; shared FileWorkspace/FileViewer for pilots; no host paths in responses | non-ZIP exports (#66), public publish, resumable large uploads and per-project storage quota; S13 browser imports and S15 owned ZIP are implemented | `pilot`，非 `supported` |
 | #56 / #57 / S4 | Pilot actors send through the shared `ProjectView → ChatPane → ChatComposer`；question-form、reload reattach、stop、retry、queue、feedback 與 typed failure copy 由真實 browser harness 驗證 | S5 attachments, S8 private skills, S11 design documents and S21 per-turn personal Codex model/effort are implemented; real-provider recordings and full chat state matrix remain | `pilot`，非 `supported` |
 | #60 / S13–S14 | shared project setup and Home prompt → exactly one run; actor-owned immutable templates, duplicate and browser ZIP/directory imports; matching CLI commands | Live Artifact/Media/Figma, complete carousel/type parity and remaining Home acceptance | `pilot`，非 `supported` |
-| #61 / S11/S13/S17/S18/S20 | bundled design/prompt templates and craft; actor design documents, revisions, safe previews and captured execution versions; immutable actor template snapshots; captured skill packages (bundled and private folder imports) with personal read-only mounts and company copy/offline-script tools; fixed-design conversations capture their packages; shared create/editor/catalog/composer and CLI | design generation, design asset packages, plugin/community management and Vela team catalogs | `pilot`，非 `supported` |
+| #61 / S11/S13/S17/S18/S20/S40 | bundled design/prompt templates and craft; actor design documents, revisions, safe previews and captured execution versions; immutable actor template snapshots; captured skill packages (bundled and private folder imports) with personal read-only mounts and company copy/offline-script tools; fixed-design conversations capture their packages; team catalogs (owner-managed use grants on private skills and documents between accounts, captured at admission); shared create/editor/catalog/composer and CLI | design generation, design asset packages, plugin/community management | `pilot`，非 `supported` |
 | #62 / S10/S16/S19/S21/S25/S38 | shared Settings frame and section navigation; instructions, manual and opt-in automatic memory (turn-source extraction, rule verification, per-account history), appearance/notification and personal Codex model preferences, About/version; HTTP A/B/admin negatives, CLI and shared Settings browser workflow | connectors, MCP, library and memory from connected apps (account OpenAI/Tavily keys in S33/S37, privacy in S30, automatic memory in S38) | `pilot`，非 `supported` |
 | #63 / S33/S34/S37 | OpenAI turns on the company pool or the account's own key carry image/speech/video functions billed to the turn's source; research search on each account's own encrypted Tavily key (standalone and with a turn), usage recorded per account; shared Home/Settings/composer and CLI | Live Artifacts, GenUI, critique and real-provider/EC2 acceptance | `pilot`，非 `supported` |
 | #66 / S15/S23 | captured owned project/folder/batch ZIP, SHA-256 receipt and standard design handoff metadata; one-file HTML export bundled from captured owner bytes; shared viewer/file download and CLI | isolated PDF/PPTX/image renderers, historical-version export binding, public share, cloud deploy/finalize/handoff | `pilot`，非 `supported` |
@@ -626,9 +626,54 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
   - The F5 test in `studio-memory-automation-http` unlinks the rule through `PUT /api/memory/index`. `studio-cli-http` has the index case.
 - **Remaining.** No route classes changed, so the transport allowlist and lanes are unchanged.
 
-## 目前進度與續作順序 — 2026-10-09（S39 後）
+## S40 — team catalogs: private skills and design documents shared between accounts (#61, #65, #68; decision 2026-10-08)
 
-[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S39 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
+- **Model.** `storage/studio-catalog-grants.ts` adds `studio_catalog_grants` (kind `skill` | `design-system`, resource, grantee account, role `use`, at most 50 per resource). The owner binding on `studio_skills` / `studio_design_systems` stays the single, immutable authority. Grantees are other active accounts of this deployment, named by username and resolved on the server. There is no Vela relay, workspace or invitation link. A grant on a deleted resource grants nothing, and owner deletion removes the grants. Admins hold only grants made to them.
+- **Routes.** Eight new `actor-scoped` routes in `routes/studio-catalog-sharing.ts` (body policies `catalog-share` and `empty`):
+  - `GET|DELETE /api/multiuser/catalog/{skills|design-systems}/:id/access`: members and own role; a grantee leaves.
+  - `PUT …/:id/shares`: owner only; `{ username, role: 'use' }`.
+  - `DELETE …/:id/shares/:accountId`: owner only.
+  - Missing, foreign and insufficient access are the same 404 on every route.
+- **What a grantee may do (`use`).** List, inspect and preview, on the existing catalog routes:
+  - Skill list/detail/files and document list/detail/files/file/preview/showcase resolve the owner's resource through the grant, with the `studioShare` projection (`role`, `ownerUsername`, `memberCount`; `owner` on one's own shared entries).
+  - Grantees also get `canMutate`/`isEditable` false on documents.
+  - Update, delete, revisions and grant management stay owner-only (404).
+  - Every read rechecks the grant, so preview and showcase bytes stop on the next request after a revoke.
+- **No shadowing.** Ids stay owner-unique (`studio-skill:<uuid>`, `user:studio_<uuid>`). The same name or title in two owner namespaces lists as two entries, and selection is by id. Daemon responses are `no-store`, and the Web catalog caches are already keyed by account generation.
+- **Turns.**
+  - **Selection:** selecting a shared skill or document captures the owner's current version at admission through the S8/S17/S11 capture path (package included). Conversation pins are unchanged: revocation, owner revision or deletion never change an admitted run or a conversation that already captured. New conversations, project setup and previews are refused at once.
+  - **Shared projects (S32):** a member's turn may inherit the project's pinned private skill or document only as the version the project owner already admitted in that project. It never reads the owner's catalog live and never grants catalog access. If the owner never admitted the pin there, the member's turn is refused.
+- **Capability.** `catalogs` and `collaboration` stay `pilot`; their reasons now name team catalogs and keep plugins pending. The transport opens the share routes only with both lanes.
+- **Web.** `StudioShareDialog` is generalized (role list and copy keys) rather than forked; projects keep their three roles, catalogs use the single `use` role without a role picker.
+  - **Share entries:** `StudioCatalogShareButton` sits on Settings → Skills rows, on the design-system detail actions and in the design-system editor header, where Studio previously had a disabled placeholder.
+  - **Badges:** `ProjectShareBadge` marks "Shared by …" / "Share · N".
+  - **Grantees:** edit and delete are hidden. Studio accounts no longer see the Vela "share to team" menu items.
+- **CLI.** `od skill members|share|unshare|leave` and `od design-system members|share|unshare|leave` (the `design-system` alias was added) on the same endpoints, with `--session-file` and `--json`.
+- **Evidence.**
+  - Daemon `studio-catalog-sharing-http` (4):
+    - Grant refusals (unknown/own/inactive usernames, non-`use` role, stranger/admin/grantee managing).
+    - Projections and owner-only writes, with foreign≡missing on every route.
+    - Capture at admission; owner revision vs. existing pin vs. new conversation.
+    - Revoke stopping reads, preview and new admissions while the pin keeps running; owner delete removing grants.
+    - Same-name no-shadow.
+    - Shared-project pin inheritance without catalog access.
+  - `storage/studio-catalog-grants` covers the 50-grant bound and soft-delete.
+  - Gate inventory and CLI case. Web `studio-catalog-sharing` (5).
+  - Transport oracle case.
+  - Browser case: owner shares from Settings → Skills and the design-system detail; the grantee sees the badge, cannot edit, selects the shared skill in the composer on a project pinned to the shared document, and runs both markers; revoke stops preview and listing and keeps the admitted conversation.
+- **Remaining.**
+  - Shared plugins (S41 scope: bundled only).
+  - Grants are per item; there are no team groups.
+  - A member's first turn in a shared project needs the owner to have admitted the pin once.
+  - Large `od … list --json` outputs over a session can be cut short by the CLI's immediate `process.exit` (adjacent; not changed here).
+
+![Share a private skill with another account](../../docs/design/studio-parity/catalog-share-dialog.png)
+
+![A shared skill in the grantee's catalog](../../docs/design/studio-parity/catalog-shared-badge.png)
+
+## 目前進度與續作順序 — 2026-10-09（S40 後）
+
+[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S40 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
 
 - 分支：`feat/studio-parity-foundation`；以 PR 最新 head 為準。先核對 git status/log 和 GitHub 最新 review，避免重做已交付項目。S18–S25 的實作、測試、限制與入口截圖見上文；本次依使用者要求階段性收尾並交接，並非 Epic 完成。
 - 已確認產品決定：公司池使用 OpenAI 官方 API；Vela 採使用者驗證的本人身份與服務端 Web account/member binding；native window、OS overlay 與 app installer/updater 的 Web 不適用決定，和 in-page pet 仍需交付項目保持分開。
@@ -636,10 +681,11 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
 - 2026-10-08 產品決定：#66 以 deploy image 內 headless Chromium（沙箱、拒絕網路）渲染 PDF/PPTX/PNG；#62/#63 允許每帳號自有 provider API key（部署主金鑰加密，管理員不可讀）；#62 Web 帳號 telemetry 關閉；#65 同一部署內帳號間專案分享（view/comment/edit、presence、共享評論），不接 Vela relay。
 - 下一批按 DAG 推進：
   - #64：S36 完成 templates/ingestion/proposals/crystallize；剩餘 connector/MCP/plugin context、帳號自有 key 作 routine 來源，以及排程觸發的真實驗收。
-  - #65：S32 完成同部署帳號間專案分享（view/comment/edit、presence、共享評論、撤銷即時生效）；剩餘 team catalogs（design systems/skills/plugins 共享，併 #61）與他人執行中 turn 的即時鏡像；依決定不接 Vela。
+  - #65：S32 完成同部署帳號間專案分享（view/comment/edit、presence、共享評論、撤銷即時生效）；S40 完成 private skills／design documents 的 team catalogs（use grant、admission capture、撤銷不改已 pin 的對話）；剩餘 plugins 共享與他人執行中 turn 的即時鏡像；依決定不接 Vela。
   - #66：PDF/PPTX/PNG 由 S31 伺服器 renderer 完成；S35 完成部署內公開連結；剩餘雲端 deploy（每帳號 token）與 finalize/handoff。
   - #63：S33 每帳號加密 OpenAI key、S34 媒體生成（圖片/旁白/影片）、S37 每帳號 Tavily research 完成；剩餘 Live Artifacts、GenUI、critique。
-  - #61：design generation、asset packages、plugin/community/team catalogs。
+  - #61：S40 完成 skills／design documents 的 team catalogs；剩餘 design generation、asset packages、plugin/community catalogs。
+  - S41（bundled plugin catalog 與 apply）待產品決定，尚未實作。Bundled plugins 中除 13 個 atoms 外，全部是帶 pipeline 與 scenario 策略的 `kind: scenario`。331/470 需要 `live-artifact`，另有 `critique-theater`、`handoff`、`figma-extract`、`code-import` 等 atoms。Studio turns 不走 OD Next，也不執行 plugin pipelines。需決定 Web 帳號「套用 bundled plugin」的語意：(a) 只捕捉 prompt context（skill、assets、design system、craft）並明示 pipeline／atoms／策略不在 Web 執行；(b) 只開放 atoms 全部可在 Web 執行的 plugins，其餘列為 unavailable 並附原因；(c) 先把 plugin pipelines／OD Next 策略移植進 Studio turns。Marketplace／community 的唯讀列表與第三方安裝的拒絕不受此影響。
   - #62：S33/S37 完成每帳號 OpenAI/Tavily 加密金鑰；S38 完成自動記憶（opt-in、依回合來源計費、驗證與歷史）；剩餘 connectors/MCP、library、connected-app 記憶。
   - #67：in-page pet 與清除本瀏覽器資料已於 S27 完成；剩餘逐項 host bridge 的 mobile/permission-denied/headless UX 驗收（#70）。
 - #53–#59 和 #68/#69 的尚欠驗收（完整 chat state matrix、replay/telemetry、background/artifact lineage、provider recording、rich headless flows）不因本批完成。最後執行 #70 同 build 單人/A/B、desktop/mobile、a11y/visual/performance、revocation/restart/rollback，再決定 rollout。

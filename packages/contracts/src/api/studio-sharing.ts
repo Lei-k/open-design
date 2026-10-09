@@ -56,3 +56,65 @@ export interface StudioPresenceLeaveRequest {
 export function isStudioProjectShareRole(value: unknown): value is StudioProjectShareRole {
   return typeof value === 'string' && (STUDIO_PROJECT_SHARE_ROLES as readonly string[]).includes(value);
 }
+
+// ---- Team catalogs (#61/#65): private skills and design documents ----------
+//
+// The owner shares one private skill or design document with another active
+// account of the same deployment, named by username and resolved on the
+// server. The only grant is `use`: list, inspect, preview and select it in
+// the grantee's own turns. The owner alone edits, revises, deletes and
+// manages grants. A missing, foreign or insufficient resource is one 404.
+
+export type StudioCatalogShareKind = 'skill' | 'design-system';
+export type StudioCatalogShareRole = 'use';
+export type StudioCatalogAccessRole = 'owner' | StudioCatalogShareRole;
+export const STUDIO_CATALOG_SHARE_ROLES: readonly StudioCatalogShareRole[] = ['use'];
+/** Grantees per shared skill or design document. */
+export const STUDIO_CATALOG_GRANTS_MAX = 50;
+
+/**
+ * Read projection on catalog entries shared between accounts: `use` for an
+ * entry shared with the reader, `owner` for the reader's own entry that has
+ * at least one grantee. Absent for an unshared entry. Never mutation authority.
+ */
+export interface StudioCatalogShareSummary {
+  role: StudioCatalogAccessRole;
+  ownerUsername: string;
+  /** Accounts with access, owner included. */
+  memberCount: number;
+}
+
+export interface StudioCatalogMember {
+  accountId: string;
+  username: string;
+  role: StudioCatalogAccessRole;
+  /** Epoch ms the grant was made (absent for the owner). */
+  grantedAt?: number;
+}
+
+/** GET /api/multiuser/catalog/{skills|design-systems}/:id/access — the owner or a grantee. */
+export interface StudioCatalogAccessResponse {
+  kind: StudioCatalogShareKind;
+  resourceId: string;
+  /** The caller's own role. */
+  role: StudioCatalogAccessRole;
+  self: StudioCatalogMember;
+  owner: StudioCatalogMember;
+  /** Owner first, then grantees in grant order. */
+  members: StudioCatalogMember[];
+  shared: boolean;
+}
+
+/** PUT /api/multiuser/catalog/{skills|design-systems}/:id/shares — owner only. */
+export interface StudioCatalogShareRequest {
+  username: string;
+  role: StudioCatalogShareRole;
+}
+
+export interface StudioCatalogShareResponse {
+  member: StudioCatalogMember;
+}
+
+export function isStudioCatalogShareRole(value: unknown): value is StudioCatalogShareRole {
+  return typeof value === 'string' && (STUDIO_CATALOG_SHARE_ROLES as readonly string[]).includes(value);
+}

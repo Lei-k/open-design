@@ -77,6 +77,12 @@ export function studioRequestAvailable(method: string, path: string,
     if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/duplicate$/.test(path)) return method === 'POST';
     if (/^\/api\/(?:multiuser\/)?import\/claude-design$/.test(path)) return method === 'POST';
   }
+  // Team catalogs (#61/#65): use grants on the actor's private skills and design
+  // documents to other accounts of this deployment. Needs both lanes.
+  if (usable('catalogs') && usable('collaboration')) {
+    const share = /^\/api\/multiuser\/catalog\/(?:skills|design-systems)\/[^/]+\/(access|shares)(\/[^/]+)?$/.exec(path);
+    if (share) return share[1] === 'access' ? !share[2] && (method === 'GET' || method === 'DELETE') : share[2] ? method === 'DELETE' : method === 'PUT';
+  }
   if (usable('catalogs')) {
     const catalogPath = path.replace(/^\/api\/multiuser\/catalog\//, '/api/');
     if (catalogPath === '/api/templates') return method === 'GET' || method === 'POST';

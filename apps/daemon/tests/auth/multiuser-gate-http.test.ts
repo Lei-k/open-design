@@ -231,6 +231,13 @@ describe('route classification covers the real inventory', () => {
       'actor-scoped PUT /api/multiuser/catalog/skills/:id',
       'actor-scoped DELETE /api/multiuser/catalog/skills/:id',
       'actor-scoped POST /api/skills/import-files',
+      // #61/#65 team catalogs: owner-managed use grants; the handler answers one 404 for missing/foreign.
+      ...['skills', 'design-systems'].flatMap((segment) => [
+        `actor-scoped GET /api/multiuser/catalog/${segment}/:id/access`,
+        `actor-scoped DELETE /api/multiuser/catalog/${segment}/:id/access`,
+        `actor-scoped PUT /api/multiuser/catalog/${segment}/:id/shares`,
+        `actor-scoped DELETE /api/multiuser/catalog/${segment}/:id/shares/:accountId`,
+      ]),
       'actor-scoped POST /api/multiuser/catalog/skills/import-files',
       'actor-scoped GET /api/routines',
       'actor-scoped GET /api/multiuser/routines',

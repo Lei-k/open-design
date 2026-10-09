@@ -53,6 +53,9 @@ import { downloadDesignSystemArchive, downloadProjectArchive } from '../runtime/
 import { useDesignKit } from '../runtime/design-kit';
 import { DesignKitView, HeaderActionsMenu, type DesignKitActionFeedbackTone, type HeaderMenuAction } from './DesignKitView';
 import { designSystemLogoHost, isUserSystem } from './design-system-metadata';
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
+import { StudioCatalogShareButton } from '../runtime/StudioShareDialog';
+import { ProjectShareBadge } from './ProjectShareBadge';
 import { Icon } from './Icon';
 import { Toast } from './Toast';
 import type { DesignSystemDetail, DesignSystemSummary, ProjectTemplate, Surface } from '../types';
@@ -1420,6 +1423,7 @@ function SystemRow({
         <span className={styles.itemNameRow}>
           <span className={styles.itemName}>{system.title}</span>
           {isDefault ? <span className={styles.badgeDefault}>{t('dsManager.badgeDefault')}</span> : null}
+          <ProjectShareBadge project={system} testId="catalog-share-badge" />
         </span>
         <span className={styles.itemSub}>{subtitle}</span>
       </span>
@@ -1518,7 +1522,11 @@ function DesignSystemDetail({
   // sharer, or a workspace owner/admin). Defaulting to `!teamSynced` (rather
   // than to the async `isTeamShared`/`teamSharedMeta` read) keeps this safe
   // even before that metadata has loaded.
-  const canManageTeamSynced = !system.teamSynced || canUnshareFromTeam === true;
+  // Studio accounts (#61/#65): a document another account shared is for use
+  // only, and sharing is between accounts of this deployment, not a Vela team.
+  const studioAccount = !useStudioCapabilities().hostServices;
+  const sharedWithMe = system.studioShare?.role === 'use';
+  const canManageTeamSynced = (!system.teamSynced || canUnshareFromTeam === true) && !sharedWithMe;
 
   // The summary lacks the DESIGN.md body + packageInfo the kit needs, so fetch
   // the full detail. The kit view derives every module from brand.json (when a
@@ -1644,8 +1652,11 @@ function DesignSystemDetail({
     }
   }
 
-  const badgeSlot = isDefault ? (
-    <span className={styles.badgeDefault}>{t('dsManager.badgeDefault')}</span>
+  const badgeSlot = isDefault || system.studioShare ? (
+    <>
+      {isDefault ? <span className={styles.badgeDefault}>{t('dsManager.badgeDefault')}</span> : null}
+      <ProjectShareBadge project={system} testId="catalog-share-badge" />
+    </>
   ) : null;
 
   // Keep only the two primary actions on the bar — "Edit with agent" and the
@@ -1662,7 +1673,7 @@ function DesignSystemDetail({
     // as unshare/edit/delete below) rather than `isUser` alone: a plain
     // member merely viewing a teammate's pulled copy must not be able to
     // push THEIR local copy over the real owner's shared entry.
-    ...(isUser && onShareToTeam && canManageTeamSynced
+    ...(isUser && onShareToTeam && canManageTeamSynced && !studioAccount
       ? [{
           id: 'share-to-team',
           label: isTeamShared ? t('dsManager.syncToTeam') : t('dsManager.shareToTeam'),
@@ -1676,7 +1687,7 @@ function DesignSystemDetail({
     // daemon enforces this via `canManageSharedResource`; `canUnshareFromTeam`
     // mirrors that so the action never appears for a system a plain member
     // merely sees synced locally.
-    ...(isUser && onUnshareFromTeam && isTeamShared && canUnshareFromTeam
+    ...(isUser && onUnshareFromTeam && isTeamShared && canUnshareFromTeam && !studioAccount
       ? [{
           id: 'unshare-from-team',
           label: t('dsManager.unshareFromTeam'),
@@ -1724,6 +1735,10 @@ function DesignSystemDetail({
 
   const actionsSlot = (
     <>
+      {isUser && studioAccount ? (
+        <StudioCatalogShareButton kind="design-system" resourceId={system.id} share={system.studioShare}
+          className={styles.actionButton} onChanged={() => { void onSystemsRefresh?.(); }} />
+      ) : null}
       {/* "Edit with agent" opens the authoring flow against the system's
           backing project — a real write surface, so it is fully hidden (not
           just disabled) for a teamSynced system the caller may not manage. */}
