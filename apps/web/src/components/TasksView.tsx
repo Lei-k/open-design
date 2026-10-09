@@ -17,6 +17,9 @@ import type {
   StudioAutomationTemplate,
 } from '@open-design/contracts';
 import { automationTemplateRoutinePrompt } from '@open-design/contracts';
+import { Button } from '@open-design/components';
+import { StudioAutomationTemplates } from './StudioAutomationTemplates';
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
 
 import { Icon, type IconName } from './Icon';
 import { navigate } from '../router';
@@ -464,6 +467,8 @@ export function TasksView({ skills = [], designTemplates = [], connectors = [], 
   const [modal, setModal] = useState<Modal>(null);
   const [templateFilter, setTemplateFilter] = useState<TemplateFilter>('all');
   const [automationCatalog, setAutomationCatalog] = useState<ContractAutomationTemplate[]>([]);
+  const studio = useStudioCapabilities();
+  const [templateEditorOpen, setTemplateEditorOpen] = useState(false);
   const [proposals, setProposals] = useState<AutomationEvolutionProposal[]>([]);
   const [proposalBusyId, setProposalBusyId] = useState<string | null>(null);
   const [crystallizingRunId, setCrystallizingRunId] = useState<string | null>(null);
@@ -720,6 +725,7 @@ export function TasksView({ skills = [], designTemplates = [], connectors = [], 
           </p>
         </div>
         <div className="automations-hero__actions">
+          {studio.actor && <Button onClick={() => setTemplateEditorOpen(true)} data-testid="studio-private-templates">{t('automations.privateTemplates')}</Button>}
           <div className="automations-metrics" aria-label={t('automations.summaryAria')}>
             <Metric label={t('automations.metricActive')} value={activeCount} />
             <Metric label={t('automations.metricPaused')} value={pausedCount} />
@@ -739,6 +745,8 @@ export function TasksView({ skills = [], designTemplates = [], connectors = [], 
           </button>
         </div>
       </header>
+      {templateEditorOpen && studio.actor && <StudioAutomationTemplates templates={automationCatalog}
+        onClose={() => setTemplateEditorOpen(false)} onProposed={() => { void refresh(); }} />}
 
       {error ? (
         <div className="automations-view__error" role="alert">

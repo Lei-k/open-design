@@ -51,8 +51,8 @@ export function registerStudioSharingRoutes(app: Express, input: {
 }): StudioSharingRoutes {
   const { db } = input;
   const now = input.clock ?? Date.now;
-  const access = new ProjectAccessStore(db);
   const accounts = AuthStore.open({ dataRoot: input.dataRoot });
+  const access = new ProjectAccessStore(db, { accountActive: (id) => accounts.getAccountById(id)?.active === true });
   const presence = new Map<string, Map<string, Tab>>();
 
   const signal = (projectId: string, type: 'presence-changed' | 'project-metadata-changed') => {

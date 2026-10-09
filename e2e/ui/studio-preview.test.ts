@@ -18,6 +18,51 @@ const test = base.extend<{ studio: StudioRuntime }>({
   },
 });
 
+test('[P1] Studio Live Artifact create, refresh, edit and delete use isolated previews and current project authority', async ({ page, studio }, info) => {
+  const projectId = studioProjectId();
+  expect((await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Live sales report' })).status).toBe(200);
+  expect((await studio.request('POST', `/api/projects/${projectId}/files`, studio.a.cookie, { name: 'sales.json', content: '{"total":8}' })).status).toBe(200);
+  await page.goto(`${studio.origin}/projects/${projectId}`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.getByTestId('design-files-tab').click();
+  const entry = page.getByTestId('studio-create-live-artifact'); await expect(entry).toBeVisible({ timeout: T.long });
+  await page.screenshot({ path: info.outputPath('studio-live-artifact-entry.png'), animations: 'disabled' });
+  await entry.click();
+  const editor = page.getByRole('dialog');
+  await editor.getByLabel('Title', { exact: true }).fill('Sales');
+  await editor.getByLabel('Template HTML', { exact: true }).fill('<h1>{{data.total}}</h1>');
+  await editor.getByLabel('Data', { exact: true }).fill('{"total":3}');
+  await editor.getByLabel('Document source', { exact: true }).fill('sales.json');
+  const created = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/live-artifacts');
+  await editor.getByRole('button', { name: 'Create', exact: true }).click();
+  const response = await created; expect(response.status()).toBe(201); const artifact = (await response.json()).artifact;
+  const viewer = page.locator('.live-artifact-viewer'); await expect(viewer).toBeVisible({ timeout: T.long });
+  const frame = page.frameLocator('[data-testid="live-artifact-preview-frame"]');
+  await expect(frame.getByRole('heading', { name: '3', exact: true })).toBeVisible({ timeout: T.long });
+  const preview = await studio.request('GET', `/api/live-artifacts/${artifact.id}/preview?projectId=${projectId}`, studio.a.cookie);
+  // The app returns a redirect and the document itself is served only by the preview host.
+  expect(preview.status).toBe(302);
+  expect((await studio.request('GET', `/api/live-artifacts/${artifact.id}?projectId=${projectId}`, studio.b.cookie)).status).toBe(404);
+  await viewer.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(frame.getByRole('heading', { name: '8', exact: true })).toBeVisible({ timeout: T.long });
+  await viewer.getByRole('button', { name: 'Refresh history', exact: true }).click();
+  await expect(viewer).toContainText('succeeded');
+  await viewer.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(editor.getByLabel('Template HTML', { exact: true })).toHaveValue('<h1>{{data.total}}</h1>');
+  await editor.getByLabel('Data', { exact: true }).fill('{"total":11}');
+  await editor.getByRole('button', { name: 'Save', exact: true }).click();
+  await viewer.getByRole('button', { name: 'Preview', exact: true }).click();
+  await expect(frame.getByRole('heading', { name: '11', exact: true })).toBeVisible({ timeout: T.long });
+  await viewer.getByRole('button', { name: 'Edit', exact: true }).click();
+  await editor.getByRole('button', { name: 'Delete', exact: true }).click();
+  await expect(editor.getByRole('status')).toContainText('Sales');
+  const deleted = page.waitForResponse((result) => result.request().method() === 'DELETE' && new URL(result.url()).pathname === `/api/live-artifacts/${artifact.id}`);
+  await editor.getByRole('button', { name: 'Delete', exact: true }).click(); expect((await deleted).status()).toBe(200);
+  expect((await studio.request('GET', `/api/live-artifacts/${artifact.id}?projectId=${projectId}`, studio.a.cookie)).status).toBe(404);
+});
+
 test('[P1] Studio run renders its immutable image immediately and retains history after workspace edits', async ({ page, studio }, info) => {
   await studio.linkCodex(studio.a);
   await studio.configureTurn(studio.a, { reply: 'Created the owner image.', artifactBytes: {
@@ -549,6 +594,7 @@ test('[P1] admin configures the company pool and Studio runs and reloads on its 
   expect((await studio.request('GET', fileUrl, studio.a.cookie)).text).toContain('Company browser design');
   expect((await studio.request('GET', fileUrl, studio.b.cookie)).status).toBe(404);
   await page.reload();
+  await expect(page.locator('body')).toContainText('Write company design', { timeout: T.long });
   await expect(source).toContainText('OpenAI · company pool');
   await expect(page.getByTestId('assistant-role').first()).toContainText('OpenAI');
   await expect(source.locator('select')).toHaveCount(0);
@@ -778,8 +824,8 @@ test('[P1] Studio account automations create, run as the owner and stay private'
 });
 
 test('[P1] Studio automation templates, crystallize and proposal review stay on the account', async ({ page, studio }, info) => {
-  await studio.linkCodex(studio.a);
-  await studio.configureTurn(studio.a, { reply: 'Compressed the project context.' });
+  expect((await studio.request('PUT', '/api/multiuser/settings/provider-keys/openai', studio.a.cookie,
+    { revision: 0, apiKey: 'sk-browser-routine-own-key-0123456789' })).status).toBe(200);
   await page.goto(`${studio.origin}/automations`);
   await page.locator('input[name="username"]').fill(studio.a.username);
   await page.locator('input[name="password"]').fill(studio.a.password);
@@ -794,16 +840,21 @@ test('[P1] Studio automation templates, crystallize and proposal review stay on 
   await template.click();
   const modal = page.getByTestId('automation-modal');
   await expect(modal.getByTestId('automation-modal-title')).toHaveValue('Compress project context');
+  await modal.getByTestId('studio-execution-source').locator('select').selectOption('openai-byok');
+  await page.screenshot({ path: info.outputPath('studio-automation-own-key-source.png'), animations: 'disabled' });
   const created = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/routines');
   await modal.locator('button[type="submit"]').click();
   const made = await created;
   expect(made.status(), await made.text()).toBe(201);
-  const routine = (await made.json()).routine as { id: string; templateId: string };
+  const routine = (await made.json()).routine as { id: string; templateId: string; agentId: string };
   expect(routine.templateId).toBe('compress-project-context');
+  expect(routine.agentId).toBe('openai-byok');
   const started = await studio.request('POST', `/api/routines/${routine.id}/run`, studio.a.cookie, {});
   expect(started.status, started.text).toBe(202);
   await expect.poll(async () => (await studio.request('GET', `/api/routines/${routine.id}/runs`, studio.a.cookie)).json.runs[0]?.status,
     { timeout: T.long }).toBe('succeeded');
+  const history = (await studio.request('GET', `/api/routines/${routine.id}/runs`, studio.a.cookie)).json.runs;
+  expect((await studio.request('GET', `/api/runs/${history[0].agentRunId}`, studio.a.cookie)).json.executionSource).toBe('personal_api_key');
   // History → Crystallize creates reviewable proposals in the shared Automations tab.
   await page.reload();
   const row = page.getByTestId(`automation-row-${routine.id}`);
@@ -825,6 +876,33 @@ test('[P1] Studio automation templates, crystallize and proposal review stay on 
   expect(skills.find((skill) => skill.id === skillId)?.name).toBe('Compress project context run skill');
   expect((await studio.request('GET', `/api/skills/${encodeURIComponent(skillId)}`, studio.b.cookie)).status).toBe(404);
   expect((await studio.request('GET', '/api/automation-proposals', studio.b.cookie)).json.proposals).toEqual([]);
+  // Private templates use the same review section and catalog cards as bundled ones.
+  await page.getByTestId('studio-private-templates').click();
+  const editor = page.getByTestId('studio-template-dialog');
+  const templateDraft = { title: 'Browser private template', description: 'Private workflow', purpose: 'Summarize team notes', triggerKinds: ['manual'], sourceKinds: ['chat'],
+    stages: [{ id: 'propose', kind: 'propose', title: 'Review notes' }], outputSinks: ['memory'], reviewPolicy: 'always', tokenCompression: 'balanced' };
+  await editor.getByTestId('studio-template-json').fill(JSON.stringify(templateDraft, null, 2));
+  await page.screenshot({ path: info.outputPath('studio-private-template-entry.png'), animations: 'disabled' });
+  const proposed = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/automation-proposals');
+  await editor.getByTestId('studio-template-propose').click();
+  expect((await proposed).status()).toBe(200);
+  const templateProposal = proposals.locator('li', { hasText: 'Browser private template' });
+  await expect(templateProposal).toBeVisible({ timeout: T.long });
+  const templateApplied = page.waitForResponse((response) => response.request().method() === 'POST' && /\/api\/automation-proposals\/[^/]+\/apply$/.test(new URL(response.url()).pathname));
+  await templateProposal.getByRole('button', { name: 'Apply' }).click();
+  const accepted = await templateApplied;
+  expect(accepted.status()).toBe(200);
+  const privateId = (await accepted.json()).result.automationTemplateId as string;
+  const privateCard = page.getByTestId(`automation-template-${privateId}`);
+  await expect(privateCard).toBeEnabled({ timeout: T.long });
+  expect((await studio.request('GET', `/api/automation-templates/${privateId}`, studio.b.cookie)).status).toBe(404);
+  await privateCard.click();
+  await expect(modal.getByTestId('automation-modal-title')).toHaveValue('Browser private template');
+  const privateRoutineCreated = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/routines');
+  await modal.locator('button[type="submit"]').click();
+  const privateRoutine = await privateRoutineCreated;
+  expect(privateRoutine.status()).toBe(201);
+  expect((await privateRoutine.json()).routine.templateId).toBe(privateId);
 });
 
 test('[P1] Studio owner comments on a preview element, sends it to the agent and keeps it private', async ({ page, studio }, info) => {
@@ -937,7 +1015,9 @@ test('[P1] Studio adopts a bundled in-page pet as an account preference that fol
   } finally { await other.close(); }
 });
 
-test('[P1] Studio owner shares a project with another account: badge, presence, shared comments and live revocation', async ({ page, browser, studio }, info) => {
+test('[P1] Studio owner shares a project with another account: badge, presence, comments, live chat and revocation', async ({ page, browser, studio }, info) => {
+  await studio.linkCodex(studio.a);
+  await studio.configureTurn(studio.a, { reply: 'Shared owner turn completed.' });
   const projectId = studioProjectId();
   const made = await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Studio shared acceptance' });
   expect(made.status, made.text).toBe(200);
@@ -1001,6 +1081,21 @@ test('[P1] Studio owner shares a project with another account: badge, presence, 
     await expect(ownerPanel).toContainText('Commenter asks for a shorter headline.', { timeout: T.long });
     await expect(ownerPanel).toContainText(studio.b.username);
     await b.screenshot({ path: info.outputPath('studio-share-member-view.png'), animations: 'disabled' });
+    // The member sees new durable chat messages without navigating or reloading,
+    // through project signals rather than access to the owner's private run.
+    const memberRunRequests: string[] = [];
+    b.on('request', (request) => {
+      if (/^\/api\/runs\/[^/]+(?:\/events)?$/.test(new URL(request.url()).pathname)) memberRunRequests.push(request.url());
+    });
+    const started = await studio.request('POST', '/api/runs', studio.a.cookie, {
+      projectId, conversationId, agentId: 'codex', executionSource: 'personal_subscription', message: 'Share the latest turn with the team.',
+    });
+    expect(started.status, started.text).toBe(202);
+    await expect(b.locator('body')).toContainText('Shared owner turn completed.', { timeout: T.long });
+    await expect(b.getByTestId('chat-send')).toBeDisabled();
+    expect(memberRunRequests).toEqual([]);
+    expect((await studio.request('GET', `/api/runs/${started.json.run.id}`, studio.b.cookie)).status).toBe(404);
+    await b.screenshot({ path: info.outputPath('studio-share-live-chat.png'), animations: 'disabled' });
     // A commenter cannot change files; the server refuses even a direct write.
     expect((await studio.request('POST', `/api/projects/${projectId}/files`, studio.b.cookie, { name: 'index.html', content: 'x', overwrite: true })).status).toBe(404);
     // The owner revokes: the member's open project closes back to Home.
@@ -1103,12 +1198,9 @@ test('[P1] Studio team catalogs: the owner shares a private skill and design doc
 });
 
 test('[P1] Studio bundled plugins: every plugin shows its Web availability, unavailable ones are neither offered nor applied, B cannot apply onto A', async ({ page, studio }, info) => {
-  // S41 review repair F1: Studio turns run no pipeline stages, so no bundled
-  // plugin is applicable today. Apply itself is covered by the daemon suite
-  // (studio-plugins-http) through a test-only row; this case proves the
-  // availability and refusal path in the running product.
+  // S42: the finite stage runner opens plugins whose atoms/context are all supported.
   await studio.linkCodex(studio.a);
-  await studio.configureTurn(studio.a, { reply: 'Plugin-free turn complete.' });
+  await studio.configureTurn(studio.a, { reply: 'Plugin stage complete.' });
   await page.goto(`${studio.origin}/plugins`);
   await page.locator('input[name="username"]').fill(studio.a.username);
   await page.locator('input[name="password"]').fill(studio.a.password);
@@ -1120,17 +1212,28 @@ test('[P1] Studio bundled plugins: every plugin shows its Web availability, unav
   await expect(unavailable).toHaveAttribute('data-applicable', 'false', { timeout: T.long });
   await expect(unavailable).toContainText('Not available on Web');
   await expect(unavailable).toContainText('live-artifact');
+  // An unavailable generation plugin still has a readable, isolated shipped example.
+  const previewRead = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/plugins/example-article-magazine/preview'
+    && new URL(response.url()).searchParams.get('variant') === 'descriptor');
+  await page.getByTestId('plugins-home-details-example-article-magazine').click();
+  expect((await previewRead).status()).toBe(200);
+  const previewDialog = page.getByRole('dialog', { name: 'Magazine Article preview' });
+  const previewFrame = previewDialog.locator('iframe');
+  await expect(previewFrame).toHaveAttribute('sandbox', 'allow-scripts');
+  await expect(previewFrame).toHaveAttribute('src', /\/api\/multiuser\/plugin-preview\//);
+  await expect(previewFrame.contentFrame().locator('h1')).toBeVisible({ timeout: T.long });
+  await page.screenshot({ path: info.outputPath('studio-bundled-plugin-preview-entry.png'), animations: 'disabled' });
+  await previewDialog.getByRole('button', { name: 'Close', exact: true }).click();
   // Host flows are not offered: no create, no install, no Home hand-off.
   await expect(page.locator('.plugin-marketplace__create')).toHaveCount(0);
-  // A pipeline of Web atoms is still unavailable: the stages would not run.
+  // A finite pipeline of Web atoms is available; the devloop and other atoms stay closed.
   await search.fill('Share to community');
   const share = page.getByTestId('plugin-web-availability-od-share-to-community');
-  await expect(share).toHaveAttribute('data-applicable', 'false', { timeout: T.long });
-  await expect(share).toContainText('Not available on Web');
-  await expect(share).toContainText('pipeline');
+  await expect(share).toHaveAttribute('data-applicable', 'true', { timeout: T.long });
+  await expect(share).not.toContainText('Not available on Web');
   await page.screenshot({ path: info.outputPath('studio-plugins-web-availability.png'), animations: 'disabled' });
 
-  // The project composer offers no unavailable plugin, and a turn carries none.
+  // The shared composer applies the available plugin and sends its captured pin.
   const projectId = studioProjectId();
   const made = await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Plugin project' });
   expect(made.status, made.text).toBe(200);
@@ -1141,26 +1244,36 @@ test('[P1] Studio bundled plugins: every plugin shows its Web availability, unav
   const composer = page.getByTestId('chat-composer-input');
   await expect(composer).toBeVisible({ timeout: T.long });
   await composer.fill('@Share');
-  await expect(page.getByRole('option').filter({ hasText: 'Share to community' })).toHaveCount(0);
-  await composer.fill('Package this work.');
+  const applicable = page.getByRole('option').filter({ hasText: 'Share to community' });
+  await expect(applicable).toBeVisible({ timeout: T.long });
+  const applyResponse = page.waitForResponse((result) => result.request().method() === 'POST'
+    && new URL(result.url()).pathname === '/api/plugins/od-share-to-community/apply');
+  await applicable.click();
+  const applied = await applyResponse;
+  expect(applied.status()).toBe(200);
+  const snapshotId = (await applied.json()).snapshotId;
+  await composer.press('ControlOrMeta+End');
+  await composer.pressSequentially(' Package this work.');
+  await expect(page.getByTestId('chat-send')).toBeEnabled();
   const admitted = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/runs');
   await page.getByTestId('chat-send').click();
   const started = await admitted;
   expect(started.status()).toBe(202);
   const sent = started.request().postDataJSON() as { appliedPluginSnapshotId?: string | null; context?: { pluginIds?: string[] } };
-  expect(sent.appliedPluginSnapshotId ?? null).toBeNull();
-  expect(sent.context?.pluginIds ?? []).toEqual([]);
-  await expect(page.locator('body')).toContainText('Plugin-free turn complete.', { timeout: T.long });
-  expect(String((await studio.turnEvidence(studio.a)).message)).not.toContain('## Active plugin');
+  expect(sent.appliedPluginSnapshotId).toBe(snapshotId);
+  expect(sent.context?.pluginIds).toEqual(['od-share-to-community']);
+  await expect(page.getByTestId('status-detail').filter({ hasText: 'package-plugin' })).toBeVisible({ timeout: T.long });
+  const evidence = await studio.turnEvidence(studio.a);
+  expect(String(evidence.message)).toContain('Stage: package-plugin');
+  expect(evidence.turnsInThread).toBe(2);
+  await page.reload();
+  await expect(page.getByTestId('status-detail').filter({ hasText: 'package-plugin' })).toBeVisible({ timeout: T.long });
 
-  // Apply is refused server-side with the typed reason, and nothing is pinned.
-  const refused = await studio.request('POST', '/api/plugins/od-share-to-community/apply', studio.a.cookie, { projectId });
-  expect(refused.status).toBe(403);
-  expect(refused.json.error).toMatchObject({ code: 'MULTIUSER_CAPABILITY_UNAVAILABLE', details: { pluginId: 'od-share-to-community', reasons: [{ code: 'pipeline' }] } });
+  // Unsupported plugins are still refused without changing the captured pin.
   const magazine = await studio.request('POST', '/api/plugins/example-article-magazine/apply', studio.a.cookie, { projectId });
   expect(magazine.status).toBe(403);
   expect(magazine.json.error.code).toBe('MULTIUSER_CAPABILITY_UNAVAILABLE');
-  expect((await studio.request('GET', `/api/projects/${projectId}`, studio.a.cookie)).json.project.appliedPluginSnapshotId ?? null).toBeNull();
+  expect((await studio.request('GET', `/api/projects/${projectId}`, studio.a.cookie)).json.project.appliedPluginSnapshotId).toBe(snapshotId);
 
   // B sees the same catalog, and A's project is the same 404 as a missing one (ownership precedes availability).
   const missingProject = await studio.request('POST', '/api/plugins/od-share-to-community/apply', studio.b.cookie, { projectId: studioProjectId() });
@@ -1169,5 +1282,5 @@ test('[P1] Studio bundled plugins: every plugin shows its Web availability, unav
   expect(foreign.text).toBe(missingProject.text);
   const bCatalog = (await studio.request('GET', '/api/plugins', studio.b.cookie)).json.plugins as Array<{ availability: { applicable: boolean } }>;
   expect(bCatalog.length).toBeGreaterThan(100);
-  expect(bCatalog.filter((plugin) => plugin.availability.applicable)).toEqual([]);
+  expect(bCatalog.filter((plugin) => plugin.availability.applicable)).toHaveLength(1);
 });

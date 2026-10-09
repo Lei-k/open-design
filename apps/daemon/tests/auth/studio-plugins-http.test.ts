@@ -9,9 +9,9 @@
 //   changes that project, an admitted run or a conversation pin.
 // - Host-global install/upgrade/uninstall, marketplace fetch, doctor and trust
 //   are refused with the typed capability code.
-// - Review repairs: Studio turns run no pipeline stages, so no bundled plugin
-//   is applicable today (F1); apply is covered with a test-only fixture row
-//   evaluated by the same registry. A turn whose plugin choice read the live
+// - Finite ordered stages execute on each pinned source; questions pause and
+//   resume the unfinished stage. A no-pipeline test fixture isolates pin tests.
+//   A turn whose plugin choice read the live
 //   project pin, empty or not, is refused when the pin changes before its
 //   commit, on every execution source (F2).
 import { randomUUID } from 'node:crypto';
@@ -21,12 +21,12 @@ import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts,
   startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
-import { PERSONAL_CODEX_MOCK, codexHome, linkCodex, until } from './personal-codex-helpers.js';
-import { FIXTURE_PLUGIN_ID, FIXTURE_SKILL_MARKER, PIPELINE_ONLY_PLUGIN_ID, installStudioFixturePlugin } from './studio-plugin-fixture.js';
+import { PERSONAL_CODEX_MOCK, actorDir, codexHome, linkCodex, setTurnMode, until } from './personal-codex-helpers.js';
+import { FIXTURE_PLUGIN_ID, FIXTURE_RESOURCE_MARKER, FIXTURE_SKILL_MARKER, PIPELINE_ONLY_PLUGIN_ID, installStudioFixturePlugin } from './studio-plugin-fixture.js';
 
-/** Test-only applicable plugin (see studio-plugin-fixture.ts); no bundled plugin is applicable on Web today. */
+/** Test-only no-pipeline plugin, isolating immutable captures and pin races. */
 const APPLICABLE = FIXTURE_PLUGIN_ID;
-/** Bundled, and unavailable on Web only because Studio turns do not run its pipeline. */
+/** Bundled plugin opened by the finite stage runner. */
 const PIPELINE_ONLY = PIPELINE_ONLY_PLUGIN_ID;
 const REPO_ROOT = path.resolve('../..');
 
@@ -42,9 +42,25 @@ const tavily: typeof fetch = async () => {
   if (researchHold) await researchHold;
   return Response.json({ answer: 'PLUGIN_RACE_FINDINGS', results: [{ title: 'Note', url: 'https://example.test/note', content: 'note' }] });
 };
-const openai: typeof fetch = async () => new Response(`data: ${JSON.stringify({ type: 'response.completed', response: {
-  output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Noted.' }] }] } })}\n\n`,
-{ headers: { 'content-type': 'text/event-stream' } });
+const questionForm = '<question-form id="brief" title="Brief">{"questions":[{"id":"color","label":"Color","type":"text"}]}</question-form>';
+const openai: typeof fetch = async (_url, init) => {
+  const input = JSON.parse(String(init?.body)).input as Array<{ role?: string; content?: string; type?: string; call_id?: string; output?: string }>;
+  const prompt = [...input].reverse().find((item) => item.role === 'user')?.content ?? '';
+  if (prompt.includes('[plugin-resource]')) {
+    const read = input.find((item) => item.type === 'function_call_output' && item.call_id === 'plugin-fixture-read');
+    const output = read ? [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: String(read.output) }] }]
+      : [{ type: 'function_call', name: 'read_skill_file', call_id: 'plugin-fixture-read',
+        arguments: JSON.stringify({ skillId: `studio-plugin:${FIXTURE_PLUGIN_ID}@1.0.0`, path: 'references/rules.md' }) }];
+    const frames = [...(read ? [{ type: 'response.output_text.delta', delta: String(read.output) }] : []),
+      { type: 'response.completed', response: { output } }];
+    return new Response(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(''),
+      { headers: { 'content-type': 'text/event-stream' } });
+  }
+  const text = prompt.includes('[pipeline-question]') ? questionForm : 'Noted.';
+  return new Response([{ type: 'response.output_text.delta', delta: text }, { type: 'response.completed', response: {
+    output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }] } }]
+    .map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
+};
 
 let daemon: StartedMultiUserDaemon; let root: string;
 let a: Principal; let b: Principal; let admin: Principal;
@@ -98,6 +114,164 @@ function withDb<T>(work: (db: Database.Database) => T): T {
 }
 
 describe('Studio bundled plugin catalog', () => {
+  const sources = [
+    { executionSource: 'personal_subscription', agentId: 'codex' },
+    { executionSource: 'company_pool', agentId: 'openai' },
+    { executionSource: 'personal_api_key', agentId: 'openai-byok' },
+  ];
+  it.each(sources)('transports the captured bundled resource into the worker on $executionSource', async (source) => {
+    const target = await project(a);
+    expect((await apply(a, APPLICABLE, { projectId: target.projectId })).status).toBe(200);
+    const started = await turn(a, target, { ...source, message: '[plugin-resource] Read the captured rules.' });
+    expect(started.status, started.text).toBe(202);
+    const id = started.json.runId as string;
+    const events = await request(a, 'GET', `/api/runs/${id}/events`);
+    expect(events.text).toContain('"status":"succeeded"');
+    const saved = withDb((db) => db.prepare('SELECT request_json FROM multiuser_runs WHERE id = ?').get(id) as { request_json: string });
+    const resource = JSON.parse(saved.request_json).pluginSnapshot.resourcePackage;
+    expect(Buffer.from(resource.files.find((file: { path: string }) => file.path === 'references/rules.md').data, 'base64').toString('utf8'))
+      .toContain(FIXTURE_RESOURCE_MARKER);
+    if (source.executionSource === 'personal_subscription') {
+      const staged = path.join(actorDir(root, a.id), id, 'skill-packages', resource.key, 'references/rules.md');
+      expect(readFileSync(staged, 'utf8')).toContain(FIXTURE_RESOURCE_MARKER);
+      const evidence = JSON.parse(readFileSync(path.join(codexHome(root, a.id), 'mock-turn-evidence.json'), 'utf8'));
+      expect(evidence.message).toContain(resource.id); expect(evidence.message).toContain(path.dirname(path.dirname(staged)));
+    } else expect(events.text).toContain(FIXTURE_RESOURCE_MARKER);
+  });
+  it.each(sources)('keeps the authorized plugin brand capture after the private document is deleted on $executionSource', async (source) => {
+    const target = await project(a);
+    const design = await request(a, 'POST', '/api/design-systems', { title: 'Plugin brand', body: 'PINNED_PRIVATE_PLUGIN_BRAND' });
+    expect(design.status, design.text).toBe(201);
+    const designId = design.json.designSystem.id as string;
+    const original = withDb((db) => db.prepare('SELECT manifest_json FROM installed_plugins WHERE id = ?').get(APPLICABLE) as { manifest_json: string });
+    try {
+      withDb((db) => db.prepare("UPDATE installed_plugins SET manifest_json = json_set(manifest_json, '$.od.context.designSystem', json(?)) WHERE id = ?")
+        .run(JSON.stringify({ ref: designId }), APPLICABLE));
+      expect((await apply(a, APPLICABLE, { projectId: target.projectId })).status).toBe(200);
+    } finally {
+      withDb((db) => db.prepare('UPDATE installed_plugins SET manifest_json = ? WHERE id = ?').run(original.manifest_json, APPLICABLE));
+    }
+    expect((await request(a, 'DELETE', `/api/design-systems/${enc(designId)}`)).status).toBe(200);
+    const started = await turn(a, target, source); expect(started.status, started.text).toBe(202);
+    expect((await request(a, 'GET', `/api/runs/${started.json.runId}/events`)).text).toContain('"status":"succeeded"');
+    const saved = withDb((db) => db.prepare('SELECT request_json FROM multiuser_runs WHERE id = ?').get(started.json.runId) as { request_json: string });
+    const captured = JSON.parse(saved.request_json);
+    expect(captured.stablePrompt).toContain('PINNED_PRIVATE_PLUGIN_BRAND');
+    const document = captured.pluginSnapshot.resourcePackage.files.find((file: { path: string }) => file.path.endsWith('/DESIGN.md'));
+    expect(Buffer.from(document.data, 'base64').toString()).toBe('PINNED_PRIVATE_PLUGIN_BRAND');
+    if (source.executionSource === 'personal_subscription') {
+      const evidence = JSON.parse(readFileSync(path.join(codexHome(root, a.id), 'mock-turn-evidence.json'), 'utf8'));
+      expect(evidence.message).toContain('PINNED_PRIVATE_PLUGIN_BRAND');
+    }
+  });
+  it.each(sources)('keeps a shared catalog skill captured by the applied plugin after its use grant is revoked on $executionSource', async (source) => {
+    const target = await project(a);
+    const imported = await request(b, 'POST', '/api/skills/import', { name: `Plugin shared skill ${randomUUID()}`, body: 'PINNED_SHARED_PLUGIN_SKILL' });
+    expect(imported.status, imported.text).toBe(201);
+    const skillId = imported.json.skill.id as string;
+    const original = withDb((db) => db.prepare('SELECT manifest_json FROM installed_plugins WHERE id = ?').get(APPLICABLE) as { manifest_json: string });
+    let snapshotId: string;
+    try {
+      withDb((db) => db.prepare("UPDATE installed_plugins SET manifest_json = json_set(manifest_json, '$.od.context.skills', json(?)) WHERE id = ?")
+        .run(JSON.stringify([{ path: './SKILL.md' }, { ref: skillId }]), APPLICABLE));
+      expect((await apply(a, APPLICABLE, { projectId: target.projectId })).status).toBe(404);
+      expect((await request(b, 'PUT', `/api/multiuser/catalog/skills/${enc(skillId)}/shares`, { username: a.username, role: 'use' })).status).toBe(200);
+      const applied = await apply(a, APPLICABLE, { projectId: target.projectId }); expect(applied.status, applied.text).toBe(200);
+      snapshotId = applied.json.snapshotId;
+      expect(applied.json.appliedPlugin.resolvedContext.items).toContainEqual({ kind: 'skill', id: skillId, label: imported.json.skill.name });
+      expect((await request(b, 'DELETE', `/api/multiuser/catalog/skills/${enc(skillId)}/shares/${a.id}`)).status).toBe(200);
+      expect((await apply(a, APPLICABLE, { projectId: target.projectId })).status).toBe(404);
+      expect((await request(b, 'DELETE', `/api/skills/${enc(skillId)}`)).status).toBe(200);
+    } finally {
+      withDb((db) => db.prepare('UPDATE installed_plugins SET manifest_json = ? WHERE id = ?').run(original.manifest_json, APPLICABLE));
+    }
+    const started = await turn(a, target, source); expect(started.status, started.text).toBe(202);
+    expect((await request(a, 'GET', `/api/runs/${started.json.runId}/events`)).text).toContain('"status":"succeeded"');
+    const saved = withDb((db) => db.prepare('SELECT request_json FROM multiuser_runs WHERE id = ?').get(started.json.runId) as { request_json: string });
+    const captured = JSON.parse(saved.request_json);
+    expect(captured.pluginSnapshot.snapshotId).toBe(snapshotId!);
+    expect(captured.stablePrompt).toContain('PINNED_SHARED_PLUGIN_SKILL');
+    const document = captured.pluginSnapshot.resourcePackage.files.find((file: { path: string }) => file.path.startsWith('opendesign-context/skill-') && file.path.endsWith('/SKILL.md'));
+    expect(Buffer.from(document.data, 'base64').toString()).toBe('PINNED_SHARED_PLUGIN_SKILL');
+    if (source.executionSource === 'personal_subscription') {
+      const resource = captured.pluginSnapshot.resourcePackage;
+      expect(readFileSync(path.join(actorDir(root, a.id), started.json.runId, 'skill-packages', resource.key, document.path), 'utf8'))
+        .toBe('PINNED_SHARED_PLUGIN_SKILL');
+    }
+  });
+  it.each(sources)('rechecks inherited project defaults after asynchronous admission on $executionSource', async (source) => {
+    const resource = await request(a, 'POST', '/api/skills/import', { name: `Defaults ${randomUUID()}`, body: 'DEFAULT_SKILL' });
+    expect(resource.status, resource.text).toBe(201);
+    const id = resource.json.skill.id as string;
+    for (const initial of [null, id]) {
+      const target = await project(a);
+      withDb((db) => db.prepare('UPDATE projects SET skill_id = ? WHERE id = ?').run(initial, target.projectId));
+      let release!: () => void;
+      researchHold = new Promise<void>((resolve) => { release = resolve; });
+      const beforeCalls = researchCalls;
+      const pending = turn(a, target, { ...source, research: { enabled: true, query: `defaults ${randomUUID()}` } });
+      try {
+        await until(() => researchCalls, (count) => count > beforeCalls, 'admission at held research');
+        withDb((db) => db.prepare('UPDATE projects SET skill_id = ? WHERE id = ?').run(initial ? null : id, target.projectId));
+      } finally { researchHold = null; release(); }
+      const refused = await pending;
+      expect(refused.status, refused.text).toBe(409);
+      expect(refused.json.error).toMatchObject({ code: 'CONFLICT', message: 'project defaults changed during admission' });
+      expect(withDb((db) => db.prepare('SELECT id FROM multiuser_runs WHERE conversation_id = ?').all(target.conversationId))).toEqual([]);
+      expect(withDb((db) => db.prepare('SELECT id FROM messages WHERE conversation_id = ?').all(target.conversationId))).toEqual([]);
+    }
+  });
+
+  it.each(sources)('executes the captured ordered pipeline and replays the same timeline on $executionSource', async (source) => {
+    const target = await project(a);
+    const applied = await apply(a, PIPELINE_ONLY, { projectId: target.projectId });
+    expect(applied.status, applied.text).toBe(200);
+    const started = await turn(a, target, source);
+    expect(started.status, started.text).toBe(202);
+    const id = started.json.runId as string;
+    const stream = await request(a, 'GET', `/api/runs/${id}/events`);
+    expect(stream.text).toContain('"status":"succeeded"');
+    const run = (await request(a, 'GET', `/api/runs/${id}`)).json;
+    expect(run.output.pipeline).toEqual({ snapshotId: applied.json.snapshotId, stageIndex: 2, stageCount: 2, awaitingInput: false });
+    const frames = stream.text.split('\n').filter((line) => line.startsWith('data: ')).map((line) => JSON.parse(line.slice(6)));
+    const timeline = frames.filter((frame) => frame.type === 'pipeline_stage').map((frame) => frame.stage);
+    expect(timeline.map((stage) => [stage.kind, stage.stageId])).toEqual([
+      ['pipeline_stage_started', 'inspect-project'], ['pipeline_stage_completed', 'inspect-project'],
+      ['pipeline_stage_started', 'package-plugin'], ['pipeline_stage_completed', 'package-plugin']]);
+    const transcript = await request(a, 'GET', `/api/projects/${target.projectId}/conversations/${target.conversationId}/messages`);
+    const assistant = transcript.json.messages.find((message: any) => message.runId === id && message.role === 'assistant');
+    expect(assistant.events.filter((event: any) => event.kind.startsWith('pipeline_stage_'))).toEqual(timeline);
+    // Foreign and missing runs use the same refusal, including the administrator.
+    for (const user of [b, admin]) {
+      expect((await request(user, 'GET', `/api/runs/${id}/events`)).text)
+        .toBe((await request(user, 'GET', `/api/runs/${randomUUID()}/events`)).text);
+    }
+  });
+
+  it.each(sources)('pauses for a question and resumes the same captured stage on $executionSource', async (source) => {
+    const target = await project(a);
+    expect((await apply(a, PIPELINE_ONLY, { projectId: target.projectId })).status).toBe(200);
+    if (source.executionSource === 'personal_subscription') setTurnMode(root, a, { reply: questionForm });
+    try {
+      const started = await turn(a, target, { ...source, message: '[pipeline-question]' });
+      expect(started.status, started.text).toBe(202);
+      const first = await request(a, 'GET', `/api/runs/${started.json.runId}/events`);
+      expect(first.text).toContain('"status":"succeeded"');
+      expect(first.text).not.toContain('pipeline_stage_completed');
+      expect(first.text).not.toContain('"stageId":"package-plugin"');
+      const progress = (await request(a, 'GET', `/api/runs/${started.json.runId}`)).json.output.pipeline;
+      expect(progress).toMatchObject({ stageIndex: 0, stageCount: 2, awaitingInput: true });
+      if (source.executionSource === 'personal_subscription') setTurnMode(root, a, { reply: 'Answered.' });
+      const answered = await turn(a, target, { ...source, message: 'Use blue', analyticsHints: { entryFrom: 'question_answer', sourceRunId: started.json.runId } });
+      expect(answered.status, answered.text).toBe(202);
+      const second = await request(a, 'GET', `/api/runs/${answered.json.runId}/events`);
+      expect(second.text).toContain('"status":"succeeded"');
+      expect((await request(a, 'GET', `/api/runs/${answered.json.runId}`)).json.output.pipeline)
+        .toMatchObject({ snapshotId: progress.snapshotId, stageIndex: 2, awaitingInput: false });
+      expect((await turn(a, target, { ...source, message: 'again', analyticsHints: { entryFrom: 'question_answer', sourceRunId: started.json.runId } })).status).toBe(409);
+    } finally { if (source.executionSource === 'personal_subscription') setTurnMode(root, a, {}); }
+  });
+
   it('lists the same bundled catalog to every account with computed availability and no host paths', async () => {
     const listed = await catalog(a);
     expect(listed.length).toBeGreaterThan(100);
@@ -112,11 +286,10 @@ describe('Studio bundled plugin catalog', () => {
     expect((await catalog(a, '/api/multiuser/catalog/plugins')).map((plugin) => plugin.id)).toEqual(listed.map((plugin) => plugin.id));
 
     const byId = new Map(listed.map((plugin) => [plugin.id, plugin]));
-    // Studio turns run no pipeline stages: a pipeline of Web atoms (file-read,
-    // file-write) is still unavailable, with the typed `pipeline` reason.
-    expect(byId.get(PIPELINE_ONLY)?.availability).toEqual({ applicable: false, reasons: [{ code: 'pipeline' }] });
-    // No bundled plugin is applicable today; only the test-only fixture row is.
-    expect(listed.filter((plugin) => plugin.availability.applicable).map((plugin) => plugin.id)).toEqual([APPLICABLE]);
+    // Finite stages of Web atoms now execute on every source.
+    expect(byId.get(PIPELINE_ONLY)?.availability).toEqual({ applicable: true, reasons: [] });
+    // This bundled pipeline and the no-pipeline fixture are applicable.
+    expect(listed.filter((plugin) => plugin.availability.applicable).map((plugin) => plugin.id).sort()).toEqual([PIPELINE_ONLY, APPLICABLE].sort());
     expect(byId.get(APPLICABLE)?.availability).toEqual({ applicable: true, reasons: [] });
     // A live-artifact template: its declared atom and the critique loop the
     // apply pipeline adds do not run in Studio turns, and both are named.
@@ -176,8 +349,8 @@ describe('Studio bundled plugin catalog', () => {
   it('refuses an unavailable plugin server-side with its typed reasons and persists nothing', async () => {
     const target = await project(a);
     const listed = await catalog(a);
-    const unavailable = listed.find((plugin) => plugin.id === PIPELINE_ONLY)!;
-    expect(unavailable.availability.reasons).toEqual([{ code: 'pipeline' }]);
+    const unavailable = listed.find((plugin) => plugin.id === 'example-article-magazine')!;
+    expect(unavailable.availability.reasons).toEqual(expect.arrayContaining([{ code: 'atom', subject: 'live-artifact' }]));
     const before = withDb((db) => (db.prepare('SELECT COUNT(*) AS n FROM applied_plugin_snapshots').get() as { n: number }).n);
     const refused = await apply(a, unavailable.id, { projectId: target.projectId });
     expect(refused.status, refused.text).toBe(403);

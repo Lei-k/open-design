@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { stampToolTiming, type ToolTimingClock } from './tool-timing.js';
 import { parseCodexErrorDetail, type CodexErrorDetail } from './codex-error-info.js';
 import { runSseEventToPersistedAgentEvent } from './chat-run-messages.js';
-import type { ChatSseEvent, DaemonAgentPayload } from '@open-design/contracts';
+import type { ChatSseEvent, DaemonAgentPayload, LiveArtifactRefreshStatus } from '@open-design/contracts';
 
 const TEXT_LIMIT = 512 * 1024;
 const EVENT_LIMIT = 2048;
@@ -162,6 +162,12 @@ export class PersonalRunEvents {
       ...(typeof event.sessionId === 'string' ? { sessionId: identifier(event.sessionId) } : {}),
       ...(event.detail || event.model ? { redacted: this.redacted(['detail', 'model']) } : {}) };
     if (type === 'thinking_start') data = { type };
+    if (type === 'live_artifact' && ['created', 'updated', 'deleted'].includes(String(event.action))) {
+      data = { type, action: event.action as 'created' | 'updated' | 'deleted', projectId: identifier(event.projectId),
+        artifactId: identifier(event.artifactId), title: this.scrub(String(event.title ?? '')).slice(0, 200),
+        ...(typeof event.refreshStatus === 'string' && ['never', 'idle', 'running', 'succeeded', 'failed'].includes(event.refreshStatus)
+          ? { refreshStatus: event.refreshStatus as LiveArtifactRefreshStatus } : {}) };
+    }
     if (type === 'thinking_tokens' && typeof event.tokens === 'number' && Number.isFinite(event.tokens)) data = { type, tokens: event.tokens };
     if (type === 'tool_use' || type === 'tool_in_flight') {
       const input = record(event.input);

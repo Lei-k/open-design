@@ -516,6 +516,11 @@ function AssistantMessageImpl({
       stripEmptyThinkingBlocks(suppressDuplicateQuestionForms(buildBlocks(displayEvents))),
     );
   }, [displayEvents]);
+  // The daemon's latest stage edge, shared by live SSE and stored history.
+  // Reuse the workflow status row; terminal runs never claim an unfinished
+  // stage is still running.
+  const pipelineStage = [...displayEvents].reverse().find((event) =>
+    event.kind === 'pipeline_stage_started' || event.kind === 'pipeline_stage_completed');
   /**
    * 这一轮对执行记录来说算什么状态。
    *
@@ -1302,6 +1307,13 @@ function AssistantMessageImpl({
       data-continuation={showRole ? 'false' : 'true'}
       data-assistant-message-id={message.id}
     >
+      {pipelineStage && (pipelineStage.kind === 'pipeline_stage_started' || pipelineStage.kind === 'pipeline_stage_completed') ? (
+        <StatusPill label={pipelineStage.kind === 'pipeline_stage_completed'
+          ? t('chat.record.done') : streaming || message.runStatus === 'running' || message.runStatus === 'queued' ? t('chat.record.running')
+            : message.runStatus === 'canceled' ? t('chat.record.canceled')
+            : message.runStatus === 'failed' ? t('chat.record.failedTurn') : t('assistant.awaitingReplyLabel')}
+          detail={pipelineStage.stageId} />
+      ) : null}
       {showRole ? (
         <div className="role" data-testid="assistant-role">
           <AgentIcon id={roleIconId} size={20} className="role-agent-icon" />

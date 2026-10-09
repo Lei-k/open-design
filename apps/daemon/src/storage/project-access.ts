@@ -11,6 +11,8 @@
 // that a client could assert. The gate and every handler that rechecks access
 // read the role from here on each request, so a revoke applies to the next
 // request and to every open stream on its next recheck.
+// Both endpoints must still be active accounts. Deactivation suspends access
+// without deleting grants; reactivation restores the owner's existing choices.
 
 import type Database from 'better-sqlite3';
 import { ProjectOwnershipStore } from './project-ownership.js';
@@ -74,11 +76,16 @@ const toGrant = (row: GrantRow): ProjectGrant => ({
   projectId: row.project_id, accountId: row.grantee_account_id, role: row.role, grantedAt: row.granted_at, updatedAt: row.updated_at,
 });
 
+export interface ProjectAccessOptions {
+  /** Live auth-store state, never cached across requests; missing accounts are inactive. */
+  accountActive(accountId: string): boolean;
+}
+
 export class ProjectAccessStore {
   private readonly db: Database.Database;
   readonly ownership: ProjectOwnershipStore;
 
-  constructor(db: Database.Database) {
+  constructor(db: Database.Database, private readonly options: ProjectAccessOptions) {
     this.db = db;
     this.ownership = new ProjectOwnershipStore(db);
     ensureProjectAccessSchema(db);
@@ -92,7 +99,7 @@ export class ProjectAccessStore {
   roleOf(projectId: string, accountId: string): ProjectAccessRole | null {
     if (typeof projectId !== 'string' || typeof accountId !== 'string' || !projectId || !accountId) return null;
     const owner = this.ownership.ownerOf(projectId);
-    if (!owner) return null;
+    if (!owner || this.options.accountActive(owner) !== true || this.options.accountActive(accountId) !== true) return null;
     if (owner === accountId) return 'owner';
     const row = this.db.prepare(`SELECT role FROM ${PROJECT_GRANTS_TABLE} WHERE project_id = ? AND grantee_account_id = ?`)
       .get(projectId, accountId) as { role: ProjectShareRole } | undefined;
@@ -126,6 +133,16 @@ export class ProjectAccessStore {
     return row.author === null ? role === 'owner' : row.author === accountId;
   }
 
+  /** Snapshot of readable ids for synchronous SQL pagination in run lists. */
+  readableProjectIds(accountId: string): string[] {
+    if (!accountId || this.options.accountActive(accountId) !== true) return [];
+    const rows = this.db.prepare(`SELECT o.project_id AS id, o.owner_account_id AS owner
+      FROM multiuser_project_owners o JOIN projects p ON p.id = o.project_id
+      WHERE o.owner_account_id = ? OR EXISTS (SELECT 1 FROM ${PROJECT_GRANTS_TABLE} g
+        WHERE g.project_id = o.project_id AND g.grantee_account_id = ?)`).all(accountId, accountId) as Array<{ id: string; owner: string }>;
+    return rows.filter((row) => this.options.accountActive(row.owner) === true).map((row) => row.id);
+  }
+
   listGrants(projectId: string): ProjectGrant[] {
     return (this.db.prepare(`SELECT * FROM ${PROJECT_GRANTS_TABLE} WHERE project_id = ? ORDER BY granted_at, grantee_account_id`)
       .all(projectId) as GrantRow[]).map(toGrant);
@@ -136,7 +153,7 @@ export class ProjectAccessStore {
    * to it, and projects it owns that have at least one grant.
    */
   shareSummaries(accountId: string): Map<string, { role: ProjectAccessRole; ownerAccountId: string; memberCount: number }> {
-    if (typeof accountId !== 'string' || !accountId) return new Map();
+    if (typeof accountId !== 'string' || !accountId || this.options.accountActive(accountId) !== true) return new Map();
     const rows = this.db.prepare(`SELECT o.project_id AS projectId, o.owner_account_id AS owner,
         (SELECT role FROM ${PROJECT_GRANTS_TABLE} g WHERE g.project_id = o.project_id AND g.grantee_account_id = ?) AS granted,
         (SELECT COUNT(*) FROM ${PROJECT_GRANTS_TABLE} g WHERE g.project_id = o.project_id) AS grants
@@ -144,7 +161,13 @@ export class ProjectAccessStore {
       WHERE EXISTS (SELECT 1 FROM ${PROJECT_GRANTS_TABLE} g WHERE g.project_id = o.project_id
         AND (o.owner_account_id = ? OR g.grantee_account_id = ?))`)
       .all(accountId, accountId, accountId) as Array<{ projectId: string; owner: string; granted: ProjectShareRole | null; grants: number }>;
-    return new Map(rows.map((row) => [row.projectId, {
+    // Cache account state only within this synchronous read.
+    const states = new Map<string, boolean>();
+    const active = (id: string) => {
+      if (!states.has(id)) states.set(id, this.options.accountActive(id) === true);
+      return states.get(id)!;
+    };
+    return new Map(rows.filter((row) => active(row.owner)).map((row) => [row.projectId, {
       role: row.owner === accountId ? 'owner' as const : row.granted!, ownerAccountId: row.owner, memberCount: row.grants + 1,
     }]));
   }
@@ -157,7 +180,9 @@ export class ProjectAccessStore {
     if (!isProjectShareRole(role)) throw new Error('invalid share role');
     return this.db.transaction(() => {
       const owner = this.ownership.ownerOf(projectId);
-      if (!owner) throw new Error('project is not owned');
+      if (!owner || this.options.accountActive(owner) !== true || this.options.accountActive(accountId) !== true) {
+        throw new Error('project or account unavailable');
+      }
       if (owner === accountId) throw new Error('the owner cannot be a grantee');
       const previous = this.db.prepare(`SELECT role FROM ${PROJECT_GRANTS_TABLE} WHERE project_id = ? AND grantee_account_id = ?`)
         .get(projectId, accountId) as { role: ProjectShareRole } | undefined;

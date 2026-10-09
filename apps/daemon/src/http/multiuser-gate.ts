@@ -435,6 +435,9 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   const sessionMode = body.sessionMode === undefined || (typeof body.sessionMode === 'string' && ['design', 'chat', 'plan'].includes(body.sessionMode));
   // #61: a project, scalar inputs and an empty capability grant; the plugin and ownership are checked by the route.
   if (policy === 'studio-plugin-apply') return isStudioPluginApplyRequest(body);
+  if (policy === 'studio-live-artifact') return Object.hasOwn(body, 'input')
+    ? only(['input', 'templateHtml', 'expectedRevision']) && isPlainObject(body.input) && optionalText(body.templateHtml, 64 * 1024)
+    : only(['title', 'slug', 'pinned', 'status', 'preview', 'document']);
   if (policy === 'archive-batch') return only(['files']) && Array.isArray(body.files) && body.files.length > 0
     && body.files.length <= 500 && body.files.every(projectPathText);
   // Field-level routine validation needs ownership checks and lives in the route.
@@ -610,6 +613,8 @@ export interface ProjectOwnershipRouteHooks {
   bindCreatedProject(res: Response, projectId: string, createdAt: number): void;
   /** Record the actor as the conversation's author (#65); call INSIDE the create transaction. */
   bindCreatedConversation(res: Response, conversationId: string): void;
+  /** Server projection only; transcript mutation still rechecks in the gate. */
+  conversationCanWrite?(res: Response, projectId: string, conversationId: string): boolean;
   /** Await workers; call the returned release in finally AFTER deleting parent/files. */
   cancelOwnedRuns(res: Response, projectId: string, conversationId?: string): Promise<() => void>;
 }
@@ -618,6 +623,8 @@ export interface ProjectOwnershipRouteHooks {
 
 export interface MultiUserFront {
   projectOwnershipHooks: ProjectOwnershipRouteHooks;
+  /** Current account state for project authority rechecks in route services. */
+  accountActive: (accountId: string) => boolean;
   /** Attach the ownership store to the main daemon database once it is open. */
   attachProjectOwnership: (db: Database.Database) => void;
   setCancelAccountRuns: (cancel: (accountId: string) => void) => void;
@@ -703,6 +710,10 @@ export function installMultiUserFront(
       if (!actor || !access) throw new Error('multi-user conversation creation requires a resolved actor');
       access.bindConversationAuthor(conversationId, actor.accountId);
     },
+    conversationCanWrite(res, projectId, conversationId) {
+      const actor = multiUserActorOf(res);
+      return !!actor && access?.canWriteConversation(projectId, conversationId, actor.accountId) === true;
+    },
     async cancelOwnedRuns(res, projectId, conversationId) {
       const actor = multiUserActorOf(res);
       if (!actor || !access?.ownership.isOwnedBy(projectId, actor.accountId) || !cancelProjectRuns) {
@@ -715,8 +726,9 @@ export function installMultiUserFront(
 
   return {
     projectOwnershipHooks,
+    accountActive: (accountId) => store.getAccountById(accountId)?.active === true,
     attachProjectOwnership(db) {
-      access = new ProjectAccessStore(db);
+      access = new ProjectAccessStore(db, { accountActive: (accountId) => store.getAccountById(accountId)?.active === true });
     },
     setCancelAccountRuns(cancel) { cancelAccountRuns = cancel; },
     setCompanyPoolAvailable(check) { companyPoolAvailable = check; },

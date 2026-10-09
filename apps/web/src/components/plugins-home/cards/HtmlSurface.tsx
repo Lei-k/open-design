@@ -26,6 +26,7 @@ import { studioWindowSetTimeout, studioFetch as fetch } from '../../../runtime/s
 import { useEffect, useState } from 'react';
 import { isVisualStabilityMode } from '../../../utils/visualStability';
 import type { HtmlPreviewSpec } from '../preview';
+import { registerStudioReset } from '../../../runtime/studio-resources';
 
 interface Props {
   preview: HtmlPreviewSpec;
@@ -42,8 +43,11 @@ type ProbeState = 'idle' | 'probing' | 'ok' | 'unreachable';
 
 const probeCache = new Map<string, 'ok' | 'unreachable'>();
 const inflight = new Map<string, Promise<'ok' | 'unreachable'>>();
+let probeGeneration = 0;
+registerStudioReset(() => { probeGeneration++; probeCache.clear(); inflight.clear(); });
 
 async function probe(url: string): Promise<'ok' | 'unreachable'> {
+  const generation = probeGeneration;
   const cached = probeCache.get(url);
   if (cached) return cached;
   const existing = inflight.get(url);
@@ -59,6 +63,7 @@ async function probe(url: string): Promise<'ok' | 'unreachable'> {
         method: 'GET',
         headers: { Range: 'bytes=0-0' },
       });
+      void res.body?.cancel();
       return res.ok || res.status === 206 ? ('ok' as const) : ('unreachable' as const);
     } catch {
       return 'unreachable' as const;
@@ -66,8 +71,7 @@ async function probe(url: string): Promise<'ok' | 'unreachable'> {
   })();
   inflight.set(url, run);
   const result = await run;
-  probeCache.set(url, result);
-  inflight.delete(url);
+  if (generation === probeGeneration) { probeCache.set(url, result); inflight.delete(url); }
   return result;
 }
 

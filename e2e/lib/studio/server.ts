@@ -39,7 +39,9 @@ process.once('message', async (input: { dataRoot: string; appOrigin: string; pre
       return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
     }
     const output = wrote ? [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Company browser design complete.' }] }]
-      : [{ type: 'function_call', call_id: 'browser-write', name: 'write_project_file', arguments: JSON.stringify({ path: 'company.html', content: '<!doctype html><html><body><h1>Company browser design</h1></body></html>' }) }];
+      : [{ type: 'function_call', call_id: 'browser-plan-start', name: 'update_plan', arguments: JSON.stringify({ todos: [{ content: 'Write company design', status: 'in_progress' }] }) },
+        { type: 'function_call', call_id: 'browser-write', name: 'write_project_file', arguments: JSON.stringify({ path: 'company.html', content: '<!doctype html><html><body><h1>Company browser design</h1></body></html>' }) },
+        { type: 'function_call', call_id: 'browser-plan-finish', name: 'update_plan', arguments: JSON.stringify({ todos: [{ content: 'Write company design', status: 'completed' }] }) }];
     const events = [...(wrote ? [{ type: 'response.output_text.delta', delta: 'Company browser design complete.\n' }] : []), { type: 'response.completed', response: { output } }];
     return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
   };

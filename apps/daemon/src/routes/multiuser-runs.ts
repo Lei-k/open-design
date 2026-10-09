@@ -1,3 +1,6 @@
+import { createStudioLiveArtifactTools, STUDIO_LIVE_ARTIFACT_TOOLS } from '../live-artifacts/studio-tools.js';
+import type { StudioLiveArtifacts } from '../storage/studio-live-artifacts.js';
+import { STUDIO_LIVE_ARTIFACT_PROMPT } from '../prompts/studio-live-artifacts.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -16,7 +19,7 @@ import { sendApiError } from '../http/api-errors.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { bindMultiUserStream, multiUserStreamAllowed } from '../http/multiuser-stream.js';
 import { PROJECT_OWNERS_TABLE } from '../storage/project-ownership.js';
-import { PROJECT_GRANTS_TABLE, ProjectAccessStore } from '../storage/project-access.js';
+import { ProjectAccessStore } from '../storage/project-access.js';
 import { MultiUserStudioMessages } from '../storage/multiuser-studio-messages.js';
 import { studioMessageIdPrefix } from '../http/studio-parity.js';
 import { WorkerQuotaLedger } from '../storage/worker-quota-ledger.js';
@@ -31,6 +34,9 @@ import type { PersonalRunLaneControls } from './multiuser-agent-accounts.js';
 import type { MultiUserDesignRoutes } from './multiuser-design.js';
 import { CompanyOpenAIConfigError, CompanyOpenAIStore } from '../storage/company-openai.js';
 import { CompanyOpenAIWorker, runCompanyOpenAITurn } from '../runtimes/company-openai.js';
+import { runStudioPipeline } from '../services/studio-pipeline.js';
+import { createStudioChatInvalidation } from '../services/studio-chat-invalidation.js';
+import { observeStudioProjectDefaults, studioProjectDefaultsUnchanged, type StudioProjectDefaultsObservation } from '../services/studio-project-defaults.js';
 import { STUDIO_MEDIA_PROMPT } from '../runtimes/studio-media.js';
 import { PersonalProviderKeyError, PersonalProviderKeyStore } from '../storage/personal-provider-keys.js';
 import { createStudioResearch, StudioResearchError, type StudioResearch } from '../research/studio-research.js';
@@ -41,6 +47,7 @@ import type { StudioSettings } from '../storage/studio-settings.js';
 import type { StudioCatalog } from './studio-catalog.js';
 import { composeSystemPrompt } from '../prompts/system.js';
 import { readStudioSkillPackages, stageStudioSkillPackages, type StudioSkillPackage } from '../services/studio-skill-packages.js';
+import { studioRunResourcePackages } from '../plugins/studio-resources.js';
 import { createStudioSkillScriptRunner } from '../services/studio-skill-scripts.js';
 import type { PersonalSandbox } from '../services/personal-sandbox.js';
 import { internalMultiUserResponse, type InternalMultiUserResult } from '../http/multiuser-internal.js';
@@ -330,6 +337,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   projectsRoot: string;
   mockAgentScript?: string;
   companyFetch?: typeof fetch;
+  liveArtifacts?: StudioLiveArtifacts;
   /** The verified personal bubblewrap boundary; company skill scripts run only inside it, offline. */
   scriptSandbox?: PersonalSandbox;
   repositoryRoot: string;
@@ -353,6 +361,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   memory?: StudioMemoryAutomation;
   /** Bundled plugins applied to projects (#61): the project's immutable apply snapshot. */
   plugins?: Pick<StudioPlugins, 'projectPin'>;
+  emitProjectEvent?: (projectId: string, event: import('@open-design/contracts').StudioChatMessagesChangedSsePayload | import('@open-design/contracts').LiveArtifactSsePayload) => void;
 }): { cancelAccountRuns(accountId: string): void; isRunOwner(runId: string, accountId: string): boolean;
   /** `accountId: null` stops every account's runs in the project. */
   cancelProjectRuns(accountId: string | null, projectId: string, conversationId?: string): Promise<() => void>;
@@ -477,12 +486,14 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   const withFixedSkill = (fixed: SkillSnapshot | undefined, selected: SkillSnapshot[]): SkillSnapshot[] =>
     fixed ? [fixed, ...selected.filter((skill) => skill.id !== fixed.id)] : selected;
   /** The project's own skill/design defaults a turn inherits (not explicit selections, fixed designs or answers). */
-  const projectPins = (fields: PersonalRunFields, projectId: string, fixed: boolean, question: boolean): { design?: ProjectPin; skill?: ProjectPin } => {
-    if (fixed || question) return {};
-    const project = getProject(db, projectId);
+  const projectPins = (fields: PersonalRunFields, projectId: string, fixed: boolean, question: boolean): {
+    design?: ProjectPin; skill?: ProjectPin; observed: StudioProjectDefaultsObservation;
+  } => {
+    const observed = observeStudioProjectDefaults(getProject(db, projectId), fields, fixed || question);
     return {
-      ...(fields.designSystemId === null && project?.designSystemId ? { design: { projectId, id: project.designSystemId } } : {}),
-      ...(fields.skillId === null && project?.skillId ? { skill: { projectId, id: project.skillId } } : {}),
+      observed,
+      ...(observed.design ? { design: { projectId, id: observed.design } } : {}),
+      ...(observed.skill ? { skill: { projectId, id: observed.skill } } : {}),
     };
   };
   /**
@@ -521,7 +532,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const pinned = previous ? pluginSnapshotOf(storedRequest(previous.request_json)) : null;
     const project = input.plugins?.projectPin(target.projectId, owner) ?? null;
     const current = project ? { snapshotId: project.snapshotId, pluginId: project.pluginId, pluginVersion: project.pluginVersion,
-      manifestSourceDigest: project.manifestSourceDigest, prompt: project.prompt, promptSha256: project.promptSha256 } : null;
+      manifestSourceDigest: project.manifestSourceDigest, prompt: project.prompt, promptSha256: project.promptSha256,
+      ...(project.pipeline ? { pipeline: project.pipeline } : {}), ...(project.resourcePackage ? { resourcePackage: project.resourcePackage } : {}) } : null;
     const chosen = fields.appliedPluginSnapshotId !== null && current?.snapshotId === fields.appliedPluginSnapshotId ? current : pinned ?? current;
     if (!matches(chosen)) return false;
     // `chosen === current` also holds when both are null: no conversation pin, no project pin.
@@ -535,14 +547,28 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   const pluginStillPinned = (owner: string, projectId: string, selection: PluginSelection) =>
     !selection.projectPin || (input.plugins?.projectPin(projectId, owner)?.snapshotId ?? null) === selection.projectPin.snapshotId;
   const refusePlugin = (res: Response) => sendApiError(res, 409, 'CONFLICT', 'the plugin does not match this project\'s applied plugin');
+  const pipelineContinuation = (question: RunRow | undefined, plugin: PluginSnapshot | null): { pipelineResumeStage?: number } | false => {
+    if (!question || !plugin?.pipeline?.stages.length) return {};
+    const progress = (storedJson(question.output) as { pipeline?: import('@open-design/contracts').StudioPipelineProgress } | null)?.pipeline;
+    return progress?.snapshotId === plugin.snapshotId && progress.awaitingInput === true
+      && progress.stageCount === plugin.pipeline.stages.length && Number.isInteger(progress.stageIndex)
+      && progress.stageIndex >= 0 && progress.stageIndex < progress.stageCount
+      ? { pipelineResumeStage: progress.stageIndex } : false;
+  };
   const withPlugin = (prompt: string, plugin: PluginSnapshot | null) => plugin ? `${prompt}\n\n---\n\n${plugin.prompt}` : prompt;
-  const selectSkills = (fields: PersonalRunFields, projectId: string, fixed: boolean, question: boolean): string[] => {
+  const selectSkills = (fields: PersonalRunFields, fixed: boolean, question: boolean, defaults: StudioProjectDefaultsObservation): string[] => {
     if (question) return fields.skillIds;
-    const primary = fixed ? null : fields.skillId ?? getProject(db, projectId)?.skillId ?? null;
+    const primary = fixed ? null : fields.skillId ?? defaults.skill ?? null;
     return [...new Set([...(primary ? [primary] : []), ...fields.skillIds])];
   };
 
   const artifactBlobs = createChatArtifactBlobStore({ dataDir: dataRoot });
+  const artifactToolsFor = (run: RunRow, authorized: () => boolean, onAgentEvent: (event: Record<string, unknown>) => void) => input.liveArtifacts
+    ? createStudioLiveArtifactTools({ store: input.liveArtifacts, projectId: run.project_id, conversationId: run.conversation_id, runId: run.id,
+      authorized, onChanged(action, artifact) {
+        const event = { type: 'live_artifact' as const, action, projectId: run.project_id, artifactId: artifact.id, title: artifact.title, refreshStatus: artifact.refreshStatus };
+        updateProject(db, run.project_id, {}); onAgentEvent(event); input.emitProjectEvent?.(run.project_id, event);
+      } }) : undefined;
   const companyOpenAI = new CompanyOpenAIStore(db, dataRoot);
   db.exec(`CREATE TABLE IF NOT EXISTS multiuser_company_sessions (
     conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
@@ -563,9 +589,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     throw new Error('multi-user mode refused: only the repository test mock may run');
   }
   // Owner or editor (#65): who may change the project and run turns in it.
-  const projects = new ProjectAccessStore(db);
   const ledger = new WorkerQuotaLedger({ dataRoot, ...(input.clock ? { clock: input.clock } : {}) });
   const accounts = AuthStore.open({ dataRoot });
+  const projects = new ProjectAccessStore(db, { accountActive: (id) => accounts.getAccountById(id)?.active === true });
   const now = input.clock ?? Date.now;
   const research = createStudioResearch({ db, keys: providerKeys, clock: now, ...(input.researchFetch ? { fetch: input.researchFetch } : {}) });
   /**
@@ -809,8 +835,12 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     studioMessages.append(id, row(id)!.conversation_id, seq, event, data);
     return `id: ${seq}\nevent: ${event}\ndata: ${payload}\n\n`;
   };
+  const chatInvalidation = createStudioChatInvalidation((projectId, event) => input.emitProjectEvent?.(projectId, event));
   const publishEvent = (id: string, frame: string) => {
     for (const res of listeners.get(id) ?? []) if (multiUserStreamAllowed(res)) res.write(frame);
+    const committed = row(id);
+    if (committed) chatInvalidation.changed(committed.project_id, committed.conversation_id,
+      committed.status !== 'active' && committed.status !== 'queued');
   };
   const emit = <E extends MultiUserRunEvent['event']>(id: string, event: E, data: RunEventData<E>) => {
     publishEvent(id, db.transaction(() => persistEvent<E>(id, event, data))());
@@ -1045,7 +1075,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
               Array.isArray(request.attachments) ? request.attachments.filter((item): item is string => typeof item === 'string') : []));
             const focused = Array.isArray(request.workspaceItems) && request.workspaceItems.length
               ? `\n\n${renderRunContextPrompt({ workspaceItems: request.workspaceItems }, null)}` : '';
-            const skillPackages = readStudioSkillPackages(request.skillSnapshots);
+            const skillPackages = studioRunResourcePackages(request);
             const skillRoot = input.scriptSandbox ? stageStudioSkillPackages(runHome, skillPackages) : undefined;
             artifactBaselines.set(next.id, { cwd: realCwd, before: snapshotProjectArtifacts(realCwd) });
             const authorized = () => {
@@ -1054,14 +1084,36 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 && accounts.getAccountById(next.owner_account_id)?.active === true && projects.canWrite(next.project_id, next.owner_account_id)
                 && key.current();
             };
-            void runCompanyOpenAITurn({ apiKey: key.apiKey, model: key.model,
-              // Media tools ride on the turn's own key: the bill follows the turn's source (#63).
-              systemPrompt: `${stablePrompt}${STUDIO_MEDIA_PROMPT}`, media: true, prompt: `${userPrompt}${attached}${renderCommentAttachmentHint(normalizeCommentAttachments(Array.isArray(request.commentAttachments) ? request.commentAttachments : []))}${focused}`,
-              history, skillPackages, projectsRoot, projectId: next.project_id, worker, authorized,
-              ...(skillRoot && input.scriptSandbox ? { runSkillScript: createStudioSkillScriptRunner({ sandbox: input.scriptSandbox,
-                packages: skillPackages, skillRoot, runHome, cwd: realCwd }) } : {}),
-              onAgentEvent: (event) => projection.accept(event), ...(input.companyFetch ? { fetch: input.companyFetch } : {}),
-            }).then(async (result) => {
+            const usage = { inputTokens: 0, outputTokens: 0 };
+            const mediaUsage = { images: 0, speechCharacters: 0, videoSeconds: 0 };
+            let stageHistory = history;
+            let stageCount = 0;
+            void runStudioPipeline({ db, runId: next.id, snapshot: pluginSnapshotOf(request), resumeStage: request.pipelineResumeStage,
+              check: () => { worker.abort.signal.throwIfAborted(); if (!authorized()) throw new Error('company_authority_changed'); },
+              emit: (stage) => { projection.flush(); emit(next.id, 'agent', { type: 'pipeline_stage', stage }); },
+              runStage: async (directive) => {
+                if (stageCount++) { projection.accept({ type: 'text_delta', delta: '\n\n' }); projection.flush(); }
+                let text = '';
+                const result = await runCompanyOpenAITurn({ apiKey: key.apiKey, model: key.model,
+                  // Every stage stays on the turn's own source and bill (#63).
+                  systemPrompt: `${stablePrompt}${STUDIO_MEDIA_PROMPT}${input.liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : ''}`, media: true,
+                  ...(input.liveArtifacts ? { liveArtifacts: artifactToolsFor(next, authorized, (event) => projection.accept(event))! } : {}),
+                  prompt: `${userPrompt}${attached}${renderCommentAttachmentHint(normalizeCommentAttachments(Array.isArray(request.commentAttachments) ? request.commentAttachments : []))}${focused}${directive}`,
+                  history: stageHistory, skillPackages, projectsRoot, projectId: next.project_id, worker, authorized,
+                  ...(skillRoot && input.scriptSandbox ? { runSkillScript: createStudioSkillScriptRunner({ sandbox: input.scriptSandbox,
+                    packages: skillPackages, skillRoot, runHome, cwd: realCwd }) } : {}),
+                  onAgentEvent: (event) => {
+                    if (event.type === 'text_delta' && typeof event.delta === 'string') text += event.delta;
+                    projection.accept(event);
+                  }, ...(input.companyFetch ? { fetch: input.companyFetch } : {}),
+                });
+                stageHistory = result.input;
+                usage.inputTokens += result.usage.inputTokens; usage.outputTokens += result.usage.outputTokens;
+                mediaUsage.images += result.media.images; mediaUsage.speechCharacters += result.media.speechCharacters;
+                mediaUsage.videoSeconds += result.media.videoSeconds;
+                return { value: result, ok: result.ok, text, tokensUsed: result.usage.inputTokens + result.usage.outputTokens };
+              },
+            }).then(async ({ value: result, progress }) => {
               if (!authorized()) { finish(next.id, 'canceled'); return; }
               const after = await snapshotProjectArtifactsAsync(realCwd);
               if (!authorized()) { finish(next.id, 'canceled'); return; }
@@ -1076,8 +1128,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 { projectId: next.project_id, messageId, runId: next.id, projectRoot: realCwd, touchedPaths: files.map((file) => path.join(realCwd, file)) });
               if (!authorized()) { finish(next.id, 'canceled'); return; }
               key.saveHistory(JSON.stringify(result.input));
-              finish(next.id, 'succeeded', { files, producedFiles, usage: result.usage,
-                ...(result.media.images || result.media.speechCharacters || result.media.videoSeconds ? { media: result.media } : {}) });
+              finish(next.id, 'succeeded', { files, producedFiles, usage, ...(progress ? { pipeline: progress } : {}),
+                ...(mediaUsage.images || mediaUsage.speechCharacters || mediaUsage.videoSeconds ? { media: mediaUsage } : {}) });
             }).catch((error: unknown) => {
               const cause = error instanceof Error ? error.message : '';
               finish(next.id, cancelPending.has(next.id) || shuttingDown ? 'canceled' : 'failed', { reason: failurePending.has(next.id) ? 'MULTIUSER_QUOTA_EXHAUSTED'
@@ -1192,7 +1244,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         for (const dir of [path.dirname(runHome), runHome, temp]) fs.chmodSync(dir, 0o700);
         const runId = next.id;
         try {
-          const skillPackages = readStudioSkillPackages(request?.skillSnapshots);
+          const skillPackages = studioRunResourcePackages(request);
           const skillRoot = stageStudioSkillPackages(runHome, skillPackages);
           artifactBaselines.set(runId, { cwd: realCwd, before: snapshotProjectArtifacts(realCwd) });
           startRun(next);
@@ -1212,81 +1264,104 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           const prompt = `${includeStable ? `${stablePrompt}\n\n---\n\n# User request\n\n${userPrompt}` : userPrompt}${attached}${commented}${focused}${resources}`;
           const projection = new PersonalRunEvents(realCwd, [dataRoot, account.codexHome, runHome, realCwd], (event) => emit(runId, event.event, event.data));
           projections.set(runId, projection);
-          const turn = runPersonalCodexTurn({
-            command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
-            ...(skillRoot ? { skillPackages: skillRoot } : {}),
-            prompt, resumeThreadId: session.thread_id,
-            ...(isStudioCodexModel(request?.model) ? { model: request.model } : {}),
-            ...(isStudioCodexReasoning(request?.reasoning) ? { reasoning: request.reasoning } : {}),
-            // A real personal provider always runs inside the per-run bubblewrap
-            // boundary. Its filesystem already contains only this account's
-            // CODEX_HOME, run HOME/TMPDIR and project cwd, with system paths
-            // read-only. Do not ask Codex to create a second Linux sandbox
-            // inside it: unprivileged container hosts commonly reject that
-            // nested sandbox and every file/command tool then fails to start.
-            // `danger-full-access` is scoped to the outer boundary, not the
-            // daemon container or host. Mock-only unsandboxed test lanes keep
-            // the normal platform/operator-resolved Codex policy.
-            sandboxMode: launch.sandbox ? 'danger-full-access' : codexResolvedSandboxMode(),
-            onThread: (threadId) => db.prepare(`UPDATE multiuser_personal_sessions SET thread_id = ?, updated_at = ?
-              WHERE conversation_id = ? AND personal_account_id = ?`).run(threadId, now(), next.conversation_id, accountId),
-            onAgentEvent: (event) => projection.accept(event),
-            onDone: (result) => { void (async () => {
+          const allowed = () => !storesClosed && !shuttingDown && !cancelPending.has(runId)
+            && row(runId)?.status === 'active' && accounts.getAccountById(owner)?.active === true
+            && projects.canWrite(next.project_id, owner) && personal.usableAccount(owner)?.id === accountId
+            && personal.usableAccount(owner)?.credentialVersion === next.credential_version;
+          const liveArtifacts = artifactToolsFor(next, allowed, (event) => projection.accept(event));
+          let resumeThreadId = session.thread_id;
+          let stageCount = 0;
+          void runStudioPipeline({ db, runId, snapshot: pluginSnapshotOf(request), resumeStage: request?.pipelineResumeStage,
+            check: () => { if (!allowed()) throw new Error('personal_authority_changed'); },
+            emit: (stage) => { projection.flush(); emit(runId, 'agent', { type: 'pipeline_stage', stage }); },
+            runStage: async (directive) => {
+              if (stageCount++) { projection.accept({ type: 'text_delta', delta: '\n\n' }); projection.flush(); }
+              const turn = runPersonalCodexTurn({
+                command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
+                ...(skillRoot ? { skillPackages: skillRoot } : {}),
+                prompt: `${stageCount === 1 ? prompt : userPrompt}${input.liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : ''}${directive}`, resumeThreadId,
+                ...(liveArtifacts ? { dynamicTools: STUDIO_LIVE_ARTIFACT_TOOLS.map(({ properties, required, ...tool }) => ({ ...tool,
+                  inputSchema: { type: 'object', properties, required: [...required], additionalProperties: false } })),
+                  onDynamicToolCall: (name: string, args: Record<string, unknown>) => liveArtifacts.execute(name, args) } : {}),
+                ...(isStudioCodexModel(request?.model) ? { model: request.model } : {}),
+                ...(isStudioCodexReasoning(request?.reasoning) ? { reasoning: request.reasoning } : {}),
+                // A real personal provider always runs inside the per-run bubblewrap
+                // boundary. Its filesystem already contains only this account's
+                // CODEX_HOME, run HOME/TMPDIR and project cwd, with system paths
+                // read-only. Do not ask Codex to create a second Linux sandbox
+                // inside it: unprivileged container hosts commonly reject that
+                // nested sandbox and every file/command tool then fails to start.
+                // `danger-full-access` is scoped to the outer boundary, not the
+                // daemon container or host. Mock-only unsandboxed test lanes keep
+                // the normal platform/operator-resolved Codex policy.
+                sandboxMode: launch.sandbox ? 'danger-full-access' : codexResolvedSandboxMode(),
+                onThread: (threadId) => { if (allowed()) db.prepare(`UPDATE multiuser_personal_sessions SET thread_id = ?, updated_at = ?
+                  WHERE conversation_id = ? AND personal_account_id = ?`).run(threadId, now(), next.conversation_id, accountId); },
+                onAgentEvent: (event) => { if (allowed()) projection.accept(event); },
+              });
+              children.set(runId, turn.child);
+              interrupts.set(runId, turn.interrupt);
+              const result = await turn.done;
               personal.secureHome(owner);
-              /** #78: checked on both sides of the artifact snapshot; a terminal reached while it runs wins. */
-              const settled = (): boolean => {
-                if (row(runId)?.status !== 'active') return true;
-                if (shuttingDown) { finish(runId, 'canceled', { reason: 'daemon_shutdown' }); return true; }
-                if (!cancelPending.has(runId)) return false;
-                finish(runId, 'canceled', sourceInvalidated.has(runId) ? { reason: 'MULTIUSER_PERSONAL_UNAVAILABLE' } : undefined);
-                return true;
-              };
-              if (settled()) return;
-              const baseline = artifactBaselines.get(runId);
-              let files: string[] = [];
-              let producedFiles: import('@open-design/contracts').ProjectFile[] = [];
-              if (baseline) {
-                try {
-                  const after = await snapshotProjectArtifactsAsync(baseline.cwd);
-                  files = diffRunArtifacts(baseline.before, after).touchedPaths.map((filePath) => path.relative(baseline.cwd, filePath).replaceAll('\\', '/'))
-                    .filter((filePath) => filePath && filePath !== '..' && !filePath.startsWith('../') && !path.isAbsolute(filePath)).slice(0, 128);
-                  producedFiles = files.flatMap((name) => {
-                    const fingerprint = after.get(path.join(baseline.cwd, name));
-                    return fingerprint ? [{ name, path: name, type: 'file' as const, size: fingerprint.size,
-                      mtime: fingerprint.mtimeMs, kind: kindFor(name), mime: mimeFor(name) }] : [];
+              resumeThreadId = result.threadId;
+              return { value: result, ok: result.ok, text: result.text };
+            },
+          }).then(async ({ value: result, progress }) => {
+            personal.secureHome(owner);
+            /** #78: checked on both sides of the artifact snapshot; a terminal reached while it runs wins. */
+            const settled = (): boolean => {
+              if (row(runId)?.status !== 'active') return true;
+              if (shuttingDown) { finish(runId, 'canceled', { reason: 'daemon_shutdown' }); return true; }
+              if (!cancelPending.has(runId)) return false;
+              finish(runId, 'canceled', sourceInvalidated.has(runId) ? { reason: 'MULTIUSER_PERSONAL_UNAVAILABLE' } : undefined);
+              return true;
+            };
+            if (settled()) return;
+            const baseline = artifactBaselines.get(runId);
+            let files: string[] = [];
+            let producedFiles: import('@open-design/contracts').ProjectFile[] = [];
+            if (baseline) {
+              try {
+                const after = await snapshotProjectArtifactsAsync(baseline.cwd);
+                files = diffRunArtifacts(baseline.before, after).touchedPaths.map((filePath) => path.relative(baseline.cwd, filePath).replaceAll('\\', '/'))
+                  .filter((filePath) => filePath && filePath !== '..' && !filePath.startsWith('../') && !path.isAbsolute(filePath)).slice(0, 128);
+                producedFiles = files.flatMap((name) => {
+                  const fingerprint = after.get(path.join(baseline.cwd, name));
+                  return fingerprint ? [{ name, path: name, type: 'file' as const, size: fingerprint.size,
+                    mtime: fingerprint.mtimeMs, kind: kindFor(name), mime: mimeFor(name) }] : [];
+                });
+                if (settled()) return;
+                const messageId = studioMessages.ids(runId).assistantMessageId;
+                // A damaged/quarantined transcript binding must never let a
+                // capture write refs onto another conversation's message.
+                if (getMessage(db, messageId, next.conversation_id)?.runId === runId) {
+                  await captureRunChatArtifactSnapshots({ db, blobs: artifactBlobs }, {
+                    projectId: next.project_id, projectRoot: baseline.cwd, messageId, runId,
+                    touchedPaths: files.map((file) => path.join(baseline.cwd, file)),
                   });
-                  if (settled()) return;
-                  const messageId = studioMessages.ids(runId).assistantMessageId;
-                  // A damaged/quarantined transcript binding must never let a
-                  // capture write refs onto another conversation's message.
-                  if (getMessage(db, messageId, next.conversation_id)?.runId === runId) {
-                    await captureRunChatArtifactSnapshots({ db, blobs: artifactBlobs }, {
-                      projectId: next.project_id, projectRoot: baseline.cwd, messageId, runId,
-                      touchedPaths: files.map((file) => path.join(baseline.cwd, file)),
-                    });
-                  }
-                } catch {
-                  // Artifact discovery is best-effort. A filesystem race must
-                  // not leave a completed provider turn stuck as active.
                 }
+              } catch {
+                // Artifact discovery is best-effort. A filesystem race must
+                // not leave a completed provider turn stuck as active.
               }
-              if (settled()) return;
-              if (result.ok) {
-                projection.flush();
-                if (includeStable && stablePromptHash) {
-                  db.prepare(`UPDATE multiuser_personal_sessions SET stable_prompt_hash = ?, updated_at = ?
-                    WHERE conversation_id = ? AND personal_account_id = ?`).run(stablePromptHash, now(), next.conversation_id, accountId);
-                }
-                return finish(runId, 'succeeded', { text: projection.text, textTruncated: projection.truncated, files, producedFiles, threadId: result.threadId });
+            }
+            if (settled()) return;
+            if (result.ok) {
+              projection.flush();
+              if (includeStable && stablePromptHash) {
+                db.prepare(`UPDATE multiuser_personal_sessions SET stable_prompt_hash = ?, updated_at = ?
+                  WHERE conversation_id = ? AND personal_account_id = ?`).run(stablePromptHash, now(), next.conversation_id, accountId);
               }
-              if (result.problem) personal.recordProblem(owner, accountId, result.problem);
-              finish(runId, 'failed', { reason: result.problem ? PROBLEM_ERRORS[result.problem].code : 'MULTIUSER_PERSONAL_RUN_FAILED', files, producedFiles });
-            })().catch(() => {
-              if (row(runId)?.status === 'active') finish(runId, 'failed', { reason: 'MULTIUSER_PERSONAL_RUN_FAILED' });
-            }); },
+              return finish(runId, 'succeeded', { text: projection.text, textTruncated: projection.truncated, files, producedFiles, threadId: result.threadId, ...(progress ? { pipeline: progress } : {}) });
+            }
+            if (result.problem) personal.recordProblem(owner, accountId, result.problem);
+            finish(runId, 'failed', { reason: result.problem ? PROBLEM_ERRORS[result.problem].code : 'MULTIUSER_PERSONAL_RUN_FAILED', files, producedFiles });
+          }).catch(() => {
+            if (!storesClosed && row(runId)?.status === 'active') {
+              finish(runId, !allowed() ? 'canceled' : 'failed', { reason: sourceInvalidated.has(runId)
+                ? 'MULTIUSER_PERSONAL_UNAVAILABLE' : 'MULTIUSER_PERSONAL_RUN_FAILED' });
+            }
           });
-          children.set(runId, turn.child);
-          interrupts.set(runId, turn.interrupt);
         } catch {
           // A rolled-back start stays queued; a committed start keeps its turn and worker timestamps.
           if (!children.has(runId)) finish(runId, 'failed', { reason: 'MULTIUSER_PERSONAL_RUN_FAILED' });
@@ -1550,14 +1625,16 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           || (fields.designSystemId !== null && fields.designSystemId !== fixedDesign.designSystemId))) {
       return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
     }
+    const pins = projectPins(fields, target.projectId, Boolean(fixedDesign), Boolean(question));
     const fixedCapture = fixedDesign ? await captureFixedDesign(owner, target.conversationId, fixedDesign) : null;
     if (fixedDesign && !fixedCapture) return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
     const pluginSelection = selectPlugin(owner, target, fields, question);
     if (!pluginSelection) return refusePlugin(res);
     const plugin = pluginSelection.plugin;
-    const pins = projectPins(fields, target.projectId, Boolean(fixedDesign), Boolean(question));
+    const continuation = pipelineContinuation(question, plugin);
+    if (!continuation) return sendApiError(res, 409, 'CONFLICT', 'question pipeline continuation is stale');
     const freshShared: FreshSharedCapture[] = [];
-    const designSnapshot = fixedCapture ? fixedCapture.design : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? getProject(db, target.projectId)?.designSystemId ?? null, question, pins.design, freshShared);
+    const designSnapshot = fixedCapture ? fixedCapture.design : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? pins.observed.design ?? null, question, pins.design, freshShared);
     if (designSnapshot === false) return sendApiError(res, 404, 'NOT_FOUND', 'selected design system not found or unavailable');
     // Opt-in "remember: …" heuristics land before capture, so this turn already sees them (#62).
     await input.memory?.beforeTurn(owner, fields.text);
@@ -1570,7 +1647,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const questionRequest = question ? storedRequest(question.request_json) : null;
     const inheritedSkillIds = Array.isArray(questionRequest?.skillIds) && questionRequest.skillIds.every((id) => typeof id === 'string')
       ? questionRequest.skillIds as string[] : [];
-    fields.skillIds = selectSkills(fields, target.projectId, Boolean(fixedDesign), Boolean(question));
+    fields.skillIds = selectSkills(fields, Boolean(fixedDesign), Boolean(question), pins.observed);
     if (question && ((!fixedDesign && fields.skillId !== null && !inheritedSkillIds.includes(fields.skillId))
       || fields.skillIds.length && JSON.stringify(fields.skillIds) !== JSON.stringify(inheritedSkillIds))) {
       return sendApiError(res, 409, 'CONFLICT', 'question skills changed');
@@ -1613,6 +1690,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       composed = { ...composed, prompt, hash: createHash('sha256').update(prompt).digest('hex') };
     }
     const skillSnapshots = inheritsSkills ? questionRequest?.skillSnapshots ?? [] : withFixedSkill(fixedCapture?.skill, selectedSkills);
+    try { studioRunResourcePackages({ skillSnapshots, ...(plugin ? { pluginSnapshot: plugin } : {}) }); }
+    catch { return sendApiError(res, 409, 'CONFLICT', 'captured resources are unavailable or exceed the turn limit'); }
     // No research is billed for a turn this account cannot run on its Codex link.
     if (fields.research && !personal.usableAccount(owner)) {
       return sendApiError(res, 409, 'MULTIUSER_PERSONAL_UNAVAILABLE', 'no usable personal Codex account; link or re-authorize it');
@@ -1629,6 +1708,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       ...(question ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId: question.id } } : {}),
       ...(designSnapshot ? { designSnapshot } : {}),
       ...(plugin ? { pluginSnapshot: plugin } : {}),
+      ...continuation,
       ...(composed ? { skillId: composed.selection.skillId, designSystemId: designSnapshot?.id ?? composed.selection.designSystemId,
         stablePrompt: composed.prompt, stablePromptHash: composed.hash } : {}) });
     // Prompt/catalog I/O yields: deletion or session revocation may have won
@@ -1664,6 +1744,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const lostPersonal = lostSharedCapture(owner, freshShared);
     if (lostPersonal) return refuseLostSharedCapture(res, lostPersonal);
     if (!pluginStillPinned(owner, target.projectId, pluginSelection)) return refusePlugin(res);
+    if (!studioProjectDefaultsUnchanged(pins.observed, getProject(db, target.projectId))) {
+      return sendApiError(res, 409, 'CONFLICT', 'project defaults changed during admission');
+    }
     const id = randomUUID();
     const createdAt = now();
     const queuedFrame = db.transaction(() => {
@@ -1738,7 +1821,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const previousRequest = question ? storedRequest(question.request_json) : null;
     const capturedSkillIds = Array.isArray(previousRequest?.skillIds) ? previousRequest.skillIds : [];
     const fixed = input.design?.selection(target.conversationId, owner) ?? null;
-    fields.skillIds = selectSkills(fields, target.projectId, Boolean(fixed), Boolean(question));
+    const pins = projectPins(fields, target.projectId, Boolean(fixed), Boolean(question));
+    fields.skillIds = selectSkills(fields, Boolean(fixed), Boolean(question), pins.observed);
     if (question && ((!fixed && fields.skillId !== null && !capturedSkillIds.includes(fields.skillId))
       || fields.skillIds.length && JSON.stringify(fields.skillIds) !== JSON.stringify(capturedSkillIds))) {
       return sendApiError(res, 409, 'CONFLICT', 'question skills changed');
@@ -1752,12 +1836,16 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const pluginSelection = selectPlugin(owner, target, fields, question);
     if (!pluginSelection) return refusePlugin(res);
     const plugin = pluginSelection.plugin;
-    const pins = projectPins(fields, target.projectId, Boolean(fixed), Boolean(question));
+    const continuation = pipelineContinuation(question, plugin);
+    if (!continuation) return sendApiError(res, 409, 'CONFLICT', 'question pipeline continuation is stale');
     const freshShared: FreshSharedCapture[] = [];
-    const designSnapshot = fixedCapture ? fixedCapture.design : fixed ? null : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? getProject(db, target.projectId)?.designSystemId ?? null, question, pins.design, freshShared);
+    const designSnapshot = fixedCapture ? fixedCapture.design : fixed ? null : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? pins.observed.design ?? null, question, pins.design, freshShared);
     if (designSnapshot === false) return sendApiError(res, 404, 'NOT_FOUND', 'selected design system not found or unavailable');
     const selected = !question && fields.skillIds.length ? await captureSkills(owner, target.conversationId, fields.skillIds, pins.skill, freshShared) : [];
     if (!selected) return sendApiError(res, 404, 'NOT_FOUND', 'selected skills not found or unavailable');
+    try { studioRunResourcePackages({ skillSnapshots: question ? previousRequest?.skillSnapshots ?? [] : withFixedSkill(fixedCapture?.skill, selected),
+      ...(plugin ? { pluginSnapshot: plugin } : {}) }); }
+    catch { return sendApiError(res, 409, 'CONFLICT', 'captured resources are unavailable or exceed the turn limit'); }
     // Opt-in "remember: …" heuristics land before capture, so this turn already sees them (#62).
     await input.memory?.beforeTurn(owner, fields.text);
     const actorContext = await input.settings?.capture(owner) ?? { userInstructions: '', memoryBody: '' };
@@ -1800,6 +1888,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const lostOpenAI = lostSharedCapture(owner, freshShared);
     if (lostOpenAI) return refuseLostSharedCapture(res, lostOpenAI);
     if (!pluginStillPinned(owner, target.projectId, pluginSelection)) return refusePlugin(res);
+    if (!studioProjectDefaultsUnchanged(pins.observed, getProject(db, target.projectId))) {
+      return sendApiError(res, 409, 'CONFLICT', 'project defaults changed during admission');
+    }
     const id = randomUUID(); const createdAt = now();
     const request = JSON.stringify({ message: fields.text, ...(instruction ? { instruction } : {}),
       ...(findings ? { research: { provider: 'tavily' } } : {}),
@@ -1809,6 +1900,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       skillSnapshots: question ? previousRequest?.skillSnapshots ?? [] : withFixedSkill(fixedCapture?.skill, selected),
       ...(designSnapshot ? { designSnapshot, designSystemId: designSnapshot.id } : {}),
       ...(plugin ? { pluginSnapshot: plugin } : {}),
+      ...continuation,
       ...(question ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId: question.id } } : {}),
       attachments: fields.attachments, workspaceItems: fields.workspaceItems,
       ...(fields.commentAttachments.length ? { commentAttachments: fields.commentAttachments } : {}) });
@@ -1893,16 +1985,17 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (!pin || !personal || pin.owner_account_id !== owner || !projectId || !projects.canWrite(projectId, owner)) return false;
     return !personal.isOwner('accountId', pin.personal_account_id, owner);
   };
-  /** SQL twin of `projects.canView` over the joined owner row `o` (two account binds). */
-  const readable = `(o.owner_account_id = ? OR EXISTS (SELECT 1 FROM ${PROJECT_GRANTS_TABLE} g
-    WHERE g.project_id = r.project_id AND g.grantee_account_id = ?))`;
+  // A single JSON bind keeps live authority before pagination without a second
+  // grant-policy implementation or SQLite's variable-count ceiling.
+  const readable = 'r.project_id IN (SELECT value FROM json_each(?))';
   app.get('/api/runs', (req, res) => {
     const query = parseRunListQuery(req.query);
     if (!query) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid run list query');
     const owner = actor(res);
+    const visibleProjects = JSON.stringify(projects.readableProjectIds(owner));
     // Ownership and filters apply in SQL before the limit, so a page is never short of the owner's rows.
     const where = ['r.owner_account_id = ?', readable];
-    const args: Array<string | number> = [owner, owner, owner];
+    const args: Array<string | number> = [owner, visibleProjects];
     if (query.projectId !== undefined) { where.push('r.project_id = ?'); args.push(query.projectId); }
     if (query.conversationId !== undefined) { where.push('r.conversation_id = ?'); args.push(query.conversationId); }
     if (query.status === 'nonterminal') where.push("r.status IN ('queued','active')");
@@ -1920,7 +2013,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         JOIN multiuser_runs r ON r.id = q.run_id JOIN ${PROJECT_OWNERS_TABLE} o ON o.project_id = r.project_id
         WHERE r.owner_account_id = ? AND ${readable} AND q.answered_by IS NULL
         AND NOT EXISTS (SELECT 1 FROM multiuser_runs newer WHERE newer.conversation_id = r.conversation_id AND newer.queue_seq > r.queue_seq)`)
-        .all(actor(res), actor(res), actor(res)) as Array<{ id: string }>).map((value) => value.id),
+        .all(owner, visibleProjects) as Array<{ id: string }>).map((value) => value.id),
       nextCursor: rows.length > query.limit && last ? `${last.created_at}:${last.id}` : null,
       ...(query.conversationId === undefined ? {} : { personalPinStale: personalPinStale(owner, query.conversationId) }),
     };
@@ -2013,6 +2106,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   const beginShutdown = () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    chatInvalidation.stop();
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     // Background memory extraction bills a turn's source: none outlives the daemon.
     input.memory?.close();
@@ -2068,7 +2162,13 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       return !!found && found.owner_account_id === accountId && projects.canView(found.project_id, accountId);
     },
     cancelAccountRuns(accountId) {
-      const active = db.prepare(`SELECT id FROM ${table} WHERE owner_account_id = ? AND status IN ('active','queued')`).all(accountId) as Array<{ id: string }>;
+      // Session revocation stops this account's turns. Deactivation also
+      // suspends every collaborator's turn in its projects; an ordinary logout
+      // by an active owner does not revoke those collaborators' authority.
+      const inactive = accounts.getAccountById(accountId)?.active !== true;
+      const active = db.prepare(`SELECT id FROM ${table} r WHERE status IN ('active','queued') AND
+        (owner_account_id = ? OR (? = 1 AND EXISTS (SELECT 1 FROM ${PROJECT_OWNERS_TABLE} o
+          WHERE o.project_id = r.project_id AND o.owner_account_id = ?)))`).all(accountId, inactive ? 1 : 0, accountId) as Array<{ id: string }>;
       suspendDispatch = true;
       try {
         for (const run of active) {

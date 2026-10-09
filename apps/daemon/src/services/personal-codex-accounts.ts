@@ -155,6 +155,8 @@ export function runPersonalCodexTurn(input: AppServerEnvironment & {
   onAgentEvent?: (event: Json) => void;
   /** Called synchronously from the child's close event, before `done` settles. */
   onDone?: (result: PersonalTurnResult) => void;
+  dynamicTools?: import('../agent-protocol/codex-app-server/session.js').CodexAppServerSessionOptions['dynamicTools'];
+  onDynamicToolCall?: (name: string, args: Json) => unknown;
 }): { child: ChildProcessWithoutNullStreams; done: Promise<PersonalTurnResult>; interrupt(): void } {
   const child = spawnAppServer(input);
   let text = '';
@@ -179,6 +181,7 @@ export function runPersonalCodexTurn(input: AppServerEnvironment & {
     child, prompt: input.prompt, cwd: input.cwd, sandboxMode: input.sandboxMode,
     model: input.model ?? null, reasoning: input.reasoning ?? null,
     resumeSessionId: input.resumeThreadId, resumeSessionOwned: input.resumeThreadId !== null,
+    ...(input.dynamicTools && input.onDynamicToolCall ? { dynamicTools: input.dynamicTools, onDynamicToolCall: input.onDynamicToolCall } : {}),
     onAgentEvent: (event) => {
       input.onAgentEvent?.(event);
       if (event.type === 'text_delta' && typeof event.delta === 'string') {

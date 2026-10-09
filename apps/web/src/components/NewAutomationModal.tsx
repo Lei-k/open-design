@@ -26,6 +26,8 @@ import { localizePluginDescription, localizePluginTitle } from './plugins-home/l
 import { describeRoutineSchedule, describeRoutineScheduleParts } from './routineScheduleLabels';
 import { useWorkspaceContext } from '../collab/useWorkspaceContext';
 import { workspaceProjectHeaders } from '../collab/workspace-identity';
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
+import { StudioExecutionSource } from '../runtime/StudioExecutionSource';
 
 type ProjectSummary = { id: string; name: string };
 type ScheduleKind = RoutineSchedule['kind'];
@@ -253,6 +255,9 @@ export function NewAutomationModal({
   onSaved,
 }: Props) {
   const t = useT();
+  const studio = useStudioCapabilities();
+  const [executionAgent, setExecutionAgent] = useState<string | null>(null);
+  const selectedExecutionAgent = executionAgent ?? studio.executionAgentId;
   const { locale } = useI18n();
   const { context: workspaceContext } = useWorkspaceContext();
   const editingId = initial?.routine?.id ?? null;
@@ -306,6 +311,9 @@ export function NewAutomationModal({
 
   useEffect(() => {
     if (!open) return;
+    // Capture the opening choice; a later policy update must not reset an
+    // edited draft or silently move its source to a newly enabled provider.
+    setExecutionAgent(initial?.routine?.agentId ?? studio.executionAgentId);
     if (initial?.routine) {
       setForm(formFromRoutine(initial.routine));
       setSelectedTemplateId(null);
@@ -470,6 +478,7 @@ export function NewAutomationModal({
         schedule: buildSchedule(form),
         target,
         skillId: selectedSkillIds[0] ?? null,
+        ...(!studio.hostServices && selectedExecutionAgent ? { agentId: selectedExecutionAgent } : {}),
         context: {
           ...(selectedSkillIds.length > 0 ? { skillIds: selectedSkillIds } : {}),
           ...(selectedPluginIds.length > 0 ? { pluginIds: selectedPluginIds } : {}),
@@ -497,6 +506,7 @@ export function NewAutomationModal({
           schedule: body.schedule,
           target: body.target,
           skillId: body.skillId,
+          ...(!studio.hostServices ? { agentId: body.agentId } : {}),
           context: body.context,
         }
         : body;
@@ -816,6 +826,7 @@ export function NewAutomationModal({
 
         <footer className="automation-modal__foot">
           <div className="automation-modal__pills">
+            {!studio.hostServices ? <StudioExecutionSource agentId={selectedExecutionAgent} onChange={setExecutionAgent} /> : null}
             <PillButton
               icon="folder"
               active={popover === 'project'}

@@ -47,7 +47,7 @@ it('renders the existing App without attempting unavailable service requests, in
     if (path === '/api/auth/me') return Response.json({ account: currentAccount, studio: effective, studioRevision: revision });
     if (path === '/api/projects') return Response.json({ projects: [currentProject] });
     if (path === '/api/projects/owned-project') return Response.json({ project: currentProject });
-    if (path.endsWith('/conversations')) return Response.json({ conversations: [{ id: 'conv', title: 'Conversation', createdAt: 1, updatedAt: 1 }] });
+    if (path.endsWith('/conversations')) return Response.json({ conversations: [{ id: 'conv', title: 'Conversation', studioCanWrite: true, createdAt: 1, updatedAt: 1 }] });
     if (path.endsWith('/messages')) return Response.json({ messages: [] });
     if (path.endsWith('/tabs')) return Response.json({ tabs: [], active: null });
     if (path === '/api/agent-accounts') return Response.json({ mode: 'multi-user', personalSubscriptionsEnabled: false, codex: { account: null, pendingAttempt: null }, claude: { available: false } });

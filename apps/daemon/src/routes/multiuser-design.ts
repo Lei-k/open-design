@@ -121,8 +121,8 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
 }): MultiUserDesignRoutes {
   const { db, projectsRoot } = input;
   // Preview reads need any project role; new design conversations and run prompts need write access (#65).
-  const projects = new ProjectAccessStore(db);
   const auth = AuthStore.open({ dataRoot: input.dataRoot });
+  const projects = new ProjectAccessStore(db, { accountActive: (id) => auth.getAccountById(id)?.active === true });
   const now = input.clock ?? Date.now;
   const capabilities = new Map<string, PreviewCapability>();
   let closed = false;

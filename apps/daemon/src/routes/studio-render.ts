@@ -8,7 +8,7 @@ import { getProject } from '../db.js';
 import { mimeFor, validateProjectPath } from '../projects.js';
 import { captureStudioProject } from '../projects/studio-snapshot.js';
 import { readProjectFileVersion } from '../project-file-versions.js';
-import { ProjectAccessStore } from '../storage/project-access.js';
+import { ProjectAccessStore, type ProjectAccessOptions } from '../storage/project-access.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { multiUserStreamAllowed } from '../http/multiuser-stream.js';
 import { sendApiError } from '../http/api-errors.js';
@@ -42,9 +42,9 @@ const FORMATS: Record<string, Format> = { pptx: 'pptx', 'pdf-image': 'pdf', imag
  */
 export function registerStudioRenderRoutes(app: Express, input: {
   db: Database.Database; projectsRoot: string; dataRoot: string; host: ChromiumCaptureHost | null;
-}): void {
+} & ProjectAccessOptions): void {
   // Owner or any grantee (#65): every member may download what it can read.
-  const access = new ProjectAccessStore(input.db);
+  const access = new ProjectAccessStore(input.db, input);
   const active = new Set<string>();
   const host = input.host;
   const render = async (req: Request, res: Response, format: Format) => {

@@ -177,6 +177,8 @@ const DAEMON_OWNED_INPUT_FIELDS = new Set([
   'schemaVersion',
   'refreshStatus',
   'lastRefreshedAt',
+  'studioRevision',
+  'studioProvenance',
 ]);
 
 const FORBIDDEN_JSON_KEYS = new Set([
@@ -550,7 +552,8 @@ function validateMappingPath(value: string, path: string, issues: LiveArtifactVa
     return;
   }
   for (const segment of normalized.split('.')) {
-    if (!SAFE_MAPPING_SEGMENT.test(segment) || UNSAFE_MAPPING_SEGMENTS.has(segment)) {
+    if (!SAFE_MAPPING_SEGMENT.test(segment) || UNSAFE_MAPPING_SEGMENTS.has(segment)
+      || /^\d+$/.test(segment) && (!Number.isSafeInteger(Number(segment)) || Number(segment) >= LIVE_ARTIFACT_BOUNDED_JSON_CONSTRAINTS.maxArrayLength)) {
       issues.push({ path, message: `${path} contains unsupported JSON path segment: ${segment}` });
       return;
     }

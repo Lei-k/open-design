@@ -43,6 +43,7 @@ import type {
   WorkspaceCollabContext,
 } from '@open-design/contracts';
 import type { StreamHandlers } from './anthropic';
+import { PluginPipelineStageEventSchema } from '@open-design/contracts';
 
 /**
  * 取消来源的四个合法值。服务端说了才算,说不清就不认 —— UI 把 `user_stop`
@@ -2559,6 +2560,10 @@ export function translateAgentEvent(data: DaemonAgentPayload): AgentEvent | null
 }
 function translateAgentEventBody(data: DaemonAgentPayload): AgentEvent | null {
   const t = data.type;
+  if (t === 'pipeline_stage') {
+    const stage = PluginPipelineStageEventSchema.safeParse(data.stage);
+    return stage.success ? stage.data : null;
+  }
   if (t === 'status' && typeof data.label === 'string') {
     return {
       kind: 'status',

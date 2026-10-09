@@ -1,3 +1,4 @@
+import { StudioLiveArtifactEditor } from './StudioLiveArtifactEditor';
 import { useStudioCapabilities, useStudioRequestAvailable } from '../runtime/studio-capabilities';
 import { registerStudioReset } from '../runtime/studio-resources';
 import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioSetInterval as setInterval, studioFetch as fetch, studioWindowSessionStorage } from '../runtime/studio-transport';
@@ -2001,6 +2002,7 @@ export const FileViewer = memo(function FileViewer({
 });
 
 export function LiveArtifactViewer({
+  viewerOnly = false,
   projectId,
   liveArtifact,
   liveArtifactEvents = [],
@@ -2010,9 +2012,16 @@ export function LiveArtifactViewer({
   liveArtifact: LiveArtifactWorkspaceEntry;
   liveArtifactEvents?: LiveArtifactEventItem[];
   onRefreshArtifacts?: () => Promise<void> | void;
+  viewerOnly?: boolean;
 }) {
   const t = useT();
   const { workspaceContext } = useProjectCollabContext();
+  const studio = useStudioCapabilities();
+  const [editing, setEditing] = useState(false);
+  const authority = useMemo(() => ({}), [projectId, liveArtifact.artifactId, studio.actor?.id, studio.generation, workspaceContext]);
+  const authorityRef = useRef<object | null>(authority); authorityRef.current = authority;
+  useEffect(() => { authorityRef.current = authority; return () => { if (authorityRef.current === authority) authorityRef.current = null; }; }, [authority]);
+  const current = () => authorityRef.current === authority;
   const tabs = useMemo(() => liveArtifactViewerTabs(t), [t]);
   const [mode, setMode] = useState<LiveArtifactViewerTab>('preview');
   const [detail, setDetail] = useState<LiveArtifact | null>(null);
@@ -2108,13 +2117,13 @@ export function LiveArtifactViewer({
           : `Live artifact updated: ${liveArtifactEvent.title}`,
       );
       void fetchLiveArtifact(projectId, liveArtifact.artifactId, workspaceContext).then((next) => {
-        if (next) setDetail(next);
+        if (current() && next) setDetail(next);
       });
       void fetchLiveArtifactRefreshes(
         projectId,
         liveArtifact.artifactId,
         workspaceContext,
-      ).then(setRefreshHistory);
+      ).then((next) => { if (current()) setRefreshHistory(next); });
       setReloadKey((n) => n + 1);
       continue;
     }
@@ -2137,13 +2146,13 @@ export function LiveArtifactViewer({
         }),
       );
       void fetchLiveArtifact(projectId, liveArtifact.artifactId, workspaceContext).then((next) => {
-        if (next) setDetail(next);
+        if (current() && next) setDetail(next);
       });
       void fetchLiveArtifactRefreshes(
         projectId,
         liveArtifact.artifactId,
         workspaceContext,
-      ).then(setRefreshHistory);
+      ).then((next) => { if (current()) setRefreshHistory(next); });
       continue;
     }
 
@@ -2161,23 +2170,23 @@ export function LiveArtifactViewer({
       setRefreshError(t('liveArtifact.refresh.noSourceTitle'));
     }
     void fetchLiveArtifact(projectId, liveArtifact.artifactId, workspaceContext).then((next) => {
-      if (next) setDetail(next);
+      if (current() && next) setDetail(next);
     });
     void fetchLiveArtifactRefreshes(
       projectId,
       liveArtifact.artifactId,
       workspaceContext,
-    ).then(setRefreshHistory);
+    ).then((next) => { if (current()) setRefreshHistory(next); });
     setReloadKey((n) => n + 1);
     }
-  }, [liveArtifactEvents, liveArtifact.artifactId, projectId, t, workspaceContext]);
+  }, [liveArtifactEvents, liveArtifact.artifactId, projectId, t, workspaceContext, authority]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setDetail(null);
     void fetchLiveArtifact(projectId, liveArtifact.artifactId, workspaceContext).then((next) => {
-      if (cancelled) return;
+      if (cancelled || !current()) return;
       setDetail(next);
       setLoading(false);
     });
@@ -2186,12 +2195,12 @@ export function LiveArtifactViewer({
       liveArtifact.artifactId,
       workspaceContext,
     ).then((next) => {
-      if (!cancelled) setRefreshHistory(next);
+      if (!cancelled && current()) setRefreshHistory(next);
     });
     return () => {
       cancelled = true;
     };
-  }, [projectId, liveArtifact.artifactId, liveArtifact.updatedAt, workspaceContext]);
+  }, [projectId, liveArtifact.artifactId, liveArtifact.updatedAt, workspaceContext, authority]);
 
   const previewUrl = useMemo(
     () => appendResourceQuery(
@@ -2219,6 +2228,7 @@ export function LiveArtifactViewer({
   }, [mode, previewUrl, liveArtifact.artifactId, projectId]);
 
   async function handleRefresh() {
+    if (viewerOnly) return;
     if (refreshing) return;
     setRefreshing(true);
     setRefreshError(null);
@@ -2230,12 +2240,13 @@ export function LiveArtifactViewer({
         liveArtifact.artifactId,
         workspaceContext,
       );
+      if (!current()) return;
       setDetail(result.artifact);
       void fetchLiveArtifactRefreshes(
         projectId,
         liveArtifact.artifactId,
         workspaceContext,
-      ).then(setRefreshHistory);
+      ).then((next) => { if (current()) setRefreshHistory(next); });
       setReloadKey((n) => n + 1);
       setRefreshEvents((prev) =>
         appendRefreshEvent(prev, {
@@ -2250,11 +2261,12 @@ export function LiveArtifactViewer({
       }
       await onRefreshArtifacts?.();
     } catch (error) {
+      if (!current()) return;
       const message = refreshErrorMessage(error, t);
       setRefreshError(message);
       setRefreshEvents((prev) => appendRefreshEvent(prev, { phase: 'failed', error: message }));
     } finally {
-      setRefreshing(false);
+      if (current()) setRefreshing(false);
     }
   }
 
@@ -2312,6 +2324,9 @@ export function LiveArtifactViewer({
 
   return (
     <div className={`viewer html-viewer live-artifact-viewer${inTabPresent ? ' is-tab-present' : ''}`}>
+      {editing && detail && !viewerOnly && <StudioLiveArtifactEditor projectId={projectId} artifact={detail} onClose={() => setEditing(false)} onSaved={(artifact) => {
+        setDetail(artifact); setEditing(false); setReloadKey((n) => n + 1); void onRefreshArtifacts?.();
+      }} onDeleted={() => { setEditing(false); setDetail(null); void onRefreshArtifacts?.(); }} />}
       {((node: ReactNode) => (
         chromeActionsHost ? createPortal(node, chromeActionsHost) : node
       ))(
@@ -2448,13 +2463,14 @@ export function LiveArtifactViewer({
               {t('fileViewer.open')}
             </a>
           </div>
+          {!studio.hostServices && !viewerOnly && detail && <button type="button" className="viewer-action" onClick={() => setEditing(true)}>{t('common.edit')}</button>}
           <span className="viewer-divider" aria-hidden />
           <button
             type="button"
             className="viewer-action primary"
             data-running={isRunning ? 'true' : 'false'}
             onClick={() => void handleRefresh()}
-            disabled={isRunning}
+            disabled={isRunning || viewerOnly}
             aria-busy={isRunning}
             aria-label={isRunning ? t('liveArtifact.refresh.running') : t('liveArtifact.refresh.button')}
             title={
@@ -2693,6 +2709,7 @@ function liveArtifactMetadataPayload(liveArtifact: LiveArtifact): unknown {
       createdAt: liveArtifact.createdAt,
       updatedAt: liveArtifact.updatedAt,
       lastRefreshedAt: liveArtifact.lastRefreshedAt,
+      studioRevision: liveArtifact.studioRevision,
     },
     document: liveArtifact.document
       ? {
@@ -2710,6 +2727,7 @@ function liveArtifactMetadataPayload(liveArtifact: LiveArtifact): unknown {
 function liveArtifactProvenancePayload(liveArtifact: LiveArtifact): unknown {
   return {
     documentSource: liveArtifact.document?.sourceJson ?? null,
+    acceptedDocument: liveArtifact.studioProvenance ?? null,
   };
 }
 
@@ -3025,7 +3043,7 @@ export function LiveArtifactRefreshHistoryPanel({
         <header className="live-artifact-refresh-section-header">
           <h4>{t('liveArtifact.refresh.persistedTitle')}</h4>
           <span className="live-artifact-refresh-hint">
-            {t('liveArtifact.refresh.persistedHint')}
+            {t(liveArtifact?.studioRevision === undefined ? 'liveArtifact.refresh.persistedHint' : 'studio.liveArtifact.historyHint')}
           </span>
         </header>
         {reversedPersistedEvents.length === 0 ? (
@@ -3131,6 +3149,16 @@ export function LiveArtifactRefreshHistoryPanel({
           </ol>
         )}
       </section>
+
+      {liveArtifact?.studioProvenance ? (
+        <section className="live-artifact-refresh-section" data-testid="studio-live-artifact-provenance">
+          <h4>{t('plugins.availableDetails.provenance')}</h4>
+          <p>{liveArtifact.studioProvenance.origin === 'project_file'
+            ? t('studio.liveArtifact.originProject', { path: liveArtifact.studioProvenance.source?.path ?? '' })
+            : t(liveArtifact.studioProvenance.origin === 'agent' ? 'studio.liveArtifact.originAgent' : 'studio.liveArtifact.originUser')}</p>
+          <time dateTime={liveArtifact.studioProvenance.updatedAt}>{formatAbsoluteDateTime(liveArtifact.studioProvenance.updatedAt)}</time>
+        </section>
+      ) : null}
 
       {documentSource ? (
         <section className="live-artifact-refresh-section">

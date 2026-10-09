@@ -2,9 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { captureStudioSkill, readStudioSkillPackages, stageStudioSkillPackages } from '../../src/services/studio-skill-packages.js';
+import { buildStudioSkillPackage, captureStudioSkill, readStudioSkillPackages, stageStudioSkillPackages } from '../../src/services/studio-skill-packages.js';
 import { probePersonalSandbox } from '../../src/services/personal-sandbox.js';
-import { createStudioSkillScriptRunner } from '../../src/services/studio-skill-scripts.js';
+import { createStudioSkillScriptRunner, studioSkillScriptDirectory } from '../../src/services/studio-skill-scripts.js';
+import { captureStudioPluginSkillContext } from '../../src/plugins/studio-skill-context.js';
+import { captureStudioPluginResources } from '../../src/plugins/studio-resources.js';
+import type { InstalledPluginRecord } from '@open-design/contracts';
 
 const BWRAP = '/usr/bin/bwrap';
 const usable = probePersonalSandbox(BWRAP, tmpdir());
@@ -59,6 +62,39 @@ describe.skipIf(!usable)('company skill scripts run in the offline personal sand
     controller.abort(new Error('canceled'));
     await expect(pending).rejects.toThrow();
   });
+  it('resolves OD_SKILL_DIR at the embedded catalog skill document inside a plugin carrier', async () => {
+    const { cwd, packages } = setup();
+    const skill = captureStudioPluginSkillContext({ id: 'scripted', name: 'Scripted', source: 'built-in',
+      body: 'Run scripts/render.sh', package: packages[0]! });
+    const captured = captureStudioPluginResources({ id: 'plugin', version: '1.0.0', manifest: { name: 'plugin', version: '1.0.0' } } as InstalledPluginRecord, skill.files);
+    const pluginPackages = [captured.package!];
+    const runHome = path.join(root, 'embedded-run'); fs.mkdirSync(runHome);
+    const skillRoot = stageStudioSkillPackages(runHome, pluginPackages)!;
+    const run = createStudioSkillScriptRunner({ sandbox: { bwrap: BWRAP, readOnlyPaths: [] }, packages: pluginPackages, skillRoot, runHome, cwd });
+    const script = pluginPackages[0]!.files.find((file) => file.path.endsWith('/scripts/render.sh'))!;
+    const result = await run({ skillId: pluginPackages[0]!.id, path: script.path, args: ['embedded.txt'], signal: new AbortController().signal });
+    expect(result).toMatchObject({ exitCode: 0, timedOut: false });
+    expect(result.stdout).toContain('dir=$OD_SKILL_DIR');
+    expect(fs.readFileSync(path.join(cwd, 'embedded.txt'), 'utf8')).toBe('CAPTURED_DATA');
+    for (const marker of ['SECRET_VISIBLE', 'SKILL_WRITABLE', 'NETWORK_OPEN', 'DNS_OPEN', root]) expect(result.stdout).not.toContain(marker);
+  });
+});
+
+it('uses the nearest captured SKILL.md as a script root, preserving ordinary package roots', () => {
+  const resource = buildStudioSkillPackage('plugin', ['SKILL.md', 'opendesign-context/skill-fixture/SKILL.md',
+    'opendesign-context/skill-fixture/scripts/nested/run.py', 'scripts/run.py'].map((file) => ({ path: file, bytes: Buffer.from('captured'), executable: false })));
+  expect(studioSkillScriptDirectory(resource, 'scripts/run.py')).toBe('');
+  expect(studioSkillScriptDirectory(resource, 'opendesign-context/skill-fixture/scripts/nested/run.py')).toBe('opendesign-context/skill-fixture');
+  expect(studioSkillScriptDirectory(resource, 'opendesign-context/not-a-skill/scripts/run.py')).toBe('');
+});
+
+it('refuses embedded skill documents before spawning even if their captured mode is executable', async () => {
+  const resource = buildStudioSkillPackage('plugin', ['SKILL.md', 'opendesign-context/skill-fixture/SKILL.md']
+    .map((file) => ({ path: file, bytes: Buffer.from('document'), executable: true })));
+  const run = createStudioSkillScriptRunner({ sandbox: { bwrap: BWRAP, readOnlyPaths: [] }, packages: [resource],
+    skillRoot: root, runHome: root, cwd: root });
+  for (const file of resource.files) await expect(run({ skillId: resource.id, path: file.path, args: [], signal: new AbortController().signal }))
+    .rejects.toThrow('skill script refused');
 });
 
 it('refuses unknown skills, SKILL.md, non-script resources and oversized arguments before spawning', async () => {

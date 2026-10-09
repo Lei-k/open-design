@@ -174,7 +174,7 @@ it('keeps a memory update bound to its targetRef and refuses a different embedde
   expect(await body('entry_b')).not.toContain('BOUND_MARKER');
 });
 
-it('refuses connector context, foreign projects, host-shaped fields and account automation templates', async () => {
+it('refuses connector context, foreign projects, host-shaped fields and malformed account templates', async () => {
   const connector = await ingest(a, { sourceKind: 'connector' });
   expect([connector.status, connector.json.error.code]).toEqual([403, 'MULTIUSER_CAPABILITY_UNAVAILABLE']);
   expect((await ingest(a, { connectorId: 'slack' })).status).toBe(403);
@@ -186,7 +186,7 @@ it('refuses connector context, foreign projects, host-shaped fields and account 
   expect((await ingest(a, { projectId: randomUUID() })).status).toBe(404);
   const template = await post(a, '/api/automation-proposals', { title: 'x', summary: 'y', targetKind: 'automation-template', action: 'create',
     patch: { format: 'json', after: '{}' } });
-  expect([template.status, template.json.error.code]).toEqual([403, 'MULTIUSER_CAPABILITY_UNAVAILABLE']);
+  expect([template.status, template.json.error.code]).toEqual([400, 'BAD_REQUEST']);
   expect((await post(a, '/api/automation-proposals', { id: 'chosen', title: 'x', summary: 'y', targetKind: 'skill', action: 'create',
     patch: { format: 'markdown', after: '# x' } })).status).toBe(400);
   expect((await post(a, '/api/automation-proposals', { title: 'x', summary: 'y', targetKind: 'skill', action: 'create', status: 'applied',

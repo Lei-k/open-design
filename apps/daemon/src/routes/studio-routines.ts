@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
-import { automationTemplateRoutinePrompt, type CreateRoutineRequest, type Routine, type RoutineRun, type RoutineSchedule, type RoutineProjectTarget, type UpdateRoutineRequest } from '@open-design/contracts';
+import { automationTemplateRoutinePrompt, studioRoutineAgentId, studioRoutineExecutionSource, type StudioExecutionSource,
+  type CreateRoutineRequest, type Routine, type RoutineRun, type RoutineSchedule, type RoutineProjectTarget, type UpdateRoutineRequest } from '@open-design/contracts';
 import { getProject, insertConversation, insertProject } from '../db.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { multiUserStreamAllowed } from '../http/multiuser-stream.js';
@@ -11,13 +12,15 @@ import type { InternalMultiUserResult } from '../http/multiuser-internal.js';
 import { RoutineService, nextRunAtForSchedule, validateSchedule, validateTarget, type RoutineRunCompletion } from '../routines.js';
 import { AuthStore } from '../storage/auth-store.js';
 import { ProjectOwnershipStore } from '../storage/project-ownership.js';
+import { migrateStudioRoutines } from '../storage/studio-routines.js';
+import { StudioAutomationTemplates } from '../storage/studio-automation-templates.js';
 import { isSafeId, projectDir } from '../projects.js';
 import type { AuthActor } from '../services/auth-service.js';
 import { AutomationRefusal, studioRunnableAutomationTemplate, type StudioAutomations } from './studio-automations.js';
 
 const ROUTINE_LIMIT = 20;
 const POLL_MS = 1_000;
-type Source = 'personal_subscription' | 'company_pool';
+type Source = StudioExecutionSource['source'];
 interface RoutineRow {
   id: string; owner_account_id: string; name: string; prompt: string; schedule_json: string; target_json: string;
   skill_ids_json: string; execution_source: Source; enabled: number; created_at: number; updated_at: number; template_id: string | null;
@@ -52,28 +55,8 @@ export function registerStudioRoutineRoutes(app: Express, input: {
   const now = input.clock ?? Date.now;
   const auth = AuthStore.open({ dataRoot: input.dataRoot });
   const ownership = new ProjectOwnershipStore(db);
-  db.exec(`CREATE TABLE IF NOT EXISTS studio_routines (
-      id TEXT PRIMARY KEY, owner_account_id TEXT NOT NULL, name TEXT NOT NULL, prompt TEXT NOT NULL,
-      schedule_json TEXT NOT NULL, target_json TEXT NOT NULL, skill_ids_json TEXT NOT NULL DEFAULT '[]',
-      execution_source TEXT NOT NULL CHECK(execution_source IN ('personal_subscription','company_pool')),
-      enabled INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS studio_routines_owner ON studio_routines(owner_account_id);
-    CREATE TABLE IF NOT EXISTS studio_routine_runs (
-      id TEXT PRIMARY KEY, routine_id TEXT NOT NULL REFERENCES studio_routines(id) ON DELETE CASCADE,
-      owner_account_id TEXT NOT NULL, trigger TEXT NOT NULL, status TEXT NOT NULL, project_id TEXT NOT NULL,
-      conversation_id TEXT NOT NULL, agent_run_id TEXT NOT NULL, started_at INTEGER NOT NULL, completed_at INTEGER,
-      summary TEXT, error TEXT, error_code TEXT
-    );
-    CREATE INDEX IF NOT EXISTS studio_routine_runs_routine ON studio_routine_runs(routine_id, started_at);
-    CREATE TABLE IF NOT EXISTS studio_routine_claims (
-      routine_id TEXT NOT NULL REFERENCES studio_routines(id) ON DELETE CASCADE, slot_at INTEGER NOT NULL,
-      PRIMARY KEY (routine_id, slot_at)
-    );`);
-  // Additive (#64): the bundled template a routine was created from, re-checked at dispatch.
-  if (!(db.prepare('PRAGMA table_info(studio_routines)').all() as Array<{ name: string }>).some((column) => column.name === 'template_id')) {
-    db.exec('ALTER TABLE studio_routines ADD COLUMN template_id TEXT');
-  }
+  const templates = new StudioAutomationTemplates(db);
+  migrateStudioRoutines(db);
 
   /** The owner may still run work: active, password set and in the Studio pilot. */
   const ownerUsable = (owner: string): AuthActor | null => {
@@ -97,7 +80,7 @@ export function registerStudioRoutineRoutes(app: Express, input: {
     const last = latestRun(found.id);
     const next = found.enabled ? service.nextRunAt(found.id) ?? nextRunAtForSchedule(schedule) : null;
     return { id: found.id, name: found.name, prompt: found.prompt, schedule, target: JSON.parse(found.target_json) as RoutineProjectTarget,
-      skillId: (JSON.parse(found.skill_ids_json) as string[])[0] ?? null, agentId: found.execution_source === 'company_pool' ? 'openai' : 'codex',
+      skillId: (JSON.parse(found.skill_ids_json) as string[])[0] ?? null, agentId: studioRoutineAgentId(found.execution_source),
       context: { skillIds: JSON.parse(found.skill_ids_json) as string[] }, enabled: found.enabled === 1,
       nextRunAt: next ? next.getTime() : null,
       lastRun: last ? { runId: last.id, status: last.status, trigger: last.trigger, startedAt: last.started_at,
@@ -170,19 +153,25 @@ export function registerStudioRoutineRoutes(app: Express, input: {
     const prepared = prepareTarget(owner, found, startedAt);
     let settle!: (completion: RoutineRunCompletion) => void;
     const completion = new Promise<RoutineRunCompletion>((resolve) => { settle = resolve; });
-    const allowed = () => Boolean(routineRow(found.id) && ownerUsable(owner) && ownership.isOwnedBy(prepared.projectId, owner));
+    const templateUsable = () => {
+      if (!found.template_id) return true;
+      try { studioRunnableAutomationTemplate(found.template_id, templates.list(owner)); return true; }
+      catch { return false; }
+    };
+    const allowed = () => Boolean(routineRow(found.id) && ownerUsable(owner) && ownership.isOwnedBy(prepared.projectId, owner) && templateUsable());
     return {
       projectId: prepared.projectId, conversationId: prepared.conversationId, agentRunId: '', completion,
       discardUnstarted: () => removeTarget(prepared),
       discard: () => settle({ status: 'canceled', error: 'routine run was not started' }),
       start: () => { void (async () => {
         const actor = ownerUsable(owner);
-        if (!actor || !allowed()) return settle({ status: 'failed', error: 'routine owner cannot run work', errorCode: 'MULTIUSER_PERSONAL_UNAVAILABLE' });
-        // A template routine runs only while its bundled template is still runnable for Web accounts.
+        if (!actor) return settle({ status: 'failed', error: 'routine owner cannot run work', errorCode: 'MULTIUSER_PERSONAL_UNAVAILABLE' });
+        // A template routine runs only while its bundled or private template is still runnable for this owner.
         if (found.template_id) {
-          try { studioRunnableAutomationTemplate(found.template_id); }
+          try { studioRunnableAutomationTemplate(found.template_id, templates.list(owner)); }
           catch { return settle({ status: 'failed', error: 'routine template is not available', errorCode: 'MULTIUSER_CAPABILITY_UNAVAILABLE' }); }
         }
+        if (!allowed()) return settle({ status: 'failed', error: 'routine authority changed', errorCode: 'MULTIUSER_PERSONAL_UNAVAILABLE' });
         const admitted = await input.runs.admitInternal(actor, { projectId: prepared.projectId, conversationId: prepared.conversationId,
           executionSource: found.execution_source, clientRequestId: `routine-${runId}`,
           skillIds: JSON.parse(found.skill_ids_json) as string[], message: found.prompt }, allowed,
@@ -211,16 +200,16 @@ export function registerStudioRoutineRoutes(app: Express, input: {
     const record = body as Record<string, unknown>;
     if (Object.keys(record).some((key) => !['name', 'prompt', 'schedule', 'target', 'skillId', 'agentId', 'context', 'enabled', 'templateId'].includes(key)))
       throw new RoutineRefusal(400, 'unsupported routine field');
-    // A bundled template is chosen once, at creation; it supplies the default name and prompt.
+    // A readable template is chosen once, at creation; it supplies the captured default name and prompt.
     let templateId: string | null = existing?.template_id ?? null;
     if (body.templateId !== undefined && body.templateId !== null) {
       if (existing && body.templateId !== existing.template_id) throw new RoutineRefusal(400, 'a routine keeps the template it was created from');
       let template;
-      try { template = studioRunnableAutomationTemplate(body.templateId); }
+      try { template = studioRunnableAutomationTemplate(body.templateId, templates.list(owner)); }
       catch (error) { throw new RoutineRefusal((error as { status?: number }).status === 403 ? 403 : 404, 'automation template not available'); }
       templateId = template.id;
       if (!existing) {
-        if (body.name === undefined) body = { ...body, name: template.title };
+        if (body.name === undefined) body = { ...body, name: template.title.slice(0, 100) };
         if (body.prompt === undefined) body = { ...body, prompt: automationTemplateRoutinePrompt(template) };
       }
     }
@@ -232,7 +221,10 @@ export function registerStudioRoutineRoutes(app: Express, input: {
     try { validateSchedule(schedule); validateTarget(target); } catch (error) { throw new RoutineRefusal(400, error instanceof Error ? error.message : 'invalid schedule'); }
     if (Object.keys(target).some((key) => !['mode', 'projectId'].includes(key))
       || target.mode === 'reuse' && (!isSafeId(target.projectId) || !ownership.isOwnedBy(target.projectId, owner))) throw new RoutineRefusal(404, 'resource not found');
-    if (body.agentId !== undefined && body.agentId !== null && body.agentId !== 'codex' && body.agentId !== 'openai') throw new RoutineRefusal(403, 'routines run on the personal Codex subscription or the company pool');
+    const selectedSource = studioRoutineExecutionSource(body.agentId);
+    if (body.agentId !== undefined && body.agentId !== null && selectedSource === null) {
+      throw new RoutineRefusal(403, 'routines require personal Codex, the company OpenAI pool or the account\'s own OpenAI key');
+    }
     const context = (body.context ?? {}) as Record<string, unknown>;
     const empty = (value: unknown) => value === undefined || value === null || Array.isArray(value) && value.length === 0;
     if (Object.keys(context).some((key) => !['skillIds', 'pluginIds', 'mcpServerIds', 'connectorIds', 'workspaceScope'].includes(key))
@@ -244,7 +236,7 @@ export function registerStudioRoutineRoutes(app: Express, input: {
     const skillIds = Array.isArray(listed) ? [...new Set([...(body.skillId ? [body.skillId] : []), ...listed])] : listed;
     if (!Array.isArray(skillIds) || skillIds.length > 12 || skillIds.some((id) => typeof id !== 'string' || !id || id.length > 256)) throw new RoutineRefusal(400, 'invalid skills');
     if (body.enabled !== undefined && typeof body.enabled !== 'boolean') throw new RoutineRefusal(400, 'invalid enabled flag');
-    const source: Source = body.agentId === 'openai' ? 'company_pool' : body.agentId === 'codex' ? 'personal_subscription' : existing?.execution_source ?? 'personal_subscription';
+    const source: Source = selectedSource ?? existing?.execution_source ?? 'personal_subscription';
     return { name: body.name?.trim() ?? existing!.name, prompt: body.prompt ?? existing!.prompt, schedule, target, skillIds, source,
       enabled: body.enabled ?? (existing ? existing.enabled === 1 : true), templateId };
   };

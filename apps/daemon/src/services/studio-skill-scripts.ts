@@ -20,6 +20,21 @@ function interpreterFor(file: string): readonly string[] | null {
   return null;
 }
 
+/** Embedded catalog skills keep their own SKILL.md root. Their scripts use
+ * OD_SKILL_DIR relative to that document, rather than the plugin carrier's
+ * generated index. All candidates must already exist in the captured package.
+ */
+export function studioSkillScriptDirectory(resource: StudioSkillPackage, file: string): string {
+  const names = new Set(resource.files.map((entry) => entry.path));
+  const parts = file.split('/').slice(0, -1);
+  while (parts.length) {
+    const relative = parts.join('/');
+    if (names.has(`${relative}/SKILL.md`)) return relative;
+    parts.pop();
+  }
+  return '';
+}
+
 /** Company pool scripts run the captured bytes of a selected package inside the
  * personal bubblewrap boundary with no network: only the project cwd and a
  * fresh run home are writable, the staged package is read-only, and the
@@ -34,12 +49,13 @@ export function createStudioSkillScriptRunner(input: {
   return async ({ skillId, path: file, args, signal }) => {
     const resource = input.packages.find((item) => item.id === skillId);
     const entry = resource?.files.find((item) => item.path === file);
-    if (!resource || !entry || file === 'SKILL.md') throw new Error('skill script refused');
+    if (!resource || !entry || file === 'SKILL.md' || file.endsWith('/SKILL.md')) throw new Error('skill script refused');
     if (args.length > MAX_ARGS || args.some((arg) => typeof arg !== 'string' || arg.length > ARG_LIMIT || arg.includes('\0'))) throw new Error('skill script arguments refused');
     const interpreter = entry.executable ? [] : interpreterFor(file);
     if (!interpreter) throw new Error('skill script is not executable');
-    const directory = path.join(input.skillRoot, resource.key);
-    const script = path.join(directory, file);
+    const packageDirectory = path.join(input.skillRoot, resource.key);
+    const directory = path.join(packageDirectory, studioSkillScriptDirectory(resource, file));
+    const script = path.join(packageDirectory, file);
     fs.mkdirSync(temp, { recursive: true, mode: 0o700 });
     const [bin, ...argv] = sandboxedCommand({ ...input.sandbox, readOnlyPaths: [...input.sandbox.readOnlyPaths, runtime] },
       { codexHome: home, home, temp, cwd: input.cwd, skillPackages: input.skillRoot, network: false },

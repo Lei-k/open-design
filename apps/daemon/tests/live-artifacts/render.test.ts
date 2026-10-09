@@ -92,6 +92,21 @@ describe('escapeHtmlTemplateValue', () => {
 });
 
 describe('renderHtmlTemplateV1', () => {
+  it('stops expansion at a UTF-8 byte budget before resolving later bindings', () => {
+    let laterReads = 0;
+    const data = { first: '字'.repeat(8), get later() { laterReads++; return 'never'; } };
+    expect(() => renderHtmlTemplateV1({ templateHtml: '{{data.first}}{{data.later}}', dataJson: data,
+      maxRenderedBytes: 20 })).toThrow(/render.*large/i);
+    expect(laterReads).toBe(0);
+  });
+
+  it('charges escaped values, markup and repeat iterations to one shared budget', () => {
+    const input = { templateHtml: '<p data-od-repeat="item in data.items">{{item}}</p>!', dataJson: { items: ['&', '字'] } };
+    const expected = '<p>&amp;</p><p>字</p>!';
+    expect(renderHtmlTemplateV1({ ...input, maxRenderedBytes: Buffer.byteLength(expected) }).html).toBe(expected);
+    expect(() => renderHtmlTemplateV1({ ...input, maxRenderedBytes: Buffer.byteLength(expected) - 1 })).toThrow(/render.*large/i);
+  });
+
   it('substitutes a data binding with the escaped value from dataJson', () => {
     // Happy path: a single {{ data.name }} binding resolves to the
     // corresponding key and the surrounding markup is preserved verbatim.

@@ -1,7 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import type Database from 'better-sqlite3';
 import type { PersistedAgentEvent } from '@open-design/contracts';
-import { MAX_ARTIFACT_FOCUS_SHOW, MAX_NEXT_STEP_SUGGESTIONS } from '@open-design/contracts';
+import { MAX_ARTIFACT_FOCUS_SHOW, MAX_NEXT_STEP_SUGGESTIONS, PluginPipelineStageEventSchema } from '@open-design/contracts';
 import type { RunFinishedProps } from '@open-design/contracts/analytics';
 import {
   appendMessageAgentEvents,
@@ -538,6 +538,10 @@ export function daemonAgentPayloadToPersistedAgentEvent(data: unknown): Persiste
 function unboundedAgentPayloadToPersistedAgentEvent(data: unknown): PersistedAgentEvent | null {
   if (!isRecord(data)) return null;
   const type = data.type;
+  if (type === 'pipeline_stage') {
+    const stage = PluginPipelineStageEventSchema.safeParse(data.stage);
+    return stage.success ? stage.data : null;
+  }
   if (type === 'status' && typeof data.label === 'string') {
     // Filter out transient ACP status events that carry no user-visible content.
     // The web-side translateAgentEvent already normalizes these for live display,

@@ -45,7 +45,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'studio-memory-rules-suggest' | 'studio-memory-extract' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'catalog-share' | 'provider-key' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'studio-plugin-apply' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'studio-memory-rules-suggest' | 'studio-memory-extract' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'catalog-share' | 'provider-key' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'studio-plugin-apply' | 'studio-live-artifact' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -495,8 +495,8 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     const extras = bodyPolicy === 'automation-ingestion' || bodyPolicy === 'automation-proposal'
       ? { bodyPolicy, maxBodyBytes: 300 * 1024 } : bodyPolicy === 'automation-proposal-reject' ? { bodyPolicy, maxBodyBytes: 4 * 1024 }
         : bodyPolicy ? { bodyPolicy } : {};
-    const reason = key.includes('automation-templates') ? 'bundled automation templates, identical for every account; no host user templates'
-      : 'account-owned automation packets and proposals; apply writes only into the owner\'s memory, private skills and design documents';
+    const reason = key.includes('automation-templates') ? 'bundled and account-private automation templates; no host user templates'
+      : 'account-owned automation packets and proposals; apply writes only into the owner\'s memory, private skills, design documents and automation templates';
     return [...group('actor-scoped', reason, [key], { ...extras, rewriteTo: alias.slice(alias.indexOf(' ') + 1) }),
       ...group('actor-scoped', 'account automation alias; same cookie authority and closed fields', [alias], extras)];
   }),
@@ -624,16 +624,25 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'POST /api/tools/media/hyperframes/scaffold',
     'POST /api/tools/media/generate',
   ]),
-  ...blocked('live artifacts are refreshed by agents/connectors and are not actor-scoped', [
-    'GET /api/live-artifacts',
-    'OPTIONS /api/live-artifacts/:artifactId/preview',
-    'GET /api/live-artifacts/:artifactId/preview',
-    'GET /api/live-artifacts/:artifactId',
-    'GET /api/live-artifacts/:artifactId/refreshes',
-    'PATCH /api/live-artifacts/:artifactId',
-    'DELETE /api/live-artifacts/:artifactId',
-    'OPTIONS /api/live-artifacts/:artifactId/refresh',
-    'POST /api/live-artifacts/:artifactId/refresh',
+  ...group('preview-capability', 'cookie-free Live Artifact preview on the isolated hostname; short-lived session/account/project authority',
+    ['GET /api/multiuser/live-artifact-preview/:scope']),
+  // Session routes use the Studio database; host tool-token endpoints remain closed.
+  ...[
+    ['GET', ''], ['POST', ''], ['GET', '/:artifactId'], ['PATCH', '/:artifactId'], ['DELETE', '/:artifactId'],
+    ['GET', '/:artifactId/preview'], ['GET', '/:artifactId/refreshes'], ['POST', '/:artifactId/refresh'],
+  ].flatMap(([method, suffix]) => {
+    const policy = method === 'POST' && !suffix || method === 'PATCH'
+      ? { bodyPolicy: 'studio-live-artifact' as const, maxBodyBytes: 512 * 1024 }
+      : method === 'POST' ? { bodyPolicy: 'empty' as const } : {};
+    return [
+      ...group('actor-scoped', 'session-bound Live Artifact alias; handler checks current project membership and role',
+        [`${method} /api/live-artifacts${suffix}`], { ...policy, rewriteTo: `/api/multiuser/live-artifacts${suffix}` }),
+      ...group('actor-scoped', 'database-owned Live Artifact; handler requires active owner/member and edit role for mutation',
+        [`${method} /api/multiuser/live-artifacts${suffix}`], policy),
+    ];
+  }),
+  ...blocked('Live Artifact preflight is not exposed cross-origin', [
+    'OPTIONS /api/live-artifacts/:artifactId/preview', 'OPTIONS /api/live-artifacts/:artifactId/refresh',
   ]),
 
   // Host / credentials / providers -------------------------------------------------
@@ -892,6 +901,10 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
   ...([
     ['GET /api/plugins', 'the bundled catalog with Web availability; host installs and paths are never listed'],
     ['GET /api/plugins/:id', 'one bundled plugin with Web availability; non-bundled ids are missing'],
+    ['GET /api/plugins/:id/preview', 'captured bundled HTML source or a session-bound isolated preview; no host asset proxy'],
+    ['HEAD /api/plugins/:id/preview', 'bundled preview availability probe; no redirect or capability creation'],
+    ['GET /api/plugins/:id/example/:name', 'one captured bundled HTML example or a session-bound isolated preview'],
+    ['HEAD /api/plugins/:id/example/:name', 'bundled example availability probe; no capability creation'],
     ['POST /api/plugins/:id/apply', 'owner-only apply onto the actor\'s own project; unavailable plugins refused with typed reasons'],
     ['GET /api/applied-plugins/:snapshotId', 'a Studio apply snapshot for a member of its project; foreign and missing are one 404'],
     ['GET /api/marketplaces', 'read-only marketplace listings without host paths; fetch and changes stay refused'],
@@ -923,13 +936,14 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
   ...blocked(R_PLUGINS, [
     'GET /api/plugins/stats',
     'POST /api/plugins/:id/duplicate-project',
-    'GET /api/plugins/:id/preview',
-    'GET /api/plugins/:id/example/:name',
     'GET /api/plugins/:id/asset/*splat',
     'GET /api/applied-plugins/:snapshotId/canon',
     'GET /api/applied-plugins',
     'POST /api/applied-plugins/export',
     'POST /api/applied-plugins/prune',
+  ]),
+  ...group('preview-capability', 'cookie-free captured bundled plugin assets; issuing session/account and catalog revision rechecked on every read', [
+    'GET /api/multiuser/plugin-preview/:scope/*path',
   ]),
   ...blocked('external/marketing fetches; not needed by the minimum set', [
     'GET /api/community/discord',

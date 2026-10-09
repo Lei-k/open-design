@@ -5,7 +5,7 @@ import {
   deletePreviewComment, getConversation, getPreviewComment, isProjectCommentAnchorConversationId, listPreviewComments,
   reorderPreviewComment, updatePreviewCommentAnchor, updatePreviewCommentStatus, updateProject, upsertPreviewComment,
 } from '../db.js';
-import { ProjectAccessStore, projectRoleAtLeast, type ProjectAccessRole } from '../storage/project-access.js';
+import { ProjectAccessStore, projectRoleAtLeast, type ProjectAccessRole, type ProjectAccessOptions } from '../storage/project-access.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { sendApiError } from '../http/api-errors.js';
 
@@ -29,10 +29,10 @@ export function registerStudioCommentRoutes(app: Express, input: {
   db: Database.Database;
   /** Tell the other members' open project views to re-read comments. */
   onChanged?: (projectId: string) => void;
-}): void {
+} & ProjectAccessOptions): void {
   const { db } = input;
   const changed = (projectId: string) => { try { input.onChanged?.(projectId); } catch { /* best-effort signal */ } };
-  const access = new ProjectAccessStore(db);
+  const access = new ProjectAccessStore(db, input);
   const base = '/api/multiuser/projects/:id/conversations/:cid/comments';
   type Scope = { projectId: string; conversationId: string; actor: string; role: ProjectAccessRole };
   /** The readable project/conversation pair, or null after sending the shared refusal. */

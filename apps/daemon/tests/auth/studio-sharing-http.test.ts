@@ -3,7 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts,
-  startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
+  startMultiUserDaemon, login, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
 
 // S32 (#65): project sharing between accounts of one deployment — view,
 // comment and edit grants, session-stamped presence and comment authors,
@@ -41,6 +41,7 @@ const comment = (t: Target, user: Principal, note: string) => daemon.request({ m
 const conversation = async (t: Target, user: Principal) => {
   const made = await daemon.request({ method: 'POST', path: `/api/projects/${t.id}/conversations`, cookie: user.cookie, body: { title: `${user.username} thread` } });
   expect(made.status, made.text).toBe(200);
+  expect(made.json.conversation.studioCanWrite).toBe(true);
   return made.json.conversation.id as string;
 };
 const run = (t: Target, cid: string, user: Principal, delayMs = 0) => daemon.request({ method: 'POST', path: '/api/runs', cookie: user.cookie,
@@ -171,6 +172,12 @@ describe('project sharing between accounts', () => {
     expect((await rename(owner, t.cid)).status).toBe(200);
     const listed = await daemon.request({ path: `/api/projects/${t.id}/conversations`, cookie: commenter.cookie });
     expect(listed.json.conversations.map((c: { title: string }) => c.title).sort()).toEqual(['share-editor rename', 'share-owner rename']);
+    expect(listed.json.conversations.every((c: { studioCanWrite: boolean }) => c.studioCanWrite === false)).toBe(true);
+    for (const [user, writable] of [[owner, t.cid], [editor, theirs]] as const) {
+      const response = await daemon.request({ path: `/api/projects/${t.id}/conversations`, cookie: user.cookie });
+      expect(response.json.conversations.map((c: { id: string; studioCanWrite: boolean }) => [c.id, c.studioCanWrite])
+        .sort()).toEqual([[t.cid, writable === t.cid], [theirs, writable === theirs]].sort());
+    }
     expect((await daemon.request({ path: `/api/projects/${t.id}/conversations/${theirs}/messages`, cookie: commenter.cookie })).status).toBe(200);
     const runs = await daemon.request({ path: `/api/runs?projectId=${t.id}`, cookie: editor.cookie });
     expect(runs.json.runs.map((r: { id: string }) => r.id)).toEqual([started.json.run.id]);
@@ -195,6 +202,44 @@ describe('project sharing between accounts', () => {
     expect(left.json.present.map((m: { memberId: string }) => m.memberId)).toEqual([viewer.id]);
     expect((await daemon.request({ method: 'DELETE', path: `/api/multiuser/projects/${t.id}/shares/${viewer.id}`, cookie: owner.cookie })).status).toBe(200);
     expect((await daemon.request({ path: `/api/projects/${t.id}/presence`, cookie: owner.cookie })).json.present).toEqual([]);
+  });
+
+  it('signals committed shared messages without granting the reader private run access', async () => {
+    const t = await sharedProject([[viewer, 'view']]);
+    const signals: Array<Record<string, unknown>> = [];
+    let wire = '';
+    const stream = await new Promise<http.IncomingMessage>((resolve, reject) => {
+      const { port } = new URL(daemon.baseUrl);
+      const request = http.request({ host: '127.0.0.1', port: Number(port), path: `/api/projects/${t.id}/events`, headers: { cookie: viewer.cookie } }, (res) => {
+        expect(res.statusCode).toBe(200);
+        res.on('data', (chunk: Buffer) => {
+          wire += chunk.toString();
+          for (;;) {
+            const end = wire.indexOf('\n\n'); if (end < 0) break;
+            const frame = wire.slice(0, end); wire = wire.slice(end + 2);
+            const data = frame.split('\n').find((line) => line.startsWith('data:'))?.slice(5);
+            if (!data) continue;
+            const event = JSON.parse(data) as Record<string, unknown>;
+            if (event.type === 'chat-messages-changed') signals.push(event);
+          }
+        });
+        resolve(res);
+      });
+      request.on('error', reject); request.end();
+    });
+    try {
+      const started = await run(t, t.cid, owner);
+      expect(started.status, started.text).toBe(202);
+      await until(async () => signals.some((event) => event.conversationId === t.cid));
+      for (const event of signals) {
+        expect(Object.keys(event).sort()).toEqual(['at', 'conversationId', 'projectId', 'type']);
+        expect(event.projectId).toBe(t.id); expect(Number.isFinite(event.at)).toBe(true);
+      }
+      const messages = await daemon.request({ path: `/api/projects/${t.id}/conversations/${t.cid}/messages`, cookie: viewer.cookie });
+      expect(messages.status).toBe(200);
+      expect(messages.json.messages.some((message: { content: string }) => message.content.includes('share-owner turn'))).toBe(true);
+      expect((await daemon.request({ path: `/api/runs/${started.json.run.id}`, cookie: viewer.cookie })).status).toBe(404);
+    } finally { stream.destroy(); }
   });
 
   it('revokes at once: open event streams close, reads refuse, and the grantee\'s turns stop', async () => {
@@ -242,5 +287,40 @@ describe('project sharing between accounts', () => {
     expect(deleted.status, deleted.text).toBe(200);
     expect((await daemon.request({ path: `/api/projects/${t.id}`, cookie: editor.cookie })).status).toBe(404);
     expect((await daemon.request({ path: `/api/runs/${started.json.run.id}`, cookie: editor.cookie })).status).toBe(404);
+  });
+
+  it('suspends project grants and collaborators\' runs on owner deactivation, and restores grants on reactivation', async () => {
+    const t = await sharedProject([[viewer, 'view'], [editor, 'edit']]);
+    const cid = await conversation(t, editor);
+    const started = await run(t, cid, editor, 5_000);
+    expect(started.status, started.text).toBe(202);
+    const runId = started.json.run.id as string;
+    await until(async () => ['running', 'queued'].includes(await runStatus(runId, editor)));
+    const patch = (active: boolean) => daemon.request({ method: 'PATCH', path: `/api/auth/users/${owner.id}`, cookie: admin.cookie, body: { active } });
+    try {
+      expect((await patch(false)).status).toBe(200);
+      for (const user of [viewer, editor, admin]) {
+        for (const url of [`/api/projects/${t.id}`, `/api/projects/${t.id}/files`, `/api/projects/${t.id}/raw/index.html`,
+          `/api/projects/${t.id}/conversations/${cid}/messages`, `/api/multiuser/projects/${t.id}/access`,
+          `/api/projects/${t.id}/presence`, `/api/runs/${runId}`]) {
+          expect((await daemon.request({ path: url, cookie: user.cookie })).status, url).toBe(404);
+        }
+        expect(JSON.stringify((await daemon.request({ path: '/api/projects', cookie: user.cookie })).json)).not.toContain(t.id);
+        const runs = await daemon.request({ path: `/api/runs?projectId=${t.id}`, cookie: user.cookie });
+        expect(runs.json.runs).toEqual([]);
+        expect(runs.json.awaitingInputProjectIds).not.toContain(t.id);
+      }
+      expect((await run(t, cid, editor)).status).toBe(404);
+      expect((await daemon.request({ method: 'POST', path: `/api/projects/${t.id}/conversations`, cookie: editor.cookie,
+        body: { title: 'inactive owner' } })).status).toBe(404);
+    } finally {
+      expect((await patch(true)).status).toBe(200);
+      owner.cookie = await login(daemon, owner.username, owner.password);
+    }
+    await until(async () => (await runStatus(runId, editor)) === 'canceled');
+    const access = await daemon.request({ path: `/api/multiuser/projects/${t.id}/access`, cookie: editor.cookie });
+    expect(access.json.role).toBe('edit');
+    expect(access.json.members.map((member: { accountId: string }) => member.accountId).sort()).toEqual([owner.id, viewer.id, editor.id].sort());
+    expect((await daemon.request({ path: `/api/projects/${t.id}/files`, cookie: viewer.cookie })).status).toBe(200);
   });
 });

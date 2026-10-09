@@ -1,13 +1,32 @@
 import type { AutomationSourceKind, AutomationTemplate } from './automations.js';
+import type { StudioExecutionSource } from './studio-parity.js';
+
+/** Routine agent ids name exactly one source; dispatch never substitutes another. */
+export const STUDIO_ROUTINE_EXECUTION_SOURCES = {
+  codex: 'personal_subscription', openai: 'company_pool', 'openai-byok': 'personal_api_key',
+} as const satisfies Record<StudioExecutionSource['agentId'], StudioExecutionSource['source']>;
+
+export function studioRoutineExecutionSource(agentId: unknown): StudioExecutionSource['source'] | null {
+  return typeof agentId === 'string' && Object.hasOwn(STUDIO_ROUTINE_EXECUTION_SOURCES, agentId)
+    ? STUDIO_ROUTINE_EXECUTION_SOURCES[agentId as keyof typeof STUDIO_ROUTINE_EXECUTION_SOURCES] : null;
+}
+
+export function studioRoutineAgentId(source: StudioExecutionSource['source']): StudioExecutionSource['agentId'] {
+  const agent = (Object.keys(STUDIO_ROUTINE_EXECUTION_SOURCES) as StudioExecutionSource['agentId'][])
+    .find((id) => STUDIO_ROUTINE_EXECUTION_SOURCES[id] === source);
+  if (!agent) throw new Error('invalid Studio routine execution source');
+  return agent;
+}
 
 /**
  * Account-owned automation self-evolution for the shared Studio (#64).
  *
  * Source packets, ingestions and proposals are private to the Web account
  * that created them. Bundled automation templates are the same read for every
- * account; a routine created from one runs on that account's own routine and
+ * account; private templates are created, updated and deleted through reviewable
+ * proposals. A routine created from either runs on that account's own routine and
  * execution source. Applying a proposal writes only into the account's own
- * memory, private skills or design documents. Connector context is not
+ * memory, private skills, design documents or automation templates. Connector context is not
  * available to Web accounts, so connector-only templates and connector
  * sources are refused with `MULTIUSER_CAPABILITY_UNAVAILABLE`.
  */
@@ -15,7 +34,7 @@ import type { AutomationSourceKind, AutomationTemplate } from './automations.js'
 /** Source kinds a Web account may ingest; they are recorded as labels, never fetched. */
 export const STUDIO_AUTOMATION_SOURCE_KINDS = ['upload', 'url', 'repo', 'artifact', 'chat'] as const satisfies readonly AutomationSourceKind[];
 /** Proposal targets that apply into account-owned stores. */
-export const STUDIO_AUTOMATION_PROPOSAL_TARGETS = ['memory-node', 'skill', 'design-system'] as const;
+export const STUDIO_AUTOMATION_PROPOSAL_TARGETS = ['memory-node', 'skill', 'design-system', 'automation-template'] as const;
 export const STUDIO_AUTOMATION_PROPOSAL_ACTIONS = ['create', 'update', 'delete'] as const;
 
 /** Closed request fields (the gate refuses anything else before the handler). */
@@ -26,6 +45,8 @@ export const STUDIO_AUTOMATION_PROPOSAL_FIELDS = ['title', 'summary', 'targetKin
   'automationRunId', 'targetRef', 'patch', 'confidence', 'compressionReport', 'metadata', 'status'] as const;
 
 export const STUDIO_AUTOMATION_LIMITS = {
+  /** Private templates kept per account. */
+  templates: 100,
   /** Source packets kept per account. */
   packets: 500,
   /** Proposals kept per account (any status). */
@@ -42,8 +63,8 @@ export type StudioAutomationTemplateUnavailable = {
   requires: 'connectors';
 };
 
-/** A bundled template as listed to a Web account. */
-export type StudioAutomationTemplate = AutomationTemplate & { unavailable?: StudioAutomationTemplateUnavailable };
+/** A bundled or private template as listed to a Web account. */
+export type StudioAutomationTemplate = AutomationTemplate & { unavailable?: StudioAutomationTemplateUnavailable; studioOwned?: boolean };
 
 /**
  * A bundled template needs connectors when it can only read connector sources

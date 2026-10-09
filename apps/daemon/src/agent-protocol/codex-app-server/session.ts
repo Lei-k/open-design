@@ -83,6 +83,9 @@ export interface CodexAppServerSessionOptions {
   onPromptSendStart?: () => void;
   onPromptSendEnd?: () => void;
   onTurnComplete?: () => void;
+  /** Explicit daemon-owned tools only; approvals and arbitrary server requests remain refused. */
+  dynamicTools?: readonly { name: string; description: string; inputSchema: JsonObject }[];
+  onDynamicToolCall?: (name: string, args: JsonObject) => unknown;
 }
 
 export interface CodexAppServerSession {
@@ -181,6 +184,8 @@ export function attachCodexAppServerSession(
   let archiveTimer: ReturnType<typeof setTimeout> | undefined;
   const ownsThread = !resumeSessionId || opts.resumeSessionOwned === true;
   let patchStreaming = false;
+  let activeTurnId: string | null = null;
+  const toolCalls = new Set<string>();
 
   function write(frame: JsonObject, onWritten?: () => void): void {
     const stdin = child.stdin;
@@ -261,7 +266,9 @@ export function attachCodexAppServerSession(
     request(
       'turn/start',
       params,
-      () => {
+      (result) => {
+        const turn = isRecord(result.turn) ? result.turn : null;
+        if (typeof turn?.id === 'string') activeTurnId = turn.id;
         // `turn/start` resolves when the turn is accepted; completion arrives
         // as the `turn/completed` notification.
       },
@@ -274,6 +281,7 @@ export function attachCodexAppServerSession(
       cwd,
       sandbox: sandboxMode,
       approvalPolicy: APPROVAL_POLICY_NEVER,
+      ...(opts.dynamicTools && opts.onDynamicToolCall ? { dynamicTools: opts.dynamicTools } : {}),
       ...(patchStreaming ? { config: { 'features.apply_patch_streaming_events': true } } : {}),
     };
     const onThread = (result: JsonObject) => {
@@ -359,14 +367,37 @@ export function attachCodexAppServerSession(
       return;
     }
     if (typeof frame.method !== 'string') return;
-    if (id !== null) {
-      // A server-to-client REQUEST. Nothing in this build answers one — the
-      // thread runs with approvals disabled, so MCP elicitation and approval
+    const requestId = typeof frame.id === 'number' || typeof frame.id === 'string' ? frame.id : null;
+    if (requestId !== null) {
+      if (frame.method === 'item/tool/call' && opts.dynamicTools && opts.onDynamicToolCall) {
+        const params = isRecord(frame.params) ? frame.params : {};
+        const tool = opts.dynamicTools.find((item) => item.name === params.tool);
+        const callId = params.callId;
+        let success = false; let text = 'Dynamic tool refused';
+        if (tool && promptSent && !terminalReceived && !aborted && !fatalReported && params.threadId === threadId && typeof params.turnId === 'string'
+          && (activeTurnId === null || params.turnId === activeTurnId) && typeof callId === 'string' && callId.length > 0 && callId.length <= 160
+          && toolCalls.size < 128 && !toolCalls.has(callId) && isRecord(params.arguments)
+          && Buffer.byteLength(JSON.stringify(params.arguments)) <= 512 * 1024) {
+          toolCalls.add(callId);
+          try {
+            onAgentEvent({ type: 'tool_use', id: callId, name: tool.name, input: params.arguments });
+            const output = opts.onDynamicToolCall(tool.name, params.arguments);
+            text = JSON.stringify(output) ?? 'null';
+            if (Buffer.byteLength(text) > 2 * 1024 * 1024) throw new Error('tool result too large');
+            success = true;
+          } catch { text = 'Dynamic tool refused'; }
+          onAgentEvent({ type: 'tool_result', toolUseId: callId, isError: !success, content: text });
+        }
+        write({ jsonrpc: '2.0', id: requestId, result: { success, contentItems: [{ type: 'inputText', text }] } });
+        return;
+      }
+      // Other server-to-client requests stay refused. The thread runs with
+      // approvals disabled, so MCP elicitation and approval
       // prompts should never fire. Refusing explicitly keeps a future codex
       // that does send one from blocking the turn forever waiting on a reply.
       write({
         jsonrpc: '2.0',
-        id,
+        id: requestId,
         error: { code: -32601, message: `unsupported request: ${frame.method}` },
       });
       return;
@@ -380,6 +411,11 @@ export function attachCodexAppServerSession(
       if (startedId && !threadId) threadId = startedId;
       reportSessionHandle(startedId);
       return;
+    }
+    if (frame.method === 'turn/started') {
+      const params = isRecord(frame.params) ? frame.params : {};
+      const turn = isRecord(params.turn) ? params.turn : null;
+      if (params.threadId === threadId && typeof turn?.id === 'string') activeTurnId = turn.id;
     }
     if (frame.method === 'turn/completed' && terminalReceived) return;
     normalizer.handleNotification(frame.method, frame.params);
@@ -461,7 +497,7 @@ export function attachCodexAppServerSession(
         title: 'Open Design',
         version: opts.clientVersion ?? '0.0.0',
       },
-      capabilities: { experimentalApi: opts.manageThreadVisibility === true, requestAttestation: false },
+      capabilities: { experimentalApi: opts.manageThreadVisibility === true || Boolean(opts.dynamicTools && opts.onDynamicToolCall), requestAttestation: false },
     },
     (result) => {
       // Verified with the official 0.146.0 and 0.153.4 binaries: paginated

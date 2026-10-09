@@ -35,9 +35,9 @@ export function buildStudioSkillPackage(id: string, files: ReadonlyArray<{ path:
 
 /** Validate persisted packages before any path or allocation is used. There
  * is no live-catalog fallback when a captured revision is damaged. */
-export function readStudioSkillPackages(value: unknown): StudioSkillPackage[] {
+export function readStudioSkillPackages(value: unknown, maxPackages: 12 | 13 = 12): StudioSkillPackage[] {
   if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > 12) throw new Error('invalid skill snapshots');
+  if (!Array.isArray(value) || value.length > maxPackages) throw new Error('invalid skill snapshots');
   const packages: StudioSkillPackage[] = [];
   let total = 0;
   const ids = new Set<string>();

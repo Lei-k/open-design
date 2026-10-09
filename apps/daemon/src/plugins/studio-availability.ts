@@ -8,10 +8,9 @@
 // atom, capability and context item it declares runs in a Studio turn; nothing
 // is keyed by plugin id. Declarations that do not parse fail closed.
 //
-// Studio turns have no stage runner today (`pipelines: false`): a turn carries
-// the captured plugin block and SKILL.md, never the ordered stages. Any
-// non-empty pipeline is therefore its own `pipeline` reason, whatever its
-// atoms; applying it would silently drop the stages it declares.
+// Studio executes finite ordered stages on the turn's pinned provider (S42).
+// Devloops, non-abort failure policies and unrecognised stage fields stay
+// unavailable; they must never be silently flattened into ordinary stages.
 
 import type {
   InstalledPluginRecord,
@@ -20,7 +19,7 @@ import type {
   StudioPluginUnavailableReason,
   StudioWebPluginCapabilities,
 } from '@open-design/contracts';
-import { STUDIO_WEB_PLUGIN_CAPABILITIES } from '@open-design/contracts';
+import { isStudioPluginAssetReferences, isStudioPluginCraftReferences, isStudioPluginDesignSystemReference, parseStudioPluginSkillReferences, STUDIO_WEB_PLUGIN_CAPABILITIES } from '@open-design/contracts';
 import { resolveAppliedPipeline, type ScenarioRegistryEntry } from '@open-design/plugin-runtime';
 import { isKnownAtom } from './atoms.js';
 import { deriveAutoAtomSurfaces } from './atoms/auto-surfaces.js';
@@ -74,17 +73,19 @@ export function evaluateStudioPluginAvailability(
       const claudePlugins = list('claudePlugins'); const mcp = list('mcp'); const atoms = list('atoms');
       if (!skills || !assets || !craft || !claudePlugins || !mcp || !atoms
         || (context.designSystem !== undefined && !isRecord(context.designSystem))) add({ code: 'manifest', subject: 'context' });
-      for (const ref of skills ?? []) {
-        if (!isRecord(ref)) { add({ code: 'manifest', subject: 'context' }); continue; }
-        // Same rule as apply (`pickFirstLocalSkillPath`): a relative path is the plugin's own file.
-        const local = typeof ref.ref !== 'string' && typeof ref.path === 'string'
-          && (ref.path.startsWith('./') || ref.path.startsWith('../') || ref.path.includes('/'));
+      const skillReferences = parseStudioPluginSkillReferences(skills ?? []);
+      if (skills && !skillReferences) add({ code: 'manifest', subject: 'context.skills' });
+      for (const ref of skillReferences ?? []) {
+        const local = ref.kind === 'local';
         if (local ? !web.context.localSkills : !web.context.skillRefs) add({ code: 'context', subject: local ? 'local-skill' : 'skill-ref' });
       }
       if (assets?.length && !web.context.assets) add({ code: 'context', subject: 'assets' });
+      if (assets && !isStudioPluginAssetReferences(assets)) add({ code: 'manifest', subject: 'context.assets' });
       if (craft?.length && !web.context.craft) add({ code: 'context', subject: 'craft' });
+      if (craft && !isStudioPluginCraftReferences(craft)) add({ code: 'manifest', subject: 'context.craft' });
       if (claudePlugins?.length && !web.context.claudePlugins) add({ code: 'context', subject: 'claude-plugin' });
       if (context.designSystem !== undefined && !web.context.designSystem) add({ code: 'context', subject: 'design-system' });
+      if (context.designSystem !== undefined && !isStudioPluginDesignSystemReference(context.designSystem)) add({ code: 'manifest', subject: 'context.designSystem' });
       for (const server of mcp ?? []) {
         if (!isRecord(server) || typeof server.name !== 'string') add({ code: 'manifest', subject: 'context' });
         else if (!web.mcp) add({ code: 'mcp', subject: server.name });
@@ -132,8 +133,15 @@ export function evaluateStudioPluginAvailability(
       source: resolution.source,
     });
     if ((pipeline?.stages.length ?? 0) > 0 && !web.pipelines) add({ code: 'pipeline' });
+    if (pipeline && (pipeline.stages.length > 32 || new Set(pipeline.stages.map((stage) => stage.id)).size !== pipeline.stages.length
+      || Object.keys(pipeline).some((key) => key !== 'stages'))) add({ code: 'manifest', subject: 'pipeline' });
     for (const stage of pipeline?.stages ?? []) {
-      if ((stage.repeat || stage.until) && !web.pipelineDevloop) add({ code: 'pipeline-devloop', subject: stage.id });
+      if (!/^[\w.-]{1,128}$/.test(stage.id) || stage.atoms.length > 32
+        || (stage.onFailure !== undefined && stage.onFailure !== 'abort')
+        || Object.keys(stage).some((key) => !['id', 'atoms', 'repeat', 'until', 'onFailure'].includes(key))) {
+        add({ code: 'manifest', subject: 'pipeline' });
+      }
+      if ((stage.repeat || stage.until !== undefined) && !web.pipelineDevloop) add({ code: 'pipeline-devloop', subject: stage.id });
       for (const atom of stage.atoms ?? []) {
         if (!isKnownAtom(atom)) add({ code: 'unknown-atom', subject: atom });
         else if (!web.atoms.includes(atom)) add({ code: 'atom', subject: atom });

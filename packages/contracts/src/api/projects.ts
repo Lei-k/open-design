@@ -427,6 +427,8 @@ export interface Conversation {
   messageCount?: number;
   createdAt: number;
   updatedAt: number;
+  /** Studio only: server-computed transcript/run write access for the current actor. */
+  studioCanWrite?: boolean;
   totalDurationMs?: number;
   latestRun?: {
     status: ChatRunStatus;

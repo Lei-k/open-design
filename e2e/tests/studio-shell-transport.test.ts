@@ -111,6 +111,41 @@ it('opens only reviewed owner artifact reads with a usable preview lane', () => 
   }
 });
 
+it('opens bundled plugin preview aliases while keeping host asset proxies and capability URLs outside app transport', () => {
+  for (const prefix of ['/api/plugins', '/api/multiuser/catalog/plugins']) for (const suffix of ['/demo/preview', '/demo/example/sample']) {
+    for (const method of ['GET', 'HEAD']) {
+      const url = prefix + suffix;
+      expect(studioRequestAvailable(method, url, (lane) => lane === 'catalogs')).toBe(true);
+      expect(studioRequestAvailable(method, url, () => false)).toBe(false);
+      expect(matchMultiUserRoute(method, url).every(({ entry }) => entry.routeClass === 'actor-scoped')).toBe(true);
+    }
+  }
+  for (const path of ['/api/plugins/demo/asset/private.json', '/api/plugin-previews/demo.mp4', '/api/multiuser/plugin-preview/secret/index.html']) {
+    expect(studioRequestAvailable('GET', path, () => true)).toBe(false);
+  }
+});
+
+it('opens reviewed live artifact CRUD only with both files and preview, keeping host tools and preview capabilities closed', () => {
+  for (const prefix of ['/api/live-artifacts', '/api/multiuser/live-artifacts']) {
+    for (const [method, suffix] of [['GET', ''], ['POST', ''], ['GET', '/a'], ['PATCH', '/a'], ['DELETE', '/a'],
+      ['GET', '/a/preview'], ['GET', '/a/refreshes'], ['POST', '/a/refresh']] as const) {
+      const path = `${prefix}${suffix}`;
+      expect(studioRequestAvailable(method, path, (lane) => lane === 'files' || lane === 'preview'), path).toBe(true);
+      for (const oneLane of ['files', 'preview', 'generation']) {
+        expect(studioRequestAvailable(method, path, (lane) => lane === oneLane), `${method} ${path}: ${oneLane}`).toBe(false);
+      }
+      const matches = matchMultiUserRoute(method, path);
+      expect(matches.length, path).toBeGreaterThan(0);
+      expect(matches.every(({ entry }) => entry.routeClass === 'actor-scoped'), path).toBe(true);
+    }
+  }
+  for (const [method, path] of [['POST', '/api/tools/live-artifacts/create'], ['GET', '/api/tools/live-artifacts/list'],
+    ['GET', '/api/multiuser/live-artifact-preview/opaque'], ['GET', '/api/live-artifacts/a/refresh'],
+    ['POST', '/api/live-artifacts/a/preview'], ['PUT', '/api/live-artifacts/a'], ['GET', '/api/live-artifacts/a/private']]) {
+    expect(studioRequestAvailable(method!, path!, () => true), `${method} ${path}`).toBe(false);
+  }
+});
+
 it('opens only reviewed text skill operations with a usable catalog lane', () => {
   for (const prefix of ['/api/skills', '/api/multiuser/catalog/skills']) {
     for (const [method, suffix] of [['GET', ''], ['GET', '/s'], ['GET', '/s/files'],

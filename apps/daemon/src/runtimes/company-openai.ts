@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { listCompanyProjectFiles, readCompanyProjectFile, writeCompanyProjectBytes, writeCompanyProjectFile } from '../services/company-project-files.js';
 import type { StudioSkillPackage } from '../services/studio-skill-packages.js';
 import type { StudioSkillScriptRunner } from '../services/studio-skill-scripts.js';
+import { STUDIO_LIVE_ARTIFACT_TOOLS, type StudioLiveArtifactTools } from '../live-artifacts/studio-tools.js';
 import { STUDIO_MEDIA_TOOLS, STUDIO_MEDIA_TOOL_NAMES, StudioMediaError, emptyStudioMediaUsage, runStudioMediaTool, type StudioMediaUsage } from './studio-media.js';
 
 type Json = Record<string, unknown>;
@@ -9,6 +10,9 @@ const RESPONSE_BYTES_LIMIT = 4 * 1024 * 1024;
 const FILE_BYTES_LIMIT = 1024 * 1024;
 const MAX_REQUESTS = 12;
 const tools = [
+  { name: 'update_plan', description: 'Record the complete current task plan before substantial work and update it as work progresses. At most 32 tasks, each with at most 200 characters of content. Use pending, in_progress or completed; mark a task completed only after its work is done. Keep blockers in the plan.',
+    properties: { todos: { type: 'array', items: { type: 'object', properties: { content: { type: 'string' }, status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] } },
+      required: ['content', 'status'], additionalProperties: false } } }, required: ['todos'] },
   { name: 'list_skill_files', description: 'List immutable resources of the skills selected for this conversation. Each result identifies the skill and its relative resource paths.', properties: {}, required: [] },
   { name: 'read_skill_file', description: 'Read a UTF-8 resource from a selected skill’s captured revision. Resolve relative skill references here.',
     properties: { skillId: { type: 'string' }, path: { type: 'string' } }, required: ['skillId', 'path'] },
@@ -23,6 +27,8 @@ const tools = [
 ].map(({ properties, required, ...tool }) => ({ ...tool, type: 'function', strict: true,
   parameters: { type: 'object', properties, required, additionalProperties: false } }));
 const mediaTools = STUDIO_MEDIA_TOOLS.map(({ properties, required, ...tool }) => ({ ...tool, type: 'function', strict: true,
+  parameters: { type: 'object', properties, required: [...required], additionalProperties: false } }));
+const artifactTools = STUDIO_LIVE_ARTIFACT_TOOLS.map(({ properties, required, ...tool }) => ({ ...tool, type: 'function', strict: true,
   parameters: { type: 'object', properties, required: [...required], additionalProperties: false } }));
 
 export interface CompanyOpenAITurnResult { ok: boolean; input: Json[]; files: string[]; usage: { inputTokens: number; outputTokens: number }; media: StudioMediaUsage }
@@ -63,6 +69,7 @@ export async function runCompanyOpenAITurn(input: {
   fetch?: typeof fetch;
   /** Image, speech and video functions on the same key and bill as the turn (#63). */
   media?: boolean;
+  liveArtifacts?: StudioLiveArtifactTools;
 }): Promise<CompanyOpenAITurnResult> {
   const signal = AbortSignal.any([input.worker.abort.signal, AbortSignal.timeout(10 * 60_000)]);
   const check = () => { signal.throwIfAborted(); if (!input.authorized()) throw new Error('company_authority_changed'); };
@@ -79,7 +86,8 @@ export async function runCompanyOpenAITurn(input: {
       method: 'POST', signal, redirect: 'error', headers: { authorization: `Bearer ${input.apiKey}`, 'content-type': 'application/json' },
       body: JSON.stringify({ model: input.model, store: false, stream: true, input: history,
         include: ['reasoning.encrypted_content'], max_output_tokens: 8192, parallel_tool_calls: false,
-        tools: [...tools.filter((tool) => tool.name !== 'run_skill_script' || input.runSkillScript), ...(input.media ? mediaTools : [])] }),
+        tools: [...tools.filter((tool) => tool.name !== 'run_skill_script' || input.runSkillScript), ...(input.media ? mediaTools : []),
+          ...(input.liveArtifacts ? artifactTools : [])] }),
     });
     check();
     if (!response.ok || !response.body || !response.headers.get('content-type')?.includes('text/event-stream')) {
@@ -121,14 +129,30 @@ export async function runCompanyOpenAITurn(input: {
     for (const call of calls) {
       check();
       if (typeof call.call_id !== 'string' || typeof call.name !== 'string' || typeof call.arguments !== 'string') throw new Error('company_invalid_tool');
-      let result: unknown; let failed = false;
+      let result: unknown; let failed = false; let planPublished = false;
       try {
         const args = JSON.parse(call.arguments) as Json;
         if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('invalid tool arguments');
-        emit({ type: 'tool_use', id: call.call_id, name: call.name,
+        if (call.name !== 'update_plan') emit({ type: 'tool_use', id: call.call_id, name: call.name,
           input: { ...(typeof args.path === 'string' ? { file_path: args.path } : {}),
             ...(typeof args.destination === 'string' ? { destination: args.destination } : {}) } });
-        if (input.media && STUDIO_MEDIA_TOOL_NAMES.has(call.name)) {
+        if (call.name === 'update_plan') {
+          if (Object.keys(args).some((key) => key !== 'todos') || !Array.isArray(args.todos) || args.todos.length > 32
+            || Buffer.byteLength(JSON.stringify(args)) > 8 * 1024 || args.todos.some((item: unknown) => {
+              if (!item || typeof item !== 'object' || Array.isArray(item)) return true;
+              const todo = item as Json;
+              return Object.keys(todo).some((key) => !['content', 'status'].includes(key)) || typeof todo.content !== 'string'
+                || !todo.content.trim() || todo.content.length > 200 || /[\u0000-\u0008\u000b-\u001f]/u.test(todo.content)
+                || !['pending', 'in_progress', 'completed'].includes(String(todo.status));
+            })) throw new Error('invalid plan');
+          // Only accepted snapshots carry the canonical name: a refused update
+          // must not clear the last valid plan or its unfinished-work verdict.
+          emit({ type: 'tool_use', id: call.call_id, name: 'update_plan', input: { todos: args.todos } });
+          planPublished = true;
+          result = { updated: args.todos.length };
+        } else if (input.liveArtifacts && STUDIO_LIVE_ARTIFACT_TOOLS.some((tool) => tool.name === call.name)) {
+          check(); result = input.liveArtifacts.execute(call.name, args);
+        } else if (input.media && STUDIO_MEDIA_TOOL_NAMES.has(call.name)) {
           check();
           try {
             result = await runStudioMediaTool(call.name, args, { apiKey: input.apiKey, fetch: input.fetch ?? fetch, signal,
@@ -166,7 +190,10 @@ export async function runCompanyOpenAITurn(input: {
           files.add(args.path); result = { written: args.path };
         } else throw new Error('unsupported tool');
         check();
-      } catch { check(); failed = true; result = { error: 'PROJECT_TOOL_REFUSED' }; }
+      } catch {
+        check(); failed = true; result = { error: 'PROJECT_TOOL_REFUSED' };
+        if (call.name === 'update_plan' && !planPublished) emit({ type: 'tool_use', id: call.call_id, name: 'plan_update_refused', input: {} });
+      }
       emit({ type: 'tool_result', toolUseId: call.call_id, isError: failed, content: typeof result === 'string' ? result : JSON.stringify(result) });
       history.push({ type: 'function_call_output', call_id: call.call_id, output: typeof result === 'string' ? result : JSON.stringify(result) });
     }

@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { cleanupIsolatedDataRoot, loadIsolatedServerModule, login, multiUserOptions, provisionAccounts, startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
-import { PERSONAL_CODEX_MOCK, codexHome, linkCodex, setTurnMode } from './personal-codex-helpers.js';
+import { PERSONAL_CODEX_MOCK, codexHome, linkCodex, setTurnMode, until } from './personal-codex-helpers.js';
 import { FIXTURE_PLUGIN_ID, PIPELINE_ONLY_PLUGIN_ID, installStudioFixturePlugin } from './studio-plugin-fixture.js';
 
 let daemon: StartedMultiUserDaemon;
@@ -51,6 +52,33 @@ function success(result: { code: number | null; stdout: string; stderr: string }
 }
 
 describe('same Studio APIs through remote od sessions', () => {
+  it('creates, reads, maps, refreshes, edits and deletes live artifacts through the pinned session CLI', async () => {
+    const session = path.join(root, 'cli-live-artifact-session');
+    success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', alice.username,
+      '--password-file', '-', '--session-file', session, '--json'], alice.password));
+    const projectId = success(await cli(['project', 'create', '--name', 'CLI live artifact', '--session-file', session, '--json'])).project.id;
+    expect((await daemon.request({ method: 'POST', path: `/api/projects/${projectId}/files`, cookie: alice.cookie,
+      body: { name: 'sales.json', content: '{"report":{"total":8}}' } })).status).toBe(200);
+    const request = { input: { title: 'CLI sales', preview: { type: 'html', entry: 'index.html' }, document: {
+      format: 'html_template_v1', templatePath: 'template.html', generatedPreviewPath: 'index.html', dataPath: 'data.json', dataJson: { total: 3 },
+      sourceJson: { type: 'local_file', input: { path: 'sales.json' }, refreshPermission: 'manual_refresh_granted_for_read_only',
+        outputMapping: { dataPaths: [{ from: 'report.total', to: 'total' }] } },
+    } }, templateHtml: '<h1>{{data.total}}</h1>' };
+    const artifact = success(await cli(['live-artifact', 'create', projectId, '--prompt-file', '-', '--session-file', session, '--json'], JSON.stringify(request))).artifact;
+    expect(artifact.studioProvenance.origin).toBe('user');
+    expect(success(await cli(['live-artifact', 'list', projectId, '--session-file', session, '--json'])).artifacts.map((item: { id: string }) => item.id)).toEqual([artifact.id]);
+    expect(success(await cli(['live-artifact', 'code', projectId, artifact.id, '--session-file', session, '--json']))).toBe('<h1>3</h1>');
+    const refreshed = success(await cli(['live-artifact', 'refresh', projectId, artifact.id, '--session-file', session, '--json'])).artifact;
+    expect(refreshed.document.dataJson).toEqual({ total: 8 }); expect(refreshed.studioProvenance.source.path).toBe('sales.json');
+    expect(success(await cli(['live-artifact', 'history', projectId, artifact.id, '--session-file', session, '--json'])).refreshes).toHaveLength(1);
+    expect((await daemon.request({ path: `/api/live-artifacts/${artifact.id}?projectId=${projectId}`, cookie: bob.cookie })).status).toBe(404);
+    const update = { input: { document: { ...refreshed.document, dataJson: { total: 11 } } }, expectedRevision: refreshed.studioRevision };
+    expect(success(await cli(['live-artifact', 'update', projectId, artifact.id, '--prompt-file', '-', '--session-file', session, '--json'], JSON.stringify(update))).artifact.studioProvenance.origin).toBe('user');
+    expect(success(await cli(['live-artifact', 'info', projectId, artifact.id, '--session-file', session, '--json'])).artifact.document.dataJson).toEqual({ total: 11 });
+    expect(success(await cli(['live-artifact', 'delete', projectId, artifact.id, '--session-file', session, '--json']))).toEqual({ ok: true });
+    expect(success(await cli(['live-artifact', 'list', projectId, '--session-file', session, '--json'])).artifacts).toEqual([]);
+  }, 120_000);
+
   it('exports server-rendered PPTX and PDF through od export over a session', async () => {
     const session = path.join(root, 'cli-render-session');
     success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', alice.username,
@@ -354,6 +382,20 @@ describe('same Studio APIs through remote od sessions', () => {
     expect(applied.result.skillId).toMatch(/^studio-skill:/);
     const templates = success(await cli(['automation', 'template', 'list', '--session-file', aFile, '--json'])).templates;
     expect(templates.find((item: { id: string }) => item.id === 'connector-digest-design-context').unavailable.code).toBe('MULTIUSER_CAPABILITY_UNAVAILABLE');
+    const templateDraft = { title: 'CLI private template', description: 'Private description', purpose: 'Private purpose', triggerKinds: ['manual'], sourceKinds: ['chat'],
+      stages: [{ id: 'propose', kind: 'propose', title: 'Review brief' }], outputSinks: ['memory'], reviewPolicy: 'always', tokenCompression: 'balanced' };
+    const templateProposal = success(await cli(['automation', 'template', 'propose', '--action', 'create', '--prompt-file', '-', '--session-file', aFile, '--json'], JSON.stringify(templateDraft)));
+    expect(templateProposal.proposal.targetKind).toBe('automation-template');
+    const templateApplied = success(await cli(['automation', 'proposal', 'apply', templateProposal.proposal.id, '--session-file', aFile, '--json']));
+    const privateTemplateId = templateApplied.result.automationTemplateId;
+    expect(success(await cli(['automation', 'template', 'get', privateTemplateId, '--session-file', aFile, '--json'])).template.studioOwned).toBe(true);
+    expect((await cli(['automation', 'template', 'get', privateTemplateId, '--session-file', bFile, '--json'])).code).not.toBe(0);
+    const privateRoutine = success(await cli(['automation', 'create', '--template', privateTemplateId, '--schedule', 'daily:07:00', '--session-file', aFile, '--json']));
+    expect(privateRoutine.routine.name).toBe(templateDraft.title);
+    const templateDeletion = success(await cli(['automation', 'template', 'propose', '--action', 'delete', '--target', privateTemplateId, '--session-file', aFile, '--json']));
+    success(await cli(['automation', 'proposal', 'apply', templateDeletion.proposal.id, '--session-file', aFile, '--json']));
+    expect((await cli(['automation', 'template', 'get', privateTemplateId, '--session-file', aFile, '--json'])).code).not.toBe(0);
+    success(await cli(['automation', 'delete', privateRoutine.routine.id, '--session-file', aFile, '--json']));
     const fromTemplate = success(await cli(['automation', 'create', '--template', 'compress-project-context', '--schedule', 'daily:07:00',
       '--session-file', aFile, '--json']));
     expect(fromTemplate.routine).toMatchObject({ templateId: 'compress-project-context', name: 'Compress project context' });
@@ -420,18 +462,26 @@ describe('same Studio APIs through remote od sessions', () => {
   it('lists, shows and applies bundled plugins with Web availability through od plugin; B and unavailable plugins are refused (#61)', async () => {
     const listed = success(await cli(['plugin', 'list', '--bundled', '--session-file', aFile, '--json']));
     expect(listed.total).toBeGreaterThan(100);
-    // Studio turns run no pipeline stages: no bundled plugin is applicable today.
-    expect(listed.plugins.filter((plugin: { availability: { applicable: boolean } }) => plugin.availability.applicable)).toEqual([]);
+    // The finite stage runner opens this bundled pipeline of Web atoms.
+    expect(listed.plugins.filter((plugin: { availability: { applicable: boolean } }) => plugin.availability.applicable).map((plugin: { id: string }) => plugin.id)).toEqual([PIPELINE_ONLY_PLUGIN_ID]);
     const share = listed.plugins.find((plugin: { id: string }) => plugin.id === PIPELINE_ONLY_PLUGIN_ID);
-    expect(share).toMatchObject({ fsPath: '', availability: { applicable: false, reasons: [{ code: 'pipeline' }] } });
+    expect(share).toMatchObject({ fsPath: '', availability: { applicable: true, reasons: [] } });
     const unavailable = success(await cli(['plugin', 'show', 'image-template-vr-headset-exploded-view-poster', '--session-file', aFile, '--json']));
     expect(unavailable.availability).toMatchObject({ applicable: false, reasons: expect.arrayContaining([{ code: 'unknown-atom', subject: 'image-generate' }]) });
+    // Previewing a shipped example does not imply its generation atoms are available.
+    const previewArgs = ['plugin', 'preview', 'example-article-magazine', '--session-file', aFile, '--json'];
+    const preview = success(await cli(previewArgs)); expect(preview.html).toContain('<html');
+    const bPreview = success(await cli(['plugin', 'preview', 'example-article-magazine', '--session-file', bFile, '--json']));
+    expect(bPreview.html).toBe(preview.html);
+    const descriptor = success(await cli([...previewArgs, '--variant', 'descriptor']));
+    expect(descriptor).toMatchObject({ pluginId: 'example-article-magazine', entry: 'example.html' });
+    expect(new URL(descriptor.url).pathname).toMatch(/^\/api\/multiuser\/plugin-preview\//);
+    expect((await daemon.request({ path: '/api/plugins/example-article-magazine/asset/SKILL.md', cookie: alice.cookie })).status).toBe(403);
     const made = success(await cli(['project', 'create', '--name', 'CLI plugins', '--session-file', aFile, '--json']));
     const pid = made.project.id as string;
     const pipeline = await cli(['plugin', 'apply', PIPELINE_ONLY_PLUGIN_ID, '--project', pid, '--session-file', aFile, '--json']);
-    expect(pipeline.code).not.toBe(0);
-    expect(pipeline.stderr).toContain('MULTIUSER_CAPABILITY_UNAVAILABLE');
-    expect(pipeline.stderr).toContain('pipeline');
+    expect(success(pipeline)).toMatchObject({ ok: true, projectId: pid, appliedPlugin: { pluginId: PIPELINE_ONLY_PLUGIN_ID, pipeline: { stages: [
+      { id: 'inspect-project', atoms: ['file-read'] }, { id: 'package-plugin', atoms: ['file-write'] }] } } });
     const refused = await cli(['plugin', 'apply', 'image-template-vr-headset-exploded-view-poster', '--project', pid, '--session-file', aFile, '--json']);
     expect(refused.code).not.toBe(0);
     expect(refused.stderr).toContain('MULTIUSER_CAPABILITY_UNAVAILABLE');
@@ -444,10 +494,28 @@ describe('same Studio APIs through remote od sessions', () => {
     const foreign = await cli(['plugin', 'apply', FIXTURE_PLUGIN_ID, '--project', pid, '--session-file', bFile, '--json']);
     expect(foreign.code).not.toBe(0);
     expect(foreign.stderr).toContain('PROJECT_NOT_FOUND');
+    // Catalog skill references use the same apply endpoint and owner/use policy.
+    const shared = success(await cli(['skill', 'import', '--name', 'cli-plugin-reference', '--prompt-file', '-', '--session-file', bFile, '--json'], 'CLI_PLUGIN_REFERENCE'));
+    const sharedId = shared.skill.id as string;
+    const db = new Database(path.join(root, 'app.sqlite'));
+    const original = db.prepare('SELECT manifest_json FROM installed_plugins WHERE id = ?').get(FIXTURE_PLUGIN_ID) as { manifest_json: string };
+    try {
+      db.prepare("UPDATE installed_plugins SET manifest_json = json_set(manifest_json, '$.od.context.skills', json(?)) WHERE id = ?")
+        .run(JSON.stringify([{ path: './SKILL.md' }, { ref: sharedId }]), FIXTURE_PLUGIN_ID);
+      expect((await cli(['plugin', 'apply', FIXTURE_PLUGIN_ID, '--project', pid, '--session-file', aFile, '--json'])).code).not.toBe(0);
+      success(await cli(['skill', 'share', sharedId, alice.username, '--session-file', bFile, '--json']));
+      const captured = success(await cli(['plugin', 'apply', FIXTURE_PLUGIN_ID, '--project', pid, '--session-file', aFile, '--json']));
+      expect(captured.appliedPlugin.resolvedContext.items).toContainEqual({ kind: 'skill', id: sharedId, label: 'cli-plugin-reference' });
+      success(await cli(['skill', 'unshare', sharedId, alice.username, '--session-file', bFile, '--json']));
+      expect((await cli(['plugin', 'apply', FIXTURE_PLUGIN_ID, '--project', pid, '--session-file', aFile, '--json'])).code).not.toBe(0);
+      expect(success(await cli(['project', 'info', pid, '--session-file', aFile, '--json'])).project.appliedPluginSnapshotId).toBe(captured.snapshotId);
+    } finally {
+      db.prepare('UPDATE installed_plugins SET manifest_json = ? WHERE id = ?').run(original.manifest_json, FIXTURE_PLUGIN_ID); db.close();
+    }
     const install = await cli(['plugin', 'install', '--source', 'github:example/plugin', '--session-file', aFile, '--json']);
     expect(install.code).not.toBe(0);
     expect(`${install.stdout}${install.stderr}`).toContain('MULTIUSER_CAPABILITY_UNAVAILABLE');
-  }, 60_000);
+  }, 90_000);
 
   it('honors server revocation and logs B out without printing or retaining credentials', async () => {
     const revoked = await daemon.request({ method: 'POST', path: `/api/auth/users/${alice.id}/sessions/revoke`, cookie: admin.cookie, body: {} });
@@ -519,6 +587,21 @@ it('stores the account\'s own OpenAI key through stdin, runs on it with --execut
   expect(watched.stdout).not.toContain(key);
   const info = success(await cli(['run', 'info', admitted.runId, '--session-file', sessionA, '--json']));
   expect(JSON.stringify(info)).toContain('personal_api_key');
+  const automation = success(await cli(['automation', 'create', '--name', 'CLI own-key routine', '--agent', 'openai-byok',
+    '--prompt-file', '-', '--schedule', 'daily:09:00', '--session-file', sessionA, '--json'], 'Own-key automation prompt'));
+  const routineId = automation.routine.id as string;
+  expect(automation.routine.agentId).toBe('openai-byok');
+  expect(success(await cli(['automation', 'update', routineId, '--name', 'Renamed own-key routine', '--session-file', sessionA, '--json'])).routine.agentId).toBe('openai-byok');
+  expect(success(await cli(['automation', 'update', routineId, '--agent', 'openai', '--session-file', sessionA, '--json'])).routine.agentId).toBe('openai');
+  expect(success(await cli(['automation', 'update', routineId, '--agent', 'openai-byok', '--session-file', sessionA, '--json'])).routine.agentId).toBe('openai-byok');
+  expect((await cli(['automation', 'run', routineId, '--session-file', sessionB, '--json'])).code).not.toBe(0);
+  const routineRun = success(await cli(['automation', 'run', routineId, '--session-file', sessionA, '--json']));
+  expect(routineRun).toMatchObject({ projectId: expect.any(String), conversationId: expect.any(String) });
+  const routineCookie = await login(daemon, alice.username, alice.password);
+  const routineHistory = await until(() => daemon.request({ path: `/api/routines/${routineId}/runs`, cookie: routineCookie }),
+    (result) => result.json.runs[0]?.status === 'succeeded', 'CLI own-key routine');
+  expect((await daemon.request({ path: `/api/runs/${routineHistory.json.runs[0].agentRunId}`, cookie: routineCookie })).json.executionSource).toBe('personal_api_key');
+  success(await cli(['automation', 'delete', routineId, '--session-file', sessionA, '--json']));
   // An Image project on the CLI: personal Codex is refused, the own-key source is admitted (#63).
   const image = success(await cli(['project', 'create', '--name', 'CLI image', '--kind', 'image', '--session-file', sessionA, '--json']));
   expect(image.project.metadata.kind).toBe('image');

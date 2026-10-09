@@ -14,6 +14,7 @@ import type {
 import type { StrategyTaskProjectionV2 } from '../plugins/strategy-v2.js';
 import type { SseErrorPayload } from '../errors.js';
 import type { SseTransportEvent } from './common.js';
+import type { PluginPipelineStageEvent } from '../plugins/events.js';
 
 export type LiveArtifactSseAction = 'created' | 'updated' | 'deleted';
 export type LiveArtifactRefreshSsePhase = 'started' | 'succeeded' | 'failed';
@@ -99,6 +100,14 @@ export interface ChatArtifactRefsChangedSsePayload {
   at?: number;
 }
 
+/** A committed Studio transcript changed. Members re-read messages through project authority. */
+export interface StudioChatMessagesChangedSsePayload {
+  type: 'chat-messages-changed';
+  projectId: string;
+  conversationId: string;
+  at: number;
+}
+
 export const CHAT_SSE_PROTOCOL_VERSION = 1;
 
 export interface ChatSseStartPayload {
@@ -171,6 +180,7 @@ export interface ChatSseEndPayload {
 
 export type DaemonAgentPayload = DaemonAgentPayloadBody & { redacted?: AgentEventRedaction };
 type DaemonAgentPayloadBody =
+  | { type: 'pipeline_stage'; stage: PluginPipelineStageEvent }
   | { type: 'status'; label: string; model?: string; ttftMs?: number; detail?: string; sessionId?: string }
   | { type: 'text_delta'; delta: string }
   /**

@@ -996,6 +996,7 @@ export interface AgentEventRedaction {
 
 export type PersistedAgentEvent = PersistedAgentEventBody & { redacted?: AgentEventRedaction };
 type PersistedAgentEventBody =
+  | import('../plugins/events.js').PluginPipelineStageEvent
   // `code` carries the structured API error code for `label: 'error'`
   // status events (e.g. AGENT_AUTH_REQUIRED, RATE_LIMITED). Clients use it to
   // decide error-specific affordances such as the hosted-AMR nudge.

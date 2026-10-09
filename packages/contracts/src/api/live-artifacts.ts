@@ -39,7 +39,7 @@ export interface LiveArtifactDocument {
   templatePath: 'template.html';
   generatedPreviewPath: 'index.html';
   dataPath: 'data.json';
-  /** Derived cache hydrated from dataPath in API responses; data.json is canonical. */
+  /** Desktop hydrates this from dataPath; Studio persists it in its canonical database. */
   dataJson: BoundedJsonObject;
   dataSchemaJson?: BoundedJsonObject;
   sourceJson?: LiveArtifactSource;
@@ -91,6 +91,19 @@ export interface LiveArtifact {
   updatedAt: string;
   lastRefreshedAt?: string;
   document: LiveArtifactDocument;
+  /** Studio database revision, used to refuse edits based on an outdated document. */
+  studioRevision?: number;
+  studioProvenance?: StudioLiveArtifactProvenance;
+}
+
+/** Daemon-stamped origin of the currently accepted Studio document/template.
+ * Failed refreshes and metadata-only edits retain the previous accepted origin. */
+export interface StudioLiveArtifactProvenance {
+  updatedAt: string;
+  origin: 'user' | 'agent' | 'project_file';
+  source?: { path: string; sha256: string; bytes: number };
+  conversationId?: string;
+  runId?: string;
 }
 
 export type LiveArtifactDaemonOwnedInputField =
@@ -101,7 +114,9 @@ export type LiveArtifactDaemonOwnedInputField =
   | 'createdByRunId'
   | 'schemaVersion'
   | 'refreshStatus'
-  | 'lastRefreshedAt';
+  | 'lastRefreshedAt'
+  | 'studioRevision'
+  | 'studioProvenance';
 
 export type LiveArtifactRejectDaemonOwnedInputFields = {
   [Field in LiveArtifactDaemonOwnedInputField]?: never;
@@ -185,4 +200,20 @@ export interface LiveArtifactRefreshLogEntry {
 
 export interface LiveArtifactRefreshLogResponse {
   refreshes: LiveArtifactRefreshLogEntry[];
+}
+
+/** Studio stores canonical data in the daemon database, outside worker-writable projects. */
+export const STUDIO_LIVE_ARTIFACT_LIMITS = { perProject: 100, templateBytes: 64 * 1024, renderedBytes: 2 * 1024 * 1024,
+  bodyBytes: 512 * 1024, refreshHistory: 100 } as const;
+
+export interface StudioLiveArtifactCreateRequest {
+  input: LiveArtifactCreateInput;
+  templateHtml: string;
+}
+
+export interface StudioLiveArtifactUpdateRequest {
+  input: LiveArtifactUpdateInput;
+  templateHtml?: string;
+  /** Required when replacing the document or template. */
+  expectedRevision?: number;
 }

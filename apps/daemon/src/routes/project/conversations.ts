@@ -1,5 +1,5 @@
-import type { Express } from 'express';
-import { parseStudioMessageFeedback, type ChatSessionMode } from '@open-design/contracts';
+import type { Express, Response } from 'express';
+import { parseStudioMessageFeedback, type ChatSessionMode, type Conversation } from '@open-design/contracts';
 import { readAnalyticsContext } from '../../analytics.js';
 import { nextForkedConversationTitle } from '../../conversation-fork-title.js';
 import { backfillBrandExtractionTranscriptForProject } from '../../brands/index.js';
@@ -131,6 +131,10 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
     const conversation = getConversation(db, conversationId);
     return conversation?.projectId === projectId ? conversation : null;
   };
+  const projectConversation = (res: Response, conversation: Conversation | null): Conversation | null =>
+    conversation && ctx.projectOwnership ? { ...conversation,
+      studioCanWrite: ctx.projectOwnership.conversationCanWrite?.(res, conversation.projectId, conversation.id) === true,
+    } : conversation;
 
   // ---- Conversations --------------------------------------------------------
 
@@ -139,7 +143,7 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
       return res.status(404).json({ error: 'project not found' });
     }
     if (!await authorizeProjectRequest(req, res, req.params.id, { mode: 'read' })) return;
-    res.json({ conversations: listConversations(db, req.params.id) });
+    res.json({ conversations: listConversations(db, req.params.id).map((conversation: Conversation) => projectConversation(res, conversation)) });
   });
 
   app.post('/api/projects/:id/conversations', async (req, res) => {
@@ -327,7 +331,7 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
     // Keep the row and copied transcript together. A failed copy cannot leave
     // a half-fork behind in an actor's managed project.
     const conv = ctx.projectOwnership ? db.transaction(writeConversation)() : writeConversation();
-    res.json({ conversation: conv });
+    res.json({ conversation: projectConversation(res, conv) });
   });
 
   app.patch('/api/projects/:id/conversations/:cid', async (req, res) => {
@@ -349,7 +353,7 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
       return sendApiError(res, 400, 'BAD_REQUEST', 'sessionMode must be one of design, chat, or plan');
     }
     const updated = updateConversation(db, req.params.cid, req.body || {});
-    res.json({ conversation: updated });
+    res.json({ conversation: projectConversation(res, updated) });
   });
 
   app.delete('/api/projects/:id/conversations/:cid', async (req, res) => {

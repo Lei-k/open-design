@@ -102,6 +102,7 @@ export function studioRequestAvailable(method: string, path: string,
     // marketplace changes, doctor and trust stay closed. On the standard prefix the
     // static `stats`/`events` siblings keep their own (closed) routes, as on the daemon.
     if (catalogPath === '/api/plugins') return method === 'GET';
+    if (/^\/api\/plugins\/[^/]+\/(?:preview|example\/[^/]+)$/.test(catalogPath)) return method === 'GET' || method === 'HEAD';
     const plugin = /^\/api\/plugins\/([^/]+)(\/apply)?$/.exec(catalogPath);
     if (plugin && !(path.startsWith('/api/plugins/') && ['stats', 'events'].includes(plugin[1]!))) return plugin[2] ? method === 'POST' : method === 'GET';
     if (/^\/api\/applied-plugins\/[^/]+$/.test(catalogPath)) return method === 'GET';
@@ -151,6 +152,14 @@ export function studioRequestAvailable(method: string, path: string,
       if (['extract', 'rules', 'connectors'].includes(settingsPath.slice(12))) return false;
       return ['GET', 'PUT', 'DELETE'].includes(method);
     }
+  }
+  // Data-backed Live Artifacts are readable without an OpenAI media source.
+  if (usable('files') && usable('preview')) {
+    const artifactPath = path.replace(/^\/api\/multiuser\/live-artifacts(?=\/|$)/, '/api/live-artifacts');
+    if (artifactPath === '/api/live-artifacts') return method === 'GET' || method === 'POST';
+    if (/^\/api\/live-artifacts\/[^/]+$/.test(artifactPath)) return ['GET', 'PATCH', 'DELETE'].includes(method);
+    if (/^\/api\/live-artifacts\/[^/]+\/(preview|refreshes)$/.test(artifactPath)) return method === 'GET';
+    if (/^\/api\/live-artifacts\/[^/]+\/refresh$/.test(artifactPath)) return method === 'POST';
   }
   if (usable('files')) {
     const file = /^\/api\/projects\/[^/]+\/(files|folders|search|upload|raw|text-preview|file-content)(?:\/(.+))?$/.exec(path);

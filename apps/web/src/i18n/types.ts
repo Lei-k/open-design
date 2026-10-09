@@ -30,6 +30,17 @@ export const LOCALE_LABEL: Record<Locale, string> = {
 // flat (not deeply nested) so missing-key TS errors point straight at the
 // offending string instead of a generic object mismatch.
 export interface Dict {
+  'studio.liveArtifact.outputMapping': string;
+  'studio.liveArtifact.mappingHint': string;
+  'studio.liveArtifact.originUser': string;
+  'studio.liveArtifact.originAgent': string;
+  'studio.liveArtifact.originProject': string;
+  'studio.liveArtifact.historyHint': string;
+  'studio.liveArtifact.title': string;
+  'studio.liveArtifact.sourceHint': string;
+  'studio.liveArtifact.invalidData': string;
+  'studio.liveArtifact.saveFailed': string;
+
   'studio.settingsReload': string;
   'studio.aboutDeployed': string;
   'studio.aboutReloadPage': string;
@@ -2350,6 +2361,12 @@ export interface Dict {
   'automations.proposalTargetDesignSystem': string;
   'automations.proposalTargetSkill': string;
   'automations.proposalTargetTemplate': string;
+  'automations.privateTemplates': string;
+  'automations.templateReview': string;
+  'automations.templateDefinition': string;
+  'automations.templatePropose': string;
+  'automations.templateInvalidJson': string;
+  'automations.templateFailed': string;
   'automations.proposalActionCreate': string;
   'automations.proposalActionUpdate': string;
   'automations.proposalActionMerge': string;

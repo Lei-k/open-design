@@ -953,6 +953,8 @@ import { registerStudioArchiveRoutes } from './routes/studio-archives.js';
 import { registerStudioSharingRoutes } from './routes/studio-sharing.js';
 import { registerStudioCatalogSharingRoutes } from './routes/studio-catalog-sharing.js';
 import { registerStudioPluginRoutes } from './routes/studio-plugins.js';
+import { registerStudioPluginPreviewRoutes } from './routes/studio-plugin-previews.js';
+import { registerStudioLiveArtifactRoutes } from './routes/studio-live-artifacts.js';
 import { registerStudioCommentRoutes } from './routes/studio-comments.js';
 import { registerStudioPetRoutes } from './routes/studio-pets.js';
 import { registerStudioRenderRoutes } from './routes/studio-render.js';
@@ -3522,7 +3524,7 @@ export async function startServer({
   // Multi-user preview capabilities live on their own cookie-free origin;
   // opaque Studio srcDoc frames fetch their fonts and assets from there (#59).
   const _NULL_ORIGIN_SAFE_GET_RE =
-    /^\/projects\/[^/]+\/(?:raw|preview)\/|^\/multiuser\/projects\/[^/]+\/preview\/|^\/codex-pets\/[^/]+\/spritesheet$|^\/asset-cache$/;
+    /^\/projects\/[^/]+\/(?:raw|preview)\/|^\/multiuser\/projects\/[^/]+\/preview\/|^\/multiuser\/(?:live-artifact-preview|plugin-preview)\/|^\/codex-pets\/[^/]+\/spritesheet$|^\/asset-cache$/;
   const _POWERED_PREVIEW_SAFE_RE = /^\/projects\/[^/]+\/powered\/.+$/u;
 
   // Reject cross-origin requests to API endpoints.
@@ -17623,21 +17625,30 @@ export async function startServer({
     db, skillsRoot: SKILLS_DIR, listBuiltInSkills: async () => (await listSkills(SKILLS_DIR)).map((skill) => ({ ...skill, source: 'built-in' as const })),
     ...(studioCatalogSharing ? { sharing: studioCatalogSharing } : {}),
   }) : null;
-  // Bundled plugin catalog and owner-only apply (#61); availability from the Web capability registry.
-  const studioPlugins = multiUserMode ? registerStudioPluginRoutes(app, {
-    db, dataRoot: RUNTIME_DATA_DIR, hostRoots: [PROJECT_ROOT, BUNDLED_PLUGINS_DIR],
-    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
-  }) : null;
   const studioDesignCatalog = multiUserMode ? registerStudioDesignCatalogRoutes(app, {
     ...(studioCatalogSharing ? { sharing: studioCatalogSharing } : {}),
     db, designSystemsRoot: DESIGN_SYSTEMS_DIR, promptTemplatesRoot: PROMPT_TEMPLATES_DIR, craftRoot: CRAFT_DIR,
     listBuiltInSystems: () => listDesignSystems(DESIGN_SYSTEMS_DIR, { source: 'built-in', isEditable: false, defaultStatus: 'published' }),
     listBuiltInTemplates: () => listSkills(DESIGN_TEMPLATES_DIR),
   }) : null;
-  if (multiUserMode) registerStudioArchiveRoutes(app, { db, projectsRoot: PROJECTS_DIR });
-  if (multiUserMode) registerStudioCommentRoutes(app, { db, onChanged: (projectId) => {
+  // Bundled plugin apply captures authorized skill and brand packages with its immutable prompt/resources.
+  const studioPluginPreviews = multiUserMode ? registerStudioPluginPreviewRoutes(app, { db, dataRoot: RUNTIME_DATA_DIR, bundledRoot: BUNDLED_PLUGINS_DIR,
+    previewOrigin: multiUserMode.previewOrigin, allowedOrigins: multiUserMode.allowedOrigins,
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}) }) : null;
+  const studioPlugins = multiUserMode ? registerStudioPluginRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, hostRoots: [PROJECT_ROOT, BUNDLED_PLUGINS_DIR], craftRoot: CRAFT_DIR,
+    ...(studioDesignCatalog ? { designCatalog: studioDesignCatalog, designSystemsRoot: DESIGN_SYSTEMS_DIR } : {}),
+    ...(studioCatalog ? { skillCatalog: studioCatalog } : {}),
+    ...(studioCatalogSharing ? { designAccess: studioCatalogSharing.grants, skillAccess: studioCatalogSharing.grants } : {}),
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
+  }) : null;
+  if (multiUserMode) registerStudioArchiveRoutes(app, { db, projectsRoot: PROJECTS_DIR, accountActive: multiUserFront!.accountActive });
+  if (multiUserMode) registerStudioCommentRoutes(app, { db, accountActive: multiUserFront!.accountActive, onChanged: (projectId) => {
     emitProjectEvent(projectId, { type: 'comment-changed', projectId, at: Date.now() });
   } });
+  const studioLiveArtifacts = multiUserMode ? registerStudioLiveArtifactRoutes(app, { db, projectsRoot: PROJECTS_DIR, dataRoot: RUNTIME_DATA_DIR,
+    previewOrigin: multiUserMode.previewOrigin, allowedOrigins: multiUserMode.allowedOrigins, accountActive: multiUserFront!.accountActive,
+    onChanged: (projectId, action, artifact) => { emitLiveArtifactEvent({ projectId }, action, artifact); } }) : null;
   if (multiUserMode) registerStudioPetRoutes(app, { bundledRoot: BUNDLED_PETS_DIR });
   // Server-side PDF/PPTX/PNG exports (#66): only when the deployment configured a renderer.
   const studioRenderHost = multiUserMode?.studioRenderer ? createChromiumCaptureHost({
@@ -17652,7 +17663,8 @@ export async function startServer({
     setArtifactCaptureRuntime(studioRenderHost.runtime);
     multiUserFront?.setRenderedExportsAvailable(() => true);
   }
-  if (multiUserMode) registerStudioRenderRoutes(app, { db, projectsRoot: PROJECTS_DIR, dataRoot: RUNTIME_DATA_DIR, host: studioRenderHost });
+  if (multiUserMode) registerStudioRenderRoutes(app, { db, projectsRoot: PROJECTS_DIR, dataRoot: RUNTIME_DATA_DIR,
+    host: studioRenderHost, accountActive: multiUserFront!.accountActive });
   if (multiUserMode) registerStudioProjectCreationRoutes(app, {
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR,
     readSkill: async (owner, id) => Boolean(await studioCatalog?.readSkills(owner, [id])),
@@ -17671,6 +17683,8 @@ export async function startServer({
   }) : null;
   const multiUserRuns = multiUserMode ? registerMultiUserRunRoutes(app, {
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
+    emitProjectEvent,
+    ...(studioLiveArtifacts ? { liveArtifacts: studioLiveArtifacts } : {}),
     ...(multiUserMode.testMockAgentScript ? { mockAgentScript: multiUserMode.testMockAgentScript } : {}),
     ...(multiUserMode.testCompanyOpenAIFetch ? { companyFetch: multiUserMode.testCompanyOpenAIFetch } : {}),
     ...(multiUserMode.testTavilyFetch ? { researchFetch: multiUserMode.testTavilyFetch } : {}),
@@ -18344,7 +18358,9 @@ export async function startServer({
       studioSharing?.close();
       studioCatalogSharing?.close();
       studioPlugins?.close();
+      studioPluginPreviews?.close();
       studioPublicLinks?.close();
+      studioLiveArtifacts?.close();
       multiUserFront?.close();
       void personalCodex?.shutdown();
       void multiUserRuns?.shutdown();
@@ -18362,7 +18378,9 @@ export async function startServer({
       studioSharing?.close();
       studioCatalogSharing?.close();
       studioPlugins?.close();
+      studioPluginPreviews?.close();
       studioPublicLinks?.close();
+      studioLiveArtifacts?.close();
       }
       amrTerminalReportDelivery.stop();
       clearTerminalTelemetryFallbackTimers();

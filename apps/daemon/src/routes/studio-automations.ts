@@ -22,6 +22,7 @@ import type { StudioSettings } from '../storage/studio-settings.js';
 import { readStudioMemoryEntry, saveStudioMemoryEntry } from '../storage/studio-settings.js';
 import { deleteMemoryEntry, deriveMemoryId } from '../memory.js';
 import { isSafeId } from '../projects.js';
+import { StudioAutomationTemplates, StudioTemplateRefusal } from '../storage/studio-automation-templates.js';
 
 /** A typed refusal from the account automation store (status maps to the shared error codes). */
 export class AutomationRefusal extends Error {
@@ -38,15 +39,16 @@ const jsonBounded = (value: unknown, max: number) => {
 const plainObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const MEMORY_ID = /^[a-z0-9_]{1,128}$/;
 
-export function studioAutomationTemplates(): StudioAutomationTemplate[] {
-  return BUILT_IN_AUTOMATION_TEMPLATES.map((template) => {
+export function studioAutomationTemplates(privateTemplates: AutomationTemplate[] = []): StudioAutomationTemplate[] {
+  return [...BUILT_IN_AUTOMATION_TEMPLATES.map((template) => ({ ...template })),
+    ...privateTemplates.map((template) => ({ ...template, studioOwned: true }))].map((template) => {
     const refused = studioAutomationTemplateUnavailable(template);
     return refused ? { ...template, unavailable: refused } : { ...template };
   });
 }
 /** A bundled template a Web account may run, or a typed refusal. */
-export function studioRunnableAutomationTemplate(id: unknown): AutomationTemplate {
-  const template = typeof id === 'string' ? BUILT_IN_AUTOMATION_TEMPLATES.find((item) => item.id === id) : undefined;
+export function studioRunnableAutomationTemplate(id: unknown, privateTemplates: AutomationTemplate[] = []): AutomationTemplate {
+  const template = typeof id === 'string' ? [...BUILT_IN_AUTOMATION_TEMPLATES, ...privateTemplates].find((item) => item.id === id) : undefined;
   if (!template) throw notFound();
   if (studioAutomationTemplateUnavailable(template)) throw unavailable('connector-only automation templates');
   return template;
@@ -61,8 +63,8 @@ export interface StudioAutomations {
  * Account-owned automation self-evolution (#64). Packets and proposals carry
  * their owner on every row and every lookup; foreign and missing ids are the
  * same 404 (admins included). Applying writes only into the owner's memory,
- * private skill packages and design documents. Nothing here reads or writes
- * the host-global automation stores, templates or catalogs.
+ * private skill packages, design documents and automation templates. Nothing
+ * here reads or writes the host-global automation stores, templates or catalogs.
  */
 export function registerStudioAutomationRoutes(app: Express, input: {
   db: Database.Database; settings: StudioSettings;
@@ -71,6 +73,7 @@ export function registerStudioAutomationRoutes(app: Express, input: {
   const ownership = new ProjectOwnershipStore(db);
   const skills = new StudioSkills(db);
   const designs = new StudioDesignSystems(db);
+  const templates = new StudioAutomationTemplates(db);
   db.exec(`CREATE TABLE IF NOT EXISTS studio_automation_packets (
       id TEXT PRIMARY KEY, owner_account_id TEXT NOT NULL, packet_json TEXT NOT NULL, captured_at TEXT NOT NULL
     );
@@ -130,7 +133,7 @@ export function registerStudioAutomationRoutes(app: Express, input: {
     if (body.conversationId !== undefined && body.conversationId !== null) {
       if (typeof body.conversationId !== 'string' || !body.projectId || !conversationInProject(body.projectId, body.conversationId)) throw notFound();
     }
-    return body.templateId === undefined || body.templateId === null ? null : studioRunnableAutomationTemplate(body.templateId);
+    return body.templateId === undefined || body.templateId === null ? null : studioRunnableAutomationTemplate(body.templateId, templates.list(owner));
   };
 
   const ingest = (owner: string, body: CreateAutomationSourceIngestionRequest, template: AutomationTemplate | null): AutomationSourceIngestionResponse => {
@@ -154,7 +157,6 @@ export function registerStudioAutomationRoutes(app: Express, input: {
 
   const checkProposal = (owner: string, body: CreateAutomationEvolutionProposalRequest & { status?: AutomationProposalStatus }) => {
     if (!plainObject(body)) throw new AutomationRefusal(400, 'proposal body is required');
-    if (body.targetKind === 'automation-template') throw unavailable('account automation templates');
     if (!(STUDIO_AUTOMATION_PROPOSAL_TARGETS as readonly string[]).includes(String(body.targetKind))
       || !(STUDIO_AUTOMATION_PROPOSAL_ACTIONS as readonly string[]).includes(String(body.action))
       || !text(body.title, 200) || !body.title.trim() || !text(body.summary, 2000) || !body.summary.trim()
@@ -187,12 +189,17 @@ export function registerStudioAutomationRoutes(app: Express, input: {
       if (body.targetRef !== undefined && body.targetRef !== null) throw new AutomationRefusal(400, 'create proposals carry no target');
       if (body.patch.after === undefined || !String(body.patch.after).trim()) throw new AutomationRefusal(400, 'proposal patch.after is required');
     } else if (!targetExists(owner, body.targetKind, targetRef)) throw notFound();
+    if (body.targetKind === 'automation-template') {
+      if (body.patch.format !== 'json' || body.action !== 'create' && typeof body.patch.before !== 'string') throw new AutomationRefusal(400, 'template proposals need JSON and a before snapshot for changes');
+      templates.validate(body.action, targetRef, body.patch.after, body.patch.before);
+    }
     return typeof targetRef === 'string' ? targetRef : undefined;
   };
   const targetExists = (owner: string, kind: string, ref: unknown): boolean => {
     if (typeof ref !== 'string') return false;
     if (kind === 'skill') return ref.startsWith('studio-skill:') && Boolean(skills.read(owner, ref));
     if (kind === 'design-system') return ref.startsWith('user:studio_') && Boolean(designs.read(owner, ref));
+    if (kind === 'automation-template') return Boolean(templates.read(owner, ref));
     return MEMORY_ID.test(ref);
   };
 
@@ -290,16 +297,16 @@ export function registerStudioAutomationRoutes(app: Express, input: {
     try { await operation(req, res, owner); }
     catch (error) {
       if (res.headersSent || !multiUserStreamAllowed(res)) return;
-      if (error instanceof AutomationRefusal) return sendApiError(res, error.status, error.status === 404 ? 'NOT_FOUND'
+      if (error instanceof AutomationRefusal || error instanceof StudioTemplateRefusal) return sendApiError(res, error.status, error.status === 404 ? 'NOT_FOUND'
         : error.status === 403 ? 'MULTIUSER_CAPABILITY_UNAVAILABLE' : error.status === 409 ? 'CONFLICT' : 'BAD_REQUEST', error.message);
       sendApiError(res, 400, 'BAD_REQUEST', 'automation request refused');
     }
   };
   const reply = (res: Response, status: number, body: unknown) => { if (multiUserStreamAllowed(res)) res.status(status).json(body); };
 
-  app.get('/api/multiuser/automation-templates', handle((_req, res) => reply(res, 200, { templates: studioAutomationTemplates() })));
-  app.get('/api/multiuser/automation-templates/:id', handle((req, res) => {
-    const template = studioAutomationTemplates().find((item) => item.id === req.params.id);
+  app.get('/api/multiuser/automation-templates', handle((_req, res, owner) => reply(res, 200, { templates: studioAutomationTemplates(templates.list(owner)) })));
+  app.get('/api/multiuser/automation-templates/:id', handle((req, res, owner) => {
+    const template = studioAutomationTemplates(templates.list(owner)).find((item) => item.id === req.params.id);
     if (!template) throw notFound();
     reply(res, 200, { template });
   }));
@@ -346,6 +353,17 @@ export function registerStudioAutomationRoutes(app: Express, input: {
     if (!proposal) throw notFound();
     try { assertReviewable(proposal); } catch { throw new AutomationRefusal(409, 'proposal is not reviewable'); }
     if (!multiUserStreamAllowed(res)) return;
+    if (proposal.targetKind === 'automation-template') {
+      // Both synchronous writes commit or roll back together, including the
+      // compare with the snapshot reviewed by the account.
+      const applied = db.transaction(() => {
+        const automationTemplateId = templates.apply(owner, proposal.action, proposal.targetRef, proposal.patch.before, proposal.patch.after);
+        const result = { automationTemplateId, action: proposal.action };
+        return { proposal: finish(owner, proposal, 'applied', { appliedResult: result }), result };
+      }).immediate();
+      reply(res, 200, applied);
+      return;
+    }
     const result = proposal.targetKind === 'memory-node' ? await applyMemory(owner, proposal)
       : proposal.targetKind === 'skill' ? applySkill(owner, proposal)
         : proposal.targetKind === 'design-system' ? applyDesign(owner, proposal)

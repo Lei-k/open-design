@@ -81,6 +81,58 @@ function completeHandshake(child: FakeChild, threadId = 'th-1') {
   return threadId;
 }
 
+describe('daemon-owned dynamic tools', () => {
+  const tools = [{ name: 'live_artifacts_list', description: 'List this project', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }];
+  it.each([null, 'th-1'])('advertises tools on start/resume and answers a bounded matching call: %s', (resumeSessionId) => {
+    const execute = vi.fn(() => ({ artifacts: [] })); const h = harness({ dynamicTools: tools, onDynamicToolCall: execute, resumeSessionId });
+    expect(h.child.sent('initialize')!.params.capabilities.experimentalApi).toBe(true);
+    completeHandshake(h.child);
+    expect((h.child.sent('thread/start') ?? h.child.sent('thread/resume'))!.params.dynamicTools).toEqual(tools);
+    h.child.say({ id: h.child.sent('turn/start')!.id, result: { turn: { id: 'turn-1' } } });
+    h.child.say({ id: 'server-request', method: 'item/tool/call', params: { threadId: 'th-1', turnId: 'turn-1', callId: 'call-1', tool: 'live_artifacts_list', arguments: {} } });
+    expect(execute).toHaveBeenCalledExactlyOnceWith('live_artifacts_list', {});
+    expect(h.child.frames().find((frame) => frame.id === 'server-request')!.result).toEqual({ success: true, contentItems: [{ type: 'inputText', text: '{"artifacts":[]}' }] });
+    expect(h.agentEvents).toContainEqual(expect.objectContaining({ type: 'tool_use', id: 'call-1' }));
+    expect(h.agentEvents).toContainEqual(expect.objectContaining({ type: 'tool_result', toolUseId: 'call-1', isError: false }));
+  });
+  it('refuses wrong threads/turns, unknown tools, oversized arguments and duplicate call ids', () => {
+    const execute = vi.fn(() => ({})); const h = harness({ dynamicTools: tools, onDynamicToolCall: execute }); completeHandshake(h.child);
+    h.child.say({ method: 'turn/started', params: { threadId: 'th-1', turn: { id: 'turn-1' } } });
+    const params = { threadId: 'th-1', turnId: 'turn-1', callId: 'call-1', tool: 'live_artifacts_list', arguments: {} };
+    for (const [i, patch] of [{ threadId: 'foreign' }, { turnId: 'foreign' }, { tool: 'shell' }, { arguments: { text: 'x'.repeat(512 * 1024) } }].entries()) {
+      h.child.say({ id: 900 + i, method: 'item/tool/call', params: { ...params, ...patch } });
+      expect(h.child.frames().find((frame) => frame.id === 900 + i)!.result.success).toBe(false);
+    }
+    expect(execute).not.toHaveBeenCalled();
+    h.child.say({ id: 950, method: 'item/tool/call', params }); h.child.say({ id: 951, method: 'item/tool/call', params });
+    expect(execute).toHaveBeenCalledOnce(); expect(h.child.frames().find((frame) => frame.id === 951)!.result.success).toBe(false);
+    h.child.say({ id: 952, method: 'item/permissions/requestApproval', params: {} });
+    expect(h.child.frames().find((frame) => frame.id === 952)!.error.code).toBe(-32601);
+  });
+  it('returns a generic refusal on authority failures and stops executing after interruption', () => {
+    const execute = vi.fn(() => { throw new Error('PRIVATE_HOST_PATH'); }); const h = harness({ dynamicTools: tools, onDynamicToolCall: execute }); completeHandshake(h.child);
+    h.child.say({ id: 900, method: 'item/tool/call', params: { threadId: 'th-1', turnId: 'turn', callId: 'call-1', tool: 'live_artifacts_list', arguments: {} } });
+    expect(JSON.stringify(h.child.frames())).not.toContain('PRIVATE_HOST_PATH'); expect(execute).toHaveBeenCalledOnce();
+    h.session.abort();
+    h.child.say({ id: 901, method: 'item/tool/call', params: { threadId: 'th-1', turnId: 'turn', callId: 'call-2', tool: 'live_artifacts_list', arguments: {} } });
+    expect(execute).toHaveBeenCalledOnce();
+  });
+  it.each(['completed', 'failed', 'interrupted'])('refuses tools while archiving after terminal %s', (status) => {
+    const execute = vi.fn(() => ({})); const h = harness({ manageThreadVisibility: true, dynamicTools: tools, onDynamicToolCall: execute });
+    h.child.say({ id: h.child.sent('initialize')!.id, result: { userAgent: 'open-design/0.153.4' } });
+    h.child.say({ id: h.child.sent('thread/start')!.id, result: { thread: { id: 'th-1' } } });
+    h.child.say({ id: h.child.sent('turn/start')!.id, result: { turn: { id: 'turn-1' } } });
+    if (status === 'interrupted') h.session.abort();
+    h.child.say({ method: 'turn/completed', params: { threadId: 'th-1', turn: { id: 'turn-1', status } } });
+    expect(h.child.sent('thread/archive')).toBeDefined();
+    h.child.say({ id: 980, method: 'item/tool/call', params: { threadId: 'th-1', turnId: 'turn-1', callId: 'late-call', tool: 'live_artifacts_list', arguments: {} } });
+    expect(execute).not.toHaveBeenCalled();
+    expect(h.child.frames().find((frame) => frame.id === 980)!.result.success).toBe(false);
+    h.child.say({ id: h.child.sent('thread/archive')!.id, result: {} });
+    expect(h.child.stdinEnded).toBe(1);
+  });
+});
+
 describe('codex app-server session', () => {
   describe('handshake', () => {
     it.each([

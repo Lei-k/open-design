@@ -51,8 +51,8 @@ export function registerStudioPublicLinkRoutes(app: Express, input: {
 }): { close(): void } {
   const { db } = input;
   const now = input.clock ?? Date.now;
-  const access = new ProjectAccessStore(db);
   const accounts = AuthStore.open({ dataRoot: input.dataRoot });
+  const access = new ProjectAccessStore(db, { accountActive: (id) => accounts.getAccountById(id)?.active === true });
   const root = path.join(input.dataRoot, 'studio-public-links');
   mkdirSync(root, { recursive: true, mode: 0o700 });
   db.exec(`CREATE TABLE IF NOT EXISTS ${PUBLIC_LINKS_TABLE} (

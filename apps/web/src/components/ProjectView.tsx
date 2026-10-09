@@ -2024,7 +2024,7 @@ function projectEventToAgentEvent(evt: ProjectEvent): LiveArtifactEventItem['eve
     // conversation re-read. It must be named here rather than left to fall
     // through — the tail of this function assumes whatever survives is a
     // live-artifact refresh and reads `evt.phase` off it.
-    evt.type === 'chat-artifact-refs-changed'
+    evt.type === 'chat-artifact-refs-changed' || evt.type === 'chat-messages-changed'
   ) {
     return null;
   }
@@ -2620,6 +2620,8 @@ export function ProjectView({
     () => conversations.find((conversation) => conversation.id === activeConversationId) ?? null,
     [conversations, activeConversationId],
   );
+  const currentConversationReadOnly = projectMutationReadOnly
+    || Boolean(studio.actor && activeConversation?.studioCanWrite !== true);
   // Team collaboration: persist a comment that drifted to `lost` so its ghost
   // pin survives reload. Only ProjectView has the active conversation id the
   // anchor route needs; fed to the drift ladder through the collab context.
@@ -3558,6 +3560,9 @@ export function ProjectView({
   }, [project.id]);
   const projectRunAuthorityKeyRef = useRef(projectRunAuthorityKey);
   projectRunAuthorityKeyRef.current = projectRunAuthorityKey;
+  const conversationRefreshAuthority = JSON.stringify([project.id, projectRunAuthorityKey, studio.actor?.id, studio.generation]);
+  const conversationRefreshAuthorityRef = useRef(conversationRefreshAuthority);
+  conversationRefreshAuthorityRef.current = conversationRefreshAuthority;
   const conversationsLoadedProjectIdRef = useRef<string | null>(null);
   // Live mirror of the full project prop, for async handlers whose useCallback
   // deps only track `project.id` (e.g. the project-events handler below):
@@ -3630,7 +3635,7 @@ export function ProjectView({
     currentConversationHasActiveRun
     && !currentConversationStreaming
     && !currentConversationHasProgrammaticBrandExtractionRun;
-  const currentConversationSendDisabled = projectMutationReadOnly
+  const currentConversationSendDisabled = currentConversationReadOnly
     || !projectRunHasBillableAmrPrincipal
     || currentConversationReadPending
     || failedMessagesConversationId === activeConversationId
@@ -3644,7 +3649,7 @@ export function ProjectView({
    * `handleRetry` 在这六个条件下静默 `return`,而按钮永远画成可点。
    */
   const currentConversationActionBlockReason = resolveRecoveryActionBlockReason({
-    readOnly: Boolean(projectMutationReadOnly),
+    readOnly: Boolean(currentConversationReadOnly),
     messagesUnavailable: failedMessagesConversationId === activeConversationId,
     billingPrincipalResolved: Boolean(projectRunHasBillableAmrPrincipal),
     conversationBusy: Boolean(
@@ -3660,7 +3665,7 @@ export function ProjectView({
     || (activeConversationId && failedMessagesConversationId === activeConversationId)
   ) {
     currentConversationAccessError = 'messages-unavailable';
-  } else if (projectCollab.writerAuthority === 'denied') {
+  } else if (projectCollab.writerAuthority === 'denied' || currentConversationReadOnly) {
     currentConversationAccessError = 'read-only';
   }
   const currentConversationActionDisabledRef = useRef(currentConversationActionDisabled);
@@ -3680,7 +3685,7 @@ export function ProjectView({
     && messagesAuthorityKeyRef.current === projectRunAuthorityKey
     && !currentConversationActionDisabled;
 
-  const currentConversationQueueDisabled = projectMutationReadOnly
+  const currentConversationQueueDisabled = currentConversationReadOnly
     || currentConversationReadPending
     || failedMessagesConversationId === activeConversationId;
 
@@ -5176,6 +5181,11 @@ export function ProjectView({
     null,
   );
   const handleProjectEvent = useCallback((evt: ProjectEvent) => {
+    if (evt.type === 'chat-messages-changed') {
+      if (evt.projectId === project.id && evt.conversationId === activeConversationIdRef.current
+        && currentConversationReadOnly) scheduleConversationMessageRefreshRef.current?.(evt.conversationId);
+      return;
+    }
     if (evt.type === 'file-changed') {
       iframeKeepAlivePool.evictProject(project.id);
       invalidateHtmlSourceSnapshotProject(project.id);
@@ -5346,6 +5356,7 @@ export function ProjectView({
     projectAuthorizationKey,
     projectRunAuthorityKey,
     projectRunWorkspaceContext,
+    currentConversationReadOnly,
   ]);
   // A bound project must not open a headerless EventSource while its exact
   // authority is unresolved or forbidden: that request can only fail and the
@@ -5365,6 +5376,9 @@ export function ProjectView({
     onReady: () => {
       void reconcileFilesWhenProjectEventsBecomeReady();
       void refreshPreviewCommentsRef.current?.();
+      if (studio.actor && currentConversationReadOnly && activeConversationIdRef.current) {
+        scheduleConversationMessageRefreshRef.current?.(activeConversationIdRef.current);
+      }
     },
   }, projectRunWorkspaceContext);
 
@@ -5902,16 +5916,22 @@ export function ProjectView({
     [activeConversationId, project.id, projectRunWorkspaceContext],
   );
 
+  const conversationMessageRefreshTokenRef = useRef(0);
   const refreshConversationMessagesFromServer = useCallback(
     async (conversationId: string) => {
       if (messagesConversationIdRef.current !== conversationId) return;
+      const authority = projectRunAuthorityKey;
+      const refreshAuthority = conversationRefreshAuthority;
+      const token = ++conversationMessageRefreshTokenRef.current;
       try {
         const serverMessages = await listMessages(
           project.id,
           conversationId,
           projectRunWorkspaceContext,
         );
-        if (messagesConversationIdRef.current !== conversationId) return;
+        if (!mountedRef.current || conversationRefreshAuthorityRef.current !== refreshAuthority
+          || messagesConversationIdRef.current !== conversationId || projectRunAuthorityKeyRef.current !== authority
+          || messagesAuthorityKeyRef.current !== authority || token !== conversationMessageRefreshTokenRef.current) return;
         setMessages((current) => mergeServerMessagesIntoConversation(current, serverMessages));
         setMessagesInitialized(true);
         setMessagesConversationId(conversationId);
@@ -5920,17 +5940,32 @@ export function ProjectView({
         console.warn('Failed to refresh conversation messages after run completion', err);
       }
     },
-    [project.id, projectRunWorkspaceContext],
+    [project.id, projectRunWorkspaceContext, projectRunAuthorityKey, conversationRefreshAuthority],
   );
 
+  const conversationRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scheduleConversationMessageRefresh = useCallback(
     (conversationId: string) => {
-      scheduleProjectTimeout(() => {
+      if (activeConversationIdRef.current !== conversationId) return;
+      if (conversationRefreshTimerRef.current) return;
+      conversationRefreshTimerRef.current = scheduleProjectTimeout(() => {
+        conversationRefreshTimerRef.current = null;
         void refreshConversationMessagesFromServer(conversationId);
       }, 150);
     },
     [refreshConversationMessagesFromServer, scheduleProjectTimeout],
   );
+  useEffect(() => () => {
+    ++conversationMessageRefreshTokenRef.current;
+    if (conversationRefreshTimerRef.current) clearProjectTimeout(conversationRefreshTimerRef.current);
+    conversationRefreshTimerRef.current = null;
+  }, [project.id, activeConversationId, conversationRefreshAuthority, clearProjectTimeout]);
+  useEffect(() => {
+    if (!studio.actor || !currentConversationReadOnly || !activeConversationId || !daemonLive) return;
+    const timer = studioWindowSetInterval(() => { void refreshConversationMessagesFromServer(activeConversationId); },
+      projectEventsSseConnected ? 30_000 : 5_000);
+    return () => window.clearInterval(timer);
+  }, [studio.actor, currentConversationReadOnly, activeConversationId, daemonLive, projectEventsSseConnected, refreshConversationMessagesFromServer]);
 
   // The programmatic brand-extraction transcript is a synthetic row the daemon
   // reconciles to a terminal state out of band (finalize success, the 30s
@@ -6500,7 +6535,7 @@ export function ProjectView({
   );
 
   useEffect(() => {
-    if (!studio.available('execution') || config.mode !== 'daemon' || !daemonLive || !activeConversationId || streaming) return;
+    if (!studio.available('execution') || config.mode !== 'daemon' || !daemonLive || !activeConversationId || streaming || currentConversationReadOnly) return;
     let cancelled = false;
     const reattachConversationId = activeConversationId;
 
@@ -8047,6 +8082,7 @@ export function ProjectView({
     scheduleProjectTimeout,
     scheduleConversationMessageRefresh,
     recoveryTick,
+    currentConversationReadOnly,
   ]);
 
   useEffect(() => {
@@ -8445,7 +8481,7 @@ export function ProjectView({
       meta?: ProjectChatSendMeta,
       baseMessages?: ChatMessage[],
     ) => {
-      if (projectMutationReadOnly) return false;
+      if (currentConversationReadOnly) return false;
       if (!activeConversationId) return false;
       if (messagesConversationIdRef.current !== activeConversationId) return false;
       const clientRequestId = meta?.clientRequestId ?? randomUUID();
@@ -10739,7 +10775,7 @@ export function ProjectView({
       projectRunPreflightContext,
       projectRunWorkspaceContext,
       projectRunHasBillableAmrPrincipal,
-      projectMutationReadOnly,
+      currentConversationReadOnly,
       projectWorkspaceScopeState.scope,
     ],
   );
@@ -10844,6 +10880,7 @@ export function ProjectView({
   // queued-send handlers — because "send now" interrupts the active run to
   // make room for the prioritized send.
   const handleStop = useCallback(() => {
+    if (currentConversationReadOnly) return;
     const stoppedAt = Date.now();
     const programmaticBrandId = isProgrammaticBrandExtractionProject(currentProject.metadata)
       ? currentProject.metadata?.brandId?.trim() || ''
@@ -10896,6 +10933,7 @@ export function ProjectView({
   }, [
     cancelSendTextBuffer,
     cancelReattachTextBuffers,
+    currentConversationReadOnly,
     currentProject.metadata,
     onDesignSystemsRefresh,
     onProjectsRefresh,
@@ -13771,7 +13809,7 @@ export function ProjectView({
                 || projectMutationReadOnly
                 || homeAttachmentUploads.length > 0
               }
-              viewerOnly={projectMutationReadOnly}
+              viewerOnly={currentConversationReadOnly}
               composerPlaceholder={
                 projectCollab.materializationPending
                   ? t('designFiles.syncing')

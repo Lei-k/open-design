@@ -10,7 +10,7 @@ import { addDesignArchiveMetadata, mimeFor, validateProjectPath } from '../proje
 import { sanitizeArchiveFilename } from '../projects/archive-filename.js';
 import { captureStudioProject } from '../projects/studio-snapshot.js';
 import { readProjectFileVersion } from '../project-file-versions.js';
-import { ProjectAccessStore } from '../storage/project-access.js';
+import { ProjectAccessStore, type ProjectAccessOptions } from '../storage/project-access.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { bindMultiUserStream, multiUserStreamAllowed } from '../http/multiuser-stream.js';
 import { sendApiError } from '../http/api-errors.js';
@@ -19,9 +19,9 @@ import { bundleStandaloneHtml, StandaloneHtmlExportError } from '../artifacts/st
 /** Captures bounded owned bytes before compressing or bundling. Standard
  * endpoints rewrite here so the host archive/export walkers never execute for
  * a remote actor. */
-export function registerStudioArchiveRoutes(app: Express, input: { db: Database.Database; projectsRoot: string }): void {
+export function registerStudioArchiveRoutes(app: Express, input: { db: Database.Database; projectsRoot: string } & ProjectAccessOptions): void {
   // Owner or any grantee (#65): every member may download what it can read.
-  const access = new ProjectAccessStore(input.db);
+  const access = new ProjectAccessStore(input.db, input);
   const active = new Set<string>();
   const safePath = (value: unknown): string => {
     if (typeof value !== 'string' || !value || value.length > 1024) throw new Error('Invalid archive path');

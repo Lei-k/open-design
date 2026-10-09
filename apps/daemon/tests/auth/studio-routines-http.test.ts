@@ -10,6 +10,17 @@ import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, pr
 import { PERSONAL_CODEX_MOCK, codexHome, linkCodex, until } from './personal-codex-helpers.js';
 
 let daemon: StartedMultiUserDaemon; let root: string; let a: Principal; let b: Principal; let admin: Principal;
+const ownKey = 'sk-routine-a-own-fixture-0123456789';
+let providerCalls = 0;
+const openai: typeof fetch = async (_url, init) => {
+  providerCalls++;
+  expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${ownKey}`);
+  expect(String(init?.body)).toContain('unattended scheduled routine');
+  const text = 'Own key routine complete.';
+  return new Response([{ type: 'response.output_text.delta', delta: text }, { type: 'response.completed', response: {
+    output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }] } }]
+    .map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
+};
 const pilotRevision = new Map<string, number>();
 async function pilot(user: Principal, studioPilot: boolean) {
   const revision = pilotRevision.get(user.id) ?? 0;
@@ -19,11 +30,15 @@ async function pilot(user: Principal, studioPilot: boolean) {
 }
 beforeAll(async () => {
   ({ dataRoot: root } = await loadIsolatedServerModule());
-  daemon = await startMultiUserDaemon(multiUserOptions({ testPersonalCodexAppServer: PERSONAL_CODEX_MOCK }));
+  daemon = await startMultiUserDaemon(multiUserOptions({ testPersonalCodexAppServer: PERSONAL_CODEX_MOCK, testCompanyOpenAIFetch: openai }));
   const accounts = await provisionAccounts(daemon, ['routine-a', 'routine-b']);
   [a, b] = accounts.users as [Principal, Principal]; admin = accounts.admin;
   await linkCodex(daemon, root, a, 'routine-a@example.test');
   await pilot(a, true); await pilot(b, true);
+  expect((await daemon.request({ method: 'PUT', path: '/api/admin/pool/openai', cookie: admin.cookie,
+    body: { revision: 0, model: 'fixture-model', enabled: true, capacity: 1, apiKey: 'sk-company-routine-fixture-0123456789' } })).status).toBe(200);
+  expect((await daemon.request({ method: 'PUT', path: '/api/multiuser/settings/provider-keys/openai', cookie: a.cookie,
+    body: { revision: 0, apiKey: ownKey } })).status).toBe(200);
 }, 120_000);
 afterAll(async () => { await daemon?.close(); cleanupIsolatedDataRoot(); });
 
@@ -73,6 +88,27 @@ it('keeps routines private and runs them as the owner on a fresh owned project',
   expect(paused.json.routine).toMatchObject({ enabled: false, nextRunAt: null });
   expect((await daemon.request({ method: 'DELETE', path: `/api/routines/${encodeURIComponent(id)}`, cookie: a.cookie, body: {} })).status).toBe(200);
   expect((await daemon.request({ path: `/api/routines/${encodeURIComponent(id)}`, cookie: a.cookie })).status).toBe(404);
+}, 30_000);
+
+it('runs a routine on its owner\'s encrypted API key, and a missing key never falls back to the configured pool', async () => {
+  const made = await routine(a, { name: 'Own-key routine', agentId: 'openai-byok' });
+  expect(made.status, made.text).toBe(201);
+  const id = made.json.routine.id as string;
+  expect(made.json.routine.agentId).toBe('openai-byok');
+  expect((await daemon.request({ method: 'POST', path: `/api/routines/${id}/run`, cookie: a.cookie, body: {} })).status).toBe(202);
+  const finished = await until(() => runs(a, id), (result) => result.json.runs[0]?.status === 'succeeded', 'own-key routine');
+  const run = await daemon.request({ path: `/api/runs/${finished.json.runs[0].agentRunId}`, cookie: a.cookie });
+  expect(run.json).toMatchObject({ executionSource: 'personal_api_key', agentId: 'openai-byok', status: 'succeeded' });
+  expect((await daemon.request({ method: 'PATCH', path: `/api/routines/${id}`, cookie: a.cookie, body: { name: 'Renamed' } })).json.routine.agentId).toBe('openai-byok');
+  for (const user of [b, admin]) expect((await daemon.request({ path: `/api/routines/${id}`, cookie: user.cookie })).status).toBe(404);
+  expect(JSON.stringify((await runs(a, id)).json)).not.toContain(ownKey);
+  const missing = await routine(b, { name: 'No own key', agentId: 'openai-byok' });
+  expect(missing.status, missing.text).toBe(201);
+  const calls = providerCalls;
+  expect((await daemon.request({ method: 'POST', path: `/api/routines/${missing.json.routine.id}/run`, cookie: b.cookie, body: {} })).status).toBe(202);
+  const refused = await until(() => runs(b, missing.json.routine.id), (result) => result.json.runs[0]?.status === 'failed', 'missing routine key');
+  expect(refused.json.runs[0].errorCode).toBe('MULTIUSER_PROVIDER_KEY_MISSING');
+  expect(providerCalls).toBe(calls);
 }, 30_000);
 
 it('revalidates the owner on dispatch and refuses foreign targets and host-scoped context', async () => {

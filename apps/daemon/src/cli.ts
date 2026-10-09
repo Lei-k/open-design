@@ -13,6 +13,7 @@ import { DESIGN_SYSTEMS_USAGE, isDesignSystemsHelpArg } from './cli-help/index.j
 import { BRAND_USAGE, isBrandHelpArg } from './cli-help/index.js';
 import { runDesignSystemDocumentCli } from './design-systems/document-cli.js';
 import { parseDesignSystemRenameArgs } from './design-systems/rename-args.js';
+import { studioLiveArtifactCliRequest, STUDIO_LIVE_ARTIFACT_USAGE } from './live-artifacts/session-cli.js';
 import { runLiveArtifactsToolCli } from './tools-live-artifacts-cli.js';
 import { runDeliverableSyntaxToolCli } from './tools-deliverable-syntax-cli.js';
 import { splitResearchSubcommand } from './research/cli-args.js';
@@ -468,6 +469,7 @@ const SUBCOMMAND_MAP = {
   'whats-new': runWhatsNew,
   doctor: runDoctor,
   config: runConfig,
+  'live-artifact': runStudioLiveArtifact,
   comment: runComment,
   comments: runComment,
   library: runLibrary,
@@ -1012,6 +1014,8 @@ function printRootHelp() {
   od [--port <n>] [--host <addr>] [--no-open]
       Start the local daemon and open the web UI.
 
+  od live-artifact <list|create|info|code|history|update|refresh|delete> [options]
+      Manage project Live Artifacts over the current remote session.
   od tools live-artifacts <create|list|update|refresh> [options]
       Manage live artifacts through daemon wrapper commands.
 
@@ -2815,6 +2819,7 @@ async function runPlugin(args) {
     // `show` reads the same detail (Studio accounts: one bundled plugin with Web availability).
     case 'show':      return runPluginInfo(rest);
     case 'manifest':  return runPluginManifest(rest);
+    case 'preview':   return runPluginPreview(rest);
     case 'install':   return runPluginInstall(rest);
     case 'upgrade':   return runPluginUpgrade(rest);
     case 'uninstall': return runPluginUninstall(rest);
@@ -3723,6 +3728,18 @@ async function runPluginRun(rest) {
 
 async function pluginDaemonUrl(flags) {
   return cliDaemonUrl(flags);
+}
+
+async function runPluginPreview(rest: string[]) {
+  const { pluginPreviewCliRequest } = await import('./plugins/preview-cli.js');
+  const request = pluginPreviewCliRequest(rest);
+  if (request.descriptor && !remoteSessionFile) throw new Error('--variant descriptor requires a Studio session');
+  const flags = { 'daemon-url': request.daemonUrl };
+  const base = (await pluginDaemonUrl(flags)).replace(/\/$/, '');
+  const response = await pluginFetch(flags, `${base}${request.path}`);
+  if (!response.ok) throw new Error(`plugin preview failed: HTTP ${response.status}`);
+  const result = request.descriptor ? await response.json() : { html: await response.text() };
+  return writePluginStdout(request.json || request.descriptor ? JSON.stringify(result, null, 2) + '\n' : result.html + '\n');
 }
 
 function pluginFetch(flags, input, init = {}) {
@@ -6233,6 +6250,8 @@ function printPluginHelp() {
                                           catalog is the bundled one, each plugin with Web
                                           availability; list --json includes it too.
   od plugin manifest <id>                 Print only the parsed manifest JSON (no wrapper).
+  od plugin preview <id> [--example <n>]  Read shipped HTML; --json for machines. Studio sessions
+                                          also accept --variant descriptor for an isolated preview URL.
   od plugin sources                       List distinct install sources + counts.
   od plugin install --source <path>       Install a plugin from a local folder (Phase 1).
   od plugin upgrade <id>                  Re-install a plugin from its recorded source.
@@ -7093,7 +7112,7 @@ async function runProject(args) {
   od project list                         List projects.
   od project info <id>                    Print one project.
   od project tabs <id> [--tabs-json <json-array> --active-file <path>] [--json]
-  od project events <id>                  Stream owned file events as ND-JSON.
+  od project events <id>                  Stream readable project/file/chat signals as ND-JSON.
   od project active [<id> --active-file <path> | --clear] [--json]
                                           Read/set this session's UI focus.
   od project restore-automatic-scenario <id> [--json]
@@ -10869,6 +10888,19 @@ or the daemon cannot be reached.`);
  * `od comment …` — preview comments on the same endpoints as the FileViewer
  * comment tool (owner-only in a multi-user Studio, via --session-file).
  */
+async function runStudioLiveArtifact(args) {
+  if (args.includes('--help') || args.includes('-h') || args[0] === 'help') { console.log(STUDIO_LIVE_ARTIFACT_USAGE); return; }
+  let plan;
+  try { plan = await studioLiveArtifactCliRequest(args, (file) => readMemoryPromptFile({ 'prompt-file': file })); }
+  catch (error) { console.error(error.message); process.exitCode = 2; return; }
+  const base = (await libraryDaemonUrl({ ...(plan.daemonUrl ? { 'daemon-url': plan.daemonUrl } : {}) })).replace(/\/$/, '');
+  const response = await fetch(`${base}${plan.path}`, { method: plan.method,
+    ...(plan.body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(plan.body) }) });
+  if (!response.ok) return structuredHttpFailure(response);
+  const result = plan.text ? await response.text() : await response.json();
+  process.stdout.write((plan.json || !plan.text ? JSON.stringify(result) : result) + '\n');
+}
+
 async function runComment(args) {
   const usage = `Usage:
   od comment list <projectId> --conversation <id> [--json]
@@ -12109,8 +12141,11 @@ async function readPromptFromFlags(flags) {
 
 function printAutomationHelp() {
   console.log(`Usage:
-  od automation template list                                List built-in automation templates.
-  od automation template get <id>                            Print one built-in automation template.
+  od automation template list [--json]                        List available automation templates.
+  od automation template get <id> [--json]                    Print one automation template.
+  od automation template propose --action create|update|delete
+                         [--target <id>] [--prompt-file <path|->] [--json]
+                         Studio: propose private template JSON; then review/apply the proposal.
   od automation source ingest --source-kind <kind> --title <title>
                               [--source-ref <ref>] [--template <id>]
                               [--body <markdown> | --body-file <path|->]
@@ -12126,15 +12161,15 @@ function printAutomationHelp() {
   od automation get <id>                                     Print one automation.
   od automation create --name "<title>" --prompt "<text>"
                        --schedule <spec>
-                       [--template <id>] (bundled template: default name and prompt)
+                       [--template <id>] (template supplies default name and prompt)
                        [--target new-project|reuse=<projectId>]
                        [--disabled] [--json]
                        [--prompt-file <path|->] (alternative to --prompt)
                        [--skill <id>[,<id>]] [--plugin <id>[,<id>]]
                        [--mcp <id>[,<id>]] [--connector <id>[,<id>]]
-                       [--agent <id>]
+                       [--agent <id>] (Studio: codex | openai | openai-byok)
   od automation update <id> [--name ...] [--prompt ...]
-                            [--schedule ...] [--target ...]
+                            [--schedule ...] [--target ...] [--agent <id>]
                             [--skill ...] [--plugin ...] [--mcp ...]
                             [--connector ...] [--enabled|--disabled]
                             Patch fields.
@@ -12223,6 +12258,43 @@ async function runAutomation(args) {
     case 'templates': {
       const parts = positionalArgs(rest);
       const action = parts[0] ?? 'list';
+      if (action === 'propose') {
+        const change = flags.action ?? 'create';
+        const target = typeof flags.target === 'string' ? flags.target : undefined;
+        if (!['create', 'update', 'delete'].includes(String(change)) || change !== 'create' && !target || change === 'create' && target) {
+          console.error('Usage: od automation template propose --action create|update|delete [--target <id>] --prompt-file <path|->');
+          process.exit(2);
+        }
+        let before: Record<string, unknown> | undefined;
+        if (target) {
+          let current;
+          try { current = await fetch(`${base}/api/automation-templates/${encodeURIComponent(target)}`); }
+          catch (error) { surfaceFetchError(error, base); process.exit(3); }
+          if (!current.ok) return structuredHttpFailure(current);
+          const { studioOwned: _owned, unavailable: _unavailable, ...template } = (await current.json()).template;
+          before = template;
+        }
+        let after: Record<string, unknown> | undefined;
+        if (change !== 'delete') {
+          try {
+            after = JSON.parse(await readPromptFromFlags(flags) ?? '');
+            if (!after || typeof after !== 'object' || Array.isArray(after)) throw new Error();
+          } catch { console.error('Supply template JSON with --prompt-file <path|->.'); process.exit(2); }
+        }
+        let response;
+        try {
+          response = await fetch(`${base}/api/automation-proposals`, { method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ title: String(after?.title ?? before?.title ?? 'Automation template'), summary: `Review ${change} of private automation template.`,
+              targetKind: 'automation-template', action: change, reviewPolicy: 'always', ...(target ? { targetRef: target } : {}),
+              patch: { format: 'json', ...(before ? { before: JSON.stringify(before) } : {}), ...(after ? { after: JSON.stringify(after) } : {}) } }),
+          });
+        } catch (error) { surfaceFetchError(error, base); process.exit(3); }
+        if (!response.ok) return structuredHttpFailure(response);
+        const data = await response.json();
+        if (flags.json) return writeJson(data);
+        console.log(`Review proposal ${data.proposal.id}; apply with od automation proposal apply ${data.proposal.id}.`);
+        return;
+      }
       if (action === 'list') {
         let resp;
         try {
@@ -12667,6 +12739,7 @@ async function runAutomation(args) {
       }
       if (flags.disabled) patch.enabled = false;
       if (flags.enabled) patch.enabled = true;
+      if (flags.agent) patch.agentId = String(flags.agent);
       const context = automationContextFromFlags(flags);
       if (context) {
         const skillIds = splitCommaSeparatedIds(flags.skill);
@@ -12674,7 +12747,7 @@ async function runAutomation(args) {
         patch.context = context;
       }
       if (Object.keys(patch).length === 0) {
-        console.error('update needs at least one of --name --prompt(--prompt-file) --schedule --target --skill --plugin --mcp --connector --enabled --disabled');
+        console.error('update needs at least one of --name --prompt(--prompt-file) --schedule --target --agent --skill --plugin --mcp --connector --enabled --disabled');
         process.exit(2);
       }
       let resp;

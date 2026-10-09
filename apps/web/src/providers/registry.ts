@@ -37,6 +37,7 @@ import type {
   SocialShareRequest,
   SocialShareResponse,
   WorkspaceCollabContext,
+  StudioPluginPreviewResponse,
 } from '@open-design/contracts';
 import type {
   AgentInfo,
@@ -2331,7 +2332,7 @@ export async function fetchLiveArtifacts(
     workspaceContext?: WorkspaceCollabContext | null;
   },
 ): Promise<LiveArtifactSummary[]> {
-  if (!studioUsesLocalServices()) return [];
+  if (!studioLaneUsable('files')) return [];
   const run = async () => {
     try {
       const url = workspaceResourceUrl(
@@ -3617,6 +3618,15 @@ export async function fetchPluginPreviewHtml(
     const message = err instanceof Error ? err.message : 'network error';
     return { error: message };
   }
+}
+
+/** The detail modal loads an isolated frame; source consumers keep the plain HTML helper. */
+export async function fetchStudioPluginPreview(id: string, exampleStem?: string | null): Promise<StudioPluginPreviewResponse | null> {
+  const suffix = exampleStem ? `example/${encodeURIComponent(exampleStem)}` : 'preview';
+  const response = await fetch(`/api/plugins/${encodeURIComponent(id)}/${suffix}?variant=descriptor`);
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
 }
 
 // Fetch a single example output by stem (matches the basename of the

@@ -4579,6 +4579,8 @@ export function FileWorkspace({
           />
         ) : activeLiveArtifact ? (
           <LiveArtifactViewer
+            key={`${projectId}:${activeLiveArtifact.artifactId}`}
+            viewerOnly={viewerOnly}
             projectId={projectId}
             liveArtifact={activeLiveArtifact}
             liveArtifactEvents={liveArtifactEvents}

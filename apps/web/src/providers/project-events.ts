@@ -7,6 +7,7 @@ import {
   COLLAB_PROJECT_INVALIDATION_EVENTS,
   PROJECT_CONTENT_TRANSFER_STATE_EVENT,
   type ChatArtifactRefsChangedSsePayload,
+  type StudioChatMessagesChangedSsePayload,
   type CollabProjectInvalidationSsePayload,
   type LiveArtifactRefreshSsePayload,
   type LiveArtifactSsePayload,
@@ -53,6 +54,7 @@ export type ProjectEvent =
   | ProjectLiveArtifactEvent
   | ProjectCollabInvalidationEvent
   | ProjectChatArtifactRefsChangedEvent
+  | StudioChatMessagesChangedSsePayload
   | ProjectContentTransferStateSsePayload;
 
 export interface ProjectEventsConnectionOptions {
@@ -230,6 +232,14 @@ export function createProjectEventsConnection(
           console.warn('[project-events] malformed chat-artifact-refs-changed payload', err);
         }
       }
+    });
+    es.addEventListener('chat-messages-changed', (evt) => {
+      try {
+        const data = JSON.parse((evt as MessageEvent).data) as StudioChatMessagesChangedSsePayload;
+        if (data.type !== 'chat-messages-changed' || data.projectId !== projectId
+          || typeof data.conversationId !== 'string' || !data.conversationId || !Number.isFinite(data.at)) return;
+        onChange(data);
+      } catch { /* Reconnect reconciles the transcript after a malformed signal. */ }
     });
     es.addEventListener(PROJECT_CONTENT_TRANSFER_STATE_EVENT, (evt) => {
       try {
