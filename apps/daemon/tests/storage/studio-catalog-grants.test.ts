@@ -12,7 +12,7 @@ afterEach(() => { db.close(); });
 it('derives roles from the owner binding and grants, bounded per item and gone with the item', () => {
   const skills = new StudioSkills(db);
   const designs = new StudioDesignSystems(db);
-  const grants = new StudioCatalogGrants(db);
+  const grants = new StudioCatalogGrants(db, { accountActive: () => true });
   const skill = skills.create('owner', { name: 'Shared', body: 'body' })!;
   const document = designs.create('owner', { title: 'Doc', body: 'body' });
   expect(grants.roleOf('skill', skill.id, 'owner')).toBe('owner');
@@ -39,4 +39,34 @@ it('derives roles from the owner binding and grants, bounded per item and gone w
   expect(grants.remove('design-system', document.id, 'grantee-0')).toBe(true);
   expect(grants.remove('design-system', document.id, 'grantee-0')).toBe(false);
   expect(() => db.prepare("INSERT INTO studio_catalog_grants (kind, resource_id, grantee_account_id, role, granted_at) VALUES ('skill', 'x', 'y', 'edit', 1)").run()).toThrow();
+});
+
+it('grants nothing while the owner or the grantee is deactivated, and keeps the rows for reactivation', () => {
+  const skills = new StudioSkills(db);
+  const designs = new StudioDesignSystems(db);
+  const inactive = new Set<string>();
+  const grants = new StudioCatalogGrants(db, { accountActive: (accountId) => !inactive.has(accountId) });
+  const skill = skills.create('owner', { name: 'Shared', body: 'body' })!;
+  const document = designs.create('owner', { title: 'Doc', body: 'body' });
+  grants.set('skill', skill.id, 'grantee', 1);
+  grants.set('design-system', document.id, 'grantee', 1);
+  expect(grants.roleOf('skill', skill.id, 'grantee')).toBe('use');
+  // The owner is deactivated: both kinds stop granting on every access decision.
+  inactive.add('owner');
+  expect(grants.roleOf('skill', skill.id, 'grantee')).toBeNull();
+  expect(grants.roleOf('design-system', document.id, 'grantee')).toBeNull();
+  expect(grants.sharedWith('skill', 'grantee')).toEqual([]);
+  expect(grants.sharedWith('design-system', 'grantee')).toEqual([]);
+  // Suspension, not revocation: the rows stay and reactivation restores them.
+  expect(grants.list('skill', skill.id)).toHaveLength(1);
+  inactive.delete('owner');
+  expect(grants.roleOf('design-system', document.id, 'grantee')).toBe('use');
+  expect(grants.sharedWith('skill', 'grantee')).toEqual([{ resourceId: skill.id, ownerAccountId: 'owner' }]);
+  // A deactivated grantee holds nothing either.
+  inactive.add('grantee');
+  expect(grants.roleOf('skill', skill.id, 'grantee')).toBeNull();
+  expect(grants.sharedWith('design-system', 'grantee')).toEqual([]);
+  // Missing accounts fail closed exactly like inactive ones.
+  const unknown = new StudioCatalogGrants(db, { accountActive: () => false });
+  expect(unknown.roleOf('skill', skill.id, 'grantee')).toBeNull();
 });

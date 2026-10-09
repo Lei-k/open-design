@@ -9,19 +9,41 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts,
+import { cleanupIsolatedDataRoot, loadIsolatedServerModule, login, multiUserOptions, provisionAccounts,
   startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
-import { PERSONAL_CODEX_MOCK, codexHome, linkCodex } from './personal-codex-helpers.js';
+import { PERSONAL_CODEX_MOCK, codexHome, linkCodex, until } from './personal-codex-helpers.js';
+
+/**
+ * Research fixture: the turn's paid search runs after the catalog capture and
+ * before the admission commit. While `researchHold` is set, every search waits
+ * on it, so a test can change catalog authority inside that window.
+ */
+let researchHold: Promise<void> | null = null;
+let researchCalls = 0;
+const tavily: typeof fetch = async () => {
+  researchCalls += 1;
+  if (researchHold) await researchHold;
+  return Response.json({ answer: 'CATALOG_RACE_FINDINGS', results: [{ title: 'Note', url: 'https://example.test/note', content: 'note' }] });
+};
+const companyOpenAI: typeof fetch = async () => new Response(`data: ${JSON.stringify({ type: 'response.completed', response: {
+  output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Noted.' }] }] } })}\n\n`,
+{ headers: { 'content-type': 'text/event-stream' } });
 
 let daemon: StartedMultiUserDaemon; let root: string;
 let a: Principal; let b: Principal; let c: Principal; let admin: Principal;
 beforeAll(async () => {
   ({ dataRoot: root } = await loadIsolatedServerModule());
-  daemon = await startMultiUserDaemon(multiUserOptions({ testPersonalCodexAppServer: PERSONAL_CODEX_MOCK }));
+  daemon = await startMultiUserDaemon(multiUserOptions({ testPersonalCodexAppServer: PERSONAL_CODEX_MOCK,
+    testTavilyFetch: tavily, testCompanyOpenAIFetch: companyOpenAI }));
   const accounts = await provisionAccounts(daemon, ['catalog-a', 'catalog-b', 'catalog-c']);
   [a, b, c] = accounts.users as [Principal, Principal, Principal]; admin = accounts.admin;
   await linkCodex(daemon, root, a, 'catalog-a@example.test');
   await linkCodex(daemon, root, b, 'catalog-b@example.test');
+  const pool = await daemon.request({ path: '/api/admin/pool/openai', cookie: admin.cookie });
+  expect((await daemon.request({ method: 'PUT', path: '/api/admin/pool/openai', cookie: admin.cookie, body: {
+    revision: pool.json.provider.revision, model: 'company-model', enabled: true, capacity: 2, apiKey: 'sk-catalog-race-fixture-0123456789' } })).status).toBe(200);
+  expect((await daemon.request({ method: 'PUT', path: '/api/multiuser/settings/provider-keys/tavily', cookie: b.cookie,
+    body: { revision: 0, apiKey: 'tvly-catalog-b-fixture-0123456789' } })).status).toBe(200);
 }, 120_000);
 afterAll(async () => { await daemon?.close(); cleanupIsolatedDataRoot(); });
 
@@ -252,4 +274,105 @@ describe('team catalogs between accounts', () => {
     const unadmittedThread = await request(b, 'POST', `/api/projects/${unadmitted.projectId}/conversations`, { title: 'member thread' });
     expect((await run(b, { projectId: unadmitted.projectId, conversationId: unadmittedThread.json.conversation.id })).status).toBe(404);
   }, 90_000);
+
+  it('suspends every grant of a deactivated owner and restores them on reactivation; admitted pins keep running', async () => {
+    const owner = await account('catalog-owner-off');
+    const skillId = await skill(owner, 'OWNER_OFF_SKILL_ORIGINAL guidance');
+    const designId = await design(owner, '# Owner off\nOWNER_OFF_DESIGN_ORIGINAL tokens');
+    expect((await share('skills', skillId, b.username, owner)).status).toBe(200);
+    expect((await share('design-systems', designId, b.username, owner)).status).toBe(200);
+    const pinned = await project(b);
+    const first = await finish(b, await run(b, pinned, { skillIds: [skillId], designSystemId: designId }));
+    expect(first).toContain('OWNER_OFF_SKILL_ORIGINAL'); expect(first).toContain('OWNER_OFF_DESIGN_ORIGINAL');
+    const missingSkill = `studio-skill:${randomUUID()}`;
+    const missingDesign = `user:studio_${randomUUID()}`;
+
+    expect((await request(admin, 'PATCH', `/api/auth/users/${owner.id}`, { active: false })).status).toBe(200);
+    // Lists, detail, files, preview bytes and the member view: the same refusal as a missing id.
+    expect(JSON.stringify(await listed(b, 'skills'))).not.toContain(skillId);
+    expect(JSON.stringify(await listed(b, 'design-systems'))).not.toContain(designId);
+    for (const [route, missing] of [
+      [`/api/skills/${enc(skillId)}`, `/api/skills/${enc(missingSkill)}`],
+      [`/api/skills/${enc(skillId)}/files`, `/api/skills/${enc(missingSkill)}/files`],
+      ...['', '/files', '/file?path=DESIGN.md', '/preview', '/showcase'].map((suffix) =>
+        [`/api/design-systems/${enc(designId)}${suffix}`, `/api/design-systems/${enc(missingDesign)}${suffix}`]),
+      [`/api/multiuser/catalog/skills/${enc(skillId)}/access`, `/api/multiuser/catalog/skills/${enc(missingSkill)}/access`],
+      [`/api/multiuser/catalog/design-systems/${enc(designId)}/access`, `/api/multiuser/catalog/design-systems/${enc(missingDesign)}/access`],
+    ] as Array<[string, string]>) {
+      const refused = await request(b, 'GET', route);
+      expect(refused.status, route).toBe(404);
+      expect(refused.text, route).toBe((await request(b, 'GET', missing)).text);
+    }
+    // New selections, new conversations and project setup are refused.
+    expect((await run(b, await project(b), { skillIds: [skillId] })).status).toBe(404);
+    expect((await run(b, await project(b), { designSystemId: designId })).status).toBe(404);
+    const setup = await request(b, 'POST', '/api/projects', { id: randomUUID(), name: 'owner off setup', designSystemId: designId });
+    expect(setup.status).toBe(404);
+    // The admitted conversation keeps its captured version; nothing historical is rewritten.
+    await finish(b, await run(b, pinned, { skillIds: [skillId], designSystemId: designId }));
+    const kept = latestCapture(pinned.conversationId);
+    expect(kept).toContain('OWNER_OFF_SKILL_ORIGINAL'); expect(kept).toContain('OWNER_OFF_DESIGN_ORIGINAL');
+
+    // Reactivation lifts the suspension: grants were never revoked, so they apply again.
+    expect((await request(admin, 'PATCH', `/api/auth/users/${owner.id}`, { active: true })).status).toBe(200);
+    expect((await listed(b, 'skills')).find((item) => item.id === skillId)?.studioShare).toMatchObject({ role: 'use', ownerUsername: owner.username });
+    expect((await request(b, 'GET', `/api/design-systems/${enc(designId)}/preview`)).text).toContain('OWNER_OFF_DESIGN_ORIGINAL');
+  }, 90_000);
+
+  it('refuses an admission whose shared capture loses authority before the commit, on personal and company paths', async () => {
+    const conversationRows = (conversationId: string) => {
+      const db = new Database(path.join(root, 'app.sqlite'), { readonly: true });
+      try {
+        return {
+          runs: (db.prepare('SELECT COUNT(*) AS n FROM multiuser_runs WHERE conversation_id = ?').get(conversationId) as { n: number }).n,
+          messages: (db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?').get(conversationId) as { n: number }).n,
+        };
+      } finally { db.close(); }
+    };
+    const sources = [{ agentId: 'codex', executionSource: 'personal_subscription' }, { agentId: 'openai', executionSource: 'company_pool' }];
+    const losses: Array<{ label: string; lose: (owner: Principal, ids: { skillId: string; designId: string }) => Promise<void> }> = [
+      { label: 'skill revoked', lose: async (owner, ids) => { expect((await revoke('skills', ids.skillId, b.id, owner)).status).toBe(200); } },
+      { label: 'design revoked', lose: async (owner, ids) => { expect((await revoke('design-systems', ids.designId, b.id, owner)).status).toBe(200); } },
+      { label: 'owner deactivated', lose: async (owner) => { expect((await request(admin, 'PATCH', `/api/auth/users/${owner.id}`, { active: false })).status).toBe(200); } },
+      { label: 'control (no change)', lose: async () => {} },
+    ];
+    for (const source of sources) {
+      for (const loss of losses) {
+        const label = `${source.executionSource} / ${loss.label}`;
+        const owner = await account(`race-${randomUUID().slice(0, 8)}`);
+        const ids = { skillId: await skill(owner, 'RACE_SKILL guidance'), designId: await design(owner, '# Race\nRACE_DESIGN tokens') };
+        expect((await share('skills', ids.skillId, b.username, owner)).status).toBe(200);
+        expect((await share('design-systems', ids.designId, b.username, owner)).status).toBe(200);
+        const context = await project(b);
+        let release!: () => void;
+        researchHold = new Promise<void>((resolve) => { release = resolve; });
+        const callsBefore = researchCalls;
+        try {
+          const pending = run(b, context, { ...source, skillIds: [ids.skillId], designSystemId: ids.designId,
+            clientRequestId: `race-${randomUUID()}`, research: { enabled: true, query: 'race' } });
+          // The search is held: capture already happened and the commit has not.
+          await until(() => researchCalls, (count) => count > callsBefore, `${label}: held search`);
+          await loss.lose(owner, ids);
+          release(); researchHold = null;
+          const reply = await pending;
+          if (loss.label.startsWith('control')) {
+            expect(reply.status, `${label}: ${reply.text}`).toBe(202);
+            await until(() => request(b, 'GET', `/api/runs/${reply.json.runId}`), (r) => ['succeeded', 'failed'].includes(r.json.status), `${label}: run`);
+            continue;
+          }
+          expect(reply.status, `${label}: ${reply.text}`).toBe(404);
+          expect(reply.json?.runId, label).toBeUndefined();
+          expect(conversationRows(context.conversationId), label).toEqual({ runs: 0, messages: 0 });
+        } finally { release(); researchHold = null; }
+      }
+    }
+  }, 120_000);
 });
+
+/** A fresh signed-in account, so deactivating it leaves the shared principals alone. */
+async function account(username: string): Promise<Principal> {
+  const password = `${username}-password-battery-staple`;
+  const created = await request(admin, 'POST', '/api/auth/users', { username, password, role: 'user' });
+  expect(created.status, created.text).toBe(201);
+  return { id: created.json.account.id as string, username, password, cookie: await login(daemon, username, password) };
+}

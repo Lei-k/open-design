@@ -10,7 +10,7 @@ import { formatProjectAttachmentHint, normalizeCommentAttachments, renderComment
 import { renderRunContextPrompt } from '../runtimes/chat-run-context.js';
 import { classifyRunSteering } from '../runtimes/run-steering.js';
 import { RESTART_ERROR_CODE } from '../runtimes/run-restart-recovery.js';
-import type { MultiUserRun, MultiUserRunEvent, MultiUserRunStatus, MultiUserRunsResponse, StudioProviderKeyResponse, StudioProviderKeysResponse, UpdateStudioProviderKeyRequest } from '@open-design/contracts';
+import type { MultiUserRun, MultiUserRunEvent, MultiUserRunStatus, MultiUserRunsResponse, StudioCatalogAccessRole, StudioCatalogShareKind, StudioProviderKeyResponse, StudioProviderKeysResponse, UpdateStudioProviderKeyRequest } from '@open-design/contracts';
 import { getConversation, getMessage, getProject, updateProject } from '../db.js';
 import { sendApiError } from '../http/api-errors.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
@@ -331,6 +331,12 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   catalog?: StudioCatalog;
   settings?: StudioSettings;
   designCatalog?: StudioDesignCatalog;
+  /**
+   * Team catalog grants (#61/#65): the live, synchronous `use` decision that
+   * admission repeats right before it commits a freshly captured shared item.
+   * Absent, a fresh shared capture is refused (fail closed).
+   */
+  catalogGrants?: { roleOf(kind: StudioCatalogShareKind, resourceId: string, accountId: string): StudioCatalogAccessRole | null };
   /** Account-private provider keys (#62/#63); `false` turns the source off for this deployment. */
   personalProviderKeys?: boolean;
   /** Programmatic Tavily fixture for tests; production calls the fixed provider endpoint. */
@@ -371,7 +377,26 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           ORDER BY queue_seq DESC LIMIT 1`)).get(pin.projectId, projectOwner, requestedId) as { request_json: string } | undefined;
     return row ? storedRequest(row.request_json) : null;
   };
-  const captureDesign = async (owner: string, conversationId: string, requestedId: string | null, question?: RunRow, pin?: ProjectPin): Promise<DesignSnapshot | null | false> => {
+  /**
+   * Team catalogs (#61/#65): a shared item this admission read live from
+   * another account's catalog. Capture authorized it, but the admission then
+   * yields (memory, settings, research) before it commits; each such item is
+   * re-decided synchronously right before the commit (`lostSharedCapture`).
+   * Reusing a conversation's admitted pin or inheriting a shared project's
+   * admitted pin reads no catalog and is never listed here.
+   */
+  type FreshSharedCapture = { kind: StudioCatalogShareKind; id: string };
+  /**
+   * The first fresh shared capture the actor no longer holds `use` on (revoked,
+   * owner or grantee deactivated, item deleted), or null when all still hold.
+   * Synchronous by contract: call it with no await between it and the commit.
+   */
+  const lostSharedCapture = (owner: string, fresh: readonly FreshSharedCapture[]): FreshSharedCapture | null =>
+    fresh.find(({ kind, id }) => input.catalogGrants?.roleOf(kind, id, owner) !== 'use') ?? null;
+  const refuseLostSharedCapture = (res: Response, lost: FreshSharedCapture) => sendApiError(res, 404, 'NOT_FOUND',
+    lost.kind === 'skill' ? 'selected skills not found or unavailable' : 'selected design system not found or unavailable');
+  const captureDesign = async (owner: string, conversationId: string, requestedId: string | null, question?: RunRow, pin?: ProjectPin,
+    fresh?: FreshSharedCapture[]): Promise<DesignSnapshot | null | false> => {
     const previous = question ?? (requestedId === null ? undefined : db.prepare(`SELECT * FROM multiuser_runs
       WHERE owner_account_id = ? AND conversation_id = ? AND json_valid(request_json)
         AND json_extract(request_json, '$.designSnapshot.id') = ? ORDER BY queue_seq DESC LIMIT 1`)
@@ -387,6 +412,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       const pinned = ownerPinnedCapture(owner, pin, requestedId, 'design')?.designSnapshot as DesignSnapshot | undefined;
       return pinned && pinned.id === requestedId && typeof pinned.prompt?.designSystemBody === 'string' ? pinned : false;
     }
+    if (system.studioShare?.role === 'use') fresh?.push({ kind: 'design-system', id: system.id });
     const assets = await input.designCatalog!.readSystemAssets(system.id);
     const prompt: DesignSnapshot['prompt'] = { designSystemBody: system.body, designSystemTitle: system.title,
       designSystemUsageMd: assets.usageMd, designSystemTokensCss: assets.tokensCss,
@@ -396,7 +422,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   };
 
   type SkillSnapshot = { id: string; name: string; body: string; mode?: Parameters<typeof composeSystemPrompt>[0]['skillMode']; hash: string; package?: StudioSkillPackage };
-  const captureSkills = async (owner: string, conversationId: string, ids: readonly string[], pin?: ProjectPin): Promise<SkillSnapshot[] | null> => {
+  const captureSkills = async (owner: string, conversationId: string, ids: readonly string[], pin?: ProjectPin,
+    fresh?: FreshSharedCapture[]): Promise<SkillSnapshot[] | null> => {
     if (ids.length > 12) return null;
     const snapshots: SkillSnapshot[] = [];
     for (const id of ids) {
@@ -418,6 +445,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         snapshots.push(inherited); continue;
       }
       const skill = skills[0];
+      if (skill.studioShare?.role === 'use') fresh?.push({ kind: 'skill', id: skill.id });
       const text = { id: skill.id, name: skill.name, body: skill.body, mode: skill.mode, ...(skill.package ? { package: skill.package } : {}) };
       snapshots.push({ ...text, hash: createHash('sha256').update(JSON.stringify(text)).digest('hex') });
     }
@@ -1464,7 +1492,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const fixedCapture = fixedDesign ? await captureFixedDesign(owner, target.conversationId, fixedDesign) : null;
     if (fixedDesign && !fixedCapture) return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
     const pins = projectPins(fields, target.projectId, Boolean(fixedDesign), Boolean(question));
-    const designSnapshot = fixedCapture ? fixedCapture.design : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? getProject(db, target.projectId)?.designSystemId ?? null, question, pins.design);
+    const freshShared: FreshSharedCapture[] = [];
+    const designSnapshot = fixedCapture ? fixedCapture.design : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? getProject(db, target.projectId)?.designSystemId ?? null, question, pins.design, freshShared);
     if (designSnapshot === false) return sendApiError(res, 404, 'NOT_FOUND', 'selected design system not found or unavailable');
     // Opt-in "remember: …" heuristics land before capture, so this turn already sees them (#62).
     await input.memory?.beforeTurn(owner, fields.text);
@@ -1499,7 +1528,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       composed = { prompt, hash: createHash('sha256').update(prompt).digest('hex'),
         selection: { conversationId: target.conversationId, skillId: '', designSystemId: '', locale: 'en' } };
     }
-    const selectedSkills = fields.skillIds.length && !inheritsSkills ? await captureSkills(owner, target.conversationId, fields.skillIds, pins.skill) : [];
+    const selectedSkills = fields.skillIds.length && !inheritsSkills ? await captureSkills(owner, target.conversationId, fields.skillIds, pins.skill, freshShared) : [];
     if (!selectedSkills || fields.skillIds.length > 12) return sendApiError(res, 404, 'NOT_FOUND', 'selected skills not found or unavailable');
     if (selectedSkills.length) {
       // Resolve before queueing. Later edits/deletes cannot change this turn's
@@ -1560,6 +1589,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const queuedCount = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE owner_account_id = ? AND status = 'queued' AND ${personalRows}`)
       .get(owner) as { n: number }).n;
     if (queuedCount >= PERSONAL_QUEUE_LIMIT) return sendApiError(res, 409, 'MULTIUSER_PERSONAL_QUEUE_LIMIT', 'personal queue limit reached');
+    // Shared items captured live above lost nothing while the admission yielded:
+    // decided here, with no await before the commit below.
+    const lostPersonal = lostSharedCapture(owner, freshShared);
+    if (lostPersonal) return refuseLostSharedCapture(res, lostPersonal);
     const id = randomUUID();
     const createdAt = now();
     const queuedFrame = db.transaction(() => {
@@ -1646,9 +1679,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const fixedCapture = fixed && !question ? await captureFixedDesign(owner, target.conversationId, fixed) : null;
     if (fixed && !question && !fixedCapture) return sendApiError(res, 400, 'BAD_REQUEST', 'design selection unavailable');
     const pins = projectPins(fields, target.projectId, Boolean(fixed), Boolean(question));
-    const designSnapshot = fixedCapture ? fixedCapture.design : fixed ? null : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? getProject(db, target.projectId)?.designSystemId ?? null, question, pins.design);
+    const freshShared: FreshSharedCapture[] = [];
+    const designSnapshot = fixedCapture ? fixedCapture.design : fixed ? null : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? getProject(db, target.projectId)?.designSystemId ?? null, question, pins.design, freshShared);
     if (designSnapshot === false) return sendApiError(res, 404, 'NOT_FOUND', 'selected design system not found or unavailable');
-    const selected = !question && fields.skillIds.length ? await captureSkills(owner, target.conversationId, fields.skillIds, pins.skill) : [];
+    const selected = !question && fields.skillIds.length ? await captureSkills(owner, target.conversationId, fields.skillIds, pins.skill, freshShared) : [];
     if (!selected) return sendApiError(res, 404, 'NOT_FOUND', 'selected skills not found or unavailable');
     // Opt-in "remember: …" heuristics land before capture, so this turn already sees them (#62).
     await input.memory?.beforeTurn(owner, fields.text);
@@ -1686,6 +1720,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (!own && ledger.balance(owner).remainingMs === 0) return sendApiError(res, 429, 'MULTIUSER_QUOTA_EXHAUSTED', 'worker quota exhausted');
     const queued = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE owner_account_id = ? AND status = 'queued' AND ${own ? byokRows : company}`).get(owner) as { n: number }).n;
     if (queued >= 3) return sendApiError(res, 409, 'MULTIUSER_QUEUE_LIMIT', 'queue limit reached');
+    // Shared items captured live above lost nothing while the admission yielded:
+    // decided here, with no await before the commit below.
+    const lostOpenAI = lostSharedCapture(owner, freshShared);
+    if (lostOpenAI) return refuseLostSharedCapture(res, lostOpenAI);
     const id = randomUUID(); const createdAt = now();
     const request = JSON.stringify({ message: fields.text, ...(instruction ? { instruction } : {}),
       ...(findings ? { research: { provider: 'tavily' } } : {}),

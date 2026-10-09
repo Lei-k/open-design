@@ -9,6 +9,12 @@
 // deleted resource grants nothing, and owner deletion removes the grants.
 // Every read recomputes the role from these rows, so a revoke applies to the
 // next request; already admitted runs keep the version they captured.
+//
+// A grant is effective only while both the owner and the grantee are active
+// accounts. Deactivation is a suspension decided at every access, not a
+// cleanup: the rows stay, so reactivating the owner (or grantee) restores the
+// grants exactly as the owner left them. Owner deletion of the resource and
+// explicit revocation remain the only ways a grant ends.
 
 import type Database from 'better-sqlite3';
 import { STUDIO_CATALOG_GRANTS_MAX, type StudioCatalogAccessRole, type StudioCatalogShareKind } from '@open-design/contracts';
@@ -30,9 +36,20 @@ export class StudioCatalogGrantLimitError extends Error {
 type GrantRow = { kind: StudioCatalogShareKind; resource_id: string; grantee_account_id: string; granted_at: number };
 const toGrant = (row: GrantRow): StudioCatalogGrant => ({ kind: row.kind, resourceId: row.resource_id, accountId: row.grantee_account_id, grantedAt: row.granted_at });
 
+export interface StudioCatalogGrantsOptions {
+  /**
+   * Live account state from the auth store (a separate database). Must answer
+   * from the current row on every call; a missing account is inactive.
+   */
+  accountActive(accountId: string): boolean;
+}
+
 /** The resource tables must exist (their stores create them) before this store is used. */
 export class StudioCatalogGrants {
-  constructor(private readonly db: Database.Database) {
+  private readonly accountActive: (accountId: string) => boolean;
+
+  constructor(private readonly db: Database.Database, options: StudioCatalogGrantsOptions) {
+    this.accountActive = (accountId) => options.accountActive(accountId) === true;
     db.exec(`CREATE TABLE IF NOT EXISTS ${STUDIO_CATALOG_GRANTS_TABLE} (
       kind               TEXT NOT NULL CHECK (kind IN ('skill', 'design-system')),
       resource_id        TEXT NOT NULL CHECK (length(resource_id) > 0),
@@ -52,12 +69,21 @@ export class StudioCatalogGrants {
     return row?.owner ?? null;
   }
 
-  /** The account's role on a live resource: the owner binding wins; no row grants nothing. */
+  /** Whether a grant from `owner` to `grantee` is in force: both accounts are active right now. */
+  private grantInForce(owner: string, grantee: string): boolean {
+    return this.accountActive(owner) && this.accountActive(grantee);
+  }
+
+  /**
+   * The account's role on a live resource: the owner binding wins; no row, or
+   * a row whose owner or grantee is deactivated, grants nothing.
+   */
   roleOf(kind: StudioCatalogShareKind, resourceId: string, accountId: string): StudioCatalogAccessRole | null {
     if (typeof accountId !== 'string' || !accountId) return null;
     const owner = this.ownerOf(kind, resourceId);
     if (!owner) return null;
     if (owner === accountId) return 'owner';
+    if (!this.grantInForce(owner, accountId)) return null;
     return this.db.prepare(`SELECT 1 FROM ${STUDIO_CATALOG_GRANTS_TABLE} WHERE kind = ? AND resource_id = ? AND grantee_account_id = ?`)
       .get(kind, resourceId, accountId) ? 'use' : null;
   }
@@ -67,12 +93,14 @@ export class StudioCatalogGrants {
       WHERE kind = ? AND resource_id = ? ORDER BY granted_at, grantee_account_id`).all(kind, resourceId) as GrantRow[]).map(toGrant);
   }
 
-  /** Live resources shared with the account (not its own), with their owner. */
+  /** Live resources shared with the account (not its own) by an active owner, with their owner. */
   sharedWith(kind: StudioCatalogShareKind, accountId: string): Array<{ resourceId: string; ownerAccountId: string }> {
+    if (typeof accountId !== 'string' || !accountId) return [];
     return (this.db.prepare(`SELECT r.id AS resourceId, r.owner_account_id AS ownerAccountId FROM ${STUDIO_CATALOG_GRANTS_TABLE} g
       JOIN ${RESOURCE_TABLE[kind]} r ON r.id = g.resource_id AND r.deleted_at IS NULL
       WHERE g.kind = ? AND g.grantee_account_id = ? AND r.owner_account_id <> g.grantee_account_id ORDER BY g.granted_at, r.id`)
-      .all(kind, accountId) as Array<{ resourceId: string; ownerAccountId: string }>);
+      .all(kind, accountId) as Array<{ resourceId: string; ownerAccountId: string }>)
+      .filter((row) => this.grantInForce(row.ownerAccountId, accountId));
   }
 
   /** Accounts with access to each resource that has grants, owner included. */

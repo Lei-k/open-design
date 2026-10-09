@@ -666,6 +666,15 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
   - Grants are per item; there are no team groups.
   - A member's first turn in a shared project needs the owner to have admitted the pin once.
   - Large `od … list --json` outputs over a session can be cut short by the CLI's immediate `process.exit` (adjacent; not changed here).
+- **Review repairs.**
+  - **Owner deactivation:** a grant is in force only while its owner and its grantee are both active, and every access decision checks this (`StudioCatalogGrants.roleOf` / `sharedWith`, fed by the live auth store). That covers lists, detail, files, preview/showcase bytes, member views, project setup and new admissions, for skills and documents alike. Deactivation suspends grants and does not delete them, so reactivation restores them as the owner left them. Revocation and owner deletion remain the only ways a grant ends. Admitted runs and conversation pins keep their captured version.
+  - **Revoke during admission:** admission records each shared item it read live from another account's catalog. It does not record reuse of the conversation's own pin or a shared project's inherited pin. Right before the commit, with no await in between, it re-decides `use` on each recorded item, on both the personal and the OpenAI path. A revoke, owner deactivation or deletion while memory, settings or research I/O held the admission refuses the turn with the capture's 404. No run or message is written.
+  - **Same-name skills in the Composer:** a token that two ids of one kind share (your own `brand-voice` and a shared one) is never resolved to the first catalog entry. Pills keep their ids, and deleting one pill no longer re-parses the other's text. Plain ambiguous tokens keep the matching skill you already selected, by id, so refresh and queued-draft restoration bring back the selected skill. Queued drafts also rebuild its pill. Unambiguous tokens and cross-kind names behave as before.
+  - **Evidence:** red on `36918941`, green after:
+    - `studio-catalog-sharing-http`: owner deactivation across all routes, admission and reactivation; barrier-held research with a skill revoke, a document revoke and an owner deactivation on the personal and company paths, plus a control.
+    - `storage/studio-catalog-grants`: owner and grantee deactivation, and reactivation.
+    - Web `inlineMentions` and `ChatComposer.same-name-skills`: selection, pill deletion, refreshed and queued draft.
+  - **Sibling class, not changed:** S32 project grants (`project-access.ts`) do not check the owner's active state. After the owner is deactivated, a member still reads the project, sees it listed and creates conversations, so turns can still inherit the project's admitted pins. A deactivated grantee has no session, so a request cannot reach that check. This is a separate S32 fix.
 
 ![Share a private skill with another account](../../docs/design/studio-parity/catalog-share-dialog.png)
 

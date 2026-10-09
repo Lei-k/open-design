@@ -100,7 +100,9 @@ import { BUILT_IN_PETS, CUSTOM_PET_ID } from "./pet/pets";
 import {
   inlineMentionToken,
   mentionTokenPresent,
+  retainMentionedSelections,
   type InlineMentionEntity,
+  type InlineMentionKind,
 } from '../utils/inlineMentions';
 import { workspaceContextLinkedDir, workspaceContextLinkedDirs } from './workspace-context';
 import { useProjectCollabContext } from '../collab/collab-context';
@@ -1483,7 +1485,8 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
           // 队列这条路径是**一次性**解析:点「编辑」时懒加载的列表早就回来了,
           // 对不上就是真的没了。刷新那条路径首屏列表还是空的,处理方式不同 ——
           // 见 `pendingRestoredContextRef`。
-          setStagedSkills(resolveStagedById(ctx?.skillIds, skills).resolved);
+          const restoredSkills = resolveStagedById(ctx?.skillIds, skills).resolved;
+          setStagedSkills(restoredSkills);
           setStagedMcpServers(resolveStagedById(ctx?.mcpServerIds, mcpServers).resolved);
           setStagedConnectors(resolveStagedById(ctx?.connectorIds, connectors).resolved);
           pendingRestoredContextRef.current = null;
@@ -1498,7 +1501,9 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
           setUploadError(null);
           setMention(null);
           setSlash(null);
-          editorRef.current?.setText(body);
+          // A same-name token becomes the pill of the skill this turn selected.
+          editorRef.current?.setText(body, { prefer: restoredSkills.map((skill) =>
+            ({ id: skill.id, kind: 'skill' as const, label: skill.name, token: inlineMentionToken(skill.name), title: `Skill: ${skill.name}` })) });
           editorRef.current?.focus();
           seededRef.current = true;
         },
@@ -2793,7 +2798,14 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
     // the chip remove button clears the matching metadata access. `staged`
     // (files) is intentionally NOT pruned: users attach files via the upload
     // button without leaving an `@<path>` token.
-    function handleEditorChange(text: string, present: InlineMentionEntity[]) {
+    // `ambiguous` holds plain tokens that two ids of one kind share (an account's
+    // own skill and a same-named shared one): each keeps one already-selected
+    // entry by id, never the first catalog entry with that name.
+    function handleEditorChange(
+      text: string,
+      present: InlineMentionEntity[],
+      ambiguous: Array<{ kind: InlineMentionKind; token: string }> = [],
+    ) {
       draftRef.current = text;
       setDraft(text);
       const set = new Set(present.map((e) => `${e.kind}:${e.id}`));
@@ -2806,14 +2818,17 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
         inlineBackedPluginRef.current = null;
         pluginsSectionRef.current?.clear();
       }
-      setStagedSkills((prev) => prev.filter((s) => set.has(`skill:${s.id}`)));
-      setStagedMcpServers((prev) => prev.filter((m) => set.has(`mcp:${m.id}`)));
-      setStagedConnectors((prev) =>
-        prev.filter((c) => set.has(`connector:${c.id}`)),
-      );
-      setStagedWorkspaceContexts((prev) =>
-        prev.filter((item) => set.has(`workspace:${item.id}`) || Boolean(workspaceLinkedDirAdds[item.id])),
-      );
+      setStagedSkills((prev) => retainMentionedSelections(prev, 'skill', set, ambiguous,
+        (s) => [inlineMentionToken(s.name), inlineMentionToken(s.id)]));
+      setStagedMcpServers((prev) => retainMentionedSelections(prev, 'mcp', set, ambiguous,
+        (m) => [inlineMentionToken(m.label || m.id), inlineMentionToken(m.id)]));
+      setStagedConnectors((prev) => retainMentionedSelections(prev, 'connector', set, ambiguous,
+        (c) => [inlineMentionToken(c.name), inlineMentionToken(c.id)]));
+      setStagedWorkspaceContexts((prev) => {
+        const mentioned = new Set(retainMentionedSelections(prev, 'workspace', set, ambiguous,
+          (item) => [inlineMentionToken(item.label)]).map((item) => item.id));
+        return prev.filter((item) => mentioned.has(item.id) || Boolean(workspaceLinkedDirAdds[item.id]));
+      });
     }
 
     // Lexical reports the active @/slash trigger derived from the caret. The

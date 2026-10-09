@@ -44,8 +44,10 @@ import { MentionNode, $createMentionNode, $isMentionNode } from './MentionNode';
 import { serializeComposer } from './serialize';
 import { setComposerFromText } from './deserialize';
 import {
+  ambiguousMentionTokens,
   buildInlineMentionParts,
   type InlineMentionEntity,
+  type InlineMentionKind,
 } from '../../utils/inlineMentions';
 
 // A serializable caret box the host portal positions against. Sampled from the
@@ -144,8 +146,14 @@ export interface LexicalComposerInputProps {
   knownEntities: InlineMentionEntity[];
   // Fires on every editor change with the serialized plain text + the entities
   // currently referenced by the text (MentionNodes + plain @tokens matched
-  // against knownEntities).
-  onChange(plainText: string, present: InlineMentionEntity[]): void;
+  // against knownEntities). `ambiguous` lists, in order, plain @tokens that
+  // more than one id of a kind shares (same-name skills from two accounts):
+  // they are not in `present`, so the host decides them by its own selection.
+  onChange(
+    plainText: string,
+    present: InlineMentionEntity[],
+    ambiguous: Array<{ kind: InlineMentionKind; token: string }>,
+  ): void;
   // Mention / slash trigger state derived from the caret position. Either side
   // is null when no trigger is active.
   onTrigger(state: {
@@ -188,7 +196,11 @@ export interface LexicalComposerInputProps {
 // but expressed in Lexical terms.
 export interface LexicalComposerInputHandle {
   getText(): string;
-  setText(text: string): void;
+  /**
+   * Rebuild the editor from `text`. `prefer` names which entity an ambiguous
+   * token means (e.g. a restored draft's selected skill ids), one per occurrence.
+   */
+  setText(text: string, options?: { prefer?: readonly InlineMentionEntity[] }): void;
   clear(): void;
   focus(): void;
   insertText(text: string): void;
@@ -642,9 +654,9 @@ function OnChangePlugin({
         // safe. (Only OnChangePlugin is guarded this way — TriggerPlugin MUST
         // still run on selection-only updates to drive the @/slash popover.)
         if (dirtyElements.size === 0 && dirtyLeaves.size === 0) return;
-        const { text, present } = serializeComposer(editorState);
-        const folded = foldPresentEntities(text, present, entitiesRef.current);
-        onChangeRef.current(text, folded);
+        const { text, present, plainText } = serializeComposer(editorState);
+        const folded = foldPresentEntities(plainText, present, entitiesRef.current);
+        onChangeRef.current(text, folded, ambiguousMentionTokens(plainText, entitiesRef.current));
       },
     );
   }, [editor]);
@@ -655,14 +667,16 @@ function OnChangePlugin({
 // (matching the old `replaceMentionWithText` byte-for-byte), so they aren't
 // MentionNodes in the tree. To prune their staged chips on delete, fold the
 // plain @tokens that still match a known entity into the present list.
+// `plainText` has every MentionNode blanked: a pill already carries its id, and
+// re-parsing its token could resolve a shared name to a different entity.
 function foldPresentEntities(
-  text: string,
+  plainText: string,
   present: InlineMentionEntity[],
   known: InlineMentionEntity[],
 ): InlineMentionEntity[] {
   const result: InlineMentionEntity[] = [...present];
   const seen = new Set(present.map((e) => `${e.kind}:${e.id}`));
-  const parts = buildInlineMentionParts(text, known, { highlightUnknown: false });
+  const parts = buildInlineMentionParts(plainText, known, { highlightUnknown: false });
   if (parts) {
     for (const part of parts) {
       if (part.kind === 'mention' && part.entity.kind !== 'unknown') {
@@ -767,10 +781,10 @@ export const LexicalComposerInput = forwardRef<
           '\n',
         );
       },
-      setText(text: string) {
+      setText(text: string, options?: { prefer?: readonly InlineMentionEntity[] }) {
         const editor = editorRef.current;
         if (!editor) return;
-        setComposerFromText(editor, text, knownEntitiesRef.current);
+        setComposerFromText(editor, text, knownEntitiesRef.current, options?.prefer);
       },
       clear() {
         const editor = editorRef.current;

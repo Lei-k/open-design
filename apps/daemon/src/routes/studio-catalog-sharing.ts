@@ -33,14 +33,18 @@ const SEGMENT: Record<StudioCatalogShareKind, string> = { skill: 'skills', 'desi
  * - Missing, foreign and insufficient access are the same 404 on every route.
  * - Revocation applies to the next catalog read, preview and admission. Runs
  *   and conversations that already captured a version keep it.
+ * - Deactivating the owner or the grantee suspends the grant the same way;
+ *   reactivation restores it (the rows are never rewritten by deactivation).
  */
 export function registerStudioCatalogSharingRoutes(app: Express, input: { db: Database.Database; dataRoot: string; clock?: () => number }): StudioCatalogSharing {
   const now = input.clock ?? Date.now;
   // The resource stores own (and create) the tables the grant store joins.
   new StudioSkills(input.db);
   new StudioDesignSystems(input.db);
-  const grants = new StudioCatalogGrants(input.db);
   const accounts = AuthStore.open({ dataRoot: input.dataRoot });
+  // Grants follow the live account state: a deactivated owner's (or grantee's)
+  // grants are suspended at every access decision and apply again on reactivation.
+  const grants = new StudioCatalogGrants(input.db, { accountActive: (accountId) => accounts.getAccountById(accountId)?.active === true });
   const usernameOf = (accountId: string) => accounts.getAccountById(accountId)?.username ?? '';
   const refuse = (res: Response) => sendApiError(res, 404, 'NOT_FOUND', 'not found');
 

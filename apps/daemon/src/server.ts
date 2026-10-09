@@ -17694,6 +17694,7 @@ export async function startServer({
     ...(multiUserMode.personalCodex?.sandbox ? { scriptSandbox: multiUserMode.personalCodex.sandbox } : {}),
     ...(multiUserDesign ? { design: multiUserDesign } : {}),
     ...(studioCatalog ? { catalog: studioCatalog } : {}),
+    ...(studioCatalogSharing ? { catalogGrants: studioCatalogSharing.grants } : {}),
     ...(studioSettings ? { settings: studioSettings, memory: studioSettings.automation } : {}),
     ...(studioDesignCatalog ? { designCatalog: studioDesignCatalog } : {}),
   }) : null;
