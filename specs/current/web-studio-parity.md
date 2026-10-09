@@ -869,6 +869,9 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
 
 ## 目前進度與續作順序 — 2026-10-09（本地 S54 後）
 
+**部署驗收（擁有者回報，2026-10-09）**：擁有者以本分支 build 自有 EC2 的 `deploy/multiuser/` 部署，兩個帳號實測回報通過（紀錄於 #48 留言）。這是本計畫第一筆真實環境證據，但仍屬整體回報：逐步結果、瀏覽器／裝置版本、截圖與當時部署的 image commit 都尚未留存，接手者不可把它當成 #48 的逐項驗收或 #70 矩陣的任何一格。真實 OpenAI／Tavily 金鑰未納入（#14）。
+
+
 [Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 已更新：S42–S54 於 2026-10-09 以 `0055846b6` 推送，之後再推四個修復 commit 至 `9edaaa4fc`，PR 內文也已改寫（舊版「未提交／`.git` 唯讀」敘述作廢）。本輪環境可綁 loopback socket、可 spawn Node 子程序，因此 S42–S54 各檢查點只能記為 blocked 的 HTTP/CLI 套件首次真正執行：`assertReady` 當場拒絕啟動（HEAD plugin preview/example 與 `POST /api/live-artifacts` 有分類無註冊），multi-user 模式整個開不起來，已於 S55 修復。Epic #51／#52–#70 仍未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
 
 - 分支：`feat/studio-parity-foundation`。接手先核對 git status/log、最新 PR head/review；保留本地 S42–S54 變更，勿依遠端舊的 PR 描述重做。已核對 #51 和 #52–#70 的 issue 內容；這些 issue 仍為 open。
