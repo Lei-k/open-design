@@ -450,7 +450,9 @@ describe('damaged queued run requests', () => {
     await expectRequestInvalid(alice, nullRequest);
     const run = await finished(alice, valid);
     expect(run.status, JSON.stringify(run)).toBe('succeeded');
-    expect(JSON.parse(run.output.text).message).toBe('valid-after-damaged');
+    // S52 appends the daemon's Live Artifact tool instructions after the
+    // user's prompt, so the dispatched row is identified by what it opens with.
+    expect(String(JSON.parse(run.output.text).message)).toMatch(/^valid-after-damaged(\n|$)/);
     // Only the valid row took a personal dispatch turn.
     expect(personalTurn(alice)).toBe(turnBefore + 1);
   });
@@ -481,7 +483,7 @@ describe('damaged queued run requests', () => {
     for (const [user, id, message] of [[alice, rows.aliceValid, 'startup-valid-alice'], [carol, rows.carolValid, 'startup-valid-carol']] as const) {
       const run = await finished(user, id);
       expect(run.status, JSON.stringify(run)).toBe('succeeded');
-      expect(JSON.parse(run.output.text).message).toBe(message);
+      expect(String(JSON.parse(run.output.text).message)).toMatch(new RegExp(`^${message}(\\n|$)`));
     }
   });
 

@@ -283,9 +283,15 @@ export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
       case 'allow': {
         const limit = Math.min(...matches.map((match) => match.entry.maxBodyBytes ?? Infinity));
         if (Number.isFinite(limit)) {
-          const length = Number(req.get('content-length'));
-          // A bounded route needs a declared length within its ceiling (no chunked bodies).
-          if (!req.get('content-length') || !Number.isSafeInteger(length) || length > limit) {
+          const declared = req.get('content-length');
+          const length = Number(declared);
+          // A bounded route must not read an undeclared body: a chunked
+          // request is refused outright, and a declared length must sit within
+          // the ceiling. A request with NEITHER header carries no body at all
+          // (RFC 9112 §6), which is how browsers and `fetch` send a bodiless
+          // DELETE — refusing those made every delete on a bounded route 413.
+          if (req.get('transfer-encoding')
+            || (declared !== undefined && (!Number.isSafeInteger(length) || length > limit))) {
             sendApiError(res, 413, 'PAYLOAD_TOO_LARGE', 'request body is too large for multi-user mode');
             return;
           }

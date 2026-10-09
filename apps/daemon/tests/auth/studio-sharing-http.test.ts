@@ -292,7 +292,8 @@ describe('project sharing between accounts', () => {
   it('suspends project grants and collaborators\' runs on owner deactivation, and restores grants on reactivation', async () => {
     const t = await sharedProject([[viewer, 'view'], [editor, 'edit']]);
     const cid = await conversation(t, editor);
-    const started = await run(t, cid, editor, 5_000);
+    // 2_000 ms is the mock's ceiling; a longer delay is refused as an invalid request.
+    const started = await run(t, cid, editor, 2_000);
     expect(started.status, started.text).toBe(202);
     const runId = started.json.run.id as string;
     await until(async () => ['running', 'queued'].includes(await runStatus(runId, editor)));

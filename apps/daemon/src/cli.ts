@@ -319,7 +319,8 @@ const DEPLOY_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 // external agents (hermes-agent, openclaw, etc.) can drive OpenDesign
 // automations headlessly without going through the web UI.
 const AUTOMATION_STRING_FLAGS = new Set([
-  'daemon-url', 'name', 'prompt', 'prompt-file', 'schedule', 'target',
+  // `action` is the proposed change for `od automation template propose`.
+  'daemon-url', 'name', 'prompt', 'prompt-file', 'schedule', 'target', 'action',
   'project', 'skill', 'agent', 'limit', 'plugin', 'mcp', 'connector',
   'status', 'reason', 'template', 'source-kind', 'source-ref', 'title',
   'body', 'body-file', 'compression', 'sensitivity', 'account',

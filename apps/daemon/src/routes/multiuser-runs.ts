@@ -919,6 +919,17 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       allowed: () => !storesClosed && !shuttingDown && accounts.getAccountById(run.owner_account_id)?.active === true
         && accounts.getStudioPilot(run.owner_account_id).studioPilot && projects.canView(run.project_id, run.owner_account_id) });
   };
+  /**
+   * Answered when a run reaches a terminal row. A worker settles its run one
+   * or more microtasks after its child closes (the stage runner awaits the
+   * turn, then the artifact snapshot decides), so a caller that must report
+   * the settled run waits for this rather than for the child's `close`.
+   */
+  const settleWaiters = new Map<string, (() => void)[]>();
+  const whenSettled = (id: string, done: () => void) => {
+    if (!['active', 'queued'].includes(row(id)?.status ?? '')) { done(); return; }
+    settleWaiters.set(id, [...(settleWaiters.get(id) ?? []), done]);
+  };
   const finish = (id: string, status: 'succeeded' | 'failed' | 'canceled', output?: unknown) => {
     if (storesClosed) return;
     const existing = row(id);
@@ -957,6 +968,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     artifactBaselines.delete(id);
     projections.delete(id);
     interrupts.delete(id);
+    for (const waiter of settleWaiters.get(id) ?? []) waiter();
+    settleWaiters.delete(id);
     if (!shuttingDown && !suspendDispatch) { dispatch(); dispatchPersonal(); }
   };
   for (const run of recovery) finish(run.id, 'failed', { reason: RESTART_ERROR_CODE });
@@ -1357,10 +1370,13 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             if (result.problem) personal.recordProblem(owner, accountId, result.problem);
             finish(runId, 'failed', { reason: result.problem ? PROBLEM_ERRORS[result.problem].code : 'MULTIUSER_PERSONAL_RUN_FAILED', files, producedFiles });
           }).catch(() => {
-            if (!storesClosed && row(runId)?.status === 'active') {
-              finish(runId, !allowed() ? 'canceled' : 'failed', { reason: sourceInvalidated.has(runId)
-                ? 'MULTIUSER_PERSONAL_UNAVAILABLE' : 'MULTIUSER_PERSONAL_RUN_FAILED' });
-            }
+            if (storesClosed || row(runId)?.status !== 'active') return;
+            // Same reason ladder as `settled()` above: a turn that REJECTS
+            // because the daemon is stopping is still a shutdown cancel, not
+            // a provider failure.
+            if (shuttingDown) { finish(runId, 'canceled', { reason: 'daemon_shutdown' }); return; }
+            finish(runId, !allowed() ? 'canceled' : 'failed', { reason: sourceInvalidated.has(runId)
+              ? 'MULTIUSER_PERSONAL_UNAVAILABLE' : 'MULTIUSER_PERSONAL_RUN_FAILED' });
           });
         } catch {
           // A rolled-back start stays queued; a committed start keeps its turn and worker timestamps.
@@ -2060,7 +2076,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       const child = children.get(run.id);
       if (child && running(child)) {
         cancelPending.add(run.id);
-        child.once('close', () => res.json(body(row(run.id)!)));
+        whenSettled(run.id, () => res.json(body(row(run.id)!)));
+        // A child that closes without settling its run (no worker left to
+        // write the terminal row) is canceled here, which answers the waiter.
+        child.once('close', () => setImmediate(() => finish(run.id, 'canceled')));
         const interrupt = interrupts.get(run.id);
         if (interrupt) {
           interrupt();
