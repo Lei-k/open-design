@@ -6,11 +6,15 @@ import { describe, expect, it } from 'vitest';
 import type { AuthActor } from '../../src/services/auth-service.js';
 import {
   MULTIUSER_ROUTE_CLASSIFICATION,
+  compareRouteSpecificity,
   compileRoutePattern,
+  findPrecedenceOrderViolations,
   matchMultiUserRoute,
+  matchMultiUserRouteCandidates,
+  overlappingRoutePath,
   type MultiUserRouteClassification,
 } from '../../src/http/multiuser-route-classes.js';
-import { decideMultiUserAccess } from '../../src/http/multiuser-gate.js';
+import { decideMultiUserAccess, multiUserBodyAllowed } from '../../src/http/multiuser-gate.js';
 
 const actor = (role: 'admin' | 'user', accountId = `${role}-1`): AuthActor => ({
   accountId,
@@ -118,6 +122,90 @@ describe('matcher mirrors Express routing permissively enough to fail closed', (
     expect(compileRoutePattern('/api/{optional}')).toBeNull();
     expect(compileRoutePattern('/api/x(y)')).toBeNull();
     expect(compileRoutePattern('relative')).toBeNull();
+  });
+});
+
+describe('route precedence (#81): static segments outrank parameters, independent of registration order', () => {
+  const stringRoutes = MULTIUSER_ROUTE_CLASSIFICATION.filter((entry) => !entry.nonStringPath && !entry.catchAll && !entry.pattern
+    && entry.method !== 'USE' && entry.routeClass !== 'middleware');
+  const overlaps = stringRoutes.flatMap((a, i) => stringRoutes.slice(i + 1).flatMap((b) => {
+    if (a.method !== b.method && a.method !== 'ALL' && b.method !== 'ALL') return [];
+    const witness = overlappingRoutePath(a.path, b.path);
+    return witness === null ? [] : [{ a, b, witness }];
+  }));
+
+  it('resolves every overlapping pair in the inventory to the more specific route with its own policy', () => {
+    expect(overlaps.length).toBeGreaterThan(30);
+    for (const { a, b, witness } of overlaps) {
+      const method = a.method === 'ALL' ? b.method : a.method;
+      // Public shell paths only classify real files, so they are compared by key alone.
+      if (a.routeClass === 'public-web') continue;
+      const candidates = matchMultiUserRouteCandidates(method, witness).map((match) => match.entry.key);
+      expect(candidates, `${a.key} <> ${b.key} @ ${witness}`).toEqual(expect.arrayContaining([a.key, b.key]));
+      const resolved = matchMultiUserRoute(method, witness);
+      const keys = resolved.map((match) => match.entry.key);
+      const comparison = compareRouteSpecificity(compileRoutePattern(a.path)!, compileRoutePattern(b.path)!, witness.split('/').length - 1);
+      expect(comparison, `${a.key} <> ${b.key}`).not.toBe(0);
+      const [winner, loser] = comparison > 0 ? [a, b] : [b, a];
+      expect(keys, `${witness}`).toContain(winner.key);
+      expect(keys, `${witness}`).not.toContain(loser.key);
+      const chosen = resolved.find((match) => match.entry.key === winner.key)!;
+      expect(chosen.entry.bodyPolicy, winner.key).toBe(winner.bodyPolicy);
+      expect(chosen.entry.rewriteTo, winner.key).toBe(winner.rewriteTo);
+    }
+  });
+
+  it('pins the reviewed static/param overlaps and which side answers', () => {
+    const table: Array<[string, string, string, string | undefined]> = [
+      // [method, path, winning key, winning body policy]
+      ['PUT', '/api/memory/index', 'PUT /api/memory/index', 'studio-memory-index'],
+      ['PUT', '/api/multiuser/settings/memory/index', 'PUT /api/multiuser/settings/memory/index', 'studio-memory-index'],
+      ['PUT', '/api/memory/user_fact', 'PUT /api/memory/:id', 'studio-memory-entry'],
+      ['GET', '/api/memory/tree', 'GET /api/memory/tree', undefined],
+      ['GET', '/api/memory/events', 'GET /api/memory/events', undefined],
+      ['GET', '/api/memory/system-prompt', 'GET /api/memory/system-prompt', undefined],
+      ['GET', '/api/memory/extractions', 'GET /api/memory/extractions', undefined],
+      ['GET', '/api/memory/verifications', 'GET /api/memory/verifications', undefined],
+      ['DELETE', '/api/memory/extractions', 'DELETE /api/memory/extractions', 'empty'],
+      ['DELETE', '/api/multiuser/settings/memory/verifications', 'DELETE /api/multiuser/settings/memory/verifications', 'empty'],
+      ['GET', '/api/memory/user_fact', 'GET /api/memory/:id', undefined],
+      // Blocked neighbors keep winning where they are more specific.
+      ['GET', '/api/runs/by-plugin-workflow/events', 'GET /api/runs/by-plugin-workflow/:workflowId', undefined],
+      ['GET', '/api/design-systems/generation-jobs/files', 'GET /api/design-systems/generation-jobs/:jobId', undefined],
+      ['GET', '/api/connectors/status', 'GET /api/connectors/status', undefined],
+      ['POST', '/api/proxy/openai/stream', 'POST /api/proxy/openai/stream', undefined],
+      ['GET', '/api/projects/p1/export/manifest', 'GET /api/projects/:id/export/manifest', undefined],
+    ];
+    for (const [method, path, key, policy] of table) {
+      const resolved = matchMultiUserRoute(method, path);
+      expect(resolved.map((match) => match.entry.key), `${method} ${path}`).toEqual([key]);
+      expect(resolved[0]!.entry.bodyPolicy, `${method} ${path}`).toBe(policy);
+    }
+    // The index route's own policy accepts the index field, the entry route's does not.
+    expect(multiUserBodyAllowed('studio-memory-index', { index: '# Memory' })).toBe(true);
+    expect(multiUserBodyAllowed('studio-memory-entry', { index: '# Memory' })).toBe(false);
+  });
+
+  it('keeps unranked regex overlaps together, so they still have to agree', () => {
+    // Reviewed regex routes have no segment structure: both owner file-byte
+    // patterns stay matched and must share class and (absent) alias.
+    const keys = matchMultiUserRoute('GET', '/api/projects/p1/files/a.html/versions').map((match) => match.entry.key);
+    expect(keys).toHaveLength(2);
+    // A blocked string route next to an allowed regex is still a mixed-class refusal.
+    const preview = matchMultiUserRoute('GET', '/api/projects/p1/files/a.html/preview');
+    expect(new Set(preview.map((match) => match.entry.routeClass))).toEqual(new Set(['owner-scoped-project', 'blocked-in-multiuser']));
+  });
+
+  it('refuses an Express order in which a less specific route would answer an allowed static route first', () => {
+    const route = (key: string) => ({ method: key.slice(0, key.indexOf(' ')), path: key.slice(key.indexOf(' ') + 1) });
+    const staticFirst = ['PUT /api/multiuser/settings/memory/index', 'PUT /api/multiuser/settings/memory/:id'].map(route);
+    expect(findPrecedenceOrderViolations(staticFirst)).toEqual([]);
+    expect(findPrecedenceOrderViolations([...staticFirst].reverse()))
+      .toEqual(['PUT /api/multiuser/settings/memory/index <= PUT /api/multiuser/settings/memory/:id']);
+    // Standard paths rewrite to their alias, which is routed (and checked) on its own.
+    expect(findPrecedenceOrderViolations(['PUT /api/memory/:id', 'PUT /api/memory/index'].map(route))).toEqual([]);
+    // A blocked static route never answers, whatever the order.
+    expect(findPrecedenceOrderViolations(['GET /api/connectors/:connectorId', 'GET /api/connectors/status'].map(route))).toEqual([]);
   });
 });
 

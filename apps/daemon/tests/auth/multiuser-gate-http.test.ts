@@ -11,6 +11,7 @@ import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   MULTIUSER_ROUTE_CLASSIFICATION,
+  findPrecedenceOrderViolations,
   findStaleClassifications,
   findUnclassifiedRegistrations,
   routeKey,
@@ -129,6 +130,8 @@ describe('route classification covers the real inventory', () => {
     expect(daemon.pathlessRouteInventory.length).toBeGreaterThan(0);
     expect(findUnclassifiedRegistrations(registrations)).toEqual([]);
     expect(findStaleClassifications(registrations)).toEqual([]);
+    // #81: Express answers every overlapping static/param pair with the route the gate chose.
+    expect(findPrecedenceOrderViolations(registrations)).toEqual([]);
   });
 
   it('allows exactly the reviewed actor-safe set; everything else is blocked or middleware', () => {
@@ -744,6 +747,34 @@ describe('client-supplied identity is never authority', () => {
       body: { id: randomUUID(), name: 'csrf' },
     });
     expect(byFetchSite.status).toBe(403);
+  });
+});
+
+describe('route precedence (#81)', () => {
+  // `PUT /api/memory/index` also matches `PUT /api/memory/:id`. The static
+  // route answers in Express, so the gate must authorize, police and rewrite
+  // it with its own policy, not the parameterized entry's.
+  it('saves the actor\'s own memory index through the standard route and its alias', async () => {
+    const read = async (user: Principal) => (await daemon.request({ path: '/api/memory', cookie: user.cookie })).json.index as string;
+    const bobBefore = await read(bob);
+    const adminBefore = await read(admin);
+    for (const [route, marker] of [['/api/memory/index', 'ALICE_INDEX_STANDARD'], ['/api/multiuser/settings/memory/index', 'ALICE_INDEX_ALIAS']] as const) {
+      const index = `# Memory\n\n- ${marker}\n`;
+      const saved = await daemon.request({ method: 'PUT', path: route, cookie: alice.cookie, body: { index } });
+      expect(saved.status, `${route} ${saved.text}`).toBe(200);
+      expect(saved.json).toEqual({ index });
+      expect(await read(alice)).toBe(index);
+    }
+    // Every route keeps its own body policy: the index route refuses entry fields,
+    // the entry route refuses the index field.
+    expect((await daemon.request({ method: 'PUT', path: '/api/memory/index', cookie: alice.cookie, body: { index: 'x', id: 'index' } })).status).toBe(400);
+    expect((await daemon.request({ method: 'PUT', path: '/api/memory/index', cookie: alice.cookie, body: { name: 'Index', body: 'x' } })).status).toBe(400);
+    expect((await daemon.request({ method: 'PUT', path: '/api/memory/user_fact', cookie: alice.cookie, body: { index: 'x' } })).status).toBe(400);
+    // No session, no write; B and the admin keep their own index (an actor-scoped route has no foreign target).
+    expect((await daemon.request({ method: 'PUT', path: '/api/memory/index', body: { index: 'anonymous' } })).status).toBe(401);
+    expect(await read(bob)).toBe(bobBefore);
+    expect(await read(admin)).toBe(adminBefore);
+    expect(await read(alice)).toContain('ALICE_INDEX_ALIAS');
   });
 });
 

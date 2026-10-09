@@ -39,6 +39,7 @@ import { AuthStore } from '../storage/auth-store.js';
 import { ProjectAccessStore, projectRoleAtLeast, type ProjectAccessRole } from '../storage/project-access.js';
 import { acknowledgePathlessUse } from '../route-registration-guard.js';
 import {
+  findPrecedenceOrderViolations,
   findStaleNonBlockedClassifications,
   findUnclassifiedRegistrations,
   matchMultiUserRoute,
@@ -281,9 +282,10 @@ export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
         if (matches.some((match) => match.entry.untrustedContent)) applyUntrustedContentPolicy(res);
         const aliases = matches.filter((match) => match.entry.rewriteTo).map((match) =>
           match.entry.rewriteTo!.replace(/:([A-Za-z_]\w*)/g, (_all, name: string) => encodeURIComponent(match.params[name] ?? '')));
-        // A static resource may also match an actor's :id route. Every
-        // matching authorization must agree on the same destination; skipping
-        // an ambiguous alias would accidentally reach the host-global handler.
+        // Route precedence already chose the most specific string route
+        // (#81). Survivors that remain together (reviewed regex routes, static
+        // mounts) must agree on one destination; skipping an ambiguous alias
+        // would accidentally reach the host-global handler.
         if (aliases.length && (aliases.length !== matches.length || new Set(aliases).size !== 1)) {
           sendApiError(res, 404, 'NOT_FOUND', 'not found');
           return;
@@ -718,6 +720,10 @@ export function installMultiUserFront(
       const staleAllowed = findStaleNonBlockedClassifications(registrations);
       if (staleAllowed.length > 0) {
         throw new Error(`multi-user mode refused: allowed classifications without a registered route: ${staleAllowed.join(', ')}`);
+      }
+      const precedence = findPrecedenceOrderViolations(registrations);
+      if (precedence.length > 0) {
+        throw new Error(`multi-user mode refused: a less specific route is registered ahead of an allowed static route: ${precedence.join(', ')}`);
       }
       if (!bodyPolicyInstalled) throw new Error('multi-user mode refused: body policy middleware was not installed');
       if (!access) throw new Error('multi-user mode refused: project ownership store was not attached');

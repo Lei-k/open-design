@@ -1076,10 +1076,11 @@ export function findStaleNonBlockedClassifications(registrations: readonly Route
 
 // ---- matcher ----------------------------------------------------------------
 
-type Segment =
+export type RouteSegment =
   | { kind: 'literal'; value: string }
   | { kind: 'param'; name: string }
   | { kind: 'splat'; name: string };
+type Segment = RouteSegment;
 
 const PARAM_NAME_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const UNSUPPORTED_PATTERN_CHARS = /[{}()?+!\\[\]\s^$|]/;
@@ -1189,37 +1190,151 @@ export interface MultiUserRouteMatch {
   params: Record<string, string>;
 }
 
+interface CandidateMatch extends MultiUserRouteMatch {
+  /** Segment pattern of a string route; null for reviewed regex routes and static mounts. */
+  segments: Segment[] | null;
+}
+
+const SEGMENT_RANK = { literal: 2, param: 1, splat: 0 } as const;
+
+/** Kind of the pattern segment that consumes request part `index` (a final splat consumes the rest). */
+function segmentRankAt(segments: readonly Segment[], index: number): number {
+  const segment = segments[Math.min(index, segments.length - 1)];
+  if (!segment || (index >= segments.length && segment.kind !== 'splat')) return -1;
+  return SEGMENT_RANK[segment.kind];
+}
+
 /**
- * Every classified route that could answer `method rawPath`. `rawPath` is the
- * undecoded request pathname (Express `req.path` at the app root). Only
- * reviewed regex entries (`pattern`) match; other regex routes, the SPA
- * catch-all and middleware never do, so requests only they would answer are
- * unclassified and fail closed.
+ * Orders two string patterns that both match a request of `length` parts:
+ * positive when `a` is more specific. Compared left to right, the first part
+ * consumed by different segment kinds decides: a literal outranks a parameter,
+ * which outranks a splat.
  */
-export function matchMultiUserRoute(method: string, rawPath: string): MultiUserRouteMatch[] {
+export function compareRouteSpecificity(a: readonly Segment[], b: readonly Segment[], length: number): number {
+  for (let index = 0; index < length; index++) {
+    const difference = segmentRankAt(a, index) - segmentRankAt(b, index);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+/**
+ * Route precedence (#81): the gate authorizes, polices the body of, and
+ * rewrites to the route that actually answers. When several string routes
+ * match one request, only the most specific survive, whatever their
+ * registration order: `PUT /api/memory/index` is answered by its static route
+ * with its own body policy, never by `PUT /api/memory/:id`. Reviewed regex
+ * routes and static mounts have no segment structure and are never pruned;
+ * every survivor must still agree on class and alias, or the gate fails closed.
+ * Startup ({@link findPrecedenceOrderViolations}) refuses an inventory whose
+ * Express order would let a less specific handler answer an allowed route first.
+ */
+function resolveRoutePrecedence(candidates: readonly CandidateMatch[], length: number): MultiUserRouteMatch[] {
+  const ranked = candidates.filter((candidate) => candidate.segments !== null);
+  const best = ranked.reduce<Segment[] | null>((top, candidate) =>
+    top === null || compareRouteSpecificity(candidate.segments!, top, length) > 0 ? candidate.segments : top, null);
+  return candidates
+    .filter((candidate) => candidate.segments === null || compareRouteSpecificity(candidate.segments, best!, length) === 0)
+    .map(({ entry, params }) => ({ entry, params }));
+}
+
+function collectCandidates(method: string, rawPath: string): { candidates: CandidateMatch[]; length: number } | null {
   const verb = String(method || '').toUpperCase() === 'HEAD' ? 'GET' : String(method || '').toUpperCase();
   const parts = splitRequestPath(rawPath);
-  if (parts === null) return [];
+  if (parts === null) return null;
   const lowerPath = `/${parts.join('/')}`.toLowerCase();
-  const matches: MultiUserRouteMatch[] = [];
+  const candidates: CandidateMatch[] = [];
   for (const compiled of COMPILED) {
     if (compiled.mountPrefix !== null) {
       if (lowerPath === compiled.mountPrefix || lowerPath.startsWith(`${compiled.mountPrefix}/`)) {
-        matches.push({ entry: compiled.entry, params: {} });
+        candidates.push({ entry: compiled.entry, params: {}, segments: null });
       }
       continue;
     }
     if (compiled.entry.pattern) {
       if (compiled.entry.method !== 'ALL' && compiled.entry.method !== verb) continue;
       const params = matchPattern(compiled.entry, rawPath);
-      if (params) matches.push({ entry: compiled.entry, params });
+      if (params) candidates.push({ entry: compiled.entry, params, segments: null });
       continue;
     }
     if (compiled.segments === null) continue;
     if (compiled.entry.routeClass === 'public-web' && publicMultiUserFile(rawPath) === null) continue;
     if (compiled.entry.method !== 'ALL' && compiled.entry.method !== verb) continue;
     const params = matchSegments(compiled.segments, parts);
-    if (params) matches.push({ entry: compiled.entry, params });
+    if (params) candidates.push({ entry: compiled.entry, params, segments: compiled.segments });
   }
-  return matches;
+  return { candidates, length: parts.length };
+}
+
+/**
+ * Every classified route that could answer `method rawPath`, before
+ * precedence. For audits; authorization uses {@link matchMultiUserRoute}.
+ */
+export function matchMultiUserRouteCandidates(method: string, rawPath: string): MultiUserRouteMatch[] {
+  return (collectCandidates(method, rawPath)?.candidates ?? []).map(({ entry, params }) => ({ entry, params }));
+}
+
+/**
+ * The classified routes that answer `method rawPath`, after route precedence.
+ * `rawPath` is the undecoded request pathname (Express `req.path` at the app
+ * root). Only reviewed regex entries (`pattern`) match; other regex routes,
+ * the SPA catch-all and middleware never do, so requests only they would
+ * answer are unclassified and fail closed.
+ */
+export function matchMultiUserRoute(method: string, rawPath: string): MultiUserRouteMatch[] {
+  const found = collectCandidates(method, rawPath);
+  return found ? resolveRoutePrecedence(found.candidates, found.length) : [];
+}
+
+/** A request path both string patterns match, if any (literals kept, parameters and splats filled). */
+export function overlappingRoutePath(a: string, b: string): string | null {
+  const left = compileRoutePattern(a);
+  const right = compileRoutePattern(b);
+  if (!left || !right) return null;
+  const splat = (segments: Segment[]) => segments.at(-1)?.kind === 'splat';
+  const length = Math.max(left.length, right.length);
+  if ((left.length < length && !splat(left)) || (right.length < length && !splat(right))) return null;
+  const parts: string[] = [];
+  for (let index = 0; index < length; index++) {
+    const x = left[Math.min(index, left.length - 1)]!;
+    const y = right[Math.min(index, right.length - 1)]!;
+    if (x.kind === 'literal' && y.kind === 'literal' && x.value !== y.value) return null;
+    parts.push(x.kind === 'literal' ? x.value : y.kind === 'literal' ? y.value : 'p1');
+  }
+  return `/${parts.join('/')}`;
+}
+
+/**
+ * Registration-order check for route precedence (#81). Express answers with
+ * the first registered route, the gate with the most specific one. For every
+ * pair of overlapping string routes where the more specific one is allowed and
+ * served in place (no `rewriteTo`; a rewritten request is routed by its alias,
+ * whose own pairs are checked here too), it must be registered first. Returns
+ * `winner <= loser` descriptions for violations; empty means Express and the
+ * gate agree on every overlap.
+ */
+export function findPrecedenceOrderViolations(registrations: readonly RouteRegistrationLike[]): string[] {
+  const order = new Map<string, number>();
+  registrations.forEach((registration, index) => {
+    const key = routeKey(registration.method, registration.path);
+    if (!order.has(key)) order.set(key, index);
+  });
+  const routes = COMPILED.filter((compiled) => compiled.segments !== null && !compiled.entry.pattern && order.has(compiled.entry.key));
+  const violations: string[] = [];
+  for (const [i, first] of routes.entries()) {
+    for (const second of routes.slice(i + 1)) {
+      const { entry: a } = first;
+      const { entry: b } = second;
+      if (a.method !== b.method && a.method !== 'ALL' && b.method !== 'ALL') continue;
+      const witness = overlappingRoutePath(a.path, b.path);
+      if (witness === null) continue;
+      const length = witness.split('/').length - 1;
+      const comparison = compareRouteSpecificity(first.segments!, second.segments!, length);
+      if (comparison === 0) continue;
+      const [winner, loser] = comparison > 0 ? [a, b] : [b, a];
+      if (winner.routeClass === 'blocked-in-multiuser' || winner.rewriteTo) continue;
+      if (order.get(winner.key)! > order.get(loser.key)!) violations.push(`${winner.key} <= ${loser.key}`);
+    }
+  }
+  return violations.sort();
 }

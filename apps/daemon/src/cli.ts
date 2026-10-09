@@ -11035,6 +11035,11 @@ function printMemoryHelp() {
       config and print the result. --profile/--rewrite/--verify map to the
       profile/rewrite/verify hooks; --extraction maps to chatExtractionEnabled.
 
+  od memory index [show] [--json]
+  od memory index set --prompt-file <path|-> [--json]
+      Print or replace the MEMORY.md index (the entry links injected into
+      prompts and used to pick active rules). set writes the file verbatim.
+
 Common options:
   --daemon-url <url>   OpenDesign daemon HTTP base.
   --session-file <path>  Multi-user Studio session: memory, history and switches
@@ -11247,6 +11252,7 @@ async function runMemory(args) {
     && topic !== 'config'
     && topic !== 'verify'
     && topic !== 'extractions'
+    && topic !== 'index'
   ) {
     console.error(`unknown subcommand: od memory ${topic}`);
     printMemoryHelp();
@@ -11283,6 +11289,9 @@ async function runMemory(args) {
   }
   if (topic === 'config') {
     return runMemoryConfig(base, rest, flags, writeJson);
+  }
+  if (topic === 'index') {
+    return runMemoryIndex(base, rest, flags, writeJson);
   }
 
   const parts = memoryPositionals(rest);
@@ -11716,6 +11725,51 @@ async function runMemoryHistory(base, rest, flags, writeJson, kind) {
 // `od memory config` — inspect or toggle the master switch + the four hooks.
 // No flags ⇒ print every switch (read off GET /api/memory). Toggle flags ⇒
 // PATCH /api/memory/config and print the result. Flags accept true|false.
+// `od memory index [show|set --prompt-file <path|->]` — the same MEMORY.md
+// index the Memory settings panel edits (GET /api/memory, PUT /api/memory/index).
+// Over --session-file it is the account's own index (#81).
+async function runMemoryIndex(base, rest, flags, writeJson) {
+  const action = memoryPositionals(rest)[0] ?? 'show';
+  if (action !== 'show' && action !== 'set') {
+    console.error(`unknown subcommand: od memory index ${action}`);
+    printMemoryHelp();
+    process.exit(2);
+  }
+  let resp;
+  if (action === 'show') {
+    try {
+      resp = await fetch(`${base}/api/memory`);
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!resp.ok) return structuredHttpFailure(resp);
+    const index = (await resp.json()).index ?? '';
+    if (flags.json) return writeJson({ index });
+    process.stdout.write(index.endsWith('\n') || index.length === 0 ? index : `${index}\n`);
+    return;
+  }
+  const index = await readMemoryPromptFile(flags);
+  if (typeof index !== 'string') {
+    console.error('Usage: od memory index set --prompt-file <path|->');
+    process.exit(2);
+  }
+  try {
+    resp = await fetch(`${base}/api/memory/index`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ index }),
+    });
+  } catch (err) {
+    surfaceFetchError(err, base);
+    process.exit(3);
+  }
+  if (!resp.ok) return structuredHttpFailure(resp);
+  const data = await resp.json();
+  if (flags.json) return writeJson(data);
+  console.log(`[memory] index saved (${Buffer.byteLength(data.index ?? '')} bytes)`);
+}
+
 async function runMemoryConfig(base, rest, flags, writeJson) {
   // Map CLI flag → config field. --extraction is the chat-extraction hook;
   // --profile/--rewrite/--verify are the new PRE/POST loop hooks.

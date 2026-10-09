@@ -3,8 +3,8 @@
 // writes only the turn owner's memory; personal Codex turns are skipped
 // explicitly. Verification checks the owner's own rules. History, deletes and
 // the event stream are per account; prompts inject only the actor's memory.
-import { existsSync, readdirSync, writeFileSync } from 'node:fs';
-import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, readdirSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, expect, it } from 'vitest';
@@ -164,13 +164,11 @@ it('neither injects nor enforces a rule removed from the memory index', async ()
     body: 'Assertion: UNLINKED_RULE_MARKER every page uses the brand palette\nCheck: UNLINKED_RULE_MARKER colors come from the palette' });
   expect(made.status, made.text).toBe(200);
   // Unlink it from the account's MEMORY.md index (the file both injection and
-  // verification read). The Studio `PUT /api/memory/index` alias is refused by
-  // the gate's overlapping `PUT /api/memory/:id` entry policy (a separate S10
-  // defect), so the index is rewritten in place here.
-  const indexFile = path.join(root, 'studio-accounts', createHash('sha256').update(a.id).digest('hex'), 'memory', 'MEMORY.md');
+  // verification read) through the standard Studio route (#81).
   const index = ((await get(a, '/api/memory')).json.index as string).split('\n').filter((line) => !line.includes('unlinked_palette_rule.md')).join('\n');
   expect(index).not.toBe((await get(a, '/api/memory')).json.index);
-  writeFileSync(indexFile, index);
+  const unlinked = await send(a, 'PUT', '/api/memory/index', { index });
+  expect(unlinked.status, unlinked.text).toBe(200);
   expect((await get(a, '/api/memory')).json.index).toBe(index);
   // The entry still exists; only its index link is gone.
   expect((await get(a, '/api/memory/unlinked_palette_rule')).status).toBe(200);

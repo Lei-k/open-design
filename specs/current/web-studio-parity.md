@@ -602,15 +602,33 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
   - **Fixed-design turns:** `composeStablePrompt` now forwards the account's memory hooks, so these turns honor the rewrite/verify switches on every source.
   - **Evidence:** `studio-memory-automation` (delayed memory read and delayed provider, with key removal, key replacement, pilot withdrawal, switch-off and close) and `studio-memory-automation-http` (key removed during a real extraction, unlinked rule neither injected nor enforced, hooks off in fixed-design company/own-key/Codex turns).
   - **Write commit point (closure C1):** the memory save carries the authority/cancellation check through its own reads and runs it right before the entry file is written, so key removal, pilot withdrawal or `close()` during the save writes nothing.
-  - **Open (S10, not repaired here):** the Studio `PUT /api/memory/index` alias is refused by the gate, because the overlapping `PUT /api/memory/:id` entry body policy also applies. Editing the memory index from Studio therefore fails today.
+  - **Memory index (S10 defect):** the gate refused the Studio `PUT /api/memory/index` alias because the overlapping `PUT /api/memory/:id` entry body policy also applied. S39 (#81) fixes this.
 
 ![Automatic memory switch for Web accounts](../../docs/design/studio-parity/memory-auto-settings.png)
 
 ![Learned memory and extraction history](../../docs/design/studio-parity/memory-auto-learned.png)
 
-## 目前進度與續作順序 — 2026-10-08（S38 後）
+## S39 — gate route precedence (#81)
 
-[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S38 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
+- **Defect.** Since S10 the gate applied every matching classification's body policy. `PUT /api/memory/index` also matches `PUT /api/memory/:id`, whose `studio-memory-entry` policy refuses the `index` field, so a Studio account could not save its own memory index (400). The standard route and its alias were both affected; the F5 regression test had to rewrite `MEMORY.md` on disk instead.
+- **Invariant.** `matchMultiUserRoute` now applies route precedence (`resolveRoutePrecedence`). Among matching string routes only the most specific survive, compared left to right: at the first segment where two patterns differ in kind, a literal outranks a parameter, which outranks a splat. Registration order plays no part. The survivor brings its own class, owner check, body policy and alias. Reviewed regex routes and static mounts have no segment structure, so they are never pruned and survivors still have to agree (mixed class → refused, disagreeing alias → 404). `matchMultiUserRouteCandidates` keeps the unresolved set for audits.
+- **Express agreement.** Express answers with the first registered route. Multi-user startup (`assertReady` → `findPrecedenceOrderViolations`) refuses an inventory in which a less specific route is registered ahead of an allowed static route served in place. Rewritten standard paths are routed by their alias, and the alias pair is checked the same way.
+- **Audit of the reviewed inventory (41 overlapping string pairs).**
+  - **Live-broken:** only `PUT /api/memory/index` and `PUT /api/multiuser/settings/memory/index`.
+  - **Worked already:** the memory statics `tree`, `events`, `system-prompt`, `extractions` and `verifications` (GET, plus DELETE for the history routes) on both prefixes. They worked only because the S10 "aliases agree" rule held and both sides had the same (or no) policy.
+  - **Blocked either way:** every other pair involves a blocked route (`runs/by-plugin-workflow`, `design-systems/generation-jobs`, `connectors/status|discovery`, `plugins/events|stats`, `proxy/<provider>/stream`, `export/manifest` vs `export/*splat`), plus `GET /design-systems/create` vs `:designSystemId` on the public shell. The resolved outcome is unchanged.
+  - **Regex overlaps:** unchanged. They are owner file-byte, version and publish-public patterns that agree, and `files/:name/preview` stays a mixed-class refusal.
+  - No `…/import`, `…/install` or `…/revisions` pair resolves differently.
+- **CLI.** `od memory index [show]` and `od memory index set --prompt-file <path|->` use the same `GET /api/memory` / `PUT /api/memory/index` (no CLI existed before), with `--session-file` and `--json`.
+- **Evidence.**
+  - `multiuser-gate-http` "route precedence": red on `fa9349e7` with the #81 400, green after. It covers the standard route and the alias, each route's own policy (the index route refuses entry fields, the entry route refuses `index`), 401 without a session, and B and the admin keeping their own index. It also checks the live inventory against `findPrecedenceOrderViolations`.
+  - `multiuser-route-classes`: a table test over every overlapping pair (winner only, with its own policy and alias), pinned rows, regex and mixed-class cases, and order violations.
+  - The F5 test in `studio-memory-automation-http` unlinks the rule through `PUT /api/memory/index`. `studio-cli-http` has the index case.
+- **Remaining.** No route classes changed, so the transport allowlist and lanes are unchanged.
+
+## 目前進度與續作順序 — 2026-10-09（S39 後）
+
+[Draft PR #71](https://github.com/Lei-K/open-design/pull/71) 現在包含 S1–S39 的局部交付。Epic #51／#52–#70 尚未全部完成；per-account pilot 與 deployment-wide rollout 必須維持區別，完整 gate 通過後才下線 fallback。
 
 - 分支：`feat/studio-parity-foundation`；以 PR 最新 head 為準。先核對 git status/log 和 GitHub 最新 review，避免重做已交付項目。S18–S25 的實作、測試、限制與入口截圖見上文；本次依使用者要求階段性收尾並交接，並非 Epic 完成。
 - 已確認產品決定：公司池使用 OpenAI 官方 API；Vela 採使用者驗證的本人身份與服務端 Web account/member binding；native window、OS overlay 與 app installer/updater 的 Web 不適用決定，和 in-page pet 仍需交付項目保持分開。
@@ -625,6 +643,7 @@ A read-only audit of every Studio-reachable path that touches the agent-writable
   - #62：S33/S37 完成每帳號 OpenAI/Tavily 加密金鑰；S38 完成自動記憶（opt-in、依回合來源計費、驗證與歷史）；剩餘 connectors/MCP、library、connected-app 記憶。
   - #67：in-page pet 與清除本瀏覽器資料已於 S27 完成；剩餘逐項 host bridge 的 mobile/permission-denied/headless UX 驗收（#70）。
 - #53–#59 和 #68/#69 的尚欠驗收（完整 chat state matrix、replay/telemetry、background/artifact lineage、provider recording、rich headless flows）不因本批完成。最後執行 #70 同 build 單人/A/B、desktop/mobile、a11y/visual/performance、revocation/restart/rollback，再決定 rollout。
+- S39 修正 gate route precedence（#81）：重疊的 string routes 由最具體者回應（literal > param > splat），各自保留 policy／owner check；啟動時檢查 Express 註冊順序一致。新增重疊 route 時，route-classes 的 table test 會要求明確的勝出者。
 - 關鍵邊界：pure contracts；actor authority 只由 server cookie 解析（背景工作用 `internalMultiUserResponse` 並由呼叫端提供 server-side authority）；admin 無 private-content bypass；standard aliases 不落入 host-global handler；async I/O/streams 重驗權限；resolved daemon data-root；新能力同 PR 同時接 HTTP/UI/CLI。新 route 同步 exact gate inventory、frontend allowlist 和跨 runtime negative oracle。
 - 維護入口：daemon `routes/studio-routines.ts`、`studio-automations.ts`（S36）、`research/studio-research.ts`（S37）、`services/studio-memory-automation.ts`（S38）、`studio-archives.ts`（ZIP／HTML）、`studio-catalog.ts`（含資料夾匯入）、`studio-project-creation.ts`、`studio-*` settings 與 `http/multiuser-*`；Web shared App、`components/SettingsFrame.tsx`、`runtime/StudioAccountSettings.tsx`、`runtime/StudioAccountMenu.tsx`、`runtime/StudioExecutionSource.tsx`、FileViewer 與 `runtime/studio-*`；CLI `src/cli.ts`。聊天與 prompt 改動前讀現行 chat/prompt 規劃及 module guidance。
 - 本機 Node 24 需加入 PATH，Corepack 選 pnpm 10.33.2；Web/root typecheck 或 build 使用 8 GiB heap。dev lifecycle 只用 `pnpm tools-dev`。驗證 logs 位於 scratch，不能提交。

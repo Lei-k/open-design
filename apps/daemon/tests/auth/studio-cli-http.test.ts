@@ -386,6 +386,15 @@ describe('same Studio APIs through remote od sessions', () => {
     success(await cli(['memory', 'config', '--extraction', 'false', '--session-file', aFile, '--json']));
   }, 40_000);
 
+  it('reads and replaces the account memory index through od memory index (#81)', async () => {
+    const bBefore = success(await cli(['memory', 'index', '--session-file', bFile, '--json'])).index;
+    const index = '# Memory\n\n- CLI_INDEX_MARKER\n';
+    expect(success(await cli(['memory', 'index', 'set', '--prompt-file', '-', '--session-file', aFile, '--json'], index))).toEqual({ index });
+    expect(success(await cli(['memory', 'index', 'show', '--session-file', aFile, '--json'])).index).toBe(index);
+    expect(success(await cli(['memory', 'index', '--session-file', bFile, '--json'])).index).toBe(bBefore);
+    expect((await cli(['memory', 'index', 'set', '--session-file', aFile, '--json'])).code).not.toBe(0);
+  }, 40_000);
+
   it('honors server revocation and logs B out without printing or retaining credentials', async () => {
     const revoked = await daemon.request({ method: 'POST', path: `/api/auth/users/${alice.id}/sessions/revoke`, cookie: admin.cookie, body: {} });
     expect(revoked.status).toBe(200);
