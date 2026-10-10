@@ -37,6 +37,8 @@ export const ar: Dict = {
   "studio.mcp.intro": "أضف خوادم MCP بعيدة (HTTP أو SSE) إلى حسابك. تُخزَّن قيم الترويسات وبيانات تسجيل الدخول مشفّرة ولا تُعرض مرة أخرى.",
   "studio.mcp.stdioUnavailable": "خوادم MCP المحلية (stdio) تشغّل أمرًا على الخادم، لذا فهي غير متاحة على الويب.",
   "studio.mcp.installUnavailable": "تثبيت OpenDesign كخادم MCP لوكيل برمجة يغيّر إعدادات الخادم نفسه، لذا فهو غير متاح على الويب.",
+  "studio.mcp.runAvailable": "Select your enabled, signed-in remote MCP servers in the composer or routine editor. Tools run through your account’s daemon grant.",
+  "studio.mcp.selectionUnavailable": "Only your enabled, signed-in remote MCP servers are available. Enable the server or sign in under Settings → MCP servers.",
   "studio.mcp.notInRuns": "يمكنك إعداد خوادم MCP واختبارها هنا؛ لكنها غير متاحة بعد في عمليات التشغيل.",
   "studio.mcp.empty": "لا توجد خوادم MCP بعد.",
   "studio.mcp.addTitle": "إضافة خادم بعيد",

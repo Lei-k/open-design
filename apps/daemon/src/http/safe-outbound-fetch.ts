@@ -78,6 +78,8 @@ export interface SafeOutboundInit {
   signal?: AbortSignal;
   /** Stop reading the body early once this returns true (e.g. one SSE event read). */
   stopWhen?: (received: Uint8Array) => boolean;
+  /** Synchronous bounded stream consumer (runtime MCP SSE); throws to abort. */
+  onChunk?: (received: Uint8Array) => void;
   /** Per-call ceilings (never above the helper's own). */
   timeoutMs?: number;
   maxResponseBytes?: number;
@@ -249,7 +251,8 @@ function pinnedAgent(target: Target, onSocket?: () => void): Agent {
   });
 }
 
-async function readBounded(body: ReadableStream<Uint8Array> | null, limit: number, stopWhen?: (received: Uint8Array) => boolean): Promise<Uint8Array> {
+async function readBounded(body: ReadableStream<Uint8Array> | null, limit: number, stopWhen?: (received: Uint8Array) => boolean,
+  onChunk?: (received: Uint8Array) => void): Promise<Uint8Array> {
   if (!body) return new Uint8Array();
   const reader = body.getReader();
   const chunks: Uint8Array[] = []; let size = 0;
@@ -260,6 +263,7 @@ async function readBounded(body: ReadableStream<Uint8Array> | null, limit: numbe
       size += value.byteLength;
       if (size > limit) throw new OutboundRequestRefused('size');
       chunks.push(value);
+      onChunk?.(Buffer.concat(chunks));
       if (stopWhen) {
         const joined = Buffer.concat(chunks);
         if (stopWhen(joined)) return joined;
@@ -328,7 +332,7 @@ export function createSafeOutboundFetch(options: SafeOutboundOptions = {}): Safe
           throw new OutboundRequestRefused('size');
         }
         let body: Uint8Array;
-        try { body = await readBounded(response.body as ReadableStream<Uint8Array> | null, maxBytes, init.stopWhen); }
+        try { body = await readBounded(response.body as ReadableStream<Uint8Array> | null, maxBytes, init.stopWhen, init.onChunk); }
         catch (error) {
           if (error instanceof OutboundRequestRefused) throw error;
           throw new OutboundRequestRefused(deadline.aborted ? 'timeout' : 'network');

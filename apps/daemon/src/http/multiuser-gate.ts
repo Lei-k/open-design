@@ -242,6 +242,14 @@ export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
       req.headers.authorization = toolAuthorization;
       next(); return;
     }
+    if (req.method === 'GET' && req.path === '/api/tools/mcp/list'
+      || req.method === 'POST' && req.path === '/api/tools/mcp/execute') {
+      const validation = toolTokenRegistry.validate(/^Bearer\s+(.+)$/i.exec(toolAuthorization ?? '')?.[1], {
+        endpoint: req.path, operation: req.method === 'GET' ? 'mcp:list' : 'mcp:execute' });
+      if (!validation.ok) return void sendApiError(res, 401, validation.code, validation.message);
+      if (!validation.grant.studioMcp) return void sendApiError(res, 404, 'NOT_FOUND', 'account MCP call refused');
+      req.headers.authorization = toolAuthorization; next(); return;
+    }
     const cookie = readSessionCookie(req.headers.cookie);
     const needsSession = decideMultiUserAccess({ matches, actor: null, isProjectOwner: () => false }).kind
       !== 'pass-unauthenticated';

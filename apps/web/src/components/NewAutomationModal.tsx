@@ -266,6 +266,7 @@ export function NewAutomationModal({
   const [error, setError] = useState<string | null>(null);
   const [popover, setPopover] = useState<'template' | 'project' | 'schedule' | null>(null);
   const [plugins, setPlugins] = useState<InstalledPluginRecord[]>([]);
+  const [mcpUnavailable, setMcpUnavailable] = useState(false);
   const [mcpServers, setMcpServers] = useState<McpServerConfig[]>([]);
   const [mentionTab, setMentionTab] = useState<CapabilityPickerTab>('all');
   const [mention, setMention] = useState<ContextMention | null>(null);
@@ -297,6 +298,7 @@ export function NewAutomationModal({
         fetchMcpServers(),
       ]);
       if (canceled) return;
+      setMcpUnavailable(mcpResult.status !== 'fulfilled' || mcpResult.value?.unavailable === true);
       setPlugins(pluginResult.status === 'fulfilled' ? (pluginResult.value ?? []) : []);
       setMcpServers(
         mcpResult.status === 'fulfilled'
@@ -826,6 +828,7 @@ export function NewAutomationModal({
 
         <footer className="automation-modal__foot">
           <div className="automation-modal__pills">
+            {!studio.hostServices && mcpUnavailable ? <p className="hint" data-testid="studio-routine-mcp-unavailable">{t('studio.mcp.selectionUnavailable')}</p> : null}
             {!studio.hostServices ? <StudioExecutionSource agentId={selectedExecutionAgent} onChange={setExecutionAgent} /> : null}
             <PillButton
               icon="folder"

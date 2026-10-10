@@ -35,6 +35,8 @@ export interface McpFixture {
     echoSecrets: boolean;
     /** Round-2 reviewer variant: the authorization-code token response's `scope` is exactly the received Authorization header. */
     scopeEchoesAuthorization: boolean;
+    holdDiscovery: boolean; holdCall: boolean; holdDnsAfterDiscovery: boolean; tools: unknown[] | null; resultBytes: number;
+    closedStreams: number;
   };
   resolve(hostname: string): Promise<string[]>;
   allowAddress(address: string): boolean;
@@ -51,9 +53,24 @@ export const MCP_FIXTURE_DNS: Record<string, string[]> = {
 export async function startMcpFixture(): Promise<McpFixture> {
   const requests: McpFixture['requests'] = [];
   const state: McpFixture['state'] = { accessToken: MCP_TOKEN_SENTINEL, refreshToken: MCP_REFRESH_SENTINEL, issuer: null, authorizationEndpoint: null,
-    holdMcp: false, holdToken: false, tokenFails: false, releases: [], holdDns: false, dnsWaiting: 0, dnsReleases: [], echoSecrets: false, scopeEchoesAuthorization: false };
+    holdMcp: false, holdToken: false, tokenFails: false, releases: [], holdDns: false, dnsWaiting: 0, dnsReleases: [], echoSecrets: false, scopeEchoesAuthorization: false, holdDiscovery: false, holdCall: false, holdDnsAfterDiscovery: false, tools: null, resultBytes: 0, closedStreams: 0 };
   let refreshCount = 0;
   const hold = () => new Promise<void>((resolve) => { state.releases.push(resolve); });
+  const streams = new Map<string, http.ServerResponse>();
+  const rpcResult = async (request: Record<string, unknown>, credential: string) => {
+    if (request.method === 'notifications/initialized') return null;
+    if (request.method === 'initialize') return { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'runtime-fixture', version: '1' } };
+    if (request.method === 'tools/list') {
+      if (state.holdDiscovery) await hold();
+      if (state.holdDnsAfterDiscovery) state.holdDns = true;
+      return { tools: state.tools ?? [{ name: 'lookup', description: state.echoSecrets ? `Read ${credential} ${encodedForms(credential).join(' ')}` : 'Read fixture', inputSchema: { type: 'object', properties: {}, additionalProperties: true } }] };
+    }
+    if (request.method === 'tools/call') {
+      if (state.holdCall) await hold();
+      return { content: [{ type: 'text', text: state.resultBytes ? 'x'.repeat(state.resultBytes) : state.echoSecrets ? `ok ${credential} ${encodedForms(credential).join(' ')}` : 'fixture result' }] };
+    }
+    throw new Error('fixture method');
+  };
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (chunk) => { body += chunk; });
@@ -63,6 +80,30 @@ export async function startMcpFixture(): Promise<McpFixture> {
         ...(typeof req.headers['x-api-key'] === 'string' ? { apiKey: req.headers['x-api-key'] } : {}), body });
       const json = (value: unknown, status = 200) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); };
       const origin = `http://${req.headers.host}`;
+      if (url.pathname === '/runtime-sse' && req.method === 'GET') {
+        const session = String(streams.size + Math.random()); streams.set(session, res);
+        res.on('close', () => { state.closedStreams++; streams.delete(session); });
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        return void res.write(`event: endpoint\ndata: /runtime-messages?sessionId=${session}\n\n`);
+      }
+      if ((url.pathname === '/runtime' || url.pathname === '/runtime-events' || url.pathname === '/runtime-messages') && req.method === 'POST') {
+        const credential = String(req.headers['x-api-key'] ?? req.headers.authorization ?? '');
+        if (credential !== MCP_HEADER_SENTINEL && credential !== `Bearer ${state.accessToken}`) return json({ error: 'unauthorized' }, 401);
+        const request = JSON.parse(body) as Record<string, unknown>;
+        const result = await rpcResult(request, credential);
+        if (url.pathname === '/runtime-messages') {
+          const stream = streams.get(url.searchParams.get('sessionId') ?? '');
+          if (request.id !== undefined) stream?.write(`event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: request.id, result })}\n\n`);
+          return json({}, 202);
+        }
+        if (request.id === undefined) { res.writeHead(202); return void res.end(); }
+        const answer = { jsonrpc: '2.0', id: request.id, result };
+        if (url.pathname === '/runtime-events') {
+          res.on('close', () => { state.closedStreams++; });
+          res.writeHead(200, { 'content-type': 'text/event-stream' }); return void res.write(`event: message\ndata: ${JSON.stringify(answer)}\n\n`);
+        }
+        return json(answer);
+      }
       if (url.pathname === '/mcp' && req.method === 'POST') {
         if (state.holdMcp) await hold();
         const authorized = req.headers['x-api-key'] === MCP_HEADER_SENTINEL || req.headers.authorization === `Bearer ${state.accessToken}`;

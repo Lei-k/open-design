@@ -37,6 +37,8 @@ export const th: Dict = {
   "studio.mcp.intro": "เพิ่มเซิร์ฟเวอร์ MCP ระยะไกล (HTTP หรือ SSE) ให้บัญชีของคุณ ค่าส่วนหัวและข้อมูลการลงชื่อเข้าใช้จะถูกเข้ารหัสและจะไม่แสดงอีก",
   "studio.mcp.stdioUnavailable": "เซิร์ฟเวอร์ MCP ภายในเครื่อง (stdio) จะรันคำสั่งบนเซิร์ฟเวอร์ จึงใช้บนเว็บไม่ได้",
   "studio.mcp.installUnavailable": "การติดตั้ง OpenDesign เป็นเซิร์ฟเวอร์ MCP สำหรับเอเจนต์เขียนโค้ดจะเปลี่ยนการตั้งค่าของเซิร์ฟเวอร์เอง จึงใช้บนเว็บไม่ได้",
+  "studio.mcp.runAvailable": "Select your enabled, signed-in remote MCP servers in the composer or routine editor. Tools run through your account’s daemon grant.",
+  "studio.mcp.selectionUnavailable": "Only your enabled, signed-in remote MCP servers are available. Enable the server or sign in under Settings → MCP servers.",
   "studio.mcp.notInRuns": "คุณตั้งค่าและทดสอบเซิร์ฟเวอร์ MCP ได้ที่นี่ แต่ยังใช้ในการรันไม่ได้",
   "studio.mcp.empty": "ยังไม่มีเซิร์ฟเวอร์ MCP",
   "studio.mcp.addTitle": "เพิ่มเซิร์ฟเวอร์ระยะไกล",

@@ -302,6 +302,8 @@ describe('route classification covers the real inventory', () => {
       'actor-scoped POST /api/import/claude-design',
       'actor-scoped POST /api/multiuser/import/claude-design',
       'actor-scoped POST /api/import/files',
+      'actor-scoped GET /api/tools/mcp/list',
+      'actor-scoped POST /api/tools/mcp/execute',
       'actor-scoped GET /api/tools/connectors/list',
       'actor-scoped POST /api/tools/connectors/execute',
       'actor-scoped GET /api/templates',

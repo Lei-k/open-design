@@ -323,7 +323,7 @@ const DEPLOY_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 const AUTOMATION_STRING_FLAGS = new Set([
   // `action` is the proposed change for `od automation template propose`.
   'daemon-url', 'name', 'prompt', 'prompt-file', 'schedule', 'target', 'action',
-  'project', 'skill', 'agent', 'limit', 'plugin', 'mcp', 'connector',
+  'project', 'skill', 'agent', 'limit', 'plugin', 'mcp', 'mcp-server', 'connector',
   'status', 'reason', 'template', 'source-kind', 'source-ref', 'title',
   'body', 'body-file', 'compression', 'sensitivity', 'account',
   'candidate-sinks', 'memory-type',
@@ -8138,7 +8138,7 @@ async function runRun(args) {
   od run start --project <projectId> [--conversation <id>] [--message "<text>"]
                [--prompt-file <path|->] [--task-execution <id>]
                [--client-request-id <id>]
-               [--skill <id>[,<id>]] [--connector <id>[,<id>]] [--plugin <id>] [--inputs <json>] [--grant-caps a,b]
+               [--skill <id>[,<id>]] [--connector <id>[,<id>]] [--mcp-server <id>[,<id>]] [--plugin <id>] [--inputs <json>] [--grant-caps a,b]
                [--agent claude|codex|opencode] [--model <id>] [--reasoning <effort>] [--service-tier <id>]
                [--execution-source personal_subscription|company_pool|personal_api_key] [--session-file <path>]
                [--workspace <id> --workspace-member <id>] [--follow] [--json]
@@ -8169,7 +8169,7 @@ Common options:
   }
   const sub = args[0];
   const rest = args.slice(1);
-  const RUN_STRING_FLAGS = new Set([...PROJECT_RESOURCE_STRING_FLAGS, 'connector']);
+  const RUN_STRING_FLAGS = new Set([...PROJECT_RESOURCE_STRING_FLAGS, 'connector', 'mcp-server']);
   const flags = parseFlags(rest, {
     string: RUN_STRING_FLAGS,
     boolean: PROJECT_BOOLEAN_FLAGS,
@@ -8438,7 +8438,7 @@ Common options:
           body.skillIds = selectedSkillIds;
         }
       }
-      if (flags.connector) body.context = { connectorIds: splitCommaSeparatedIds(flags.connector) };
+      if (flags.connector || flags['mcp-server']) body.context = { ...(flags.connector ? { connectorIds: splitCommaSeparatedIds(flags.connector) } : {}), ...(flags['mcp-server'] ? { mcpServerIds: splitCommaSeparatedIds(flags['mcp-server']) } : {}) };
       if (flags['design-system']) body.designSystemId = flags['design-system'];
       if (flags.agent) body.agentId = flags.agent;
       if (flags.model) body.model = flags.model;
@@ -12115,12 +12115,12 @@ function splitCommaSeparatedIds(value) {
 function automationContextFromFlags(flags) {
   const skillIds = splitCommaSeparatedIds(flags.skill);
   const pluginIds = splitCommaSeparatedIds(flags.plugin);
-  const mcpServerIds = splitCommaSeparatedIds(flags.mcp);
+  const mcpServerIds = splitCommaSeparatedIds(flags['mcp-server'] ?? flags.mcp);
   const connectorIds = splitCommaSeparatedIds(flags.connector);
   const context = {
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(pluginIds.length > 0 ? { pluginIds } : {}),
-    ...(mcpServerIds.length > 0 ? { mcpServerIds } : {}),
+    ...(flags['mcp-server'] !== undefined || flags.mcp !== undefined ? { mcpServerIds } : {}),
     ...(connectorIds.length > 0 ? { connectorIds } : {}),
   };
   return Object.keys(context).length > 0 ? context : null;
@@ -12188,11 +12188,11 @@ function printAutomationHelp() {
                        [--disabled] [--json]
                        [--prompt-file <path|->] (alternative to --prompt)
                        [--skill <id>[,<id>]] [--plugin <id>[,<id>]]
-                       [--mcp <id>[,<id>]] [--connector <id>[,<id>]]
+                       [--mcp-server <id>[,<id>]] [--connector <id>[,<id>]]
                        [--agent <id>] (Studio: codex | openai | openai-byok)
   od automation update <id> [--name ...] [--prompt ...]
                             [--schedule ...] [--target ...] [--agent <id>]
-                            [--skill ...] [--plugin ...] [--mcp ...]
+                            [--skill ...] [--plugin ...] [--mcp-server ...]
                             [--connector ...] [--enabled|--disabled]
                             Patch fields.
   od automation run <id>                                       Trigger a manual run; prints projectId/conversationId.
@@ -12770,7 +12770,7 @@ async function runAutomation(args) {
         patch.context = context;
       }
       if (Object.keys(patch).length === 0) {
-        console.error('update needs at least one of --name --prompt(--prompt-file) --schedule --target --agent --skill --plugin --mcp --connector --enabled --disabled');
+        console.error('update needs at least one of --name --prompt(--prompt-file) --schedule --target --agent --skill --plugin --mcp-server --connector --enabled --disabled');
         process.exit(2);
       }
       let resp;

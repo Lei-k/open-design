@@ -8,7 +8,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { STUDIO_MCP_LIMITS, STUDIO_MCP_NOT_IN_RUNS_REASON, STUDIO_MCP_STDIO_UNAVAILABLE_REASON } from '@open-design/contracts';
+import { STUDIO_MCP_LIMITS, STUDIO_MCP_STDIO_UNAVAILABLE_REASON } from '@open-design/contracts';
 import { until } from './personal-codex-helpers.js';
 import {
   cleanupIsolatedDataRoot, loadIsolatedServerModule, login, multiUserOptions, provisionAccounts, startMultiUserDaemon,
@@ -121,7 +121,7 @@ describe('account-owned remote servers', () => {
       expect(listed.status).toBe(200);
       expect(listed.json.servers.map((server: { id: string }) => server.id)).toContain(id);
       expect(listed.json.stdio).toEqual({ available: false, reason: STUDIO_MCP_STDIO_UNAVAILABLE_REASON });
-      expect(listed.json.runs).toEqual({ available: false, reason: STUDIO_MCP_NOT_IN_RUNS_REASON });
+      expect(listed.json.runs).toEqual({ available: true, reason: null });
       expect(listed.json.templates.every((template: { transport: string }) => template.transport !== 'stdio')).toBe(true);
       expect(listed.text).not.toContain(MCP_HEADER_SENTINEL);
     }
@@ -572,19 +572,17 @@ describe('provider-returned metadata is untrusted', () => {
   });
 });
 
-describe('run-time use stays refused (S61 opens it)', () => {
-  it('runs and routines refuse mcpServerIds with the precise reason', async () => {
+describe('runtime selection is now owner-scoped (S61)', () => {
+  it('runs and routines refuse an unavailable server with the same missing shape', async () => {
     const id = `run-${randomUUID().slice(0, 6)}`;
-    await remote(alice, id);
+    await remote(alice, id, { enabled: false });
     const projectId = randomUUID();
     const project = await call(alice, 'POST', '/api/projects', { id: projectId, name: 'mcp-run' });
-    const run = await call(alice, 'POST', '/api/runs', { projectId, conversationId: project.json.conversationId, message: 'use it', agentId: 'openai',
-      context: { mcpServerIds: [id] } });
-    expect(run.status, run.text).toBe(403);
-    expect(run.json.error).toMatchObject({ code: 'MULTIUSER_CAPABILITY_UNAVAILABLE', message: STUDIO_MCP_NOT_IN_RUNS_REASON, details: { capability: 'mcp', reason: STUDIO_MCP_NOT_IN_RUNS_REASON } });
+    expect((await asAdmin('PUT', '/api/admin/pool/openai', { revision: 0, apiKey: 'sk-S61-control-fixture-0123456789', model: 'fixture', enabled: true, capacity: 1 })).status).toBe(200);
+    const run = await call(alice, 'POST', '/api/runs', { projectId, conversationId: project.json.conversationId, message: 'use it', agentId: 'openai', context: { mcpServerIds: [id] } });
+    expect(run.status, run.text).toBe(404); expect(run.json.error.code).toBe('NOT_FOUND');
     const routine = await call(alice, 'POST', '/api/routines', { name: 'r', prompt: 'p', schedule: { kind: 'daily', time: '09:00', timezone: 'UTC' },
       target: { mode: 'create_each_run' }, context: { mcpServerIds: [id] } });
-    expect(routine.status, routine.text).toBe(403);
-    expect(routine.json.error).toMatchObject({ code: 'MULTIUSER_CAPABILITY_UNAVAILABLE', details: { capability: 'mcp', reason: STUDIO_MCP_NOT_IN_RUNS_REASON } });
+    expect(routine.status, routine.text).toBe(404); expect(routine.json.error.code).toBe('NOT_FOUND');
   });
 });

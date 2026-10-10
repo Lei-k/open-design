@@ -76,6 +76,8 @@ export interface Dict {
   'studio.mcp.stdioUnavailable': string;
   'studio.mcp.installUnavailable': string;
   'studio.mcp.notInRuns': string;
+  'studio.mcp.runAvailable': string;
+  'studio.mcp.selectionUnavailable': string;
   'studio.mcp.empty': string;
   'studio.mcp.addTitle': string;
   'studio.mcp.id': string;

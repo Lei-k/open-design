@@ -388,7 +388,7 @@ export function attachCodexAppServerSession(
           && toolCalls.size < 128 && !toolCalls.has(callId) && isRecord(params.arguments)
           && Buffer.byteLength(JSON.stringify(params.arguments)) <= 512 * 1024) {
           toolCalls.add(callId);
-          const connector = tool.name.startsWith('connectors_');
+          const connector = tool.name.startsWith('connectors_') || tool.name.startsWith('mcp_');
           const answer = (output: unknown, failed = false) => {
             let content = 'Dynamic tool refused'; let ok = false;
             try {
@@ -399,7 +399,7 @@ export function attachCodexAppServerSession(
             } catch { content = connector && failed && isRecord(output) && typeof output.error === 'string'
               && (API_ERROR_CODES as readonly string[]).includes(output.error) ? JSON.stringify({ error: output.error }) : 'Dynamic tool refused'; }
             onAgentEvent({ type: 'tool_result', toolUseId: callId, isError: !ok,
-              content: connector ? (ok ? 'Account connector call completed' : 'Account connector call refused') : content });
+              content: connector ? (tool.name.startsWith('mcp_') ? (ok ? 'Account MCP call completed' : 'Account MCP call refused') : (ok ? 'Account connector call completed' : 'Account connector call refused')) : content });
             write({ jsonrpc: '2.0', id: requestId, result: { success: ok, contentItems: [{ type: 'inputText', text: content }] } });
           };
           const refuse = (error: unknown) => answer({ error: isRecord(error) && typeof error.code === 'string'

@@ -858,6 +858,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
     // shown in the slash-command palette so `/mcp <id>` inserts a hint into
     // the prompt that nudges the model to use that server's tools.
     const [mcpServers, setMcpServers] = useState<McpServerConfig[]>([]);
+    const [mcpUnavailable, setMcpUnavailable] = useState(false);
     const [mcpTemplates, setMcpTemplates] = useState<McpTemplate[]>([]);
     const [connectors, setConnectors] = useState<ConnectorDetail[]>([]);
     const [connectorKeyConfigured, setConnectorKeyConfigured] = useState(false);
@@ -1150,24 +1151,21 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
 
     // Lazy-fetch the user's external MCP servers list (once engaged) so the
     // `/mcp …` slash palette and the composer's MCP button popover have
-    // something to render. We deliberately do not reactively re-fetch when
-    // the user toggles servers from Settings — the dialog refreshes itself,
-    // and the chat composer rehydrates next time the user re-opens it. A
-    // background poll would be cheap but unnecessary for the typical
-    // edit-once-then-chat workflow.
+    // something to render. Studio Settings mutations refresh this list and
+    // discard selections that are no longer available to the current actor.
     useEffect(() => {
       if (!composerEngaged) return;
       let cancelled = false;
-      void (async () => {
+      const readMcp = async () => {
         const data = await fetchMcpServers();
         if (cancelled || !data) return;
         setMcpServers(data.servers);
-        setMcpTemplates(data.templates);
-      })();
-      return () => {
-        cancelled = true;
+        setMcpTemplates(data.templates); setMcpUnavailable(data.unavailable === true);
+        if (!studio.hostServices) setStagedMcpServers((current) => current.filter((server) => data.servers.some((item) => item.id === server.id)));
       };
-    }, [composerEngaged]);
+      void readMcp(); window.addEventListener('studio-mcp-changed', readMcp);
+      return () => { cancelled = true; window.removeEventListener('studio-mcp-changed', readMcp); };
+    }, [composerEngaged, studio.generation, studio.hostServices]);
 
     // Skills now come from the parent (App.tsx → ProjectView → ChatPane → ChatComposer)
     // pre-filtered by enabled/disabled state. We no longer fetch a fresh list
@@ -3612,6 +3610,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
               />
             ) : null}
           </div>
+          {!studio.hostServices && mcpUnavailable ? <p className="hint" data-testid="studio-mcp-selection-unavailable">{t('studio.mcp.selectionUnavailable')}</p> : null}
           <CaretFloatingLayer
             caret={caretRect}
             open={Boolean(mention)}
@@ -3734,7 +3733,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 void insertSkillMention(skill);
               }}
               mcpServers={enabledMcpServers}
-              onPickMcp={!studioRequest('GET', '/api/mcp/config') ? undefined : (server) => {
+              onPickMcp={!studioRequest('GET', '/api/mcp/servers') ? undefined : (server) => {
                 trackComposerBar({
                   element: 'plus_pick',
                   resource_kind: 'mcp',
@@ -3742,7 +3741,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 insertMcpMention(server);
               }}
-              onAddMcp={studioRequest('GET', '/api/mcp/config') && onOpenMcpSettings ? () => {
+              onAddMcp={studioRequest('GET', '/api/mcp/servers') && onOpenMcpSettings ? () => {
                 trackComposerBar({ element: 'plus_add', resource_kind: 'mcp' });
                 onOpenMcpSettings();
               } : undefined}

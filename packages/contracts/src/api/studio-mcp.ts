@@ -10,7 +10,7 @@
  * and no response carries them. Reads show header names, a configured flag and
  * (for long values only) the last four characters. Another account's server is
  * unaddressable — identical to a server that does not exist — and administrators
- * have no read bypass. Run-time use stays refused in this slice.
+ * have no read bypass. Run-time use is bound to the run owner’s selected usable servers.
  */
 import type { McpTemplate, UpdateMcpServersRequest } from './mcp.js';
 
@@ -74,7 +74,7 @@ export interface StudioMcpServersResponse {
   templates: McpTemplate[];
   limits: typeof STUDIO_MCP_LIMITS;
   stdio: { available: false; reason: string };
-  runs: { available: false; reason: string };
+  runs: { available: boolean; reason: string | null };
 }
 
 export interface StudioMcpServerResponse {
@@ -150,3 +150,9 @@ export type StudioMcpAuthorityRefusal = 'account' | 'session' | 'server-changed'
 export type StudioMcpCallbackRefusal = 'state' | 'expired' | 'replayed' | 'session' | 'account' | 'server-changed' | 'provider' | 'not-completed';
 /** details.reason of `MULTIUSER_MCP_OUTBOUND_REFUSED`: the SSRF guard refused the destination. */
 export type StudioMcpOutboundRefusal = 'scheme' | 'credentials' | 'host' | 'address' | 'redirect' | 'timeout' | 'size' | 'network';
+
+/** Daemon-mediated run tools, identical on personal Codex and both Responses sources. */
+export interface StudioMcpTool { name: string; description: string; inputSchema: Record<string, unknown> }
+export interface StudioMcpToolsResponse { servers: Array<{ serverId: string; tools: StudioMcpTool[] }> }
+export interface StudioMcpToolCallRequest { serverId: string; toolName: string; input: Record<string, unknown> }
+export interface StudioMcpToolCallResponse { serverId: string; toolName: string; output: unknown }

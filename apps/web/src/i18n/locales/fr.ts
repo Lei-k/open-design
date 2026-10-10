@@ -427,6 +427,8 @@ export const fr: Dict = {
   "studio.mcp.intro": "Ajoutez des serveurs MCP distants (HTTP ou SSE) à votre compte. Les valeurs d’en-tête et les connexions sont stockées chiffrées et ne sont plus jamais affichées.",
   "studio.mcp.stdioUnavailable": "Les serveurs MCP locaux (stdio) exécutent une commande sur le serveur et ne sont pas disponibles sur le Web.",
   "studio.mcp.installUnavailable": "Installer OpenDesign comme serveur MCP pour un agent de code modifie la configuration du serveur lui-même et n’est pas disponible sur le Web.",
+  "studio.mcp.runAvailable": "Select your enabled, signed-in remote MCP servers in the composer or routine editor. Tools run through your account’s daemon grant.",
+  "studio.mcp.selectionUnavailable": "Only your enabled, signed-in remote MCP servers are available. Enable the server or sign in under Settings → MCP servers.",
   "studio.mcp.notInRuns": "Vous pouvez configurer et tester vos serveurs MCP ici ; ils ne sont pas encore disponibles dans les exécutions.",
   "studio.mcp.empty": "Aucun serveur MCP pour l’instant.",
   "studio.mcp.addTitle": "Ajouter un serveur distant",

@@ -21,7 +21,7 @@
  *   known secret (a fragment, or a secret with extra characters around it) is
  *   replaced too;
  * - shape checks reject credential-looking values even without a match: a
- *   value after an auth-scheme word (`Basic`, `Bearer`, …) and a base64 run
+ *   credible payload after an auth-scheme word (`Basic`, `Bearer`, …) and a base64 run
  *   that decodes to readable text or to a known secret.
  *
  * Secrets shorter than 4 characters cannot be scrubbed meaningfully and are
@@ -142,6 +142,12 @@ function overlaps(text: string, secrets: KnownSecrets): boolean {
   return false;
 }
 
+/** Scheme words are ordinary metadata too; only a credible payload makes a credential. */
+function credentialPayload(text: string, secrets: KnownSecrets): boolean {
+  return carriesSecret(text, secrets) || readableBase64(text) !== null
+    || /^[A-Za-z0-9._~+/-]{16,}={0,2}$/.test(text);
+}
+
 /** True when `text` contains a known secret or a fragment of one, directly or base64-encoded. */
 export function carriesSecret(text: string, secrets: KnownSecrets): boolean {
   if (secrets.values.some((secret) => text.includes(secret)) || overlaps(text, secrets)) return true;
@@ -153,7 +159,8 @@ export function carriesSecret(text: string, secrets: KnownSecrets): boolean {
 export function scrubSecrets(text: string, secrets: KnownSecrets): string {
   let out = text;
   for (const secret of secrets.values) if (out.includes(secret)) out = out.split(secret).join(REDACTED);
-  out = out.replace(/\b(basic|bearer|dpop|digest|negotiate|hoba|mutual)(\s+)(?!\[redacted\])\S+/gi, (_m, scheme: string, gap: string) => `${scheme}${gap}${REDACTED}`);
+  out = out.replace(/\b(basic|bearer|dpop|digest|negotiate|hoba|mutual)(\s+)(?!\[redacted\])(\S+)/gi,
+    (match, scheme: string, gap: string, payload: string) => credentialPayload(payload, secrets) ? `${scheme}${gap}${REDACTED}` : match);
   return out.replace(RUN, (run) => (overlaps(run, secrets) || carriesSecret(run, secrets) || readableBase64(run) !== null ? REDACTED : run));
 }
 
@@ -177,12 +184,11 @@ const SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
 export function untrustedScope(value: unknown, secrets: KnownSecrets): string | null {
   if (typeof value !== 'string') return null;
   const kept: string[] = [];
-  let afterScheme = false;
-  for (const token of value.slice(0, 8192).split(/[ \t\r\n]+/)) {
+  const tokens = value.slice(0, 8192).split(/[ \t\r\n]+/).filter(Boolean);
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
     if (!token) continue;
-    // Shape: an auth-scheme word and the value after it are a credential, never a scope.
-    if (AUTH_SCHEME.test(token)) { afterScheme = true; continue; }
-    if (afterScheme) { afterScheme = false; continue; }
+    if (AUTH_SCHEME.test(token) && tokens[i + 1] && credentialPayload(tokens[i + 1]!, secrets)) { i++; continue; }
     if (!SCOPE_TOKEN.test(token) || carriesSecret(token, secrets) || readableBase64(token) !== null || kept.includes(token)) continue;
     if (kept.length >= 32 || [...kept, token].join(' ').length > 1024) break;
     kept.push(token);

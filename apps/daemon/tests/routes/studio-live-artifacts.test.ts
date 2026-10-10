@@ -293,3 +293,18 @@ it.each(['company_pool', 'personal_api_key'])('completes create/read/update/refr
   ]);
   expect(JSON.stringify(persisted)).not.toContain(`${source}-fixture`);
 });
+
+it('S61 keeps MCP Live Artifact sources refused with the actor-grant lifecycle reason', async () => {
+  const value = draft();
+  Object.assign(value.input.document.sourceJson, { type: 'daemon_tool', toolName: 'mcp_execute', input: { serverId: 'mine', toolName: 'lookup' } });
+  const result = await call('POST', '', value);
+  expect(result.status).toBe(403);
+  expect(result.body.error.message).toContain('refreshing-actor');
+  expect(store.list('project')).toEqual([]);
+  // A legacy stored source must receive the same precise refusal on refresh.
+  const legacy = store.create('project', draft());
+  Object.assign(legacy.document.sourceJson!, { type: 'daemon_tool', toolName: 'mcp_execute' });
+  db.prepare('UPDATE studio_live_artifacts SET artifact_json = ? WHERE project_id = ? AND id = ?').run(JSON.stringify(legacy), 'project', legacy.id);
+  expect(() => store.refresh('project', legacy.id)).toThrow('refreshing-actor');
+  expect(store.history('project', legacy.id)).toEqual([]);
+});

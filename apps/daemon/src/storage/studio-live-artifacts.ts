@@ -72,8 +72,15 @@ export class StudioLiveArtifacts {
     if (Buffer.byteLength(html) > LIMITS.renderedBytes) throw new StudioLiveArtifactRefusal(413, 'live artifact preview is too large');
     return html;
   }
+  private refuseMcpSource(value: unknown): void {
+    const source = (value as { document?: { sourceJson?: { type?: unknown; toolName?: unknown } } } | null)?.document?.sourceJson;
+    if (source?.type === 'mcp_tool' || typeof source?.toolName === 'string' && source.toolName.startsWith('mcp_')) {
+      throw new StudioLiveArtifactRefusal(403, 'MCP Live Artifact refresh requires an asynchronous refreshing-actor grant lifecycle; run MCP grants cannot be borrowed for refresh');
+    }
+  }
   create(project: string, value: unknown, lineage?: { conversationId: string; runId: string }): LiveArtifact {
     if (!closed(value, ['input', 'templateHtml']) || !closed(value.input, ['title', 'slug', 'sessionId', 'pinned', 'status', 'preview', 'document'])) throw invalid();
+    this.refuseMcpSource(value.input);
     const parsed = validateLiveArtifactCreateInput(value.input); if (!parsed.ok) throw invalid();
     const now = new Date().toISOString(); const input = parsed.value;
     const artifact: LiveArtifact = { ...input, ...(lineage ? { sessionId: lineage.conversationId, createdByRunId: lineage.runId } : {}),
@@ -93,6 +100,7 @@ export class StudioLiveArtifacts {
   update(project: string, id: string, value: unknown, lineage?: { conversationId: string; runId: string }): LiveArtifact {
     const previous = this.row(project, id);
     if (!closed(value, ['input', 'templateHtml', 'expectedRevision']) || !closed(value.input, ['title', 'slug', 'pinned', 'status', 'preview', 'document'])) throw invalid();
+    this.refuseMcpSource(value.input);
     const parsed = validateLiveArtifactUpdateInput(value.input); if (!parsed.ok) throw invalid();
     const current: LiveArtifact = JSON.parse(previous.artifact_json);
     if (value.expectedRevision !== undefined && (!Number.isSafeInteger(value.expectedRevision) || Number(value.expectedRevision) < 1)
@@ -125,6 +133,7 @@ export class StudioLiveArtifacts {
   }
   refresh(project: string, id: string): LiveArtifactRefreshResponse {
     const row = this.row(project, id); const artifact: LiveArtifact = JSON.parse(row.artifact_json);
+    this.refuseMcpSource(artifact);
     const source = artifact.document.sourceJson;
     if (!source || source.refreshPermission !== 'manual_refresh_granted_for_read_only') {
       throw new StudioLiveArtifactRefusal(409, 'manual refresh requires an approved read-only source');

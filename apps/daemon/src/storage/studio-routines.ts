@@ -48,5 +48,8 @@ export function migrateStudioRoutines(db: Database.Database): void {
   if (!(db.prepare('PRAGMA table_info(studio_routines)').all() as Array<{ name: string }>).some((column) => column.name === 'connector_ids_json')) {
     db.exec("ALTER TABLE studio_routines ADD COLUMN connector_ids_json TEXT NOT NULL DEFAULT '[]'");
   }
+  if (!(db.prepare('PRAGMA table_info(studio_routines)').all() as Array<{ name: string }>).some((column) => column.name === 'mcp_server_ids_json')) {
+    db.exec("ALTER TABLE studio_routines ADD COLUMN mcp_server_ids_json TEXT NOT NULL DEFAULT '[]'");
+  }
 
 }

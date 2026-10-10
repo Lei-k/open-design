@@ -37,6 +37,8 @@ export const esES: Dict = {
   "studio.mcp.intro": "Añade servidores MCP remotos (HTTP o SSE) a tu cuenta. Los valores de las cabeceras y los inicios de sesión se guardan cifrados y no se vuelven a mostrar.",
   "studio.mcp.stdioUnavailable": "Los servidores MCP locales (stdio) ejecutan un comando en el servidor y no están disponibles en la Web.",
   "studio.mcp.installUnavailable": "Instalar OpenDesign como servidor MCP para un agente de programación cambia la configuración del propio servidor y no está disponible en la Web.",
+  "studio.mcp.runAvailable": "Select your enabled, signed-in remote MCP servers in the composer or routine editor. Tools run through your account’s daemon grant.",
+  "studio.mcp.selectionUnavailable": "Only your enabled, signed-in remote MCP servers are available. Enable the server or sign in under Settings → MCP servers.",
   "studio.mcp.notInRuns": "Aquí puedes configurar y probar tus servidores MCP; aún no están disponibles en las ejecuciones.",
   "studio.mcp.empty": "Todavía no hay servidores MCP.",
   "studio.mcp.addTitle": "Añadir un servidor remoto",

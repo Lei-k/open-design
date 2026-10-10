@@ -488,3 +488,10 @@ it('S59 connector agent endpoints are bearer-granted while cookie transport stay
   }
   expect(studioRequestAvailable('POST', '/api/runs', () => true, true, true, true)).toBe(true);
 });
+
+it('S61 MCP runtime endpoints are classified but cookie transport cannot borrow a bearer grant', () => {
+  for (const [method, path] of [['GET', '/api/tools/mcp/list'], ['POST', '/api/tools/mcp/execute']]) {
+    expect(matchMultiUserRoute(method!, path!).map(({ entry }) => entry.routeClass)).toEqual(['actor-scoped']);
+    expect(studioRequestAvailable(method!, path!, () => true, true, true, true, true)).toBe(false);
+  }
+});

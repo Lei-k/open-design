@@ -621,6 +621,9 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'GET /api/tools/connectors/list',
     'POST /api/tools/connectors/execute',
   ]),
+  ...group('actor-scoped', 'server-minted account MCP grant; bearer-only at the gate', [
+    'GET /api/tools/mcp/list', 'POST /api/tools/mcp/execute',
+  ]),
   ...blocked(R_TOOL_TOKENS, [
     'POST /api/tools/library/search',
     'POST /api/tools/library/apply',

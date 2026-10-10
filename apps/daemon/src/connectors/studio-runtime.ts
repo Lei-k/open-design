@@ -1,3 +1,4 @@
+import { reserveStudioToolCall } from '../services/studio-tool-call-budget.js';
 import type Database from 'better-sqlite3';
 import type { ApiErrorCode } from '@open-design/contracts';
 import type { AuthActor } from '../services/auth-service.js';
@@ -59,8 +60,6 @@ export class StudioConnectorRuntime {
   private readonly tokens: ToolTokenRegistry;
   private readonly provider: StudioComposioClient;
   private readonly metadata = new Map<string, { expires: number; definition: ConnectorCatalogDefinition }>();
-  /** Provider calls of a run that passed the limit check and have not been audited yet. */
-  private readonly reserved = new Map<string, number>();
   /** In-flight provider requests per run; a cancel aborts them. */
   private readonly inflight = new Map<string, Set<AbortController>>();
   private runLive: (runId: string) => boolean = () => true;
@@ -219,15 +218,13 @@ export class StudioConnectorRuntime {
       try { assertJsonSchemaMatches(input.value, tool.inputSchemaJson); } catch { throw new StudioConnectorRuntimeError('CONNECTOR_INPUT_SCHEMA_MISMATCH', 400); }
       const slug = tool.providerToolId ?? tool.name;
       const audit = (outcome: string) => this.grants.appendToolAudit({ owner: bound.ownerAccountId, connectorId: id, toolSlug: slug, runId: grant.runId, outcome });
-      let holdsSlot = false;
+      let releaseSlot: (() => void) | null = null;
       try {
         const credential = this.company.credential();
         // No await between the authority/liveness check, the slot reservation and the provider request.
         live();
-        if (this.grants.toolCalls(grant.runId) + (this.reserved.get(grant.runId) ?? 0) >= STUDIO_RUN_CONNECTOR_CALL_LIMIT) {
-          throw new StudioConnectorRuntimeError('CONNECTOR_RATE_LIMITED', 429);
-        }
-        this.reserved.set(grant.runId, (this.reserved.get(grant.runId) ?? 0) + 1); holdsSlot = true;
+        releaseSlot = reserveStudioToolCall(grant.runId, this.grants.toolCalls(grant.runId), STUDIO_RUN_CONNECTOR_CALL_LIMIT);
+        if (!releaseSlot) throw new StudioConnectorRuntimeError('CONNECTOR_RATE_LIMITED', 429);
         const result = await this.provider.executeTool(credential!.apiKey, slug, this.store.entityFor(bound.ownerAccountId),
           bound.connections.find((row) => row.connectorId === id)!.providerConnectionId, input.value, tracked.signal);
         live();
@@ -247,10 +244,7 @@ export class StudioConnectorRuntime {
         audit(safe.code); throw safe;
       } finally {
         // The audit row (written synchronously above) now counts this call; release its reservation.
-        if (holdsSlot) {
-          const left = (this.reserved.get(grant.runId) ?? 1) - 1;
-          if (left > 0) this.reserved.set(grant.runId, left); else this.reserved.delete(grant.runId);
-        }
+        releaseSlot?.();
       }
     } finally { tracked.release(); }
   }

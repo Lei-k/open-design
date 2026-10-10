@@ -427,6 +427,8 @@ export const fa: Dict = {
   "studio.mcp.intro": "سرورهای MCP راه‌دور (HTTP یا SSE) را به حساب خود اضافه کنید. مقادیر سرآیندها و اطلاعات ورود به‌صورت رمزگذاری‌شده ذخیره می‌شوند و دیگر نمایش داده نمی‌شوند.",
   "studio.mcp.stdioUnavailable": "سرورهای MCP محلی (stdio) روی سرور فرمان اجرا می‌کنند و در وب در دسترس نیستند.",
   "studio.mcp.installUnavailable": "نصب OpenDesign به‌عنوان سرور MCP برای یک عامل برنامه‌نویسی پیکربندی خود سرور را تغییر می‌دهد و در وب در دسترس نیست.",
+  "studio.mcp.runAvailable": "Select your enabled, signed-in remote MCP servers in the composer or routine editor. Tools run through your account’s daemon grant.",
+  "studio.mcp.selectionUnavailable": "Only your enabled, signed-in remote MCP servers are available. Enable the server or sign in under Settings → MCP servers.",
   "studio.mcp.notInRuns": "می‌توانید سرورهای MCP خود را اینجا پیکربندی و آزمایش کنید؛ هنوز در اجراها در دسترس نیستند.",
   "studio.mcp.empty": "هنوز سرور MCP ندارید.",
   "studio.mcp.addTitle": "افزودن سرور راه‌دور",

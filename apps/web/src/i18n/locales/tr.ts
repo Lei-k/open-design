@@ -37,6 +37,8 @@ export const tr: Dict = {
   "studio.mcp.intro": "Hesabınıza uzak MCP sunucuları (HTTP veya SSE) ekleyin. Başlık değerleri ve oturum açma bilgileri şifreli saklanır ve bir daha gösterilmez.",
   "studio.mcp.stdioUnavailable": "Yerel (stdio) MCP sunucuları sunucuda komut çalıştırır ve Web'de kullanılamaz.",
   "studio.mcp.installUnavailable": "OpenDesign'ı bir kodlama ajanı için MCP sunucusu olarak kurmak sunucunun kendi yapılandırmasını değiştirir ve Web'de kullanılamaz.",
+  "studio.mcp.runAvailable": "Select your enabled, signed-in remote MCP servers in the composer or routine editor. Tools run through your account’s daemon grant.",
+  "studio.mcp.selectionUnavailable": "Only your enabled, signed-in remote MCP servers are available. Enable the server or sign in under Settings → MCP servers.",
   "studio.mcp.notInRuns": "MCP sunucularınızı burada yapılandırıp test edebilirsiniz; henüz çalıştırmalarda kullanılamazlar.",
   "studio.mcp.empty": "Henüz MCP sunucusu yok.",
   "studio.mcp.addTitle": "Uzak sunucu ekle",

@@ -37,6 +37,8 @@ export const uk: Dict = {
   "studio.mcp.intro": "Додайте віддалені MCP-сервери (HTTP або SSE) для свого облікового запису. Значення заголовків і дані входу зберігаються зашифрованими й більше не показуються.",
   "studio.mcp.stdioUnavailable": "Локальні (stdio) MCP-сервери запускають команду на сервері й недоступні у вебверсії.",
   "studio.mcp.installUnavailable": "Встановлення OpenDesign як MCP-сервера для агента програмування змінює конфігурацію самого сервера й недоступне у вебверсії.",
+  "studio.mcp.runAvailable": "Select your enabled, signed-in remote MCP servers in the composer or routine editor. Tools run through your account’s daemon grant.",
+  "studio.mcp.selectionUnavailable": "Only your enabled, signed-in remote MCP servers are available. Enable the server or sign in under Settings → MCP servers.",
   "studio.mcp.notInRuns": "Тут можна налаштувати й перевірити MCP-сервери; у запусках вони поки недоступні.",
   "studio.mcp.empty": "MCP-серверів ще немає.",
   "studio.mcp.addTitle": "Додати віддалений сервер",

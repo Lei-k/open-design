@@ -7,6 +7,7 @@ import { studioFetch as fetch } from '../runtime/studio-transport';
 // providers PUT uses (the daemon takes the full set rather than merging).
 
 import type {
+  StudioMcpServersResponse,
   McpOAuthStatusResponse,
   McpServerConfig,
   McpServersResponse,
@@ -21,11 +22,17 @@ export type {
   StartMcpOAuthResponse,
 };
 
-export async function fetchMcpServers(): Promise<McpServersResponse | null> {
+export async function fetchMcpServers(): Promise<(McpServersResponse & { unavailable?: boolean }) | null> {
   try {
     const res = await fetch('/api/mcp/servers');
     if (!res.ok) return null;
-    const data = (await res.json()) as McpServersResponse;
+    const data = (await res.json()) as McpServersResponse & Partial<StudioMcpServersResponse>;
+    if (data.runs) {
+      const owned = data.servers as unknown as StudioMcpServersResponse['servers'];
+      const usable = owned.filter((server) => data.runs?.available && server.enabled && ['not-required', 'connected'].includes(server.oauth.status));
+      return { servers: usable.map((server) => ({ id: server.id, ...(server.label ? { label: server.label } : {}), transport: server.transport,
+        url: server.url, enabled: true, authMode: server.authMode })), templates: [], unavailable: usable.length !== owned.length || !usable.length };
+    }
     return {
       servers: Array.isArray(data?.servers) ? data.servers : [],
       templates: Array.isArray(data?.templates) ? data.templates : [],

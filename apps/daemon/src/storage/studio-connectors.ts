@@ -332,7 +332,14 @@ export class StudioConnectorStore {
  */
 export class StudioConnectorGrantStore {
   constructor(private readonly db: Database.Database, private readonly now: () => number = Date.now) {
-    db.exec(`CREATE TABLE IF NOT EXISTS studio_connector_grant_epochs (account_id TEXT PRIMARY KEY, version INTEGER NOT NULL);
+    db.exec(`CREATE TABLE IF NOT EXISTS studio_mcp_tool_audit (id INTEGER PRIMARY KEY, actor_account_id TEXT NOT NULL,
+        server_id TEXT NOT NULL, tool_name TEXT NOT NULL, run_id TEXT NOT NULL, outcome TEXT NOT NULL, duration_ms INTEGER NOT NULL, created_at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS studio_mcp_tool_audit_run ON studio_mcp_tool_audit (run_id);
+      CREATE TRIGGER IF NOT EXISTS studio_mcp_tool_audit_immutable BEFORE UPDATE ON studio_mcp_tool_audit
+        BEGIN SELECT RAISE(ABORT, 'audit rows are immutable'); END;
+      CREATE TRIGGER IF NOT EXISTS studio_mcp_tool_audit_no_delete BEFORE DELETE ON studio_mcp_tool_audit
+        BEGIN SELECT RAISE(ABORT, 'audit rows are immutable'); END;
+      CREATE TABLE IF NOT EXISTS studio_connector_grant_epochs (account_id TEXT PRIMARY KEY, version INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS studio_connector_tool_audit (id INTEGER PRIMARY KEY, actor_account_id TEXT NOT NULL,
         connector_id TEXT NOT NULL, tool_slug TEXT NOT NULL, run_id TEXT NOT NULL, outcome TEXT NOT NULL, created_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS studio_connector_tool_audit_run ON studio_connector_tool_audit (run_id);
@@ -350,7 +357,11 @@ export class StudioConnectorGrantStore {
   }
   /** Completed (audited) tool calls of a run, whatever their outcome. */
   toolCalls(runId: string): number {
-    return (this.db.prepare('SELECT COUNT(*) AS n FROM studio_connector_tool_audit WHERE run_id = ?').get(runId) as { n: number }).n;
+    return (this.db.prepare('SELECT (SELECT COUNT(*) FROM studio_connector_tool_audit WHERE run_id = ?) + (SELECT COUNT(*) FROM studio_mcp_tool_audit WHERE run_id = ?) AS n').get(runId, runId) as { n: number }).n;
+  }
+  appendMcpAudit(row: { owner: string; serverId: string; toolName: string; runId: string; outcome: string; durationMs: number }): void {
+    this.db.prepare(`INSERT INTO studio_mcp_tool_audit (actor_account_id, server_id, tool_name, run_id, outcome, duration_ms, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(row.owner, row.serverId, row.toolName, row.runId, row.outcome, row.durationMs, this.now());
   }
   appendToolAudit(row: { owner: string; connectorId: string; toolSlug: string; runId: string; outcome: string }): void {
     this.db.prepare(`INSERT INTO studio_connector_tool_audit (actor_account_id, connector_id, tool_slug, run_id, outcome, created_at)

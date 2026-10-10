@@ -37,6 +37,8 @@ export const id: Dict = {
   "studio.mcp.intro": "Tambahkan server MCP jarak jauh (HTTP atau SSE) untuk akun Anda. Nilai header dan info masuk disimpan terenkripsi dan tidak pernah ditampilkan lagi.",
   "studio.mcp.stdioUnavailable": "Server MCP lokal (stdio) menjalankan perintah di server dan tidak tersedia di Web.",
   "studio.mcp.installUnavailable": "Memasang OpenDesign sebagai server MCP untuk agen pengodean mengubah konfigurasi server itu sendiri dan tidak tersedia di Web.",
+  "studio.mcp.runAvailable": "Select your enabled, signed-in remote MCP servers in the composer or routine editor. Tools run through your account’s daemon grant.",
+  "studio.mcp.selectionUnavailable": "Only your enabled, signed-in remote MCP servers are available. Enable the server or sign in under Settings → MCP servers.",
   "studio.mcp.notInRuns": "Anda dapat mengonfigurasi dan menguji server MCP di sini; server ini belum tersedia dalam eksekusi.",
   "studio.mcp.empty": "Belum ada server MCP.",
   "studio.mcp.addTitle": "Tambahkan server jarak jauh",

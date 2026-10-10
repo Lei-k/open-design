@@ -37,6 +37,8 @@ export const zhTW: Dict = {
   "studio.mcp.intro": "為你的帳號新增遠端 MCP 伺服器（HTTP 或 SSE）。標頭值與登入資訊會加密儲存，儲存後不會再顯示。",
   "studio.mcp.stdioUnavailable": "本機（stdio）MCP 伺服器會在伺服器上執行指令，Web 版無法使用。",
   "studio.mcp.installUnavailable": "將 OpenDesign 安裝為程式設計代理的 MCP 伺服器會變更伺服器本身的設定，Web 版無法使用。",
+  "studio.mcp.runAvailable": "Select your enabled, signed-in remote MCP servers in the composer or routine editor. Tools run through your account’s daemon grant.",
+  "studio.mcp.selectionUnavailable": "Only your enabled, signed-in remote MCP servers are available. Enable the server or sign in under Settings → MCP servers.",
   "studio.mcp.notInRuns": "你可以在此設定與測試 MCP 伺服器；目前尚無法在執行中使用。",
   "studio.mcp.empty": "尚未新增 MCP 伺服器。",
   "studio.mcp.addTitle": "新增遠端伺服器",

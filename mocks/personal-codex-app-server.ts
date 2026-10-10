@@ -126,6 +126,21 @@ async function turn(id: number, params: Json): Promise<void> {
     notify('item/completed', { threadId, turnId, item: { type: 'mcpToolCall', id: 'mcp_attempt', server: 'fixture',
       tool: 'lookup', arguments: {}, status: 'failed', result: null, error: { message: 'ordinary tool error' } } });
   }
+  if (text.includes('[mock-mcp]')) {
+    const call = async (tool: string, args: Json) => {
+      const requestId = toolRequestId--;
+      const reply = await new Promise<Json>((resolve) => { toolReplies.set(requestId, resolve);
+        send({ id: requestId, method: 'item/tool/call', params: { threadId, turnId, callId: `mcp_${requestId}`, tool, arguments: args } }); });
+      const result = reply.result as Json | undefined;
+      if (result?.success !== true) throw new Error('MCP fixture refused');
+      return JSON.parse(String((result.contentItems as Json[])[0]!.text)) as Json;
+    };
+    try {
+      const listed = await call('mcp_list', {});
+      const server = (listed.servers as Json[])[0]!; const tool = (server.tools as Json[])[0]!;
+      await call('mcp_execute', { serverId: server.serverId, toolName: tool.name, input: {} });
+    } catch { return failed('MCP fixture refused', 'badRequest'); }
+  }
   if (text.includes('[mock-connector]')) {
     const requestId = toolRequestId--;
     const reply = await new Promise<Json>((resolve) => {

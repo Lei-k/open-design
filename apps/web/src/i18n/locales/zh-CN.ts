@@ -37,6 +37,8 @@ export const zhCN: Dict = {
   "studio.mcp.intro": "为你的账号添加远程 MCP 服务器（HTTP 或 SSE）。请求头的值和登录信息会加密保存，保存后不会再显示。",
   "studio.mcp.stdioUnavailable": "本地（stdio）MCP 服务器会在服务器上执行命令，Web 版不可用。",
   "studio.mcp.installUnavailable": "将 OpenDesign 安装为编码代理的 MCP 服务器会更改服务器自身的配置，Web 版不可用。",
+  "studio.mcp.runAvailable": "Select your enabled, signed-in remote MCP servers in the composer or routine editor. Tools run through your account’s daemon grant.",
+  "studio.mcp.selectionUnavailable": "Only your enabled, signed-in remote MCP servers are available. Enable the server or sign in under Settings → MCP servers.",
   "studio.mcp.notInRuns": "你可以在这里配置和测试 MCP 服务器；目前还不能在运行中使用。",
   "studio.mcp.empty": "还没有 MCP 服务器。",
   "studio.mcp.addTitle": "添加远程服务器",

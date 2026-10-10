@@ -71,7 +71,7 @@ it('shows the empty state, the stdio-unavailable reason and the not-in-runs note
   const session = await mount(fake);
   await waitFor(() => expect(screen.getByTestId('studio-mcp-empty')).toBeTruthy());
   expect(screen.getByTestId('studio-mcp-stdio-unavailable').textContent).toMatch(/stdio/i);
-  expect(screen.getByTestId('studio-mcp-not-in-runs').textContent).toMatch(/not yet available in runs/);
+  expect(screen.getByTestId('studio-mcp-run-available').textContent).toMatch(/composer or routine/);
   const transport = screen.getByTestId('studio-mcp-add-transport') as HTMLSelectElement;
   expect([...transport.options].map((option) => option.value)).toEqual(['http', 'sse']);
   for (const control of document.querySelectorAll('input, select, textarea, label')) {

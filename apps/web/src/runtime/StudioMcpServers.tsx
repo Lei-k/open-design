@@ -73,7 +73,7 @@ export function StudioMcpServers() {
       const response = await action();
       if (!response.ok) { await failed(response); if (response.status === 409) await read(); return; }
       await after?.(response);
-      await read();
+      await read(); window.dispatchEvent(new Event('studio-mcp-changed'));
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) setNotice('error');
     } finally { setBusy(null); }
@@ -120,7 +120,7 @@ export function StudioMcpServers() {
   return <section className="settings-section" data-testid="studio-mcp">
     <p className="hint">{t('studio.mcp.intro')}</p>
     <p role="note" className={styles.note} data-testid="studio-mcp-stdio-unavailable">{t('studio.mcp.stdioUnavailable')}</p>
-    <p className="hint" data-testid="studio-mcp-not-in-runs">{t('studio.mcp.notInRuns')}</p>
+    <p className="hint" data-testid="studio-mcp-run-available">{t('studio.mcp.runAvailable')}</p>
     {notice && <p role="status" data-testid="studio-mcp-notice">{t(NOTICE_KEYS[notice])}</p>}
     {data.servers.length === 0
       ? <p className={styles.empty} data-testid="studio-mcp-empty">{t('studio.mcp.empty')}</p>

@@ -1,4 +1,6 @@
 // @ts-nocheck
+import { StudioMcpRuntime } from './mcp-client/studio-runtime.js';
+import { registerStudioMcpToolRoutes } from './routes/studio-mcp-tools.js';
 import { registerMultiUserStatic } from './http/multiuser-static.js';
 import { startEvidenceDelivery } from './services/evidence-delivery.js';
 import type {
@@ -8476,6 +8478,10 @@ export async function startServer({
     },
   });
 
+  const studioMcpRuntime = multiUserMode ? new StudioMcpRuntime({ db, dataRoot: RUNTIME_DATA_DIR, auth: multiUserFront!.authStore,
+    sessionCurrent: (actor) => multiUserFront!.sessionCurrent(actor),
+    ...(multiUserMode.testMcpOutbound ? { outbound: multiUserMode.testMcpOutbound } : {}) }) : null;
+  if (studioMcpRuntime) registerStudioMcpToolRoutes(app, studioMcpRuntime);
   const studioConnectorRuntime = multiUserMode ? new StudioConnectorRuntime({ db, dataRoot: RUNTIME_DATA_DIR, auth: multiUserFront!.authStore,
     sessionCurrent: (actor) => multiUserFront!.sessionCurrent(actor),
     ...(multiUserMode.testComposioFetch ? { fetch: multiUserMode.testComposioFetch } : {}) }) : null;
@@ -17692,6 +17698,7 @@ export async function startServer({
   }) : null;
   const multiUserRuns = multiUserMode ? registerMultiUserRunRoutes(app, {
     ...(studioConnectorRuntime ? { connectors: studioConnectorRuntime } : {}),
+    ...(studioMcpRuntime ? { mcp: studioMcpRuntime } : {}),
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
     emitProjectEvent,
     ...(studioLiveArtifacts ? { liveArtifacts: studioLiveArtifacts } : {}),
@@ -17731,6 +17738,7 @@ export async function startServer({
   const studioRoutines = multiUserRuns ? registerStudioRoutineRoutes(app, {
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, runs: multiUserRuns,
     ...(studioConnectorRuntime ? { connectors: studioConnectorRuntime } : {}),
+    ...(studioMcpRuntime ? { mcp: studioMcpRuntime } : {}),
     ...(studioAutomations ? { automations: studioAutomations } : {}),
     ...(multiUserMode?.poolClock ? { clock: multiUserMode.poolClock } : {}),
   }) : null;
@@ -17738,6 +17746,7 @@ export async function startServer({
     // Pending connector authorizations die with the session (S58); connections stay recorded.
     studioConnectors?.invalidateAccount(accountId);
     studioConnectorRuntime?.invalidateAccount(accountId);
+    studioMcpRuntime?.invalidateAccount(accountId);
     studioMcp?.invalidateAccount(accountId);
     multiUserRuns.cancelAccountRuns(accountId);
     personalCodex?.cancelPendingFor(accountId).catch(() => {});
@@ -18411,6 +18420,7 @@ export async function startServer({
       studioPublicLinks?.close();
       studioLiveArtifacts?.close();
       studioConnectorRuntime?.close();
+      studioMcpRuntime?.close();
       }
       amrTerminalReportDelivery.stop();
       clearTerminalTelemetryFallbackTimers();

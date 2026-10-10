@@ -3,7 +3,7 @@ import net from 'node:net';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
 import {
-  STUDIO_MCP_FORBIDDEN_HEADERS, STUDIO_MCP_HEADER_NAME_PATTERN, STUDIO_MCP_LIMITS, STUDIO_MCP_NOT_IN_RUNS_REASON, STUDIO_MCP_SERVER_ID_PATTERN,
+  STUDIO_MCP_FORBIDDEN_HEADERS, STUDIO_MCP_HEADER_NAME_PATTERN, STUDIO_MCP_LIMITS, STUDIO_MCP_SERVER_ID_PATTERN,
   STUDIO_MCP_STDIO_UNAVAILABLE_REASON,
   type ImportStudioMcpServersResponse, type StudioMcpAuthMode, type StudioMcpAuthorityRefusal, type StudioMcpCallbackRefusal, type StudioMcpOAuthStartResponse,
   type StudioMcpOAuthState, type StudioMcpOAuthStatusResponse, type StudioMcpServer, type StudioMcpServerResponse, type StudioMcpServersResponse,
@@ -171,7 +171,7 @@ export function registerStudioMcpRoutes(app: Express, deps: RegisterStudioMcpRou
       authMode: row.auth_mode, headers: store.headerSummary(row), oauth: oauthState(row), lastTest, revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at };
   };
   const listResponse = (owner: string): StudioMcpServersResponse => ({ servers: store.list(owner).map(dto), templates: REMOTE_TEMPLATES, limits: STUDIO_MCP_LIMITS,
-    stdio: { available: false, reason: STUDIO_MCP_STDIO_UNAVAILABLE_REASON }, runs: { available: false, reason: STUDIO_MCP_NOT_IN_RUNS_REASON } });
+    stdio: { available: false, reason: STUDIO_MCP_STDIO_UNAVAILABLE_REASON }, runs: { available: true, reason: null } });
   const binding = (row: StudioMcpServerRow): StudioMcpServerBinding => ({ serverId: row.server_id, instanceId: row.instance_id, generation: row.generation });
 
   // ---- input validation: fixed messages, never echoing a value ----------------------

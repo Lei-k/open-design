@@ -427,6 +427,8 @@ export const ko: Dict = {
   "studio.mcp.intro": "계정에 원격 MCP 서버(HTTP 또는 SSE)를 추가합니다. 헤더 값과 로그인 정보는 암호화되어 저장되며 다시 표시되지 않습니다.",
   "studio.mcp.stdioUnavailable": "로컬(stdio) MCP 서버는 서버에서 명령을 실행하므로 웹에서는 사용할 수 없습니다.",
   "studio.mcp.installUnavailable": "OpenDesign을 코딩 에이전트의 MCP 서버로 설치하면 서버 자체 설정이 바뀌므로 웹에서는 사용할 수 없습니다.",
+  "studio.mcp.runAvailable": "Select your enabled, signed-in remote MCP servers in the composer or routine editor. Tools run through your account’s daemon grant.",
+  "studio.mcp.selectionUnavailable": "Only your enabled, signed-in remote MCP servers are available. Enable the server or sign in under Settings → MCP servers.",
   "studio.mcp.notInRuns": "여기에서 MCP 서버를 설정하고 테스트할 수 있습니다. 아직 실행에서는 사용할 수 없습니다.",
   "studio.mcp.empty": "아직 MCP 서버가 없습니다.",
   "studio.mcp.addTitle": "원격 서버 추가",

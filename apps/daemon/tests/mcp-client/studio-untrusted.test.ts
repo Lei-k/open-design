@@ -76,3 +76,11 @@ describe('outbound credential representations', () => {
     expect(untrustedScope('offline_access repo:read https://example.com/auth/read', unknown)).toBe('offline_access repo:read https://example.com/auth/read');
   });
 });
+
+// Promoted unchanged assertions from the immutable S60 round-3 review.
+it('preserves valid ordinary scopes after a scope named basic', () => {
+  expect(untrustedScope('basic repo:status', knownSecrets([]))).toBe('basic repo:status');
+});
+it('preserves an ordinary provider name containing the word Mutual', () => {
+  expect(untrustedText('Mutual Fund MCP', knownSecrets([]))).toBe('Mutual Fund MCP');
+});

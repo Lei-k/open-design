@@ -7,6 +7,8 @@ import type { MultiUserRunOutput } from './multiuser-design.js';
 export type MultiUserRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
 export interface MultiUserRun {
   connectorIds?: string[];
+  /** Owner-selected account remote MCP ids; never URLs, credentials or grant bindings. */
+  mcpServerIds?: string[];
   id: string;
   projectId: string;
   conversationId: string;

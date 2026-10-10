@@ -37,6 +37,8 @@ export const hu: Dict = {
   "studio.mcp.intro": "Adjon hozzá távoli MCP-kiszolgálókat (HTTP vagy SSE) a fiókjához. A fejlécértékek és a bejelentkezések titkosítva tárolódnak, és soha többé nem jelennek meg.",
   "studio.mcp.stdioUnavailable": "A helyi (stdio) MCP-kiszolgálók parancsot futtatnak a kiszolgálón, ezért a webes verzióban nem érhetők el.",
   "studio.mcp.installUnavailable": "Az OpenDesign MCP-kiszolgálóként való telepítése egy kódoló ügynökhöz magának a kiszolgálónak a beállításait módosítja, ezért a webes verzióban nem érhető el.",
+  "studio.mcp.runAvailable": "Select your enabled, signed-in remote MCP servers in the composer or routine editor. Tools run through your account’s daemon grant.",
+  "studio.mcp.selectionUnavailable": "Only your enabled, signed-in remote MCP servers are available. Enable the server or sign in under Settings → MCP servers.",
   "studio.mcp.notInRuns": "Itt beállíthatja és tesztelheti MCP-kiszolgálóit; futtatásokban még nem használhatók.",
   "studio.mcp.empty": "Még nincs MCP-kiszolgáló.",
   "studio.mcp.addTitle": "Távoli kiszolgáló hozzáadása",

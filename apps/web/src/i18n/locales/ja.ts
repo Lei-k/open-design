@@ -427,6 +427,8 @@ export const ja: Dict = {
   "studio.mcp.intro": "アカウント用のリモート MCP サーバー（HTTP または SSE）を追加します。ヘッダーの値とサインイン情報は暗号化して保存され、再表示されません。",
   "studio.mcp.stdioUnavailable": "ローカル（stdio）MCP サーバーはサーバー上でコマンドを実行するため、Web では利用できません。",
   "studio.mcp.installUnavailable": "OpenDesign をコーディングエージェントの MCP サーバーとしてインストールするとサーバー自体の設定が変わるため、Web では利用できません。",
+  "studio.mcp.runAvailable": "Select your enabled, signed-in remote MCP servers in the composer or routine editor. Tools run through your account’s daemon grant.",
+  "studio.mcp.selectionUnavailable": "Only your enabled, signed-in remote MCP servers are available. Enable the server or sign in under Settings → MCP servers.",
   "studio.mcp.notInRuns": "ここで MCP サーバーを設定・テストできます。実行ではまだ利用できません。",
   "studio.mcp.empty": "MCP サーバーはまだありません。",
   "studio.mcp.addTitle": "リモートサーバーを追加",

@@ -1,3 +1,6 @@
+import { StudioMcpRuntimeError, type StudioMcpRuntime } from '../mcp-client/studio-runtime.js';
+import { STUDIO_MCP_TOOL_DESCRIPTORS } from '../mcp-client/studio-tool-descriptors.js';
+import type { StudioMcpGrant } from '../tool-tokens.js';
 import { STUDIO_CONNECTOR_TOOL_DESCRIPTORS } from '../connectors/tool-descriptors.js';
 import { STUDIO_RUN_CONNECTOR_GRANT_MAX_MS, StudioConnectorRuntimeError, type StudioConnectorRuntime } from '../connectors/studio-runtime.js';
 import { toolTokenRegistry, type StudioConnectorGrant, type ToolTokenGrant } from '../tool-tokens.js';
@@ -10,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
-import { workspaceToolsUnavailable, API_ERROR_CODES, STUDIO_MCP_NOT_IN_RUNS_REASON, STUDIO_RESEARCH_MAX_SOURCES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
+import { workspaceToolsUnavailable, API_ERROR_CODES, STUDIO_RESEARCH_MAX_SOURCES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
 import { PersonalRunEvents } from '../runtimes/personal-run-events.js';
 import { formatProjectAttachmentHint, normalizeCommentAttachments, renderCommentAttachmentHint, resolveSafeProjectAttachments } from '../runtimes/chat-prompt-inputs.js';
 import { renderRunContextPrompt } from '../runtimes/chat-run-context.js';
@@ -128,6 +131,7 @@ type PersonalRunFields = {
   appliedPluginSnapshotId: string | null;
   pluginIds: string[];
   connectorIds: string[];
+  mcpServerIds: string[];
 };
 type FieldRefusal = { status: number; code: ApiErrorCode; message: string; details?: { capability: string; reason: string } };
 /** A project-relative path: no root, drive, backslash, NUL, empty, `.` or `..` segment. */
@@ -208,11 +212,8 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
     if (Object.keys(record).some((key) => ![...selections, 'skillIds', 'pluginIds', 'workspaceItems'].includes(key))) {
       return refuse(403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'not available for personal Studio runs: context selections');
     }
-    // Account MCP servers (#62, S60) are configurable in Settings; run-time use opens in S61.
-    if (record.mcpServerIds !== undefined && !(Array.isArray(record.mcpServerIds) && record.mcpServerIds.length === 0)) {
-      return { status: 403, code: 'MULTIUSER_CAPABILITY_UNAVAILABLE', message: STUDIO_MCP_NOT_IN_RUNS_REASON,
-        details: { capability: 'mcp', reason: STUDIO_MCP_NOT_IN_RUNS_REASON } };
-    }
+    if (record.mcpServerIds !== undefined && !(Array.isArray(record.mcpServerIds) && record.mcpServerIds.length <= 12
+      && record.mcpServerIds.every((id) => typeof id === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(id)))) return refuse(400, 'BAD_REQUEST', 'invalid MCP selections');
     const items = record.workspaceItems ?? [];
     if (!Array.isArray(items) || items.length > 20) return refuse(400, 'BAD_REQUEST', 'invalid run context');
     for (const item of items) {
@@ -272,6 +273,7 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
     attachments: [...new Set(attachments as string[])],
     workspaceItems, commentAttachments, model, reasoning, research,
     appliedPluginSnapshotId: (body.appliedPluginSnapshotId as string | null | undefined) ?? null,
+    mcpServerIds: [...new Set(((context as { mcpServerIds?: string[] } | null)?.mcpServerIds ?? []))],
     connectorIds: [...new Set(((context as { connectorIds?: string[] } | null)?.connectorIds ?? []))],
     pluginIds: ((context as { pluginIds?: string[] } | null)?.pluginIds ?? []),
   };
@@ -350,6 +352,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   companyFetch?: typeof fetch;
   liveArtifacts?: StudioLiveArtifacts;
   connectors?: StudioConnectorRuntime;
+  mcp?: StudioMcpRuntime;
   /** The verified personal bubblewrap boundary; company skill scripts run only inside it, offline. */
   scriptSandbox?: PersonalSandbox;
   repositoryRoot: string;
@@ -581,6 +584,26 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         const event = { type: 'live_artifact' as const, action, projectId: run.project_id, artifactId: artifact.id, title: artifact.title, refreshStatus: artifact.refreshStatus };
         updateProject(db, run.project_id, {}); onAgentEvent(event); input.emitProjectEvent?.(run.project_id, event);
       } }) : undefined;
+  const mcpGrants = new Map<string, ToolTokenGrant>();
+  const captureMcp = (fields: PersonalRunFields, res: Response): StudioMcpGrant | undefined | false => {
+    if (!fields.mcpServerIds.length) return undefined;
+    try { if (!input.mcp) throw new StudioMcpRuntimeError('NOT_FOUND', 404);
+      return input.mcp.capture(multiUserActorOf(res)!, fields.mcpServerIds);
+    } catch (error) { const safe = error instanceof StudioMcpRuntimeError ? error : new StudioMcpRuntimeError('NOT_FOUND', 404);
+      sendApiError(res, safe.status, safe.code, 'selected account MCP servers are unavailable'); return false; }
+  };
+  const mcpToolsFor = (run: RunRow, authorized: () => boolean) => {
+    const bound = storedRequest(run.request_json)?.mcpGrant as StudioMcpGrant | undefined;
+    if (!bound || !input.mcp) return undefined;
+    input.mcp.assert(bound);
+    let grant = mcpGrants.get(run.id);
+    if (!grant) {
+      grant = toolTokenRegistry.mint({ runId: run.id, projectId: run.project_id, studioMcp: bound, ttlMs: STUDIO_RUN_CONNECTOR_GRANT_MAX_MS,
+        allowedEndpoints: ['/api/tools/mcp/list', '/api/tools/mcp/execute'], allowedOperations: ['mcp:list', 'mcp:execute'] });
+      mcpGrants.set(run.id, grant);
+    }
+    return input.mcp.tools(grant, () => { if (!authorized()) throw new StudioMcpRuntimeError('MULTIUSER_MCP_AUTHORITY_CHANGED', 409); });
+  };
   const connectorGrants = new Map<string, ToolTokenGrant>();
   const captureConnectors = (fields: PersonalRunFields, res: Response): StudioConnectorGrant | undefined | false => {
     if (!fields.connectorIds.length) return undefined;
@@ -588,7 +611,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       if (!input.connectors) throw new StudioConnectorRuntimeError('MULTIUSER_CAPABILITY_UNAVAILABLE');
       return input.connectors.capture(multiUserActorOf(res)!, fields.connectorIds);
     } catch (error) {
-      const safe = error instanceof StudioConnectorRuntimeError ? error : new StudioConnectorRuntimeError('CONNECTOR_NOT_GRANTED');
+      const safe = (error instanceof StudioConnectorRuntimeError || error instanceof StudioMcpRuntimeError) ? error : new StudioConnectorRuntimeError('CONNECTOR_NOT_GRANTED');
       sendApiError(res, safe.status, safe.code, 'selected account connectors are unavailable'); return false;
     }
   };
@@ -615,6 +638,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const grant = connectorGrants.get(id);
     if (grant) { toolTokenRegistry.revokeToken(grant.token); connectorGrants.delete(id); }
     input.connectors?.abortRun(id);
+    const mcpGrant = mcpGrants.get(id);
+    if (mcpGrant) { toolTokenRegistry.revokeToken(mcpGrant.token); mcpGrants.delete(id); }
+    input.mcp?.abortRun(id);
   };
   /** Mark a run as being cancelled; from this instant it can make no further connector call. */
   const markCancelPending = (id: string) => { cancelPending.add(id); revokeConnectorGrant(id); };
@@ -847,6 +873,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const current = row(id);
     return !current || current.status === 'active' || current.status === 'queued';
   });
+  input.mcp?.setRunLiveness((id) => !storesClosed && !cancelPending.has(id) && row(id)?.status === 'active');
   const actor = (res: Response) => multiUserActorOf(res)?.accountId ?? '';
   const owned = (req: Request, res: Response): RunRow | null => {
     const id = String(req.params.id ?? '');
@@ -877,6 +904,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
     })(),
     message: storedMessage(run.request_json),
+    ...(Array.isArray(storedRequest(run.request_json)?.mcpServerIds) ? { mcpServerIds: storedRequest(run.request_json)!.mcpServerIds as string[] } : {}),
     ...(Array.isArray(storedRequest(run.request_json)?.connectorIds) ? { connectorIds: storedRequest(run.request_json)!.connectorIds as string[] } : {}),
     ...studioMessages.ids(run.id),
     ...(isPersonal(run) || isByok(run) ? { executionSource: run.execution_source } : isOpenAI(run) ? { executionSource: 'company_pool' as const } : {}),
@@ -1158,6 +1186,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             const usage = { inputTokens: 0, outputTokens: 0 };
             const mediaUsage = { images: 0, speechCharacters: 0, videoSeconds: 0 };
             const connectorTools = connectorToolsFor(next, authorized);
+            const mcpTools = mcpToolsFor(next, authorized);
             let stageHistory = history;
             let stageCount = 0;
             void runStudioPipeline({ db, runId: next.id, snapshot: pluginSnapshotOf(request), resumeStage: request.pipelineResumeStage,
@@ -1169,6 +1198,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 const result = await runCompanyOpenAITurn({ apiKey: key.apiKey, model: key.model,
                   // Every stage stays on the turn's own source and bill (#63).
                   ...(connectorTools ? { connectors: connectorTools } : {}),
+                  ...(mcpTools ? { mcp: mcpTools } : {}),
                   systemPrompt: `${stablePrompt}${STUDIO_MEDIA_PROMPT}${input.liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : ''}`, media: true,
                   ...(input.liveArtifacts ? { liveArtifacts: artifactToolsFor(next, authorized, (event) => projection.accept(event))! } : {}),
                   prompt: `${userPrompt}${attached}${renderCommentAttachmentHint(normalizeCommentAttachments(Array.isArray(request.commentAttachments) ? request.commentAttachments : []))}${focused}${directive}`,
@@ -1213,7 +1243,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 : isByok(next) && cause === 'provider_rate_limited' ? 'MULTIUSER_PROVIDER_RATE_LIMITED' : 'MULTIUSER_RUN_FAILED' });
             })
               .finally(() => worker.close(!storesClosed && row(next.id)?.status === 'succeeded'));
-          } catch (error) { finish(next.id, cancelPending.has(next.id) ? 'canceled' : 'failed', { reason: error instanceof StudioConnectorRuntimeError ? error.code : 'MULTIUSER_RUN_START_FAILED' }); worker.close(false); }
+          } catch (error) { finish(next.id, cancelPending.has(next.id) ? 'canceled' : 'failed', { reason: (error instanceof StudioConnectorRuntimeError || error instanceof StudioMcpRuntimeError) ? error.code : 'MULTIUSER_RUN_START_FAILED' }); worker.close(false); }
           continue;
         }
         if (!mockAgentScript) { closeLedgerSpan(next, 'failed'); finish(next.id, 'failed', { reason: 'MULTIUSER_PROVIDER_DISABLED' }); continue; }
@@ -1290,7 +1320,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       if (storesClosed || shuttingDown) return true;
       const status = row(runId)?.status;
       if (status === 'queued' || (status === 'active' && !children.has(runId))) {
-        finish(runId, 'failed', { reason: error instanceof PersonalAccountError || error instanceof StudioConnectorRuntimeError ? error.code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
+        finish(runId, 'failed', { reason: error instanceof PersonalAccountError || (error instanceof StudioConnectorRuntimeError || error instanceof StudioMcpRuntimeError) ? error.code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
       }
       return row(runId)?.status !== 'queued';
     } catch (secondary) {
@@ -1383,6 +1413,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
               && personal.usableAccount(owner)?.credentialVersion === next.credential_version;
             const liveArtifacts = artifactToolsFor(next, allowed, (event) => projection.accept(event));
             const connectorTools = connectorToolsFor(next, allowed);
+            const mcpTools = mcpToolsFor(next, allowed);
             let resumeThreadId = session.thread_id;
             let stageCount = 0;
             void runStudioPipeline({ db, runId, snapshot: pluginSnapshotOf(request), resumeStage: request?.pipelineResumeStage,
@@ -1396,12 +1427,13 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                   command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
                   ...(skillRoot ? { skillPackages: skillRoot } : {}),
                   prompt: `${stageCount === 1 ? prompt : userPrompt}${directive}`, resumeThreadId,
-                  ...(liveArtifacts || connectorTools ? { dynamicToolsPrompt: liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : '',
+                  ...(liveArtifacts || connectorTools || mcpTools ? { dynamicToolsPrompt: liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : '',
                     dynamicTools: [
                       ...(liveArtifacts ? STUDIO_LIVE_ARTIFACT_TOOLS.map(({ properties, required, ...tool }) => ({ ...tool,
                         inputSchema: { type: 'object', properties, required: [...required], additionalProperties: false } })) : []),
-                      ...(connectorTools ? STUDIO_CONNECTOR_TOOL_DESCRIPTORS : [])],
-                    onDynamicToolCall: (name: string, args: Record<string, unknown>) => name.startsWith('connectors_')
+                      ...(connectorTools ? STUDIO_CONNECTOR_TOOL_DESCRIPTORS : []),
+                      ...(mcpTools ? STUDIO_MCP_TOOL_DESCRIPTORS : [])],
+                    onDynamicToolCall: (name: string, args: Record<string, unknown>) => name.startsWith('mcp_') ? mcpTools!.execute(name, args) : name.startsWith('connectors_')
                       ? connectorTools!.execute(name, args) : liveArtifacts!.execute(name, args) } : {}),
                   ...(isStudioCodexModel(request?.model) ? { model: request.model } : {}),
                   ...(isStudioCodexReasoning(request?.reasoning) ? { reasoning: request.reasoning } : {}),
@@ -1490,7 +1522,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             }).catch(logPersonalDispatchFailure);
           } catch (error) {
             // A rolled-back start stays queued; a committed start keeps its turn and worker timestamps.
-            if (!children.has(runId)) finish(runId, 'failed', { reason: error instanceof PersonalAccountError || error instanceof StudioConnectorRuntimeError ? error.code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
+            if (!children.has(runId)) finish(runId, 'failed', { reason: error instanceof PersonalAccountError || (error instanceof StudioConnectorRuntimeError || error instanceof StudioMcpRuntimeError) ? error.code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
           }
         } catch (error) {
           // A run that cannot be failed (its store is gone) stops this pass rather than spinning on it.
@@ -1833,9 +1865,11 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const findings = await researchInstruction(owner, target.conversationId, fields, res);
     if (findings === false) return;
     if (findings) instruction = [instruction, findings].filter(Boolean).join('\n\n');
+    const mcpGrant = captureMcp(fields, res);
+    if (mcpGrant === false) return;
     const connectorGrant = captureConnectors(fields, res);
     if (connectorGrant === false) return;
-    const request = JSON.stringify({ ...(connectorGrant ? { connectorGrant, connectorIds: fields.connectorIds } : {}), message: fields.text, ...(instruction ? { instruction } : {}), ...(fields.attachments.length ? { attachments: fields.attachments } : {}),
+    const request = JSON.stringify({ ...(mcpGrant ? { mcpGrant, mcpServerIds: fields.mcpServerIds } : {}), ...(connectorGrant ? { connectorGrant, connectorIds: fields.connectorIds } : {}), message: fields.text, ...(instruction ? { instruction } : {}), ...(fields.attachments.length ? { attachments: fields.attachments } : {}),
       ...(inheritsSkills || withFixedSkill(fixedCapture?.skill, selectedSkills).length ? { skillIds: inheritsSkills ? inheritedSkillIds : fields.skillIds, skillSnapshots } : {}),
       ...(fields.workspaceItems.length ? { workspaceItems: fields.workspaceItems } : {}),
       ...(fields.commentAttachments.length ? { commentAttachments: fields.commentAttachments } : {}),
@@ -2028,9 +2062,11 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       return sendApiError(res, 409, 'CONFLICT', 'project defaults changed during admission');
     }
     const id = randomUUID(); const createdAt = now();
+    const mcpGrant = captureMcp(fields, res);
+    if (mcpGrant === false) return;
     const connectorGrant = captureConnectors(fields, res);
     if (connectorGrant === false) return;
-    const request = JSON.stringify({ ...(connectorGrant ? { connectorGrant, connectorIds: fields.connectorIds } : {}), message: fields.text, ...(instruction ? { instruction } : {}),
+    const request = JSON.stringify({ ...(mcpGrant ? { mcpGrant, mcpServerIds: fields.mcpServerIds } : {}), ...(connectorGrant ? { connectorGrant, connectorIds: fields.connectorIds } : {}), message: fields.text, ...(instruction ? { instruction } : {}),
       ...(findings ? { research: { provider: 'tavily' } } : {}),
       ...(own ? { personalProvider: 'openai', personalModel: currentKey!.model, personalCredentialRevision: currentKey!.credentialRevision }
         : { companyProvider: 'openai', companyModel: config.model, companyCredentialRevision: config.credentialRevision }), stablePrompt: prompt, stablePromptHash: createHash('sha256').update(prompt).digest('hex'),

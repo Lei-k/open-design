@@ -1,3 +1,5 @@
+import { StudioMcpRuntime } from '../../src/mcp-client/studio-runtime.js';
+import { StudioMcpStore } from '../../src/storage/studio-mcp.js';
 import { StudioConnectorRuntime } from '../../src/connectors/studio-runtime.js';
 import { CompanyComposioStore, StudioConnectorStore } from '../../src/storage/studio-connectors.js';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -21,6 +23,7 @@ const routes = new Map<string, (req: Request, res: Response) => Promise<void>>()
 const requests: Array<{ owner: string; source: unknown }> = [];
 let configured: boolean;
 let connectors: StudioConnectorRuntime;
+let mcp: StudioMcpRuntime;
 let connectorSelections: unknown[];
 beforeEach(() => {
   vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-09T12:59:59Z'));
@@ -36,8 +39,9 @@ beforeEach(() => {
     (url: string, handler: (req: Request, res: Response) => Promise<void>) => routes.set(`${method.toUpperCase()} ${url}`, handler),
   ])) as unknown as Express;
   connectors = new StudioConnectorRuntime({ db, dataRoot: root, auth, sessionCurrent: () => true });
+  mcp = new StudioMcpRuntime({ db, dataRoot: root, auth, sessionCurrent: () => true });
   connectorSelections = [];
-  service = registerStudioRoutineRoutes(app, { db, dataRoot: root, projectsRoot: path.join(root, 'projects'), connectors, runs: {
+  service = registerStudioRoutineRoutes(app, { db, dataRoot: root, projectsRoot: path.join(root, 'projects'), connectors, mcp, runs: {
     async admitInternal(actor, request, allowed) {
       expect(allowed()).toBe(true);
       connectorSelections.push(request.context);
@@ -48,7 +52,7 @@ beforeEach(() => {
     runState: () => ({ status: 'succeeded', text: 'Routine done', reason: null }),
   } });
 });
-afterEach(() => { service?.stop(); connectors?.close(); auth?.close(); closeDatabase(); rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
+afterEach(() => { service?.stop(); connectors?.close(); mcp?.close(); auth?.close(); closeDatabase(); rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
 
 async function api(method: string, suffix = '', body: unknown = {}, owner = 'A', id = '') {
   const actor = { accountId: owner, username: owner.toLowerCase(), role: 'user' as const, sessionId: `fixture-${owner}`, sessionExpiresAt: Date.now() + 60_000 };
@@ -186,4 +190,20 @@ it('S60 A3: connectors are re-checked only when they change or the routine is en
   expect(cleared.status).toBe(200);
   expect(cleared.body.routine.context?.connectorIds ?? []).toEqual([]);
   expect((await api('PATCH', '/:id', { enabled: true }, 'A', id)).status).toBe(200);
+});
+
+it('S61 scheduled dispatch captures fresh MCP owner authority and revalidates after disable', async () => {
+  const store = new StudioMcpStore(db, root);
+  store.create('A', 'mine', { url: 'https://mcp.example.com/runtime', transport: 'http', label: null, templateId: null, enabled: true, authMode: 'none' }, {}, () => {});
+  const made = await api('POST', '', { name: 'MCP routine', prompt: 'Use mine', agentId: 'openai', context: { mcpServerIds: ['mine'] }, schedule: { kind: 'hourly', minute: 0, timezone: 'UTC' } });
+  expect(made.status).toBe(201); const id = made.body.routine.id;
+  await vi.advanceTimersByTimeAsync(2100);
+  expect(connectorSelections).toContainEqual({ connectorIds: [], mcpServerIds: ['mine'] });
+  expect(requests).toContainEqual({ owner: 'A', source: 'company_pool' });
+  const sent = requests.length;
+  store.update('A', 'mine', 1, { enabled: false }, {}, () => {});
+  await vi.advanceTimersByTimeAsync(3_600_000);
+  expect(requests).toHaveLength(sent);
+  const history = await api('GET', '/:id/runs', {}, 'A', id);
+  expect(history.body.runs[0]).toMatchObject({ trigger: 'scheduled', status: 'failed', errorCode: 'NOT_FOUND' });
 });
