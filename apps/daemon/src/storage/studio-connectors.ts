@@ -15,7 +15,11 @@ import { loadCompanyCredentialKey } from './company-openai.js';
  *   the host user id and never client supplied.
  * - An OAuth state is a random token whose SHA-256 is stored, bound to the
  *   account, its session, role and pilot revision, the connector, the company
- *   key revision and an expiry, and consumed once.
+ *   key revision and an expiry, and consumed once. Cancellation (the user's,
+ *   a session revocation, a key change) is authoritative: it also retires a
+ *   state an in-flight callback already consumed, and the callback records a
+ *   connection only in a transaction that finds its state neither cancelled
+ *   nor expired (`completeConnection`).
  * - Audit rows record actions and outcome categories, never key material,
  *   entities or provider ids.
  */
@@ -81,8 +85,13 @@ export class CompanyComposioStore {
     const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
     return Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64');
   }
-  /** Revision-checked; a string sets or rotates, null clears. */
-  update(actorId: string, input: unknown): { summary: CompanyComposioSummary; action: CompanyComposioAction } {
+  /**
+   * Revision-checked; a string sets or rotates, null clears. `authorize` runs
+   * inside the write transaction immediately before the write (it throws to
+   * refuse); `onChange` runs in the same transaction when the key changed, so
+   * a key change and its side effects commit together.
+   */
+  update(actorId: string, input: unknown, hooks: { authorize?: () => void; onChange?: (action: Exclude<CompanyComposioAction, 'unchanged'>) => void } = {}): { summary: CompanyComposioSummary; action: CompanyComposioAction } {
     const body = input as { revision?: unknown; apiKey?: unknown } | null;
     if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((key) => !['revision', 'apiKey'].includes(key))
       || !Number.isSafeInteger(body.revision) || Number(body.revision) < 0
@@ -90,6 +99,7 @@ export class CompanyComposioStore {
         && !/[\s\0]/.test(body.apiKey.trim()))) throw new CompanyComposioConfigError(400);
     const apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : null;
     return this.db.transaction(() => {
+      hooks.authorize?.();
       const previous = this.row();
       if (previous.revision !== body.revision) throw new CompanyComposioConfigError(409);
       const prior = this.credential();
@@ -102,6 +112,7 @@ export class CompanyComposioStore {
           apiKey === null ? null : apiKey.slice(-4), this.now());
       this.db.prepare('INSERT INTO company_composio_audit (actor_id, action, revision, credential_revision, created_at) VALUES (?, ?, ?, ?, ?)')
         .run(actorId, action, revision, credentialRevision, this.now());
+      if (action !== 'unchanged') hooks.onChange?.(action);
       return { summary: this.read(), action };
     }).immediate();
   }
@@ -120,11 +131,13 @@ export interface StudioConnectorStateBinding {
 interface StateRow {
   state_hash: string; owner_account_id: string; session_id: string; role: string; studio_revision: number | null;
   session_expires_at: number; connector_id: string; credential_revision: number; provider_connection_id: string | null;
-  expires_at: number; used_at: number | null; cancelled: 'state' | 'session' | 'key-changed' | null; created_at: number;
+  expires_at: number; used_at: number | null; cancelled: 'state' | 'session' | 'key-changed' | null; completed_at: number | null; created_at: number;
 }
 export type ConsumedState =
   | { ok: true; binding: StudioConnectorStateBinding; providerConnectionId: string | null }
   | { ok: false; reason: 'state' | 'expired' | 'replayed' | 'session' | 'key-changed' };
+/** Outcome of the callback's final, transactional completion. */
+export type CompletedConnection<R extends string> = { ok: true } | { ok: false; reason: 'state' | 'expired' | 'replayed' | 'session' | 'key-changed' | R };
 
 const hashState = (token: string) => createHash('sha256').update(`studio-connector-state:${token}`).digest('hex');
 const STATE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
@@ -149,7 +162,8 @@ export class StudioConnectorStore {
       state_hash TEXT PRIMARY KEY, owner_account_id TEXT NOT NULL, session_id TEXT NOT NULL, role TEXT NOT NULL,
       studio_revision INTEGER, session_expires_at INTEGER NOT NULL, connector_id TEXT NOT NULL,
       credential_revision INTEGER NOT NULL, provider_connection_id TEXT, expires_at INTEGER NOT NULL,
-      used_at INTEGER, cancelled TEXT CHECK (cancelled IS NULL OR cancelled IN ('state','session','key-changed')), created_at INTEGER NOT NULL
+      used_at INTEGER, cancelled TEXT CHECK (cancelled IS NULL OR cancelled IN ('state','session','key-changed')), completed_at INTEGER,
+      created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS studio_connector_states_owner ON studio_connector_states (owner_account_id, used_at);
     CREATE TABLE IF NOT EXISTS studio_connector_audit (
@@ -160,6 +174,10 @@ export class StudioConnectorStore {
       BEGIN SELECT RAISE(ABORT, 'audit rows are immutable'); END;
     CREATE TRIGGER IF NOT EXISTS studio_connector_audit_no_delete BEFORE DELETE ON studio_connector_audit
       BEGIN SELECT RAISE(ABORT, 'audit rows are immutable'); END;`);
+    // Tables created before completion was tracked gain the column; existing rows read as not completed.
+    if (!(db.prepare('PRAGMA table_info(studio_connector_states)').all() as Array<{ name: string }>).some((column) => column.name === 'completed_at')) {
+      db.exec('ALTER TABLE studio_connector_states ADD COLUMN completed_at INTEGER');
+    }
     db.prepare('INSERT OR IGNORE INTO studio_connector_meta (singleton, entity_secret) VALUES (1, ?)').run(randomBytes(32));
     this.entitySecret = (db.prepare('SELECT entity_secret FROM studio_connector_meta WHERE singleton = 1').get() as { entity_secret: Buffer }).entity_secret;
   }
@@ -213,7 +231,7 @@ export class StudioConnectorStore {
         this.db.prepare("UPDATE studio_connector_states SET used_at = ?, cancelled = 'state' WHERE state_hash = ?").run(at, stale.state_hash);
       }
       this.db.prepare(`INSERT INTO studio_connector_states (state_hash, owner_account_id, session_id, role, studio_revision, session_expires_at,
-        connector_id, credential_revision, provider_connection_id, expires_at, used_at, cancelled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?)`)
+        connector_id, credential_revision, provider_connection_id, expires_at, used_at, cancelled, completed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, NULL, ?)`)
         .run(hashState(token), binding.accountId, binding.sessionId, binding.role, binding.studioRevision, binding.sessionExpiresAt,
           binding.connectorId, binding.credentialRevision, expiresAt, at);
     })();
@@ -243,15 +261,50 @@ export class StudioConnectorStore {
         credentialRevision: row.credential_revision } };
     }).immediate();
   }
-  /** Retire pending authorizations: one connector (the user cancelled), or every one the account holds (session revoke, disable). */
+  /**
+   * Record the account's connection for a consumed state, in one transaction
+   * that first re-reads the state — refusing it if it was cancelled (by the
+   * user, a session revocation or a key change) or expired after the callback
+   * consumed it, or already completed — and then runs `recheck` (account,
+   * session and key authority) inside the same transaction. A cancel that
+   * returned before this commit can therefore never be followed by a
+   * connection.
+   */
+  completeConnection<R extends string>(token: string, connectorId: string,
+    input: { owner: string; providerConnectionId: string; accountLabel: string; credentialRevision: number },
+    recheck: () => R | null): CompletedConnection<R> {
+    const at = this.now();
+    return this.db.transaction((): CompletedConnection<R> => {
+      const row = this.db.prepare('SELECT * FROM studio_connector_states WHERE state_hash = ?').get(hashState(token)) as StateRow | undefined;
+      if (!row || row.connector_id !== connectorId || row.owner_account_id !== input.owner || row.used_at === null) return { ok: false, reason: 'state' };
+      if (row.cancelled !== null) return { ok: false, reason: row.cancelled };
+      if (row.completed_at !== null) return { ok: false, reason: 'replayed' };
+      if (row.expires_at <= at) return { ok: false, reason: 'expired' };
+      const refused = recheck();
+      if (refused) return { ok: false, reason: refused };
+      this.saveConnection(input.owner, connectorId, input);
+      this.db.prepare('UPDATE studio_connector_states SET completed_at = ? WHERE state_hash = ?').run(at, row.state_hash);
+      return { ok: true };
+    }).immediate();
+  }
+  /**
+   * Retire authorizations: one connector (the user cancelled), or every one the
+   * account holds (session revoke, disable). Authoritative for in-flight
+   * callbacks: a state a callback already consumed but has not completed is
+   * cancelled too, so `completeConnection` refuses it.
+   */
   cancelStates(owner: string, connectorId?: string): number {
-    return this.db.prepare(`UPDATE studio_connector_states SET used_at = ?, cancelled = ? WHERE owner_account_id = ? AND used_at IS NULL
-      ${connectorId === undefined ? '' : 'AND connector_id = ?'}`).run(this.now(), connectorId === undefined ? 'session' : 'state', owner,
+    const at = this.now();
+    return this.db.prepare(`UPDATE studio_connector_states SET used_at = COALESCE(used_at, ?), cancelled = ?
+      WHERE owner_account_id = ? AND cancelled IS NULL AND completed_at IS NULL AND expires_at > ?
+      ${connectorId === undefined ? '' : 'AND connector_id = ?'}`).run(at, connectorId === undefined ? 'session' : 'state', owner, at,
       ...(connectorId === undefined ? [] : [connectorId])).changes;
   }
-  /** Company key change: every pending authorization dies with the key it was started under. */
+  /** Company key change: every authorization started under the old key dies with it, in flight or not. */
   cancelAllStates(): number {
-    return this.db.prepare("UPDATE studio_connector_states SET used_at = ?, cancelled = 'key-changed' WHERE used_at IS NULL").run(this.now()).changes;
+    const at = this.now();
+    return this.db.prepare(`UPDATE studio_connector_states SET used_at = COALESCE(used_at, ?), cancelled = 'key-changed'
+      WHERE cancelled IS NULL AND completed_at IS NULL AND expires_at > ?`).run(at, at).changes;
   }
 
   audit(actor: string, action: string, connectorId: string | null, outcome: string): void {

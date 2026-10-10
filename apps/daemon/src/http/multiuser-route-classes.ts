@@ -218,6 +218,7 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
   ...group('middleware', 'global /api browser-origin guard; not an endpoint', ['USE /api']),
   ...group('middleware', 'pathless authorization gate; never authorizes on its own', ['USE <pathless:authorization-gate:1>']),
   ...group('middleware', 'pathless global JSON parser; never authorizes on its own', ['USE <pathless:json-parser:1>']),
+  ...group('middleware', 'pathless body-parser error handler: fixed typed errors, never echoes or logs the body; never authorizes on its own', ['USE <pathless:body-errors:1>']),
   ...group('middleware', 'pathless project body policy; never authorizes on its own', ['USE <pathless:body-policy:1>']),
   ...group('middleware', 'root static middleware is disabled for requests in multi-user mode', ['USE <pathless:root-static:1>']),
 

@@ -231,11 +231,14 @@ export const API_ERROR_CODES = [
   // unknown, expired, replayed, or whose bound session/account/key/provider
   // account no longer matches (details.reason); PROVIDER_FAILED: Composio
   // refused or failed (its body is never echoed); RECHECK_REQUIRED: the
-  // company key changed since the account connected.
+  // company key changed since the account connected; AUTHORITY_CHANGED: the
+  // account, session, company key or connection changed while the request
+  // ran, so nothing was sent to the provider or changed (details.reason).
   'MULTIUSER_CONNECTORS_NOT_CONFIGURED',
   'MULTIUSER_CONNECTOR_AUTHORIZATION_INVALID',
   'MULTIUSER_CONNECTOR_PROVIDER_FAILED',
   'MULTIUSER_CONNECTOR_RECHECK_REQUIRED',
+  'MULTIUSER_CONNECTOR_AUTHORITY_CHANGED',
   'INTERNAL_ERROR',
 ] as const;
 

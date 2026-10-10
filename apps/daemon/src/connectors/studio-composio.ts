@@ -53,8 +53,13 @@ export class StudioComposioClient {
     return value as Record<string, unknown>;
   }
 
-  /** An enabled auth config for the toolkit in the company project, creating a Composio-managed one if none exists. */
-  async resolveAuthConfig(apiKey: string, connectorId: string, catalogSlug: string): Promise<string> {
+  /**
+   * An enabled auth config for the toolkit in the company project, creating a
+   * Composio-managed one if none exists. `beforeCreate` runs immediately before
+   * that provider-side write (after the list request settled) and throws to
+   * stop it.
+   */
+  async resolveAuthConfig(apiKey: string, connectorId: string, catalogSlug: string, hooks: { beforeCreate?: () => void } = {}): Promise<string> {
     // Composio toolkit slugs are lower case; the catalog keeps display casing.
     const toolkitSlug = catalogSlug.toLowerCase();
     const listed = await this.request(apiKey, `/api/v3/auth_configs?${new URLSearchParams({ toolkit_slug: toolkitSlug })}`, { method: 'GET' });
@@ -66,6 +71,7 @@ export class StudioComposioClient {
       const status = text(entry.status)?.toUpperCase();
       if (id && (!status || status === 'ENABLED') && connectorIdForToolkitSlug(slug) === connectorId) return id;
     }
+    hooks.beforeCreate?.();
     const created = await this.request(apiKey, '/api/v3.1/auth_configs', { method: 'POST',
       body: { toolkit: { slug: toolkitSlug }, auth_config: { type: 'use_composio_managed_auth' } } });
     const id = text(created?.id) ?? text(record(created?.auth_config).id);

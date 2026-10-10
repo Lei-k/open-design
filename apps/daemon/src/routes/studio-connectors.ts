@@ -5,12 +5,11 @@ import {
   STUDIO_CONNECTOR_RECHECK_REQUIRED,
   type ConnectorAuthConfigPrepareResponse, type ConnectorConnectResponse, type ConnectorDetail, type ConnectorDetailResponse,
   type ConnectorDiscoveryResponse, type ConnectorListResponse, type ConnectorStatusResponse, type ConnectorStatusSummary,
-  type StudioComposioConfigResponse, type StudioConnectorCallbackRefusal,
+  type StudioComposioConfigResponse, type StudioConnectorAuthorityRefusal, type StudioConnectorCallbackRefusal,
 } from '@open-design/contracts';
 import { sendApiError } from '../http/api-errors.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import type { AuthActor } from '../services/auth-service.js';
-import { multiUserStreamAllowed } from '../http/multiuser-stream.js';
 import { connectorDefinitionToDetail, type ConnectorCatalogDefinition } from '../connectors/catalog.js';
 import { connectorIdForToolkitSlug, getStaticComposioCatalogDefinitions } from '../connectors/composio.js';
 import { StudioComposioClient, StudioComposioError } from '../connectors/studio-composio.js';
@@ -37,6 +36,21 @@ export interface StudioConnectors {
 
 const MAX_PREPARE = 8;
 const CONNECTOR_ID = /^[a-z0-9_]{1,64}$/;
+
+/** Thrown at an effect boundary when the authority the request started with no longer holds. */
+class ConnectorAuthorityError extends Error {
+  constructor(readonly reason: StudioConnectorAuthorityRefusal) { super(`connector authority changed: ${reason}`); }
+}
+
+/** What a connectors effect was started under and must still hold when it runs. */
+interface ConnectorAuthority {
+  /** The acting account's session as the gate (or the OAuth state) resolved it. */
+  actor: AuthActor;
+  /** The company key revision the effect uses; that key must still be configured at this revision. */
+  credentialRevision?: number;
+  /** The connection the effect acts on; it must still be this account's same live binding. */
+  connection?: { connectorId: string; providerConnectionId: string | null; credentialRevision: number };
+}
 
 /**
  * Account connectors control plane for Web accounts (#62, S58). The standard
@@ -76,6 +90,43 @@ export function registerStudioConnectorRoutes(app: Express, deps: RegisterStudio
   };
   const owner = (res: Response): string | null => multiUserActorOf(res)?.accountId ?? null;
   const noStore = (res: Response) => res.setHeader('Cache-Control', 'no-store');
+  /**
+   * Invariant: authority is re-established immediately before every
+   * provider-side or local destructive/binding effect of the connectors
+   * control plane — a Composio request, a connection save or removal, an
+   * OAuth state's creation or cancellation, an auth-config cache write, a
+   * company key change. The gate's check (and any check before an `await`) is
+   * stale once the request has yielded: a session can be revoked, an account
+   * disabled, a pilot or role changed, the company key rotated or cleared, or
+   * the connection disconnected or replaced meanwhile. Call this synchronously
+   * — no `await` between it and the effect — and on any change refuse with
+   * `MULTIUSER_CONNECTOR_AUTHORITY_CHANGED`: no provider call, no local change.
+   */
+  const connectorAuthorityRefusal = (expected: ConnectorAuthority): StudioConnectorAuthorityRefusal | null => {
+    const { actor } = expected;
+    if (!deps.accountActive(actor.accountId)) return 'account';
+    if (!deps.sessionCurrent(actor)) return 'session';
+    if (expected.credentialRevision !== undefined) {
+      const key = company.read();
+      if (!key.configured || key.credentialRevision !== expected.credentialRevision) return 'key-changed';
+    }
+    if (expected.connection) {
+      const row = store.connection(actor.accountId, expected.connection.connectorId);
+      if (row?.status !== 'connected' || row.provider_connection_id !== expected.connection.providerConnectionId
+        || row.credential_revision !== expected.connection.credentialRevision) return 'connection-changed';
+    }
+    return null;
+  };
+  const assertConnectorAuthority = (expected: ConnectorAuthority): void => {
+    const refused = connectorAuthorityRefusal(expected);
+    if (refused) throw new ConnectorAuthorityError(refused);
+  };
+  const authorityChanged = (res: Response, actor: string, action: string, connectorId: string | null, reason: StudioConnectorAuthorityRefusal) => {
+    // The refusal itself is audited (append-only); nothing else changes.
+    store.audit(actor, `${action}_refused`, connectorId, reason);
+    return sendApiError(res, 409, 'MULTIUSER_CONNECTOR_AUTHORITY_CHANGED',
+      'the account, session, company key or connection changed while this request ran; nothing was changed', { details: { reason } });
+  };
   const providerFailed = (res: Response, error: unknown, operation: string) => {
     const status = error instanceof StudioComposioError ? error.httpStatus : null;
     console.error(`[Studio] MULTIUSER_CONNECTOR_PROVIDER_FAILED: ${operation}${status ? ` HTTP ${status}` : ''}`);
@@ -85,14 +136,29 @@ export function registerStudioConnectorRoutes(app: Express, deps: RegisterStudio
     return sendApiError(res, 502, 'MULTIUSER_CONNECTOR_PROVIDER_FAILED', error instanceof StudioComposioError && error.kind === 'rejected'
       ? 'Composio refused the company key' : 'Composio request failed');
   };
+  /**
+   * A failed effect: an authority change is reported as such (it outranks a
+   * provider failure that raced it); anything else is a typed provider failure.
+   */
+  const effectFailed = (res: Response, error: unknown, authority: ConnectorAuthority, action: string, connectorId: string | null, operation: string) => {
+    const reason = error instanceof ConnectorAuthorityError ? error.reason : connectorAuthorityRefusal(authority);
+    if (reason) return authorityChanged(res, authority.actor.accountId, action, connectorId, reason);
+    if (error instanceof StudioComposioError) return providerFailed(res, error, operation);
+    console.error(`[Studio] connectors ${operation} failed`);
+    return sendApiError(res, 500, 'INTERNAL_ERROR', 'connectors request failed');
+  };
   const notConfigured = (res: Response) => sendApiError(res, 409, 'MULTIUSER_CONNECTORS_NOT_CONFIGURED',
     'no company Composio key is configured; an administrator configures it in Settings → Connectors');
-  const authConfigFor = async (definition: ConnectorCatalogDefinition, credential: { apiKey: string; credentialRevision: number }) => {
-    const cached = store.authConfig(definition.id, credential.credentialRevision);
+  /** The connector's auth config under `authority`'s key revision; resolving and caching it are effects. */
+  const authConfigFor = async (definition: ConnectorCatalogDefinition, apiKey: string, authority: ConnectorAuthority & { credentialRevision: number }) => {
+    const cached = store.authConfig(definition.id, authority.credentialRevision);
     if (cached) return cached;
-    const id = await composio.resolveAuthConfig(credential.apiKey, definition.id, definition.providerConnectorId ?? definition.id);
+    assertConnectorAuthority(authority);
+    const id = await composio.resolveAuthConfig(apiKey, definition.id, definition.providerConnectorId ?? definition.id,
+      { beforeCreate: () => assertConnectorAuthority(authority) });
     // Cached per key revision: a rotated key never reuses another project's config.
-    if (company.read().credentialRevision === credential.credentialRevision) store.setAuthConfig(definition.id, credential.credentialRevision, id);
+    assertConnectorAuthority(authority);
+    store.setAuthConfig(definition.id, authority.credentialRevision, id);
     return id;
   };
 
@@ -113,15 +179,19 @@ export function registerStudioConnectorRoutes(app: Express, deps: RegisterStudio
     if (!actor) return sendApiError(res, 401, 'UNAUTHORIZED', 'authentication required');
     if (actor.role !== 'admin') return sendApiError(res, 403, 'FORBIDDEN', 'admin role required');
     try {
-      const { action } = company.update(actor.accountId, req.body);
-      if (action !== 'unchanged') {
-        // Authorizations started under the previous key can never complete.
-        store.cancelAllStates();
-        store.audit(actor.accountId, `company_key_${action}`, null, 'ok');
-      }
+      company.update(actor.accountId, req.body, {
+        // Still a live administrator when the write commits (the body was read after the gate checked).
+        authorize: () => assertConnectorAuthority({ actor }),
+        onChange: (action) => {
+          // Authorizations started under the previous key can never complete, in flight or not.
+          store.cancelAllStates();
+          store.audit(actor.accountId, `company_key_${action}`, null, 'ok');
+        },
+      });
       noStore(res);
       res.json(configResponse(res));
     } catch (error) {
+      if (error instanceof ConnectorAuthorityError) return authorityChanged(res, actor.accountId, 'company_key', null, error.reason);
       if (error instanceof CompanyComposioConfigError) {
         return sendApiError(res, error.status, error.status === 409 ? 'CONFLICT' : 'BAD_REQUEST',
           error.status === 409 ? 'the company key changed; reload before saving' : 'invalid company Composio key update');
@@ -154,7 +224,7 @@ export function registerStudioConnectorRoutes(app: Express, deps: RegisterStudio
     res.json({ connectors: detailsFor(actor), meta: { provider: 'composio' } } satisfies ConnectorDiscoveryResponse);
   });
   app.post('/api/multiuser/connectors/auth-configs/prepare', async (req, res) => {
-    const actor = owner(res);
+    const actor = multiUserActorOf(res);
     if (!actor) return sendApiError(res, 401, 'UNAUTHORIZED', 'authentication required');
     const ids = (req.body as { connectorIds?: unknown } | undefined)?.connectorIds;
     if (!Array.isArray(ids) || ids.length === 0 || ids.length > MAX_PREPARE || ids.some((id) => typeof id !== 'string')) {
@@ -162,19 +232,22 @@ export function registerStudioConnectorRoutes(app: Express, deps: RegisterStudio
     }
     const credential = company.credential();
     if (!credential) return notConfigured(res);
+    const authority = { actor, credentialRevision: credential.credentialRevision };
     const results: ConnectorAuthConfigPrepareResponse['results'] = {};
     for (const id of [...new Set(ids as string[])]) {
       const definition = definitionOf(id);
       if (!definition) { results[id] = { status: 'error', message: 'connector not found' }; continue; }
-      try { results[id] = { status: 'ready', authConfigId: await authConfigFor(definition, credential) }; }
+      try { results[id] = { status: 'ready', authConfigId: await authConfigFor(definition, credential.apiKey, authority) }; }
       catch (error) {
+        if (error instanceof ConnectorAuthorityError) return authorityChanged(res, actor.accountId, 'prepare', null, error.reason);
         console.error(`[Studio] MULTIUSER_CONNECTOR_PROVIDER_FAILED: auth config${error instanceof StudioComposioError && error.httpStatus ? ` HTTP ${error.httpStatus}` : ''}`);
         results[id] = error instanceof StudioComposioError && error.kind === 'custom-auth-required'
           ? { status: 'custom_required', message: 'this app needs a custom auth configuration in the company Composio project' }
           : { status: 'error', message: 'Composio request failed' };
       }
     }
-    if (!multiUserStreamAllowed(res)) return;
+    const refused = connectorAuthorityRefusal({ actor });
+    if (refused) return authorityChanged(res, actor.accountId, 'prepare', null, refused);
     noStore(res);
     res.json({ results } satisfies ConnectorAuthConfigPrepareResponse);
   });
@@ -194,13 +267,11 @@ export function registerStudioConnectorRoutes(app: Express, deps: RegisterStudio
     bound = consumed.binding;
     const binding = consumed.binding;
     // Identity comes from the server-side state, never the cookie; it must still be current.
-    const authority = (): StudioConnectorCallbackRefusal | null => {
-      if (!deps.accountActive(binding.accountId)) return 'account';
-      if (!deps.sessionCurrent({ accountId: binding.accountId, username: '', role: binding.role as AuthActor['role'], sessionId: binding.sessionId,
-        sessionExpiresAt: binding.sessionExpiresAt, ...(binding.studioRevision === null ? {} : { studioRevision: binding.studioRevision }) })) return 'session';
-      const key = company.read();
-      if (!key.configured || key.credentialRevision !== binding.credentialRevision) return 'key-changed';
-      return null;
+    const stateActor: AuthActor = { accountId: binding.accountId, username: '', role: binding.role as AuthActor['role'], sessionId: binding.sessionId,
+      sessionExpiresAt: binding.sessionExpiresAt, ...(binding.studioRevision === null ? {} : { studioRevision: binding.studioRevision }) };
+    const authority = (): 'account' | 'session' | 'key-changed' | null => {
+      const refused = connectorAuthorityRefusal({ actor: stateActor, credentialRevision: binding.credentialRevision });
+      return refused === 'connection-changed' ? null : refused;
     };
     const before = authority();
     if (before) return refuse(before);
@@ -214,16 +285,20 @@ export function registerStudioConnectorRoutes(app: Express, deps: RegisterStudio
     if (!credential || credential.credentialRevision !== binding.credentialRevision) return refuse('key-changed');
     let account;
     try { account = await composio.connectedAccount(credential.apiKey, providerConnectionId); }
-    catch (error) { return providerFailed(res, error, 'callback verification'); }
+    catch (error) {
+      const changed = authority();
+      return changed ? refuse(changed) : providerFailed(res, error, 'callback verification');
+    }
     const expectedAuthConfig = store.authConfig(definition.id, binding.credentialRevision);
     if (!account || account.userId !== store.entityFor(binding.accountId)
       || (account.toolkitSlug && connectorIdForToolkitSlug(account.toolkitSlug) !== definition.id)
       || (expectedAuthConfig && account.authConfigId && account.authConfigId !== expectedAuthConfig)) return refuse('provider');
     if (account.status && !['ACTIVE', 'CONNECTED'].includes(account.status)) return refuse('not-completed');
-    const after = authority();
-    if (after) return refuse(after);
-    store.saveConnection(binding.accountId, definition.id, { providerConnectionId, accountLabel: account.accountLabel ?? definition.name,
-      credentialRevision: binding.credentialRevision });
+    // The binding effect: one transaction that refuses a state cancelled or expired
+    // while the provider answered and rechecks account, session and key authority.
+    const completed = store.completeConnection(String(req.query.state), definition.id, { owner: binding.accountId, providerConnectionId,
+      accountLabel: account.accountLabel ?? definition.name, credentialRevision: binding.credentialRevision }, authority);
+    if (!completed.ok) return refuse(completed.reason);
     store.audit(binding.accountId, 'connect_complete', definition.id, 'ok');
     sendConnectedPage(res, definition.id, definition.name);
   });
@@ -242,25 +317,28 @@ export function registerStudioConnectorRoutes(app: Express, deps: RegisterStudio
     if (!definition) return sendApiError(res, 404, 'CONNECTOR_NOT_FOUND', 'connector not found');
     const credential = company.credential();
     if (!credential) return notConfigured(res);
+    const authority = { actor, credentialRevision: credential.credentialRevision };
     let authConfigId: string;
-    try { authConfigId = await authConfigFor(definition, credential); }
-    catch (error) { if (!multiUserStreamAllowed(res)) return; return providerFailed(res, error, 'auth config'); }
-    if (!multiUserStreamAllowed(res)) return;
-    if (company.read().credentialRevision !== credential.credentialRevision) return notConfigured(res);
-    const { token, expiresAt } = store.createState({ accountId: actor.accountId, sessionId: actor.sessionId, role: actor.role,
-      studioRevision: actor.studioRevision ?? null, sessionExpiresAt: actor.sessionExpiresAt, connectorId: definition.id,
-      credentialRevision: credential.credentialRevision });
+    try { authConfigId = await authConfigFor(definition, credential.apiKey, authority); }
+    catch (error) { return effectFailed(res, error, authority, 'connect', definition.id, 'auth config'); }
+    let token: string; let expiresAt: number;
+    try {
+      // The state (a local binding) and the provider link are created under authority checked just now.
+      assertConnectorAuthority(authority);
+      ({ token, expiresAt } = store.createState({ accountId: actor.accountId, sessionId: actor.sessionId, role: actor.role,
+        studioRevision: actor.studioRevision ?? null, sessionExpiresAt: actor.sessionExpiresAt, connectorId: definition.id,
+        credentialRevision: credential.credentialRevision }));
+    } catch (error) { return effectFailed(res, error, authority, 'connect', definition.id, 'connect state'); }
     const callbackUrl = `${deps.publicOrigin}/api/connectors/oauth/callback/${encodeURIComponent(definition.id)}?${new URLSearchParams({ state: token })}`;
     let link: Awaited<ReturnType<StudioComposioClient['createLink']>>;
     try {
       link = await composio.createLink(credential.apiKey, { authConfigId, entity: store.entityFor(actor.accountId), state: token, callbackUrl });
+      // Authority lost while the provider answered: nothing stays pending and nothing is returned.
+      assertConnectorAuthority(authority);
     } catch (error) {
       store.discardState(token);
-      if (!multiUserStreamAllowed(res)) return;
-      return providerFailed(res, error, 'connect link');
+      return effectFailed(res, error, authority, 'connect', definition.id, 'connect link');
     }
-    // A session revoked or rotated while the provider answered gets nothing and keeps nothing pending.
-    if (!multiUserStreamAllowed(res)) { store.discardState(token); return; }
     if (link.providerConnectionId) store.setStateProviderConnection(token, link.providerConnectionId);
     store.audit(actor.accountId, 'connect_start', definition.id, link.redirectUrl ? 'redirect' : 'pending');
     noStore(res);
@@ -269,44 +347,49 @@ export function registerStudioConnectorRoutes(app: Express, deps: RegisterStudio
       expiresAt: new Date(expiresAt).toISOString() } } satisfies ConnectorConnectResponse);
   });
   app.post('/api/multiuser/connectors/:connectorId/authorization/cancel', (req, res) => {
-    const actor = owner(res);
+    const actor = multiUserActorOf(res);
     if (!actor) return sendApiError(res, 401, 'UNAUTHORIZED', 'authentication required');
     const definition = definitionOf(req.params.connectorId);
     if (!definition) return sendApiError(res, 404, 'CONNECTOR_NOT_FOUND', 'connector not found');
-    const cancelled = store.cancelStates(actor, definition.id);
-    if (cancelled) store.audit(actor, 'authorization_cancel', definition.id, 'ok');
+    const refused = connectorAuthorityRefusal({ actor });
+    if (refused) return authorityChanged(res, actor.accountId, 'authorization_cancel', definition.id, refused);
+    // Authoritative: a state an in-flight callback already consumed is cancelled too and can never complete.
+    const cancelled = store.cancelStates(actor.accountId, definition.id);
+    if (cancelled) store.audit(actor.accountId, 'authorization_cancel', definition.id, 'ok');
     noStore(res);
-    res.json({ connector: detailsFor(actor, definition)[0]! } satisfies ConnectorDetailResponse);
+    res.json({ connector: detailsFor(actor.accountId, definition)[0]! } satisfies ConnectorDetailResponse);
   });
   app.delete('/api/multiuser/connectors/:connectorId/connection', async (req, res) => {
-    const actor = owner(res);
+    const actor = multiUserActorOf(res);
     if (!actor) return sendApiError(res, 401, 'UNAUTHORIZED', 'authentication required');
     const definition = definitionOf(req.params.connectorId);
-    const row = definition ? store.connection(actor, definition.id) : null;
+    const row = definition ? store.connection(actor.accountId, definition.id) : null;
     // An unknown connector, one this account never connected and another account's
     // connection are the same refusal: nothing here can address another account's row.
     if (!definition || !row || row.status !== 'connected') return sendApiError(res, 404, 'NOT_FOUND', 'connection not found');
     const credential = company.credential();
+    const connection = { connectorId: definition.id, providerConnectionId: row.provider_connection_id, credentialRevision: row.credential_revision };
+    const viaProvider = credential !== null && row.provider_connection_id !== null && row.credential_revision === credential.credentialRevision;
+    // The provider is called only under the key the connection was made with; both must still hold at every step.
+    const authority: ConnectorAuthority = viaProvider ? { actor, credentialRevision: credential.credentialRevision, connection } : { actor, connection };
     let outcome = 'local';
-    if (credential && row.provider_connection_id && row.credential_revision === credential.credentialRevision) {
-      try {
-        const account = await composio.connectedAccount(credential.apiKey, row.provider_connection_id);
-        if (account && account.userId === store.entityFor(actor)) {
-          await composio.deleteConnectedAccount(credential.apiKey, row.provider_connection_id);
+    try {
+      if (viaProvider) {
+        assertConnectorAuthority(authority);
+        const account = await composio.connectedAccount(credential.apiKey, row.provider_connection_id!);
+        if (account && account.userId === store.entityFor(actor.accountId)) {
+          assertConnectorAuthority(authority);
+          await composio.deleteConnectedAccount(credential.apiKey, row.provider_connection_id!);
           outcome = 'provider';
         } else outcome = account ? 'provider-mismatch' : 'provider-missing';
-      } catch (error) {
-        if (!multiUserStreamAllowed(res)) return;
-        return providerFailed(res, error, 'disconnect');
       }
-    }
-    // The account's own row only, rechecked after the provider call; history stays in the audit.
-    const current = store.connection(actor, definition.id);
-    if (current?.status === 'connected' && current.provider_connection_id === row.provider_connection_id) store.markDisconnected(actor, definition.id);
-    store.audit(actor, 'disconnect', definition.id, outcome);
-    if (!multiUserStreamAllowed(res)) return;
+      // The account's own row only, under the same authority; history stays in the audit.
+      assertConnectorAuthority(authority);
+    } catch (error) { return effectFailed(res, error, authority, 'disconnect', definition.id, 'disconnect'); }
+    store.markDisconnected(actor.accountId, definition.id);
+    store.audit(actor.accountId, 'disconnect', definition.id, outcome);
     noStore(res);
-    res.json({ connector: detailsFor(actor, definition)[0]! } satisfies ConnectorDetailResponse);
+    res.json({ connector: detailsFor(actor.accountId, definition)[0]! } satisfies ConnectorDetailResponse);
   });
 
   return {

@@ -79,6 +79,12 @@ it('administers the company key from stdin or a private file and never prints it
   const set = await cli(['admin', 'connectors', 'composio', 'set', '--revision', '0', '--api-key-file', '-', '--session-file', adminFile, '--json'], `${KEY}\n`);
   expect(success(set)).toEqual({ composio: { configured: true, apiKeyTail: '9876', revision: 1, credentialRevision: 1, canManage: true } });
   expect(set.stdout + set.stderr).not.toContain(KEY);
+  // Invalid or oversized key material is refused without being echoed by the CLI or the server.
+  for (const input of [`${KEY} embedded-space\n`, `${KEY}${'x'.repeat(5000)}\n`]) {
+    const refused = await cli(['admin', 'connectors', 'composio', 'set', '--revision', '1', '--api-key-file', '-', '--session-file', adminFile, '--json'], input);
+    expect(refused.code).not.toBe(0);
+    expect(refused.stdout + refused.stderr).not.toContain(KEY.slice(0, 10));
+  }
   // A member can neither set nor clear it, and reads no tail.
   const member = await cli(['admin', 'connectors', 'composio', 'clear', '--revision', '1', '--session-file', aliceFile, '--json']);
   expect(member.code).not.toBe(0);

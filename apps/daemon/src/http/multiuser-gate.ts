@@ -19,7 +19,8 @@
 //      - for owner-scoped-project routes, checks from the route param that the
 //        actor owns the project BEFORE the handler runs, answering a
 //        non-enumerating 404 otherwise (no admin override);
-//   3. after the global JSON parser, enforces per-route body policies;
+//   3. after the global JSON parser, answers parser failures with fixed typed
+//      errors that never echo the body, and enforces per-route body policies;
 //   4. exposes the ownership hooks the project routes use for list filtering
 //      and for binding the owner inside the create transaction.
 //
@@ -28,7 +29,7 @@
 // registered, or when the body policy / ownership store was not wired.
 
 import type Database from 'better-sqlite3';
-import type { Express, Request, RequestHandler, Response } from 'express';
+import type { ErrorRequestHandler, Express, Request, RequestHandler, Response } from 'express';
 import { STUDIO_AUTOMATION_INGESTION_FIELDS, STUDIO_AUTOMATION_PROPOSAL_FIELDS, STUDIO_MEMORY_CONFIG_FIELDS, STUDIO_MEMORY_EXTRACT_FIELDS, isStudioPluginApplyRequest, parseStudioMessageFeedback, parseStudioSettingsWrite, type StudioProjectShareSummary } from '@open-design/contracts';
 import { sendApiError } from './api-errors.js';
 import { setMultiUserStreamAuthority } from './multiuser-stream.js';
@@ -608,6 +609,39 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   return metadataAllowed(body.metadata, policy === 'project-patch');
 }
 
+const BODY_ERROR_TYPE = /^[a-z]+(?:\.[a-z]+)*$/;
+
+/**
+ * Invariant: in multi-user mode a request body is never echoed — not in a
+ * response, a log line, stderr or the failure journal — whatever way it fails
+ * to parse (malformed or non-object JSON, over the parser limit, unsupported
+ * charset or encoding, aborted). body-parser quotes the raw bytes in its error
+ * message and keeps them on `error.body`; Express's default handler renders
+ * that message in development and logs the stack in every environment but
+ * `test`. Secret-bearing routes (company Composio and OpenAI keys, account
+ * OpenAI/Tavily keys) depend on this, so it is enforced for every route in
+ * one place: the answer is a fixed typed error and the log names only the
+ * parser's error category. Mounted directly after the global JSON parser, it
+ * sees only errors raised before any route handler runs.
+ */
+export function createMultiUserBodyErrorHandler(): ErrorRequestHandler {
+  return (error: unknown, _req, res, _next) => {
+    const failure = error as { status?: unknown; statusCode?: unknown; type?: unknown } | null;
+    const status = failure?.status ?? failure?.statusCode;
+    const type = typeof failure?.type === 'string' && BODY_ERROR_TYPE.test(failure.type) ? failure.type : 'unknown';
+    console.warn(`[multiuser] request body refused: ${type}`);
+    if (res.headersSent) {
+      // Never hand the error (and its body excerpt) to the default handler.
+      if (!res.writableEnded) res.end();
+      return;
+    }
+    if (status === 413) sendApiError(res, 413, 'PAYLOAD_TOO_LARGE', 'request body is too large');
+    else if (status === 415) sendApiError(res, 415, 'UNSUPPORTED_MEDIA_TYPE', 'unsupported request body encoding');
+    else if (typeof status === 'number' && status >= 400 && status < 500) sendApiError(res, 400, 'BAD_REQUEST', 'malformed request body');
+    else sendApiError(res, 500, 'INTERNAL_ERROR', 'internal error');
+  };
+}
+
 export function createMultiUserBodyPolicy(): RequestHandler {
   return (req, res, next) => {
     const matches = res.locals[ROUTE_LOCAL] as MultiUserRouteMatch[] | undefined;
@@ -666,7 +700,7 @@ export interface MultiUserFront {
   /** `accountId: null` cancels every account's runs in the project (owner deletion). */
   setCancelProjectRuns: (cancel: (accountId: string | null, projectId: string, conversationId?: string) => Promise<() => void>) => void;
   setIsAgentAccountOwner: (check: (param: 'attemptId' | 'accountId', id: string, accountId: string) => boolean) => void;
-  /** Install the post-parse body policy; call right after the global JSON parser. */
+  /** Install the redacting body-error handler and the post-parse body policy; call right after the global JSON parser. */
   installBodyPolicy: (app: Express) => void;
   /** Refuse to listen unless every registration is classified and wiring is complete. */
   assertReady: (registrations: readonly RouteRegistrationLike[]) => void;
@@ -770,6 +804,7 @@ export function installMultiUserFront(
     setCancelProjectRuns(cancel) { cancelProjectRuns = cancel; },
     setIsAgentAccountOwner(check) { isAgentAccountOwner = check; },
     installBodyPolicy(target) {
+      target.use(acknowledgePathlessUse(createMultiUserBodyErrorHandler(), 'body-errors'));
       target.use(acknowledgePathlessUse(createMultiUserBodyPolicy(), 'body-policy'));
       bodyPolicyInstalled = true;
     },

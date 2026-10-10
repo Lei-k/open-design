@@ -58,6 +58,17 @@ export type StudioConnectorCallbackRefusal =
   | 'provider'
   | 'not-completed';
 
+/**
+ * Why a connectors request stopped before its next provider call or local
+ * change (details.reason of `MULTIUSER_CONNECTOR_AUTHORITY_CHANGED`, HTTP 409).
+ * Authority is re-established immediately before every effect: `account` —
+ * the account was disabled; `session` — the session was revoked, rotated or
+ * expired, or the role or Studio pilot changed; `key-changed` — the company
+ * key was rotated or cleared; `connection-changed` — the connection was
+ * disconnected or replaced meanwhile.
+ */
+export type StudioConnectorAuthorityRefusal = 'account' | 'session' | 'key-changed' | 'connection-changed';
+
 /** Fixed refusal shared by run admission, tool routes and connector sources until runs may use connectors (S59). */
 export const STUDIO_CONNECTORS_NOT_USABLE_IN_RUNS =
   'connectors are connectable in Settings but not yet usable in runs, tools, Live Artifact sources or automations' as const;
