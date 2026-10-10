@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
-import { automationTemplateRoutinePrompt, studioRoutineAgentId, studioRoutineExecutionSource, type StudioExecutionSource,
+import { STUDIO_MCP_NOT_IN_RUNS_REASON, automationTemplateRoutinePrompt, studioRoutineAgentId, studioRoutineExecutionSource, type StudioExecutionSource,
   type CreateRoutineRequest, type Routine, type RoutineRun, type RoutineSchedule, type RoutineProjectTarget, type UpdateRoutineRequest } from '@open-design/contracts';
 import { getProject, insertConversation, insertProject } from '../db.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
@@ -37,7 +37,7 @@ export interface StudioRoutineRuns {
 }
 
 class RoutineRefusal extends Error {
-  constructor(readonly status: number, message: string) { super(message); }
+  constructor(readonly status: number, message: string, readonly details?: { capability: string; reason: string }) { super(message); }
 }
 
 /**
@@ -208,6 +208,16 @@ export function registerStudioRoutineRoutes(app: Express, input: {
     const record = body as Record<string, unknown>;
     if (Object.keys(record).some((key) => !['name', 'prompt', 'schedule', 'target', 'skillId', 'agentId', 'context', 'enabled', 'templateId'].includes(key)))
       throw new RoutineRefusal(400, 'unsupported routine field');
+    if (body.enabled !== undefined && typeof body.enabled !== 'boolean') throw new RoutineRefusal(400, 'invalid enabled flag');
+    const enabled = body.enabled ?? (existing ? existing.enabled === 1 : true);
+    /**
+     * Creation and enabling a disabled routine are the edits that may start
+     * work, so (like every dispatch) they re-establish the routine's template
+     * and connector authority. Other edits of an existing routine — disabling
+     * it, renaming it, clearing its connectors — must stay possible after the
+     * owner deleted a private template or disconnected an app (S60 A3/A4).
+     */
+    const enabling = !existing || (enabled && existing.enabled !== 1);
     // A readable template is chosen once, at creation; it supplies the captured default name and prompt.
     let templateId: string | null = existing?.template_id ?? null;
     let needsConnector = false;
@@ -215,12 +225,17 @@ export function registerStudioRoutineRoutes(app: Express, input: {
       if (existing && body.templateId != null && body.templateId !== existing.template_id) throw new RoutineRefusal(400, 'a routine keeps the template it was created from');
       let template;
       try { template = studioRunnableAutomationTemplate(body.templateId ?? existing?.template_id, templates.list(owner)); }
-      catch (error) { throw new RoutineRefusal((error as { status?: number }).status === 403 ? 403 : 404, 'automation template not available'); }
-      templateId = template.id;
-      needsConnector = template.sourceKinds.every((kind) => kind === 'connector');
-      if (!existing) {
-        if (body.name === undefined) body = { ...body, name: template.title.slice(0, 100) };
-        if (body.prompt === undefined) body = { ...body, prompt: automationTemplateRoutinePrompt(template) };
+      catch (error) {
+        if (enabling) throw new RoutineRefusal((error as { status?: number }).status === 403 ? 403 : 404, 'automation template not available');
+        template = null;
+      }
+      if (template) {
+        templateId = template.id;
+        needsConnector = template.sourceKinds.every((kind) => kind === 'connector');
+        if (!existing) {
+          if (body.name === undefined) body = { ...body, name: template.title.slice(0, 100) };
+          if (body.prompt === undefined) body = { ...body, prompt: automationTemplateRoutinePrompt(template) };
+        }
       }
     }
     const text = (value: unknown, max: number) => typeof value === 'string' && value.trim().length > 0 && value.length <= max && !value.includes('\0');
@@ -239,24 +254,29 @@ export function registerStudioRoutineRoutes(app: Express, input: {
     const empty = (value: unknown) => value === undefined || value === null || Array.isArray(value) && value.length === 0;
     const connectorIds = (body.context ? context.connectorIds ?? [] : existing ? JSON.parse(existing.connector_ids_json) : []) as unknown;
     if (!Array.isArray(connectorIds) || connectorIds.length > 12 || connectorIds.some((id) => typeof id !== 'string' || !/^[a-z0-9_]{1,64}$/.test(id))) throw new RoutineRefusal(400, 'invalid connector selections');
-    if (needsConnector && !connectorIds.length) throw new StudioConnectorRuntimeError('CONNECTOR_NOT_GRANTED');
-    if (connectorIds.length) {
+    // A connector-only template needs a selection whenever the routine can run.
+    if (needsConnector && !connectorIds.length && enabled) throw new StudioConnectorRuntimeError('CONNECTOR_NOT_GRANTED');
+    const previous = new Set(existing ? JSON.parse(existing.connector_ids_json) as string[] : []);
+    const selectionChanged = !existing || connectorIds.length !== previous.size || connectorIds.some((id) => !previous.has(id as string));
+    // Re-checked only when the selection changes or the routine is created/enabled; clearing never needs a connection.
+    if (connectorIds.length && (selectionChanged || enabling)) {
       const actor = ownerUsable(owner);
       if (!actor || !input.connectors) throw new StudioConnectorRuntimeError('CONNECTOR_NOT_GRANTED');
-      input.connectors.capture(actor, connectorIds);
+      input.connectors.capture(actor, connectorIds as string[]);
     }
+    // Account MCP servers (#62, S60) are configurable in Settings; run-time use opens in S61.
+    if (!empty(context.mcpServerIds)) throw new RoutineRefusal(403, STUDIO_MCP_NOT_IN_RUNS_REASON, { capability: 'mcp', reason: STUDIO_MCP_NOT_IN_RUNS_REASON });
     if (Object.keys(context).some((key) => !['skillIds', 'pluginIds', 'mcpServerIds', 'connectorIds', 'workspaceScope'].includes(key))
-      || !empty(context.pluginIds) || !empty(context.mcpServerIds) || !empty(context.workspaceScope))
-      throw new RoutineRefusal(403, 'plugins, MCP servers and workspace scopes are not available for routines');
+      || !empty(context.pluginIds) || !empty(context.workspaceScope))
+      throw new RoutineRefusal(403, 'plugins and workspace scopes are not available for routines');
     // The standard form sends the primary skill both as skillId and inside context.skillIds.
     const listed = body.context || body.skillId !== undefined ? context.skillIds ?? [] : existing ? JSON.parse(existing.skill_ids_json) : [];
     if (body.skillId !== undefined && body.skillId !== null && typeof body.skillId !== 'string') throw new RoutineRefusal(400, 'invalid skills');
     const skillIds = Array.isArray(listed) ? [...new Set([...(body.skillId ? [body.skillId] : []), ...listed])] : listed;
     if (!Array.isArray(skillIds) || skillIds.length > 12 || skillIds.some((id) => typeof id !== 'string' || !id || id.length > 256)) throw new RoutineRefusal(400, 'invalid skills');
-    if (body.enabled !== undefined && typeof body.enabled !== 'boolean') throw new RoutineRefusal(400, 'invalid enabled flag');
     const source: Source = selectedSource ?? existing?.execution_source ?? 'personal_subscription';
     return { name: body.name?.trim() ?? existing!.name, prompt: body.prompt ?? existing!.prompt, schedule, target, skillIds, connectorIds, source,
-      enabled: body.enabled ?? (existing ? existing.enabled === 1 : true), templateId };
+      enabled, templateId };
   };
   const handle = (operation: (req: Request, res: Response, owner: string) => unknown) => async (req: Request, res: Response) => {
     const owner = multiUserActorOf(res)?.accountId;
@@ -268,8 +288,9 @@ export function registerStudioRoutineRoutes(app: Express, input: {
       const status = (error as { status?: unknown } | null)?.status;
       if (error instanceof StudioConnectorRuntimeError) return sendApiError(res, error.status, error.code, 'routine connectors unavailable');
       if ((error instanceof RoutineRefusal || error instanceof AutomationRefusal) && typeof status === 'number') {
+        const details = error instanceof RoutineRefusal && error.details ? { details: error.details } : {};
         return sendApiError(res, status, status === 404 ? 'NOT_FOUND' : status === 403 ? 'MULTIUSER_CAPABILITY_UNAVAILABLE'
-          : status === 409 ? 'CONFLICT' : 'BAD_REQUEST', (error as Error).message);
+          : status === 409 ? 'CONFLICT' : 'BAD_REQUEST', (error as Error).message, details);
       }
       sendApiError(res, 400, 'BAD_REQUEST', 'routine request refused');
     }

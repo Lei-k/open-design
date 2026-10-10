@@ -396,6 +396,20 @@ describe('route classification covers the real inventory', () => {
       }),
       'auth GET /api/connectors/oauth/callback/:connectorId',
       'auth GET /api/multiuser/connectors/oauth/callback/:connectorId',
+      // S60 (#62, decision 2A): account remote MCP servers; the standard paths are aliases, stdio stays refused.
+      ...['GET ', 'PUT '].flatMap((route) => [`actor-scoped ${route}/api/mcp/servers`, `actor-scoped ${route}/api/multiuser/mcp/servers`]),
+      'actor-scoped POST /api/multiuser/mcp/servers',
+      'actor-scoped PATCH /api/multiuser/mcp/servers/:serverId',
+      'actor-scoped DELETE /api/multiuser/mcp/servers/:serverId',
+      'actor-scoped POST /api/multiuser/mcp/servers/:serverId/test',
+      ...['POST /start', 'POST /disconnect', 'GET /status'].flatMap((route) => {
+        const [method, suffix] = route.split(' ');
+        return [`actor-scoped ${method} /api/mcp/oauth${suffix}`, `actor-scoped ${method} /api/multiuser/mcp/oauth${suffix}`];
+      }),
+      'actor-scoped POST /api/multiuser/mcp/oauth/refresh',
+      'actor-scoped POST /api/multiuser/mcp/oauth/cancel',
+      'auth GET /api/mcp/oauth/callback',
+      'auth GET /api/multiuser/mcp/oauth/callback',
       'owner-scoped-project PUT /api/multiuser/projects/:id/shares',
       'owner-scoped-project DELETE /api/multiuser/projects/:id/shares/:accountId',
       'owner-scoped-project GET /api/multiuser/projects/:id/access',
@@ -862,7 +876,8 @@ describe('fail-closed classification', () => {
       { method: 'POST', path: '/api/memory/connectors/extract', body: {} },
       { method: 'POST', path: '/api/import/folder', body: { baseDir: '/' } },
       { method: 'POST', path: '/api/dialog/open-folder', body: {} },
-      { method: 'GET', path: '/api/mcp/servers' },
+      { method: 'GET', path: '/api/mcp/install-info' },
+      { method: 'POST', path: '/api/mcp/install/codex', body: {} },
       { method: 'GET', path: '/api/connectors/logos/github' },
       { method: 'POST', path: '/api/plugins/install', body: {} },
       { method: 'POST', path: '/api/chat', body: {} },

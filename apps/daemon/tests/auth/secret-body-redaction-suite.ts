@@ -17,13 +17,19 @@ import {
 const MARK = 'SNTL';
 const SENTINEL = `${MARK}_secret_key_material_0123456789`;
 
-interface Endpoint { name: string; path: string; as: 'admin' | 'user'; valid: Record<string, unknown> }
+interface Endpoint { name: string; path: string; as: 'admin' | 'user'; valid: Record<string, unknown>; method?: 'PUT' | 'POST' }
+const MCP_REMOTE = { transport: 'http', url: 'https://mcp.example.com/mcp', enabled: true };
 const ENDPOINTS: Endpoint[] = [
   { name: 'company Composio key (standard alias)', path: '/api/connectors/composio/config', as: 'admin', valid: { revision: 0, apiKey: SENTINEL } },
   { name: 'company Composio key', path: '/api/multiuser/connectors/company-key', as: 'admin', valid: { revision: 0, apiKey: SENTINEL } },
   { name: 'company OpenAI key', path: '/api/admin/pool/openai', as: 'admin', valid: { revision: 0, enabled: true, model: 'gpt-5', capacity: 1, apiKey: SENTINEL } },
   { name: 'account OpenAI key', path: '/api/multiuser/settings/provider-keys/openai', as: 'user', valid: { revision: 0, apiKey: SENTINEL } },
   { name: 'account Tavily key', path: '/api/multiuser/settings/provider-keys/tavily', as: 'user', valid: { revision: 0, apiKey: SENTINEL } },
+  // S60 (#62): account remote MCP header values (import body and create body).
+  { name: 'account MCP import (standard alias)', path: '/api/mcp/servers', as: 'user', valid: { servers: [{ id: 'redaction', ...MCP_REMOTE, headers: { Authorization: SENTINEL } }] } },
+  { name: 'account MCP import', path: '/api/multiuser/mcp/servers', as: 'user', valid: { servers: [{ id: 'redaction', ...MCP_REMOTE, headers: { Authorization: SENTINEL } }] } },
+  { name: 'account MCP server create', path: '/api/multiuser/mcp/servers', method: 'POST', as: 'user',
+    valid: { id: 'redaction', url: 'https://mcp.example.com/mcp', headers: { Authorization: SENTINEL } } },
 ];
 
 /** Bodies that must each fail without any body-derived text escaping. */
@@ -40,6 +46,20 @@ function hostileBodies(endpoint: Endpoint): Array<{ label: string; rawBody: stri
     { label: 'wrong field type', rawBody: JSON.stringify({ ...endpoint.valid, revision: SENTINEL }), contentType: 'application/json' },
     // Under the route's byte bound but over every key-length bound: refused by validation, not by size.
     { label: 'invalid key value', rawBody: JSON.stringify({ ...endpoint.valid, apiKey: `${SENTINEL}${'y'.repeat(5000)}` }), contentType: 'application/json' },
+    ...(endpoint.path.includes('/mcp/') ? mcpHostileBodies(endpoint) : []),
+  ];
+}
+
+/** S60: header values that fail field validation, and a stdio entry carrying the secret in its env. */
+function mcpHostileBodies(endpoint: Endpoint): Array<{ label: string; rawBody: string; contentType: string }> {
+  const wrap = (server: Record<string, unknown>) => JSON.stringify(endpoint.method === 'POST' ? server : { servers: [server] });
+  const base = endpoint.method === 'POST' ? { id: 'redaction', url: 'https://mcp.example.com/mcp' } : { id: 'redaction', ...MCP_REMOTE };
+  return [
+    { label: 'over-long header value', rawBody: wrap({ ...base, headers: { Authorization: `${SENTINEL}${'z'.repeat(5000)}` } }), contentType: 'application/json' },
+    { label: 'header value with CRLF', rawBody: wrap({ ...base, headers: { Authorization: `${SENTINEL}\r\nX-Injected: 1` } }), contentType: 'application/json' },
+    { label: 'header name carrying the secret', rawBody: wrap({ ...base, headers: { [`${SENTINEL} bad`]: 'value' } }), contentType: 'application/json' },
+    { label: 'stdio entry with the secret in env', rawBody: wrap({ id: 'redaction', transport: 'stdio', command: 'npx', env: { TOKEN: SENTINEL } }), contentType: 'application/json' },
+    { label: 'secret in a refused URL', rawBody: wrap({ ...base, url: `http://169.254.169.254/?k=${SENTINEL}` }), contentType: 'application/json' },
   ];
 }
 
@@ -97,7 +117,7 @@ export function secretBodyRedactionSuite(nodeEnv: 'development' | 'production'):
       const principal = endpoint.as === 'admin' ? admin : user;
       const problems: string[] = [];
       for (const body of hostileBodies(endpoint)) {
-        const res = await daemon.request({ method: 'PUT', path: endpoint.path, cookie: principal.cookie, rawBody: body.rawBody,
+        const res = await daemon.request({ method: endpoint.method ?? 'PUT', path: endpoint.path, cookie: principal.cookie, rawBody: body.rawBody,
           headers: { origin: MU_TEST_ORIGIN, 'content-type': body.contentType } });
         if (res.text.includes(MARK)) problems.push(`${body.label}: response echoes the body: ${res.text.slice(0, 200)}`);
         if (res.status < 400 || res.status >= 500) problems.push(`${body.label}: status ${res.status}`);

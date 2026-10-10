@@ -20,11 +20,12 @@ import type { AppConfig } from '../types';
 import { useStudioCapabilities, StudioUnavailable } from './studio-capabilities';
 import { StudioProviderKeys } from './StudioProviderKeys';
 import { StudioConnectors } from './StudioConnectors';
+import { StudioMcpServers } from './StudioMcpServers';
 
 /** Account sections, plus the desktop sections whose lane is still open: those
  * stay in the navigation with the server's reason instead of disappearing. */
-type StudioSettingsSection = 'agentAccounts' | 'skills' | 'general' | 'instructions' | 'memory' | 'media' | 'connectors' | 'integrations' | 'privacy' | 'about';
-const PENDING: Partial<Record<StudioSettingsSection, StudioParityLaneId>> = { media: 'generation', integrations: 'settings' };
+type StudioSettingsSection = 'agentAccounts' | 'skills' | 'general' | 'instructions' | 'memory' | 'media' | 'connectors' | 'mcpClient' | 'integrations' | 'privacy' | 'about';
+const PENDING: Partial<Record<StudioSettingsSection, StudioParityLaneId>> = { media: 'generation' };
 
 function studioSection(section: SettingsSection): StudioSettingsSection {
   switch (section) {
@@ -32,7 +33,8 @@ function studioSection(section: SettingsSection): StudioSettingsSection {
     case 'designSystems': return 'skills';
     case 'instructions': case 'memory': case 'media': case 'privacy': case 'about': return section;
     case 'composio': return 'connectors';
-    case 'integrations': case 'mcpClient': return 'integrations';
+    case 'mcpClient': return 'mcpClient';
+    case 'integrations': return 'integrations';
     default: return 'general';
   }
 }
@@ -84,6 +86,7 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
     memory: { title: t('settings.memory'), subtitle: t('settings.memoryHint') },
     media: { title: t('settings.mediaProviders'), subtitle: 'Image / video / audio' },
     connectors: { title: t('studio.connectors.navTitle'), subtitle: t('studio.connectors.navHint') },
+    mcpClient: { title: t('studio.mcp.navTitle'), subtitle: t('studio.mcp.navHint') },
     integrations: { title: t('settings.mcpServerTitle'), subtitle: t('settings.mcpServerHint') },
     privacy: { title: t('settings.privacy'), subtitle: t('settings.privacyHint') },
     about: { title: t('settings.about'), subtitle: t('settings.aboutHint') },
@@ -108,6 +111,7 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
       {item('memory', 'brain')}
       {item('media', 'image')}
       {item('connectors', 'link')}
+      {item('mcpClient', 'puzzle')}
       {item('integrations', 'puzzle')}
       {item('privacy', 'eye')}
       {item('about', 'settings')}
@@ -166,6 +170,13 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
     {/* #62 S58: the company Composio key (administrators) and each account's own connections. */}
     {section === 'connectors' && (studio.available('settings') && studio.capabilities?.connectors
       ? <StudioConnectors /> : <StudioUnavailable lane="settings" />)}
+    {/* #62 S60 (decision 2A): each account's own remote MCP servers; stdio is not offered. */}
+    {section === 'mcpClient' && (studio.available('settings') && studio.capabilities?.mcpServers
+      ? <StudioMcpServers /> : <StudioUnavailable lane="settings" />)}
+    {/* Installing OpenDesign's own stdio MCP server into a coding agent writes host configuration (#62, S60). */}
+    {section === 'integrations' && <section className="settings-section" data-testid="studio-mcp-install-unavailable">
+      <p role="note">{t('studio.mcp.installUnavailable')}</p>
+    </section>}
     {section === 'about' && <StudioAbout loaded={appVersionInfo ?? null} />}
   </SettingsFrame>;
 }

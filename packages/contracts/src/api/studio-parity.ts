@@ -57,6 +57,12 @@ export interface StudioRuntimeCapabilities {
    * means unavailable. Connections are not usable in runs yet.
    */
   connectors?: boolean;
+  /**
+   * Account remote MCP servers (#62, S60): the actor can add, test, authorize
+   * and remove its own remote (HTTP/SSE) MCP servers. stdio is never available
+   * on multi-user Web. Absent means unavailable. Not usable in runs yet.
+   */
+  mcpServers?: boolean;
 }
 
 export interface StudioRouteParity {
@@ -154,9 +160,11 @@ export function parseStudioRuntimeCapabilities(value: unknown): StudioRuntimeCap
   if (studio.renderedExports !== undefined && typeof studio.renderedExports !== 'boolean') return null;
   if (studio.researchSearch !== undefined && typeof studio.researchSearch !== 'boolean') return null;
   if (studio.connectors !== undefined && typeof studio.connectors !== 'boolean') return null;
+  if (studio.mcpServers !== undefined && typeof studio.mcpServers !== 'boolean') return null;
   return { schemaVersion: 1, shell: studio.shell!, features,
     ...(choices !== undefined ? { executionSources: choices.map((choice) => ({ ...choice })) } : {}),
     ...(studio.renderedExports !== undefined ? { renderedExports: studio.renderedExports } : {}),
     ...(studio.researchSearch !== undefined ? { researchSearch: studio.researchSearch } : {}),
-    ...(studio.connectors !== undefined ? { connectors: studio.connectors } : {}) };
+    ...(studio.connectors !== undefined ? { connectors: studio.connectors } : {}),
+    ...(studio.mcpServers !== undefined ? { mcpServers: studio.mcpServers } : {}) };
 }

@@ -59,6 +59,12 @@ function isMultiUserEnvironmentSwitch(name: string): boolean {
   return normalized.includes('MULTIUSER') || normalized === 'ODAUTHMODE';
 }
 
+export interface StudioMcpOutboundTestInjection {
+  resolve?: (hostname: string) => Promise<string[]>;
+  allowAddress?: (address: string) => boolean;
+  timeoutMs?: number;
+}
+
 export interface MultiUserAuthServiceOverrides {
   /** Test-only KDF cost override; production keeps the auth-service default. */
   passwordParams?: ScryptParams;
@@ -84,6 +90,12 @@ export interface MultiUserModeOptions {
   testTavilyFetch?: typeof fetch;
   /** Programmatic Composio fixture for account connectors (#62, S58); deployment config cannot supply it. */
   testComposioFetch?: typeof fetch;
+  /**
+   * Programmatic outbound-guard injection for account remote MCP servers (#62,
+   * S60): a resolver and exact extra addresses (a loopback fixture). Direct
+   * startServer test harness only; there is no environment or config path.
+   */
+  testMcpOutbound?: StudioMcpOutboundTestInjection;
   /** Test harness clock for pool accounting. */
   poolClock?: () => number;
   /**
@@ -161,6 +173,7 @@ export interface ResolvedMultiUserMode {
   testCompanyOpenAIFetch?: typeof fetch;
   testTavilyFetch?: typeof fetch;
   testComposioFetch?: typeof fetch;
+  testMcpOutbound?: StudioMcpOutboundTestInjection;
   poolClock?: () => number;
   /** How personal app-server children start; absent means the feature is off. */
   personalCodex?: ResolvedPersonalCodex;
@@ -254,6 +267,7 @@ export function resolveMultiUserMode(input: {
     ...(options.testCompanyOpenAIFetch ? { testCompanyOpenAIFetch: options.testCompanyOpenAIFetch } : {}),
     ...(options.testTavilyFetch ? { testTavilyFetch: options.testTavilyFetch } : {}),
     ...(options.testComposioFetch ? { testComposioFetch: options.testComposioFetch } : {}),
+    ...(options.testMcpOutbound ? { testMcpOutbound: { ...options.testMcpOutbound } } : {}),
     ...(options.poolClock ? { poolClock: options.poolClock } : {}),
     ...(personalCodex ? { personalCodex } : {}),
     ...(options.studioRenderer ? { studioRenderer: resolveStudioRenderer(options.studioRenderer) } : {}),

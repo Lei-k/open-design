@@ -30,3 +30,19 @@ export const CONNECTOR_TOOL_DESCRIPTORS = [
     },
   },
 ];
+
+const STUDIO_RUN_NOTE = 'Available only inside this Studio run, for the apps its owner selected; there is no command-line fallback.';
+const STUDIO_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  connectors_list: `List the connected apps selected for this run and their available read-only tools. Use \`{ "useCase": "personal_daily_digest" }\` for curated daily-digest tools. ${STUDIO_RUN_NOTE}`,
+  connectors_execute: `Execute an allowed read-only tool of a connected app selected for this run. ${STUDIO_RUN_NOTE}`,
+};
+
+/**
+ * Studio-run variant (S60): the same tool names and input schemas, but the
+ * descriptions do not point at the desktop `"$OD_BIN" tools connectors …`
+ * command, which a Studio run (native personal Codex dynamic tools or a
+ * Responses function call) cannot reach. The desktop array above is unchanged.
+ */
+export const STUDIO_CONNECTOR_TOOL_DESCRIPTORS: typeof CONNECTOR_TOOL_DESCRIPTORS = CONNECTOR_TOOL_DESCRIPTORS.map((tool) => ({
+  ...tool, description: STUDIO_DESCRIPTIONS[tool.name] ?? STUDIO_RUN_NOTE,
+}));

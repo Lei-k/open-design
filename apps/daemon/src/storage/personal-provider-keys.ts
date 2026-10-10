@@ -51,6 +51,41 @@ function masterKey(dataRoot: string, configured: string | undefined): Buffer {
 }
 
 /**
+ * Account-private secrets other than provider keys (S60: remote MCP header
+ * values, OAuth tokens and pending authorizations), sealed exactly like the
+ * provider keys below: the same deployment master key, an HKDF-SHA256 subkey
+ * per account under this sealer's own label, and AES-256-GCM authenticated
+ * against the account and the caller's purpose. Ciphertext copied to another
+ * account, label or purpose fails to open.
+ */
+export class AccountSecretSealer {
+  private readonly master: Buffer;
+  constructor(dataRoot: string, private readonly label: string, configuredMasterKey = process.env.OD_CREDENTIAL_MASTER_KEY) {
+    if (!/^open-design-[a-z0-9-]+-v\d+$/.test(label) || label === AAD) throw new Error('invalid account secret label');
+    this.master = masterKey(dataRoot, configuredMasterKey);
+  }
+  private subkey(accountId: string): Buffer {
+    return Buffer.from(hkdfSync('sha256', this.master, Buffer.from(accountId, 'utf8'), Buffer.from(this.label), 32));
+  }
+  seal(accountId: string, purpose: string, plaintext: string): string {
+    const iv = randomBytes(12); const cipher = createCipheriv('aes-256-gcm', this.subkey(accountId), iv);
+    cipher.setAAD(Buffer.from(`${this.label}:${purpose}:${accountId}`));
+    const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+    return Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64');
+  }
+  /** Null when absent or not openable for this account and purpose. */
+  open(accountId: string, purpose: string, sealed: string | null | undefined): string | null {
+    if (!sealed) return null;
+    try {
+      const bytes = Buffer.from(sealed, 'base64');
+      const decipher = createDecipheriv('aes-256-gcm', this.subkey(accountId), bytes.subarray(0, 12));
+      decipher.setAAD(Buffer.from(`${this.label}:${purpose}:${accountId}`)); decipher.setAuthTag(bytes.subarray(12, 28));
+      return Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString('utf8');
+    } catch { return null; }
+  }
+}
+
+/**
  * Account-private provider API keys (#62/#63). Each account's ciphertext is
  * sealed with a key derived from the deployment master key and the account id,
  * and authenticated against the account and provider, so a row copied to

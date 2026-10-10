@@ -1,5 +1,5 @@
-import { CONNECTOR_TOOL_DESCRIPTORS } from '../connectors/tool-descriptors.js';
-import { StudioConnectorRuntimeError, type StudioConnectorRuntime } from '../connectors/studio-runtime.js';
+import { STUDIO_CONNECTOR_TOOL_DESCRIPTORS } from '../connectors/tool-descriptors.js';
+import { STUDIO_RUN_CONNECTOR_GRANT_MAX_MS, StudioConnectorRuntimeError, type StudioConnectorRuntime } from '../connectors/studio-runtime.js';
 import { toolTokenRegistry, type StudioConnectorGrant, type ToolTokenGrant } from '../tool-tokens.js';
 import { createStudioLiveArtifactTools, STUDIO_LIVE_ARTIFACT_TOOLS } from '../live-artifacts/studio-tools.js';
 import type { StudioLiveArtifacts } from '../storage/studio-live-artifacts.js';
@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
-import { workspaceToolsUnavailable, API_ERROR_CODES, STUDIO_RESEARCH_MAX_SOURCES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
+import { workspaceToolsUnavailable, API_ERROR_CODES, STUDIO_MCP_NOT_IN_RUNS_REASON, STUDIO_RESEARCH_MAX_SOURCES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
 import { PersonalRunEvents } from '../runtimes/personal-run-events.js';
 import { formatProjectAttachmentHint, normalizeCommentAttachments, renderCommentAttachmentHint, resolveSafeProjectAttachments } from '../runtimes/chat-prompt-inputs.js';
 import { renderRunContextPrompt } from '../runtimes/chat-run-context.js';
@@ -129,7 +129,7 @@ type PersonalRunFields = {
   pluginIds: string[];
   connectorIds: string[];
 };
-type FieldRefusal = { status: number; code: ApiErrorCode; message: string };
+type FieldRefusal = { status: number; code: ApiErrorCode; message: string; details?: { capability: string; reason: string } };
 /** A project-relative path: no root, drive, backslash, NUL, empty, `.` or `..` segment. */
 const safeProjectRelative = (value: string) => value.length > 0 && value.length <= 512 && !value.includes('\0') && !value.startsWith('/')
   && !value.includes('\\') && !/^[A-Za-z]:/.test(value) && value.split('/').every((part) => part !== '..' && part !== '.' && part !== '');
@@ -205,9 +205,13 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
       && record.pluginIds.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 256))) return refuse(400, 'BAD_REQUEST', 'invalid plugin selection');
     if (record.connectorIds !== undefined && !(Array.isArray(record.connectorIds) && record.connectorIds.length <= 12
       && record.connectorIds.every((id) => typeof id === 'string' && /^[a-z0-9_]{1,64}$/.test(id)))) return refuse(400, 'BAD_REQUEST', 'invalid connector selections');
-    if (Object.keys(record).some((key) => ![...selections, 'skillIds', 'pluginIds', 'workspaceItems'].includes(key))
-      || record.mcpServerIds !== undefined && !(Array.isArray(record.mcpServerIds) && record.mcpServerIds.length === 0)) {
+    if (Object.keys(record).some((key) => ![...selections, 'skillIds', 'pluginIds', 'workspaceItems'].includes(key))) {
       return refuse(403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'not available for personal Studio runs: context selections');
+    }
+    // Account MCP servers (#62, S60) are configurable in Settings; run-time use opens in S61.
+    if (record.mcpServerIds !== undefined && !(Array.isArray(record.mcpServerIds) && record.mcpServerIds.length === 0)) {
+      return { status: 403, code: 'MULTIUSER_CAPABILITY_UNAVAILABLE', message: STUDIO_MCP_NOT_IN_RUNS_REASON,
+        details: { capability: 'mcp', reason: STUDIO_MCP_NOT_IN_RUNS_REASON } };
     }
     const items = record.workspaceItems ?? [];
     if (!Array.isArray(items) || items.length > 20) return refuse(400, 'BAD_REQUEST', 'invalid run context');
@@ -594,20 +598,26 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     input.connectors.assert(bound);
     let grant = connectorGrants.get(run.id);
     if (!grant) {
-      grant = toolTokenRegistry.mint({ runId: run.id, projectId: run.project_id, studioConnectors: bound,
+      // Lives with the run (S60 A2): `finish` and every cancel request revoke it; the
+      // ceiling only bounds a run that never settles.
+      grant = toolTokenRegistry.mint({ runId: run.id, projectId: run.project_id, studioConnectors: bound, ttlMs: STUDIO_RUN_CONNECTOR_GRANT_MAX_MS,
         allowedEndpoints: ['/api/tools/connectors/list', '/api/tools/connectors/execute'], allowedOperations: ['connectors:list', 'connectors:execute'] });
       connectorGrants.set(run.id, grant);
     }
-    const token = grant.token;
-    const tools = input.connectors.tools(grant);
-    return { execute: async (name: string, args: Record<string, unknown>) => {
+    // The worker's own authority joins the token, run and account checks the
+    // runtime makes before every provider request and after every await (S60 A1).
+    return input.connectors.tools(grant, () => {
       if (!authorized()) throw new StudioConnectorRuntimeError('MULTIUSER_CONNECTOR_AUTHORITY_CHANGED', 409);
-      const validation = toolTokenRegistry.validate(token, { endpoint: name === 'connectors_list' ? '/api/tools/connectors/list' : '/api/tools/connectors/execute',
-        operation: name === 'connectors_list' ? 'connectors:list' : 'connectors:execute' });
-      if (!validation.ok) throw new StudioConnectorRuntimeError(validation.code, validation.code.endsWith('DENIED') ? 403 : 401);
-      return tools.execute(name, args);
-    } };
+    });
   };
+  /** A cancel request or terminal state: the run's grant dies and its in-flight provider work is aborted. */
+  const revokeConnectorGrant = (id: string) => {
+    const grant = connectorGrants.get(id);
+    if (grant) { toolTokenRegistry.revokeToken(grant.token); connectorGrants.delete(id); }
+    input.connectors?.abortRun(id);
+  };
+  /** Mark a run as being cancelled; from this instant it can make no further connector call. */
+  const markCancelPending = (id: string) => { cancelPending.add(id); revokeConnectorGrant(id); };
   const companyOpenAI = new CompanyOpenAIStore(db, dataRoot);
   db.exec(`CREATE TABLE IF NOT EXISTS multiuser_company_sessions (
     conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
@@ -830,6 +840,13 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     answered_by TEXT REFERENCES multiuser_runs(id) ON DELETE SET NULL
   )`);
   const row = (id: string) => db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id) as RunRow | undefined;
+  // Run liveness at the connector provider boundary (S60 A1): a cancelled or settled run
+  // makes no further provider call, even through a token that has not been revoked yet.
+  input.connectors?.setRunLiveness((id) => {
+    if (storesClosed || cancelPending.has(id)) return false;
+    const current = row(id);
+    return !current || current.status === 'active' || current.status === 'queued';
+  });
   const actor = (res: Response) => multiUserActorOf(res)?.accountId ?? '';
   const owned = (req: Request, res: Response): RunRow | null => {
     const id = String(req.params.id ?? '');
@@ -971,8 +988,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     settleWaiters.set(id, [...(settleWaiters.get(id) ?? []), done]);
   };
   const finish = (id: string, status: 'succeeded' | 'failed' | 'canceled', output?: unknown) => {
-    const grant = connectorGrants.get(id);
-    if (grant) { toolTokenRegistry.revokeToken(grant.token); connectorGrants.delete(id); }
+    revokeConnectorGrant(id);
     if (storesClosed) return;
     const existing = row(id);
     if (!existing || (existing.status !== 'active' && existing.status !== 'queued')) return;
@@ -1384,7 +1400,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                     dynamicTools: [
                       ...(liveArtifacts ? STUDIO_LIVE_ARTIFACT_TOOLS.map(({ properties, required, ...tool }) => ({ ...tool,
                         inputSchema: { type: 'object', properties, required: [...required], additionalProperties: false } })) : []),
-                      ...(connectorTools ? CONNECTOR_TOOL_DESCRIPTORS : [])],
+                      ...(connectorTools ? STUDIO_CONNECTOR_TOOL_DESCRIPTORS : [])],
                     onDynamicToolCall: (name: string, args: Record<string, unknown>) => name.startsWith('connectors_')
                       ? connectorTools!.execute(name, args) : liveArtifacts!.execute(name, args) } : {}),
                   ...(isStudioCodexModel(request?.model) ? { model: request.model } : {}),
@@ -1495,7 +1511,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         sourceInvalidated.add(run.id);
         const child = children.get(run.id);
         if (child && running(child)) {
-          cancelPending.add(run.id);
+          markCancelPending(run.id);
           exits.push(new Promise<void>((resolve) => child.once('close', () => resolve())));
           child.kill('SIGTERM');
         } else finish(run.id, 'canceled', { reason: 'MULTIUSER_PERSONAL_UNAVAILABLE' });
@@ -1556,7 +1572,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         suspendDispatch = true;
         try { for (const run of pending) {
           const child = children.get(run.id);
-          if (child && running(child)) { cancelPending.add(run.id); child.kill('SIGTERM'); }
+          if (child && running(child)) { markCancelPending(run.id); child.kill('SIGTERM'); }
           else finish(run.id, 'canceled', { reason: 'MULTIUSER_PROVIDER_KEY_MISSING' });
         } } finally { suspendDispatch = false; }
         dispatch();
@@ -1579,7 +1595,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         suspendDispatch = true;
         try { for (const run of pending) if (isOpenAI(run)) {
           const child = children.get(run.id);
-          if (child && running(child)) { cancelPending.add(run.id); child.kill('SIGTERM'); }
+          if (child && running(child)) { markCancelPending(run.id); child.kill('SIGTERM'); }
           else finish(run.id, 'failed', { reason: 'MULTIUSER_PROVIDER_DISABLED' });
         } } finally { suspendDispatch = false; }
       }
@@ -1718,7 +1734,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       return sendApiError(res, 404, 'NOT_FOUND', 'not found');
     }
     const fields = parsePersonalRunFields(inputBody, studioMessageIdPrefix(owner));
-    if ('code' in fields) return sendApiError(res, fields.status, fields.code, fields.message);
+    if ('code' in fields) return sendApiError(res, fields.status, fields.code, fields.message, fields.details ? { details: fields.details } : {});
     if (!personal?.enabled) return sendApiError(res, 403, 'MULTIUSER_PERSONAL_DISABLED', 'personal subscriptions are not enabled on this server');
     // Media projects generate through OpenAI functions; the sandboxed personal Codex lane has none (#63).
     const projectKind = (getProject(db, target.projectId)?.metadata as { kind?: unknown } | null | undefined)?.kind;
@@ -1912,7 +1928,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       return sendApiError(res, 404, 'NOT_FOUND', 'not found');
     }
     const fields = parsePersonalRunFields({ ...inputBody, agentId: 'codex', executionSource: 'personal_subscription' }, studioMessageIdPrefix(owner));
-    if ('code' in fields) return sendApiError(res, fields.status, fields.code, fields.message);
+    if ('code' in fields) return sendApiError(res, fields.status, fields.code, fields.message, fields.details ? { details: fields.details } : {});
     // The company model is admin-owned; a per-turn choice applies only to personal Codex.
     if (fields.model || fields.reasoning) return sendApiError(res, 403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'not available for OpenAI runs: model, reasoning');
     const replay = requestedRun(owner, target.conversationId, fields.clientRequestId);
@@ -2181,7 +2197,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (run.status === 'active') {
       const child = children.get(run.id);
       if (child && running(child)) {
-        cancelPending.add(run.id);
+        markCancelPending(run.id);
         whenSettled(run.id, () => res.json(body(row(run.id)!)));
         // A child that closes without settling its run (no worker left to
         // write the terminal row) is canceled here, which answers the waiter.
@@ -2298,7 +2314,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       try {
         for (const run of active) {
           const child = children.get(run.id);
-          if (child && running(child)) { cancelPending.add(run.id); child.kill('SIGTERM'); }
+          if (child && running(child)) { markCancelPending(run.id); child.kill('SIGTERM'); }
           else finish(run.id, 'canceled');
         }
       } finally { suspendDispatch = false; }
@@ -2329,7 +2345,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           for (const run of rows) {
             const child = children.get(run.id);
             if (!child || !running(child)) { finish(run.id, 'canceled'); continue; }
-            cancelPending.add(run.id);
+            markCancelPending(run.id);
             exits.push(new Promise<void>((resolve) => {
               const deadline = setTimeout(() => { child.kill('SIGKILL'); }, 2_000);
               deadline.unref();

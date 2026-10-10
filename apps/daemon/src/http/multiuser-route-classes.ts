@@ -1,5 +1,6 @@
 import type { ProjectShareRole } from '../storage/project-access.js';
 import { MULTIUSER_SHELL_PATHS, MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE, MULTIUSER_AGENT_ICON_ROUTE, MULTIUSER_EDITOR_ICON_ROUTE, publicMultiUserFile } from './multiuser-static.js';
+import { STUDIO_MCP_INSTALL_UNAVAILABLE_REASON } from '@open-design/contracts';
 
 // Multi-user route classification registry (issue #4) — declarative data.
 //
@@ -45,7 +46,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'studio-memory-rules-suggest' | 'studio-memory-extract' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'catalog-share' | 'provider-key' | 'composio-config' | 'connector-prepare' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'studio-plugin-apply' | 'studio-live-artifact' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'studio-memory-rules-suggest' | 'studio-memory-extract' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'catalog-share' | 'provider-key' | 'composio-config' | 'connector-prepare' | 'studio-mcp-server' | 'studio-mcp-import' | 'studio-mcp-oauth' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'studio-plugin-apply' | 'studio-live-artifact' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -168,6 +169,8 @@ const R_TOOL_TOKENS = 'agent tool endpoint authorized by run-scoped tool tokens,
 const R_HOST_FS = 'host filesystem / desktop integration; not an actor resource';
 const R_CREDENTIALS = 'connector/MCP/OAuth/provider credentials are host-level secrets; admin/pool surfaces are #10/#11';
 /** S58 (#62): the connector control plane is open; run-time use opens in S59. */
+const R_MCP_OWN = 'the actor\'s own remote MCP servers only (header values write-only); another account\'s server is the same 404; no admin bypass';
+const R_MCP_OAUTH = 'OAuth for the actor\'s own remote MCP server: single-use state bound to account, session and server; tokens sealed per account';
 const R_CONNECTORS_NOT_IN_RUNS = 'connector ingestion and memory extraction have no admitted run grant (#62/#64)';
 const R_SHARED_CATALOG = 'shared catalog whose user-created entries are global across accounts (not actor-scoped yet)';
 const R_PLUGINS = 'plugin install/registry/snapshots are host-level and shared across accounts';
@@ -656,16 +659,6 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'POST /api/agents/:agentId/oauth-launch',
     'POST /api/agents/:agentId/companion/install',
     'GET /api/agents',
-    'GET /api/mcp/install-info',
-    'GET /api/mcp/install/codex/status',
-    'POST /api/mcp/install/codex',
-    'DELETE /api/mcp/install/codex',
-    'GET /api/mcp/servers',
-    'PUT /api/mcp/servers',
-    'POST /api/mcp/oauth/start',
-    'GET /api/mcp/oauth/callback',
-    'GET /api/mcp/oauth/status',
-    'POST /api/mcp/oauth/disconnect',
     'POST /api/xai/oauth/start',
     'POST /api/xai/oauth/complete',
     'GET /api/xai/auth/status',
@@ -827,6 +820,36 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
   ...group('auth', 'OAuth callback: no session at the gate; the handler binds identity from a single-use state and rechecks it',
     ['GET /api/multiuser/connectors/oauth/callback/:connectorId']),
   ...refused('connectors', 'connector logos are fetched from a third-party host; Studio shows initials instead', ['GET /api/connectors/logos/:slug']),
+  // Account remote MCP servers (#62, S60; owner decision 2A). Each account keeps its
+  // own remote (HTTP/SSE) servers; the host mcp-config.json, host token store and
+  // Codex install never run for a cookie actor. stdio is refused for everyone.
+  ...refused('mcp-stdio', STUDIO_MCP_INSTALL_UNAVAILABLE_REASON, [
+    'GET /api/mcp/install-info', 'GET /api/mcp/install/codex/status', 'POST /api/mcp/install/codex', 'DELETE /api/mcp/install/codex',
+  ]),
+  ...group('actor-scoped', R_MCP_OWN, ['GET /api/mcp/servers'], { rewriteTo: '/api/multiuser/mcp/servers' }),
+  ...group('actor-scoped', R_MCP_OWN, ['GET /api/multiuser/mcp/servers']),
+  ...group('actor-scoped', 'import of the desktop body: upserts the actor\'s remote servers; any stdio entry is refused',
+    ['PUT /api/mcp/servers'], { bodyPolicy: 'studio-mcp-import', maxBodyBytes: 256 * 1024, rewriteTo: '/api/multiuser/mcp/servers' }),
+  ...group('actor-scoped', 'import of the desktop body: upserts the actor\'s remote servers; any stdio entry is refused',
+    ['PUT /api/multiuser/mcp/servers'], { bodyPolicy: 'studio-mcp-import', maxBodyBytes: 256 * 1024 }),
+  ...group('actor-scoped', R_MCP_OWN, ['POST /api/multiuser/mcp/servers', 'PATCH /api/multiuser/mcp/servers/:serverId'],
+    { bodyPolicy: 'studio-mcp-server', maxBodyBytes: 128 * 1024 }),
+  ...group('actor-scoped', R_MCP_OWN, ['DELETE /api/multiuser/mcp/servers/:serverId']),
+  ...group('actor-scoped', 'connection test of the actor\'s own server through the SSRF-guarded outbound fetch',
+    ['POST /api/multiuser/mcp/servers/:serverId/test'], { bodyPolicy: 'empty', maxBodyBytes: 1024 }),
+  ...(['start', 'disconnect'] as const).flatMap((action) => [
+    ...group('actor-scoped', R_MCP_OAUTH, [`POST /api/mcp/oauth/${action}`], { bodyPolicy: 'studio-mcp-oauth', maxBodyBytes: 1024, rewriteTo: `/api/multiuser/mcp/oauth/${action}` }),
+    ...group('actor-scoped', R_MCP_OAUTH, [`POST /api/multiuser/mcp/oauth/${action}`], { bodyPolicy: 'studio-mcp-oauth', maxBodyBytes: 1024 }),
+  ]),
+  ...group('actor-scoped', R_MCP_OAUTH, ['POST /api/multiuser/mcp/oauth/refresh', 'POST /api/multiuser/mcp/oauth/cancel'],
+    { bodyPolicy: 'studio-mcp-oauth', maxBodyBytes: 1024 }),
+  ...group('actor-scoped', R_MCP_OAUTH, ['GET /api/mcp/oauth/status'], { rewriteTo: '/api/multiuser/mcp/oauth/status' }),
+  ...group('actor-scoped', R_MCP_OAUTH, ['GET /api/multiuser/mcp/oauth/status']),
+  // The OAuth return carries no session cookie: identity comes from the single-use server-side state.
+  ...group('auth', 'MCP OAuth callback: no session at the gate; the handler binds identity from a single-use state and rechecks it',
+    ['GET /api/mcp/oauth/callback'], { rewriteTo: '/api/multiuser/mcp/oauth/callback' }),
+  ...group('auth', 'MCP OAuth callback: no session at the gate; the handler binds identity from a single-use state and rechecks it',
+    ['GET /api/multiuser/mcp/oauth/callback']),
   // Actor preferences and manual memory (#62); host registrars never run.
   ...[
     ['GET /api/app-config', undefined],

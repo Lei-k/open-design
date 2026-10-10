@@ -35,7 +35,7 @@ beforeEach(() => {
   const app = Object.fromEntries(['get', 'post', 'patch', 'delete'].map((method) => [method,
     (url: string, handler: (req: Request, res: Response) => Promise<void>) => routes.set(`${method.toUpperCase()} ${url}`, handler),
   ])) as unknown as Express;
-  connectors = new StudioConnectorRuntime({ db, dataRoot: root, sessionCurrent: () => true });
+  connectors = new StudioConnectorRuntime({ db, dataRoot: root, auth, sessionCurrent: () => true });
   connectorSelections = [];
   service = registerStudioRoutineRoutes(app, { db, dataRoot: root, projectsRoot: path.join(root, 'projects'), connectors, runs: {
     async admitInternal(actor, request, allowed) {
@@ -139,4 +139,51 @@ it('S59 routine connector context persists, dispatches as owner and fails typed 
   await api('POST', '/:id/run', {}, 'A', id);
   await vi.advanceTimersByTimeAsync(1100);
   expect((await api('GET', '/:id/runs', {}, 'A', id)).body.runs[0]).toMatchObject({ status: 'failed', errorCode: 'CONNECTOR_NOT_GRANTED' });
+});
+
+it('S60 A4: a routine whose private template was deleted can still be edited and disabled, but not re-enabled', async () => {
+  const templates = new StudioAutomationTemplates(db);
+  const templateId = templates.apply('A', 'create', undefined, undefined, JSON.stringify({ title: 'Private brief', description: 'Private', purpose: 'Private purpose',
+    triggerKinds: ['manual', 'schedule'], sourceKinds: ['chat'], stages: [{ id: 'propose', kind: 'propose', title: 'Draft a proposal' }],
+    outputSinks: ['memory'], reviewPolicy: 'always', tokenCompression: 'balanced' }));
+  const made = await api('POST', '', { templateId, agentId: 'openai-byok', schedule: { kind: 'hourly', minute: 0, timezone: 'UTC' } });
+  expect(made.status).toBe(201);
+  const id = made.body.routine.id;
+  templates.apply('A', 'delete', templateId, JSON.stringify(templates.read('A', templateId)), undefined);
+  const renamed = await api('PATCH', '/:id', { name: 'Renamed after delete' }, 'A', id);
+  expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
+  expect(renamed.body.routine).toMatchObject({ name: 'Renamed after delete', templateId });
+  const disabled = await api('PATCH', '/:id', { enabled: false }, 'A', id);
+  expect(disabled.status).toBe(200);
+  expect(disabled.body.routine.enabled).toBe(false);
+  // Enabling (like dispatch) re-resolves the template.
+  expect((await api('PATCH', '/:id', { enabled: true }, 'A', id)).status).toBe(404);
+  // Another account still cannot address it.
+  expect((await api('PATCH', '/:id', { enabled: false }, 'B', id)).status).toBe(404);
+});
+
+it('S60 A3: connectors are re-checked only when they change or the routine is enabled; clearing is allowed', async () => {
+  const company = new CompanyComposioStore(db, root);
+  company.update('A', { revision: 0, apiKey: 's60_fixture_composio_key' });
+  const store = new StudioConnectorStore(db);
+  store.saveConnection('A', 'github', { providerConnectionId: 'ca_A', accountLabel: 'A', credentialRevision: company.read().credentialRevision });
+  const made = await api('POST', '', { name: 'Connected routine', prompt: 'Read', agentId: 'openai',
+    context: { connectorIds: ['github'] }, schedule: { kind: 'hourly', minute: 0, timezone: 'UTC' } });
+  expect(made.status).toBe(201);
+  const id = made.body.routine.id;
+  store.markDisconnected('A', 'github');
+  // Unrelated edit of an enabled routine: no connector re-check.
+  expect((await api('PATCH', '/:id', { name: 'Renamed' }, 'A', id)).status).toBe(200);
+  // Same selection resent: unchanged, not re-checked.
+  expect((await api('PATCH', '/:id', { context: { connectorIds: ['github'] } }, 'A', id)).status).toBe(200);
+  expect((await api('PATCH', '/:id', { enabled: false }, 'A', id)).status).toBe(200);
+  const enable = await api('PATCH', '/:id', { enabled: true }, 'A', id);
+  expect(enable.status).toBe(403);
+  expect(enable.body.error.code).toBe('CONNECTOR_NOT_GRANTED');
+  // A changed selection is re-checked.
+  expect((await api('PATCH', '/:id', { context: { connectorIds: ['github', 'notion'] } }, 'A', id)).body.error.code).toBe('CONNECTOR_NOT_GRANTED');
+  const cleared = await api('PATCH', '/:id', { context: { connectorIds: [] } }, 'A', id);
+  expect(cleared.status).toBe(200);
+  expect(cleared.body.routine.context?.connectorIds ?? []).toEqual([]);
+  expect((await api('PATCH', '/:id', { enabled: true }, 'A', id)).status).toBe(200);
 });

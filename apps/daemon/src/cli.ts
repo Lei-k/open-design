@@ -9,6 +9,7 @@ import { runResource } from './resource-cli.js';
 import { runProjectHandoff } from './handoff-cli.js';
 import { runConnectorsToolCli } from './tools-connectors-cli.js';
 import { runConnectorsCli } from './connectors/connectors-cli.js';
+import { runStudioMcpCli } from './mcp-client/studio-cli.js';
 import { runDesignSystemsToolCli } from './tools-design-systems-cli.js';
 import { DESIGN_SYSTEMS_USAGE, isDesignSystemsHelpArg } from './cli-help/index.js';
 import { BRAND_USAGE, isBrandHelpArg } from './cli-help/index.js';
@@ -882,7 +883,9 @@ if (argv[0] === 'mcp' && argv[1] === 'live-artifacts') {
 }
 
 const first = argv.find((a) => !a.startsWith('-'));
-if (remoteSessionFile && (!first || !SUBCOMMAND_MAP[first] || ['daemon', 'doctor', 'mcp', 'resource', 'amr', 'agent', 'diagnostics', 'figma', 'brand', 'brands', 'collab', 'workspace'].includes(first))) {
+// `od mcp servers|oauth …` (#62, S60) is the reviewed remote surface of the mcp command; the rest stays local.
+const remoteMcpSurface = first === 'mcp' && ['servers', 'oauth'].includes(argv.filter((a) => !a.startsWith('-'))[1] ?? '');
+if (remoteSessionFile && (!first || !SUBCOMMAND_MAP[first] || (['daemon', 'doctor', 'mcp', 'resource', 'amr', 'agent', 'diagnostics', 'figma', 'brand', 'brands', 'collab', 'workspace'].includes(first) && !remoteMcpSurface))) {
   process.stderr.write(`${JSON.stringify({ ok: false, error: { code: 'CLI_SESSION_CAPABILITY_PENDING', message: 'This local/host command has no reviewed remote session adapter; use the Studio capability contract' } })}\n`);
   process.exit(2);
 }
@@ -2396,6 +2399,11 @@ async function runMcp(args) {
   if (args[0] === 'install') {
     return runMcpInstall(args.slice(1));
   }
+  // Account remote MCP servers (#62, S60): the same /api/mcp endpoints as Settings.
+  if (args[0] === 'servers' || args[0] === 'oauth') {
+    process.exitCode = await runStudioMcpCli(args, cliDaemonUrl);
+    return;
+  }
   let flags;
   try {
     flags = parseFlags(args, {
@@ -2483,7 +2491,12 @@ for tool calls to succeed.
 
 To register this server into a coding agent's own config automatically:
   od mcp install <agent> [--uninstall] [--print] [--json] [--daemon-url <url>]
-  Agents: ${AGENT_SLUGS.join(' ')}`);
+  Agents: ${AGENT_SLUGS.join(' ')}
+
+Account remote MCP servers (multi-user Web with --session-file, or the local daemon):
+  od mcp servers list|add|update|remove|test|import ...
+  od mcp oauth start|status|refresh|cancel|disconnect <id>
+  Run \`od mcp servers --help\` for details.`);
 }
 
 // ---------------------------------------------------------------------------

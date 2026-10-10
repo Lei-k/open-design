@@ -319,3 +319,41 @@ export class StudioConnectorStore {
       .run(actor, action, connectorId, outcome, this.now());
   }
 }
+
+/**
+ * Run-time connector grants (#62, S59; persistence moved here in S60).
+ *
+ * - The per-account revocation epoch: every account-wide revocation (session
+ *   revoke, password reset, disable, role change, logout) bumps it, and a grant
+ *   captured under an older epoch is refused at the provider boundary.
+ * - The immutable per-call tool audit: actor, connector, tool slug, run id,
+ *   outcome category and time only — never arguments, results, entities,
+ *   provider ids or keys. Completed rows also count toward the per-run limit.
+ */
+export class StudioConnectorGrantStore {
+  constructor(private readonly db: Database.Database, private readonly now: () => number = Date.now) {
+    db.exec(`CREATE TABLE IF NOT EXISTS studio_connector_grant_epochs (account_id TEXT PRIMARY KEY, version INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS studio_connector_tool_audit (id INTEGER PRIMARY KEY, actor_account_id TEXT NOT NULL,
+        connector_id TEXT NOT NULL, tool_slug TEXT NOT NULL, run_id TEXT NOT NULL, outcome TEXT NOT NULL, created_at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS studio_connector_tool_audit_run ON studio_connector_tool_audit (run_id);
+      CREATE TRIGGER IF NOT EXISTS studio_connector_tool_audit_immutable BEFORE UPDATE ON studio_connector_tool_audit
+        BEGIN SELECT RAISE(ABORT, 'audit rows are immutable'); END;
+      CREATE TRIGGER IF NOT EXISTS studio_connector_tool_audit_no_delete BEFORE DELETE ON studio_connector_tool_audit
+        BEGIN SELECT RAISE(ABORT, 'audit rows are immutable'); END;`);
+  }
+  epoch(owner: string): number {
+    return (this.db.prepare('SELECT version FROM studio_connector_grant_epochs WHERE account_id = ?').get(owner) as { version: number } | undefined)?.version ?? 0;
+  }
+  invalidate(owner: string): void {
+    this.db.prepare(`INSERT INTO studio_connector_grant_epochs VALUES (?, 1)
+      ON CONFLICT(account_id) DO UPDATE SET version = version + 1`).run(owner);
+  }
+  /** Completed (audited) tool calls of a run, whatever their outcome. */
+  toolCalls(runId: string): number {
+    return (this.db.prepare('SELECT COUNT(*) AS n FROM studio_connector_tool_audit WHERE run_id = ?').get(runId) as { n: number }).n;
+  }
+  appendToolAudit(row: { owner: string; connectorId: string; toolSlug: string; runId: string; outcome: string }): void {
+    this.db.prepare(`INSERT INTO studio_connector_tool_audit (actor_account_id, connector_id, tool_slug, run_id, outcome, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)`).run(row.owner, row.connectorId, row.toolSlug, row.runId, row.outcome, this.now());
+  }
+}

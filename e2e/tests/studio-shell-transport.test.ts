@@ -4,7 +4,7 @@ import { expect, it } from 'vitest';
 import { MULTIUSER_ROUTE_CLASSIFICATION, matchMultiUserRoute } from '../../apps/daemon/src/http/multiuser-route-classes.js';
 const runtime = fileURLToPath(new URL('../../apps/web/src/runtime/studio-transport.ts', import.meta.url));
 const { studioRequestAvailable } = await import(runtime) as {
-  studioRequestAvailable(method: string, path: string, usable?: (lane: string) => boolean, renderedExports?: boolean, researchSearch?: boolean, connectors?: boolean): boolean;
+  studioRequestAvailable(method: string, path: string, usable?: (lane: string) => boolean, renderedExports?: boolean, researchSearch?: boolean, connectors?: boolean, mcpServers?: boolean): boolean;
 };
 
 it('classifies every observed request from the real App and cookie entry lifecycle', () => {
@@ -399,6 +399,32 @@ it('opens the account connectors control plane only with the settings lane and t
     expect(studioRequestAvailable(method, path, () => true, true, true, true), `${method} ${path}`).toBe(false);
   }
   expect(matchMultiUserRoute('GET', '/api/connectors/oauth/callback/github').every(({ entry }) => entry.routeClass === 'auth')).toBe(true);
+});
+
+it('opens account remote MCP servers only with the settings lane and the mcpServers capability; stdio installs stay refused (S60)', () => {
+  const settings = (lane: string) => lane === 'settings';
+  const opened = [['GET', '/api/mcp/servers'], ['PUT', '/api/mcp/servers'], ['GET', '/api/multiuser/mcp/servers'], ['PUT', '/api/multiuser/mcp/servers'],
+    ['POST', '/api/multiuser/mcp/servers'], ['PATCH', '/api/multiuser/mcp/servers/docs'], ['DELETE', '/api/multiuser/mcp/servers/docs'],
+    ['POST', '/api/multiuser/mcp/servers/docs/test'], ['POST', '/api/mcp/oauth/start'], ['POST', '/api/multiuser/mcp/oauth/start'],
+    ['POST', '/api/mcp/oauth/disconnect'], ['POST', '/api/multiuser/mcp/oauth/disconnect'], ['POST', '/api/multiuser/mcp/oauth/refresh'],
+    ['POST', '/api/multiuser/mcp/oauth/cancel'], ['GET', '/api/mcp/oauth/status'], ['GET', '/api/multiuser/mcp/oauth/status']] as const;
+  for (const [method, path] of opened) {
+    expect(studioRequestAvailable(method, path, settings, false, false, false, true), `${method} ${path}`).toBe(true);
+    expect(studioRequestAvailable(method, path, settings, false, false, true, false), `${method} ${path} without capability`).toBe(false);
+    expect(studioRequestAvailable(method, path, () => false, false, false, false, true), `${method} ${path} without settings`).toBe(false);
+    const matches = matchMultiUserRoute(method, path);
+    expect(matches.length, `${method} ${path}`).toBeGreaterThan(0);
+    expect(matches.every(({ entry }) => entry.routeClass === 'actor-scoped'), `${method} ${path}`).toBe(true);
+  }
+  // The host Codex install is a typed stdio refusal for everyone; the OAuth return is a cookie-less navigation.
+  for (const [method, path] of [['GET', '/api/mcp/install-info'], ['GET', '/api/mcp/install/codex/status'], ['POST', '/api/mcp/install/codex'], ['DELETE', '/api/mcp/install/codex']] as const) {
+    expect(studioRequestAvailable(method, path, () => true, true, true, true, true), `${method} ${path}`).toBe(false);
+    expect(matchMultiUserRoute(method, path).every(({ entry }) => entry.routeClass === 'blocked-in-multiuser' && entry.capabilityRefusal === 'mcp-stdio'), `${method} ${path}`).toBe(true);
+  }
+  expect(studioRequestAvailable('GET', '/api/mcp/oauth/callback', () => true, true, true, true, true)).toBe(false);
+  for (const path of ['/api/mcp/oauth/callback', '/api/multiuser/mcp/oauth/callback']) {
+    expect(matchMultiUserRoute('GET', path).every(({ entry }) => entry.routeClass === 'auth'), path).toBe(true);
+  }
 });
 
 it('opens team catalog grants only with usable catalogs and collaboration lanes, and only where the daemon classifies them', () => {

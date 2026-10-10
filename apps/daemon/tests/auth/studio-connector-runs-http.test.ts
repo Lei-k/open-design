@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { PERSONAL_CODEX_MOCK, linkCodex, setTurnMode, until } from './personal-codex-helpers.js';
 import { toolTokenRegistry } from '../../src/tool-tokens.js';
 import { StudioConnectorRuntime } from '../../src/connectors/studio-runtime.js';
+import { AuthStore } from '../../src/storage/auth-store.js';
 import { CompanyComposioStore, StudioConnectorStore } from '../../src/storage/studio-connectors.js';
 import { cleanupIsolatedDataRoot, loadIsolatedServerModule, login, multiUserOptions, provisionAccounts, startMultiUserDaemon,
   MU_TEST_ORIGIN, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
@@ -13,7 +14,7 @@ const ARGUMENT = 'S59_PRIVATE_TOOL_ARGUMENT';
 const RESULT = 'S59_PRIVATE_TOOL_RESULT';
 const OAUTH = 'S59_PRIVATE_OAUTH_TOKEN';
 let daemon: StartedMultiUserDaemon; let root: string; let admin: Principal; let a: Principal; let b: Principal;
-let db: Database.Database; let runtime: StudioConnectorRuntime; let store: StudioConnectorStore; let company: CompanyComposioStore;
+let db: Database.Database; let auth: AuthStore; let runtime: StudioConnectorRuntime; let store: StudioConnectorStore; let company: CompanyComposioStore;
 let rejectProvider = false;
 let holdMetadata = false; let releaseMetadata: (() => void) | undefined;
 let calls: Array<{ url: string; body: Record<string, unknown> }> = [];
@@ -61,7 +62,8 @@ beforeAll(async () => {
   daemon = await startMultiUserDaemon(multiUserOptions({ testComposioFetch: composio, testCompanyOpenAIFetch: openai, testPersonalCodexAppServer: PERSONAL_CODEX_MOCK }));
   ({ admin } = await provisionAccounts(daemon, []));
   db = new Database(path.join(root, 'app.sqlite'));
-  runtime = new StudioConnectorRuntime({ db, dataRoot: root, sessionCurrent: () => true, fetch: composio });
+  auth = AuthStore.open({ dataRoot: root });
+  runtime = new StudioConnectorRuntime({ db, dataRoot: root, auth, sessionCurrent: () => true, fetch: composio });
   store = new StudioConnectorStore(db); company = new CompanyComposioStore(db, root);
   const cfg = await daemon.request({ path: '/api/admin/pool/openai', cookie: admin.cookie });
   expect((await mutate(admin, 'PUT', '/api/admin/pool/openai', { revision: cfg.json.provider.revision, apiKey: 'sk-S59-openai-fixture', model: 'fixture', enabled: true, capacity: 2 })).status).toBe(200);
@@ -73,7 +75,7 @@ beforeEach(async () => {
   store.saveConnection(b.id, 'notion', { providerConnectionId: 'ca_B_notion', accountLabel: b.username, credentialRevision: company.read().credentialRevision });
   calls = []; providerRequests = []; rejectProvider = false; holdMetadata = false; releaseMetadata = undefined; logs.length = 0;
 });
-afterAll(async () => { toolTokenRegistry.clear(); runtime?.close(); db?.close(); await daemon?.close(); vi.restoreAllMocks(); cleanupIsolatedDataRoot(); });
+afterAll(async () => { toolTokenRegistry.clear(); runtime?.close(); auth?.close(); db?.close(); await daemon?.close(); vi.restoreAllMocks(); cleanupIsolatedDataRoot(); });
 
 it('S59 account grant lists selected apps and executes with A entity and binding, redacted results and metadata-only audit', async () => {
   const g = grant(a);

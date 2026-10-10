@@ -902,6 +902,7 @@ import {
 } from './live-artifacts/http-helpers.js';
 import { registerConnectorRoutes } from './connectors/routes.js';
 import { StudioConnectorRuntime } from './connectors/studio-runtime.js';
+import { registerStudioMcpRoutes } from './routes/studio-mcp.js';
 import { registerStudioConnectorRoutes } from './routes/studio-connectors.js';
 import { registerActiveContextRoutes } from './routes/active-context.js';
 import { registerAutomationRoutes } from './routes/automation.js';
@@ -8475,7 +8476,7 @@ export async function startServer({
     },
   });
 
-  const studioConnectorRuntime = multiUserMode ? new StudioConnectorRuntime({ db, dataRoot: RUNTIME_DATA_DIR,
+  const studioConnectorRuntime = multiUserMode ? new StudioConnectorRuntime({ db, dataRoot: RUNTIME_DATA_DIR, auth: multiUserFront!.authStore,
     sessionCurrent: (actor) => multiUserFront!.sessionCurrent(actor),
     ...(multiUserMode.testComposioFetch ? { fetch: multiUserMode.testComposioFetch } : {}) }) : null;
   registerConnectorRoutes(app, {
@@ -11499,7 +11500,9 @@ export async function startServer({
     // values further down at .mcp.json write time — see the spawn block
     // below — instead of re-reading.
     let externalMcpConfig = { servers: [] };
-    if (!SANDBOX_RUNTIME.enabled) {
+    // The host MCP config (which may spawn stdio servers) never feeds a multi-user
+    // process (#62, S60); Studio runs use the isolated run services.
+    if (!SANDBOX_RUNTIME.enabled && !multiUserMode) {
       try {
         externalMcpConfig = await readMcpConfig(RUNTIME_DATA_DIR);
       } catch (err) {
@@ -17715,6 +17718,13 @@ export async function startServer({
     ...(multiUserMode.testComposioFetch ? { fetch: multiUserMode.testComposioFetch } : {}),
     ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
   }) : null;
+  // Account remote MCP servers (#62, S60; owner decision 2A): remote HTTP/SSE only, sealed per account.
+  const studioMcp = multiUserMode ? registerStudioMcpRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, publicOrigin: multiUserMode.allowedOrigins[0]!,
+    sessionCurrent: (actor) => multiUserFront!.sessionCurrent(actor), accountActive: multiUserFront!.accountActive,
+    ...(multiUserMode.testMcpOutbound ? { outbound: multiUserMode.testMcpOutbound } : {}),
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
+  }) : null;
   // Account-owned automation packets/proposals (#64); apply writes only into account stores.
   const studioAutomations = studioSettings ? registerStudioAutomationRoutes(app, { db, settings: studioSettings }) : null;
   // Account-owned Automations dispatch through the same run admission policy.
@@ -17728,6 +17738,7 @@ export async function startServer({
     // Pending connector authorizations die with the session (S58); connections stay recorded.
     studioConnectors?.invalidateAccount(accountId);
     studioConnectorRuntime?.invalidateAccount(accountId);
+    studioMcp?.invalidateAccount(accountId);
     multiUserRuns.cancelAccountRuns(accountId);
     personalCodex?.cancelPendingFor(accountId).catch(() => {});
   });

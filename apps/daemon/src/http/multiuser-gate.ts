@@ -538,6 +538,13 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   if (policy === 'composio-config') return only(['revision', 'apiKey']) && Object.keys(body).length === 2
     && Number.isSafeInteger(body.revision) && Number(body.revision) >= 0
     && (body.apiKey === null || typeof body.apiKey === 'string' && body.apiKey.trim().length >= 8 && body.apiKey.length <= 4096);
+  // S60: account remote MCP servers. Structure only; the route validates fields with fixed
+  // messages and answers a stdio shape (command/args/env) with a typed capability refusal.
+  if (policy === 'studio-mcp-server') return only(['id', 'url', 'transport', 'label', 'templateId', 'enabled', 'authMode', 'headers', 'revision', 'command', 'args', 'env', 'cwd'])
+    && (body.headers === undefined || isPlainObject(body.headers)) && (body.revision === undefined || Number.isSafeInteger(body.revision));
+  if (policy === 'studio-mcp-import') return only(['servers']) && Array.isArray(body.servers) && body.servers.length <= 64
+    && body.servers.every((entry) => isPlainObject(entry));
+  if (policy === 'studio-mcp-oauth') return only(['serverId']) && typeof body.serverId === 'string' && body.serverId.length > 0 && body.serverId.length <= 64;
   if (policy === 'connector-prepare') return only(['connectorIds']) && Array.isArray(body.connectorIds)
     && body.connectorIds.length > 0 && body.connectorIds.length <= 8
     && body.connectorIds.every((id) => typeof id === 'string' && /^[a-z0-9_]{1,64}$/.test(id));
@@ -705,6 +712,12 @@ export interface MultiUserFront {
    * window. Used where identity is carried by server-side state (S58 OAuth).
    */
   sessionCurrent: (actor: AuthActor) => boolean;
+  /**
+   * The gate's own auth store handle, shared with route services that need
+   * account/pilot reads at an effect boundary instead of opening a second
+   * handle (S60). Owned and closed by the front.
+   */
+  authStore: AuthStore;
   /** Attach the ownership store to the main daemon database once it is open. */
   attachProjectOwnership: (db: Database.Database) => void;
   setCancelAccountRuns: (cancel: (accountId: string) => void) => void;
@@ -808,6 +821,7 @@ export function installMultiUserFront(
     projectOwnershipHooks,
     accountActive: (accountId) => store.getAccountById(accountId)?.active === true,
     sessionCurrent: (actor) => auth.isActorCurrent(actor),
+    authStore: store,
     attachProjectOwnership(db) {
       access = new ProjectAccessStore(db, { accountActive: (accountId) => store.getAccountById(accountId)?.active === true });
     },

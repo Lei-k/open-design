@@ -27,7 +27,7 @@ export function StudioCapabilitiesProvider({ session, generation, actor, capabil
   // The session owns this lifetime (including StrictMode remounts). It releases
   // the transport and module registry before publishing another generation.
   activateStudioTransport(session, generation, { messageIdPrefix, usable, renderedExports: capabilities.renderedExports === true,
-    researchSearch: capabilities.researchSearch === true, connectors: capabilities.connectors === true });
+    researchSearch: capabilities.researchSearch === true, connectors: capabilities.connectors === true, mcpServers: capabilities.mcpServers === true });
   const value: StudioCapabilities = { actor, session, generation, capabilities, hostServices: false,
     // Choices are advertised by the authenticated daemon, never inferred from host configuration.
     executionAgentId: usable('execution') ? (capabilities.executionSources?.[0]?.agentId ?? (capabilities.executionSources === undefined ? 'codex' : null)) : null,

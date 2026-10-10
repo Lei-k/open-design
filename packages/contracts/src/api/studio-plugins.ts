@@ -21,11 +21,14 @@ export interface StudioPluginPreviewResponse {
   expiresAt: number;
 }
 
+/** Upper bound on an ordered Studio plugin pipeline (finite stage runner, S42). */
+export const STUDIO_PIPELINE_MAX_STAGES = 32;
+
 /** The finite, ordered pipeline subset executed on every Studio source. */
 export function isStudioOrderedPipeline(value: unknown): value is PluginPipeline {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const stages = (value as Record<string, unknown>).stages;
-  if (!Array.isArray(stages) || stages.length > 32 || Object.keys(value).some((key) => key !== 'stages')) return false;
+  if (!Array.isArray(stages) || stages.length > STUDIO_PIPELINE_MAX_STAGES || Object.keys(value).some((key) => key !== 'stages')) return false;
   const ids = new Set<string>();
   return stages.every((item: unknown) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return false;

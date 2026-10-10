@@ -1,4 +1,4 @@
-import { CONNECTOR_TOOL_DESCRIPTORS } from '../connectors/tool-descriptors.js';
+import { STUDIO_CONNECTOR_TOOL_DESCRIPTORS } from '../connectors/tool-descriptors.js';
 import { StudioConnectorRuntimeError } from '../connectors/studio-runtime.js';
 import { EventEmitter } from 'node:events';
 import { listCompanyProjectFiles, readCompanyProjectFile, writeCompanyProjectBytes, writeCompanyProjectFile } from '../services/company-project-files.js';
@@ -33,6 +33,9 @@ const mediaTools = STUDIO_MEDIA_TOOLS.map(({ properties, required, ...tool }) =>
 const artifactTools = STUDIO_LIVE_ARTIFACT_TOOLS.map(({ properties, required, ...tool }) => ({ ...tool, type: 'function', strict: true,
   parameters: { type: 'object', properties, required: [...required], additionalProperties: false } }));
 
+
+/** Wall-clock ceiling of one company/own-key Responses turn (one pipeline stage). */
+export const COMPANY_OPENAI_TURN_TIMEOUT_MS = 10 * 60_000;
 export interface CompanyOpenAITurnResult { ok: boolean; input: Json[]; files: string[]; usage: { inputTokens: number; outputTokens: number }; media: StudioMediaUsage }
 
 /** Same lifecycle the scheduler uses for native children, without giving an
@@ -74,7 +77,7 @@ export async function runCompanyOpenAITurn(input: {
   liveArtifacts?: StudioLiveArtifactTools;
   connectors?: { execute(name: string, args: Record<string, unknown>): Promise<unknown> };
 }): Promise<CompanyOpenAITurnResult> {
-  const signal = AbortSignal.any([input.worker.abort.signal, AbortSignal.timeout(10 * 60_000)]);
+  const signal = AbortSignal.any([input.worker.abort.signal, AbortSignal.timeout(COMPANY_OPENAI_TURN_TIMEOUT_MS)]);
   const check = () => { signal.throwIfAborted(); if (!input.authorized()) throw new Error('company_authority_changed'); };
   const history: Json[] = [...(input.systemPrompt ? [{ role: 'developer', content: input.systemPrompt }] : []),
     ...input.history.filter((item) => item.role !== 'developer'), { role: 'user', content: input.prompt }];
@@ -90,7 +93,7 @@ export async function runCompanyOpenAITurn(input: {
       body: JSON.stringify({ model: input.model, store: false, stream: true, input: history,
         include: ['reasoning.encrypted_content'], max_output_tokens: 8192, parallel_tool_calls: false,
         tools: [...tools.filter((tool) => tool.name !== 'run_skill_script' || input.runSkillScript), ...(input.media ? mediaTools : []),
-          ...(input.liveArtifacts ? artifactTools : []), ...(input.connectors ? CONNECTOR_TOOL_DESCRIPTORS.map(({ inputSchema, ...tool }) => ({ type: 'function', ...tool, parameters: inputSchema, strict: false })) : [])] }),
+          ...(input.liveArtifacts ? artifactTools : []), ...(input.connectors ? STUDIO_CONNECTOR_TOOL_DESCRIPTORS.map(({ inputSchema, ...tool }) => ({ type: 'function', ...tool, parameters: inputSchema, strict: false })) : [])] }),
     });
     check();
     if (!response.ok || !response.body || !response.headers.get('content-type')?.includes('text/event-stream')) {
@@ -153,7 +156,7 @@ export async function runCompanyOpenAITurn(input: {
           emit({ type: 'tool_use', id: call.call_id, name: 'update_plan', input: { todos: args.todos } });
           planPublished = true;
           result = { updated: args.todos.length };
-        } else if (input.connectors && CONNECTOR_TOOL_DESCRIPTORS.some((tool) => tool.name === call.name)) {
+        } else if (input.connectors && STUDIO_CONNECTOR_TOOL_DESCRIPTORS.some((tool) => tool.name === call.name)) {
           check(); result = await input.connectors.execute(call.name, args);
         } else if (input.liveArtifacts && STUDIO_LIVE_ARTIFACT_TOOLS.some((tool) => tool.name === call.name)) {
           check(); result = input.liveArtifacts.execute(call.name, args);

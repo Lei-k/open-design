@@ -39,7 +39,7 @@ export function studioLaneForRoute(entry: Pick<MultiUserRouteClassification, 'me
   const domain = parts[1];
   if (domain === 'multiuser') {
     if (parts[2] === 'import') return 'home';
-    if (parts[2] === 'settings' || parts[2] === 'connectors') return 'settings';
+    if (parts[2] === 'settings' || parts[2] === 'connectors' || parts[2] === 'mcp') return 'settings';
     if (parts[2] === 'catalog') return parts[3] === 'codex-pets' ? 'settings' : 'catalogs';
     if (parts[2] === 'design-catalog') return 'catalogs';
     if (parts[2] === 'plugin-preview') return 'catalogs';
@@ -142,7 +142,9 @@ export function multiUserStudioCapabilities(studioPilot = false, policy: { perso
     // Research runs on each account's own Tavily key, which needs account key custody (#63).
     researchSearch: policy.personalKeysEnabled === true,
     // Account connectors control plane (#62, S58): connectable, not yet usable in runs.
-    connectors: true } : {}) };
+    connectors: true,
+    // Account remote MCP servers (#62, S60): configurable, not yet usable in runs.
+    mcpServers: true } : {}) };
 }
 
 /** The actor's private transcript-id namespace (see `isStudioMessageIdInNamespace`).

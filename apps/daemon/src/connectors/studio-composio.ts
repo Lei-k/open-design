@@ -44,11 +44,14 @@ const record = (value: unknown): Record<string, unknown> => value && typeof valu
 export class StudioComposioClient {
   constructor(private readonly fetchImpl: typeof fetch = fetch, private readonly baseUrl = COMPOSIO_API_BASE_URL) {}
 
-  private async request(apiKey: string, path: string, init: { method: string; body?: unknown; allow404?: boolean }): Promise<Record<string, unknown> | null> {
+  private async request(apiKey: string, path: string, init: { method: string; body?: unknown; allow404?: boolean; signal?: AbortSignal }): Promise<Record<string, unknown> | null> {
     let response: Response;
     try {
+      init.signal?.throwIfAborted();
       response = await this.fetchImpl(`${this.baseUrl}${path}`, {
-        method: init.method, redirect: 'error', signal: AbortSignal.timeout(TIMEOUT_MS),
+        method: init.method, redirect: 'error',
+        // A caller's signal (a run cancel, S60) aborts the request as well as the fixed timeout.
+        signal: init.signal ? AbortSignal.any([AbortSignal.timeout(TIMEOUT_MS), init.signal]) : AbortSignal.timeout(TIMEOUT_MS),
         headers: { accept: 'application/json', 'content-type': 'application/json', 'user-agent': 'OpenDesign Studio connectors', 'x-api-key': apiKey },
         ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
       });
@@ -122,15 +125,16 @@ export class StudioComposioClient {
     await this.request(apiKey, `/api/v3/connected_accounts/${encodeURIComponent(id)}`, { method: 'DELETE', allow404: true });
   }
 
-  async toolMetadata(apiKey: string, toolkitSlug: string): Promise<Record<string, unknown>[]> {
-    const response = await this.request(apiKey, `/api/v3.1/tools?${new URLSearchParams({ toolkit_slug: toolkitSlug.toLowerCase(), limit: '1000' })}`, { method: 'GET' });
+  async toolMetadata(apiKey: string, toolkitSlug: string, signal?: AbortSignal): Promise<Record<string, unknown>[]> {
+    const response = await this.request(apiKey, `/api/v3.1/tools?${new URLSearchParams({ toolkit_slug: toolkitSlug.toLowerCase(), limit: '1000' })}`,
+      { method: 'GET', ...(signal ? { signal } : {}) });
     const items = Array.isArray(response?.items) ? response.items : Array.isArray(response?.data) ? response.data : [];
     return items.slice(0, 1000).filter((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item));
   }
 
-  async executeTool(apiKey: string, toolSlug: string, entity: string, connectionId: string, input: unknown): Promise<unknown> {
+  async executeTool(apiKey: string, toolSlug: string, entity: string, connectionId: string, input: unknown, signal?: AbortSignal): Promise<unknown> {
     const response = await this.request(apiKey, `/api/v3.1/tools/execute/${encodeURIComponent(toolSlug)}`, { method: 'POST',
-      body: { user_id: entity, connected_account_id: connectionId, arguments: input } });
+      body: { user_id: entity, connected_account_id: connectionId, arguments: input }, ...(signal ? { signal } : {}) });
     if (!response || response.successful === false || response.error) throw new StudioComposioError('failed', null);
     return response.data ?? null;
   }

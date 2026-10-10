@@ -240,6 +240,20 @@ export const API_ERROR_CODES = [
   'MULTIUSER_CONNECTOR_RECHECK_REQUIRED',
   'MULTIUSER_CONNECTOR_AUTHORITY_CHANGED',
   'CONNECTOR_NOT_GRANTED',
+  // Account remote MCP servers (#62, S60). AUTHORITY_CHANGED: the account,
+  // session or server changed while the request ran, so nothing further was
+  // sent or changed (details.reason); AUTHORIZATION_INVALID: an OAuth callback
+  // whose single-use state is unknown, expired, replayed or whose bound
+  // account/session/server no longer matches (details.reason);
+  // OUTBOUND_REFUSED: the SSRF guard refused the destination (details.reason);
+  // PROVIDER_FAILED: the remote server or its authorization server failed or
+  // answered unusably (its body is never echoed); LIMIT_REACHED: the account
+  // already has the maximum number of servers.
+  'MULTIUSER_MCP_AUTHORITY_CHANGED',
+  'MULTIUSER_MCP_AUTHORIZATION_INVALID',
+  'MULTIUSER_MCP_OUTBOUND_REFUSED',
+  'MULTIUSER_MCP_PROVIDER_FAILED',
+  'MULTIUSER_MCP_LIMIT_REACHED',
   'INTERNAL_ERROR',
 ] as const;
 
