@@ -19,6 +19,7 @@ let daemon: StartedMultiUserDaemon; let root: string; let admin: Principal; let 
 let db: Database.Database; let auth: AuthStore; let runtime: StudioConnectorRuntime; let store: StudioConnectorStore; let company: CompanyComposioStore;
 let holdMetadata = false; let releaseMetadata: (() => void) | undefined; let metadataAborted = false; let ignoreAbort = false;
 let holdExecute = false; const releaseExecutes: Array<() => void> = [];
+let metadataStatus = 200;
 let calls: Array<{ url: string; at: number }> = [];
 let openaiOnFirstCall: (() => void) | undefined;
 let modelSawToolOutput: string[] = [];
@@ -35,6 +36,7 @@ const composio: typeof fetch = async (url, init) => {
       }, { once: true });
     });
   }
+  if (String(url).includes('/api/v3.1/tools?') && metadataStatus !== 200) return new Response('unavailable', { status: metadataStatus });
   if (String(url).includes('/api/v3.1/tools?')) return Response.json({ items: [
     { slug: 'HUBSPOT_GET_CONTACT', name: 'Get contact', toolkit: { slug: 'hubspot' }, scopes: ['read'],
       input_parameters: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false } } ] });
@@ -79,7 +81,7 @@ beforeEach(async () => {
   a = { id: made.json.account.id, username, password, cookie: await login(daemon, username, password) };
   company.update(admin.id, { revision: company.read().revision, apiKey: KEY });
   for (const id of ['hubspot', 'github']) store.saveConnection(a.id, id, { providerConnectionId: `ca_${id}_${a.id}`, accountLabel: 'A', credentialRevision: company.read().credentialRevision });
-  calls = []; holdMetadata = true; releaseMetadata = undefined; metadataAborted = false; ignoreAbort = false; holdExecute = false; releaseExecutes.length = 0;
+  calls = []; holdMetadata = true; releaseMetadata = undefined; metadataAborted = false; ignoreAbort = false; holdExecute = false; releaseExecutes.length = 0; metadataStatus = 200;
   openaiOnFirstCall = undefined; modelSawToolOutput = [];
 });
 afterAll(async () => { toolTokenRegistry.clear(); runtime?.close(); auth?.close(); db?.close(); await daemon?.close(); vi.restoreAllMocks(); cleanupIsolatedDataRoot(); });
@@ -210,3 +212,68 @@ it.each([['account disabled'], ['connection replaced'], ['grant revoked']])(
     expect(result.json.error.code).toMatch(/^(TOOL_TOKEN_INVALID|MULTIUSER_CONNECTOR_AUTHORITY_CHANGED)$/);
     expect(executes()).toHaveLength(0);
   });
+
+// S62 Repair 1 (P2): Composio tool discovery is an outbound request like any other —
+// budgeted, audited (empty tool slug, outcome, duration), negatively cached and coalesced.
+// Promoted from the S62 reviewer's authority probe (80 provider requests, no audit rows;
+// a scratch handoff outside git).
+const list = (token: string) => daemon.request({ method: 'GET', path: '/api/tools/connectors/list', headers: { authorization: `Bearer ${token}` } });
+const metadataCalls = () => calls.filter((call) => call.url.includes('/api/v3.1/tools?'));
+const discoveryAudit = (runId: string) => (db.prepare("SELECT * FROM studio_connector_tool_audit WHERE run_id = ? AND tool_slug = '' ORDER BY id")
+  .all(runId) as Array<{ outcome: string; duration_ms?: number }>).map(({ outcome, duration_ms }) => ({ outcome, duration_ms }));
+it('S62 R1 connector discovery after the run budget is spent sends nothing and audits every refused attempt', async () => {
+  holdMetadata = false;
+  const runId = randomUUID();
+  const g = toolTokenRegistry.mint({ runId, projectId: 'p', studioConnectors: runtime.capture(routineActor(a), ['hubspot'])! });
+  const insert = db.prepare(`INSERT INTO studio_connector_tool_audit (actor_account_id, connector_id, tool_slug, run_id, outcome, created_at) VALUES (?, 'hubspot', 'HUBSPOT_GET_CONTACT', ?, 'ok', ?)`);
+  for (let i = 0; i < 60; i++) insert.run(a.id, runId, Date.now());
+  const results = await Promise.all(Array.from({ length: 20 }, () => list(g.token)));
+  expect(results.map((result) => result.status)).toEqual(Array(20).fill(429));
+  expect(results.every((result) => result.json.error.code === 'CONNECTOR_RATE_LIMITED')).toBe(true);
+  expect(metadataCalls()).toHaveLength(0);
+  const rows = discoveryAudit(runId);
+  expect(rows).toHaveLength(20); expect(rows.every((row) => row.outcome === 'CONNECTOR_RATE_LIMITED' && Number.isInteger(row.duration_ms))).toBe(true);
+  // An execute that needs discovery is refused the same way, before any provider request.
+  const executed = await execute(g.token, { connectorId: 'hubspot', toolName: 'hubspot.hubspot_get_contact', input: { id: 'x' } });
+  expect(executed.status, executed.text).toBe(429); expect(metadataCalls()).toHaveLength(0); expect(executes()).toHaveLength(0);
+  toolTokenRegistry.revokeToken(g.token);
+});
+it('S62 R1 concurrent discovery misses share one provider request, a failure is cached briefly, and each attempt is audited once', async () => {
+  metadataStatus = 503;
+  const runId = randomUUID();
+  const g = toolTokenRegistry.mint({ runId, projectId: 'p', studioConnectors: runtime.capture(routineActor(a), ['hubspot'])! });
+  const first = Array.from({ length: 10 }, () => list(g.token));
+  await until(() => releaseMetadata, (r) => !!r, 'metadata entered');
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  releaseMetadata!();
+  const failedNow = await Promise.all(first);
+  expect(failedNow.map((result) => result.status)).toEqual(Array(10).fill(502));
+  expect(metadataCalls()).toHaveLength(1);
+  // Within the failure TTL nothing is sent again, by lists or executes.
+  holdMetadata = false;
+  for (let i = 0; i < 5; i++) expect((await list(g.token)).status).toBe(502);
+  expect((await execute(g.token, { connectorId: 'hubspot', toolName: 'hubspot.hubspot_get_contact', input: { id: 'x' } })).status).toBe(502);
+  expect(metadataCalls()).toHaveLength(1); expect(executes()).toHaveLength(0);
+  expect(discoveryAudit(runId)).toEqual([{ outcome: 'MULTIUSER_CONNECTOR_PROVIDER_FAILED', duration_ms: expect.any(Number) }]);
+  toolTokenRegistry.revokeToken(g.token);
+});
+it('S62 R1 a successful discovery is one budgeted, audited request; an execute covers its discovery and call with one slot', async () => {
+  holdMetadata = false;
+  const runId = randomUUID();
+  const g = toolTokenRegistry.mint({ runId, projectId: 'p', studioConnectors: runtime.capture(routineActor(a), ['hubspot'])! });
+  const listed = await Promise.all(Array.from({ length: 8 }, () => list(g.token)));
+  expect(listed.every((result) => result.status === 200)).toBe(true);
+  expect(metadataCalls()).toHaveLength(1); expect(discoveryAudit(runId)).toEqual([{ outcome: 'ok', duration_ms: expect.any(Number) }]);
+  // A refresh-style grant with a one-call budget: discovery (fresh account, cold cache) and the call share the slot.
+  const b = (await (async () => {
+    const username = `s62r1-${randomUUID().slice(0, 8)}`; const password = `${username}-battery-staple-password`;
+    const made = await mutate(admin, 'POST', '/api/auth/users', { username, password, role: 'user' });
+    return { id: made.json.account.id as string, username, password, cookie: await login(daemon, username, password) };
+  })());
+  store.saveConnection(b.id, 'hubspot', { providerConnectionId: `ca_hubspot_${b.id}`, accountLabel: 'B', credentialRevision: company.read().credentialRevision });
+  const one = toolTokenRegistry.mint({ runId: randomUUID(), projectId: 'p', callLimit: 1, studioConnectors: runtime.capture(routineActor(b), ['hubspot'])! });
+  const done = await execute(one.token, { connectorId: 'hubspot', toolName: 'hubspot.hubspot_get_contact', input: { id: 'x' } });
+  expect(done.status, done.text).toBe(200); expect(metadataCalls()).toHaveLength(2); expect(executes()).toHaveLength(1);
+  expect(db.prepare('SELECT tool_slug, outcome FROM studio_connector_tool_audit WHERE run_id = ?').all(one.runId)).toEqual([{ tool_slug: 'HUBSPOT_GET_CONTACT', outcome: 'ok' }]);
+  toolTokenRegistry.revokeToken(g.token); toolTokenRegistry.revokeToken(one.token);
+});

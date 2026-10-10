@@ -15,6 +15,7 @@ import { toolTokenRegistry } from '../../src/tool-tokens.js';
 import { CompanyComposioStore, StudioConnectorStore } from '../../src/storage/studio-connectors.js';
 import { StudioMcpRuntime, studioMcpToolName } from '../../src/mcp-client/studio-runtime.js';
 import { AuthStore } from '../../src/storage/auth-store.js';
+import { StudioLiveArtifacts } from '../../src/storage/studio-live-artifacts.js';
 
 const KEY = 's62_company_composio_key_0123456789';
 let daemon: StartedMultiUserDaemon; let fixture: McpFixture; let root: string; let admin: Principal;
@@ -77,6 +78,12 @@ async function create(sourceJson: unknown, who = owner) {
   const made = await call(who, 'POST', base(), document(sourceJson)); expect(made.status, made.text).toBe(201); return made.json.artifact as { id: string; studioRevision: number };
 }
 const refresh = (who: Principal, id: string) => call(who, 'POST', base(`/${id}/refresh`));
+/** An owner/editor re-saves the stored source with the read-only confirmation ticked (S62 Repair 1). */
+async function reconfirm(who: Principal, id: string) {
+  const current = (await call(who, 'GET', base(`/${id}`))).json.artifact;
+  const saved = await call(who, 'PATCH', base(`/${id}`), { input: { document: current.document }, expectedRevision: current.studioRevision });
+  expect(saved.status, saved.text).toBe(200); return saved.json.artifact;
+}
 const read = async (id: string) => (await call(owner, 'GET', base(`/${id}`))).json.artifact;
 const history = async (id: string) => (await call(owner, 'GET', base(`/${id}/refreshes`))).json.refreshes as Array<Record<string, any>>;
 const executes = () => composioCalls.filter((item) => item.url.includes('/tools/execute/'));
@@ -207,6 +214,13 @@ it('S62 MCP: owner and collaborator each refresh with their own server; provenan
   expect(mine.json.artifact.document.dataJson).toEqual({ total: 7 });
   expect(mine.json.artifact.studioProvenance).toMatchObject({ origin: 'mcp', toolSource: { kind: 'mcp', id: 'mine', tool: 'lookup', actorAccountId: owner.id } });
   expect(mcpCalls().map((request) => request.host.split(':')[0])).toEqual(['owner.fixture.test']);
+  // S62 Repair 1: the owner's confirmation covers the owner's server instance only; the
+  // collaborator is asked to confirm for their own server first, and nothing is sent until then.
+  const sent = fixture.requests.length;
+  const unconfirmed = await refresh(editor, artifact.id); expect(unconfirmed.status, unconfirmed.text).toBe(409);
+  expect(unconfirmed.json.error).toMatchObject({ code: 'LIVE_ARTIFACT_SOURCE_RECONFIRM_REQUIRED', details: { reason: 'reconfirm' } });
+  expect(fixture.requests).toHaveLength(sent); expect((await history(artifact.id))).toHaveLength(1);
+  await reconfirm(editor, artifact.id);
   const theirs = await refresh(editor, artifact.id); expect(theirs.status, theirs.text).toBe(200);
   expect(mcpCalls().map((request) => request.host.split(':')[0])).toEqual(['owner.fixture.test', 'editor.fixture.test']);
   expect(theirs.json.artifact.studioProvenance.toolSource.actorAccountId).toBe(editor.id);
@@ -243,7 +257,7 @@ it('S62 MCP: a tool without readOnlyHint is refused, and creation needs the read
 
 it.each(['logout', 'account-disable', 'server-disable', 'header-change', 'project-access'])('S62 MCP refresh racing %s during discovery sends no tools/call and writes nothing', async (kind) => {
   const who = kind === 'project-access' ? editor : owner;
-  await server(who, 'race.fixture.test'); const artifact = await create(mcpSource());
+  await server(who, 'race.fixture.test'); const artifact = await create(mcpSource(), who);
   fixture.state.holdDiscovery = true; const pending = refresh(who, artifact.id);
   await until(() => fixture.requests.some((request) => request.body.includes('tools/list')), Boolean, 'discovery held');
   if (kind === 'logout') await call(who, 'POST', '/api/auth/logout', {});
@@ -259,6 +273,110 @@ it.each(['logout', 'account-disable', 'server-disable', 'header-change', 'projec
   expect(fixture.requests).toHaveLength(sent); expect(mcpCalls()).toHaveLength(0);
   const stored = JSON.parse((db.prepare('SELECT artifact_json FROM studio_live_artifacts WHERE id = ?').get(artifact.id) as { artifact_json: string }).artifact_json);
   expect(stored.document.dataJson).toEqual({ total: 0 }); expect(stored.refreshStatus).toBe('never');
+});
+
+// S62 Repair 1 (P1): revoking the short-lived refresh grant at any point is an authority
+// loss — nothing is written (no revision bump, no failed-refresh record, no history);
+// only the immutable source audit row remains. Promoted from the S62 reviewer's
+// revocation probe (a scratch handoff outside git).
+function captureRefreshGrant() {
+  const grants: Array<{ token: string; runId: string }> = [];
+  const mint = toolTokenRegistry.mint.bind(toolTokenRegistry);
+  const spy = vi.spyOn(toolTokenRegistry, 'mint').mockImplementation((options) => {
+    const grant = mint(options); if (grant.runId.startsWith('live-artifact-refresh:')) grants.push(grant); return grant;
+  });
+  return { grants, restore: () => spy.mockRestore() };
+}
+async function expectNothingWritten(artifact: { id: string; studioRevision: number }, result: { status: number; json: any; text: string }) {
+  expect(result.status, result.text).toBe(409); expect(result.json.error.code).toBe('LIVE_ARTIFACT_REFRESH_AUTHORITY_CHANGED');
+  const after = await read(artifact.id);
+  expect(after.studioRevision).toBe(artifact.studioRevision); expect(after.refreshStatus).toBe('never');
+  expect(after.document.dataJson).toEqual({ total: 0 }); expect(await history(artifact.id)).toEqual([]);
+  expect(sourceAudit(artifact.id)).toEqual([expect.objectContaining({ outcome: 'LIVE_ARTIFACT_REFRESH_AUTHORITY_CHANGED' })]);
+}
+it.each(['discovery', 'call'] as const)('S62 R1 MCP: revoking the refresh grant during %s writes nothing at all', async (phase) => {
+  await server(owner, 'revoke.fixture.test'); const artifact = await create(mcpSource());
+  const captured = captureRefreshGrant();
+  try {
+    if (phase === 'discovery') fixture.state.holdDiscovery = true; else fixture.state.holdCall = true;
+    const pending = refresh(owner, artifact.id);
+    await until(() => fixture.requests.some((request) => request.body.includes(phase === 'discovery' ? 'tools/list' : 'tools/call')), Boolean, `${phase} held`);
+    expect(captured.grants).toHaveLength(1); expect(toolTokenRegistry.revokeToken(captured.grants[0]!.token)).toBe(true);
+    Object.assign(fixture.state, { holdDiscovery: false, holdCall: false }); for (const release of fixture.state.releases.splice(0)) release();
+    await expectNothingWritten(artifact, await pending);
+    expect(mcpCalls()).toHaveLength(phase === 'discovery' ? 0 : 1);
+  } finally { captured.restore(); }
+});
+it('S62 R1 MCP: revoking the refresh grant between the call and the transaction writes nothing at all', async () => {
+  await server(owner, 'revoke.fixture.test'); const artifact = await create(mcpSource());
+  const captured = captureRefreshGrant();
+  const commit = StudioLiveArtifacts.prototype.commitSourceRefresh;
+  const spy = vi.spyOn(StudioLiveArtifacts.prototype, 'commitSourceRefresh').mockImplementation(function (this: StudioLiveArtifacts, ...args) {
+    toolTokenRegistry.revokeToken(captured.grants[0]!.token); return commit.apply(this, args);
+  });
+  try {
+    await expectNothingWritten(artifact, await refresh(owner, artifact.id));
+    expect(spy).toHaveBeenCalledOnce(); expect(mcpCalls()).toHaveLength(1);
+  } finally { spy.mockRestore(); captured.restore(); }
+});
+it('S62 R1 connector: revoking the refresh grant during the call writes nothing at all', async () => {
+  const artifact = await create(connectorSource());
+  const captured = captureRefreshGrant();
+  try {
+    composio.holdExecute = true; const pending = refresh(owner, artifact.id);
+    await until(async () => composio.releases.length, Boolean, 'execute held');
+    expect(toolTokenRegistry.revokeToken(captured.grants[0]!.token)).toBe(true);
+    composio.holdExecute = false; for (const release of composio.releases.splice(0)) release();
+    await expectNothingWritten(artifact, await pending);
+    expect(executes()).toHaveLength(1);
+  } finally { captured.restore(); }
+});
+
+// S62 Repair 1 (P2): the read-only confirmation is bound to the confirming account's server
+// instance + generation and the tool. Promoted from the S62 reviewer's probe (endpoint
+// replacement and delete/recreate both refreshed without reconfirmation; a scratch handoff outside git).
+it.each(['endpoint-replaced', 'deleted-and-recreated'] as const)('S62 R1 MCP: after the server is %s the refresh asks to reconfirm, sends and writes nothing, and works once reconfirmed', async (change) => {
+  await server(owner, 'original.fixture.test');
+  const artifact = await create(mcpSource());
+  expect((await refresh(owner, artifact.id)).status).toBe(200);
+  const before = await read(artifact.id);
+  if (change === 'endpoint-replaced') {
+    const row = (await call(owner, 'GET', '/api/multiuser/mcp/servers')).json.servers[0];
+    expect((await call(owner, 'PATCH', '/api/multiuser/mcp/servers/mine', { revision: row.revision, url: fixture.url('/runtime', 'replacement.fixture.test') })).status).toBe(200);
+  } else {
+    expect((await call(owner, 'DELETE', '/api/multiuser/mcp/servers/mine')).status).toBe(200);
+    await server(owner, 'replacement.fixture.test');
+  }
+  const sent = fixture.requests.length;
+  const refused = await refresh(owner, artifact.id);
+  expect(refused.status, refused.text).toBe(409);
+  expect(refused.json.error).toMatchObject({ code: 'LIVE_ARTIFACT_SOURCE_RECONFIRM_REQUIRED', details: { reason: 'reconfirm' } });
+  expect(fixture.requests).toHaveLength(sent);
+  const after = await read(artifact.id);
+  expect(after.studioRevision).toBe(before.studioRevision); expect(after.document).toEqual(before.document); expect(await history(artifact.id)).toHaveLength(1);
+  expect(sourceAudit(artifact.id).at(-1)).toMatchObject({ outcome: 'LIVE_ARTIFACT_SOURCE_RECONFIRM_REQUIRED:reconfirm' });
+  // A viewer cannot reconfirm; the owner can, for the current server only.
+  const current = await read(artifact.id);
+  expect((await call(viewer, 'PATCH', base(`/${artifact.id}`), { input: { document: current.document }, expectedRevision: current.studioRevision })).status).toBe(404);
+  await reconfirm(owner, artifact.id);
+  const again = await refresh(owner, artifact.id); expect(again.status, again.text).toBe(200);
+  expect(mcpCalls().map((request) => request.host.split(':')[0])).toEqual(['original.fixture.test', 'replacement.fixture.test']);
+});
+it('S62 R1 MCP: changing the source tool voids every account\'s confirmation; agent-written descriptors confirm nothing', async () => {
+  await server(owner, 'owner.fixture.test'); await server(editor, 'editor.fixture.test');
+  fixture.state.tools = [...lookupTools, { ...lookupTools[0]!, name: 'other' }];
+  const artifact = await create(mcpSource()); await reconfirm(editor, artifact.id);
+  expect((await refresh(editor, artifact.id)).status).toBe(200);
+  // The owner switches the tool: the owner's own save re-confirms for the owner only.
+  const current = await read(artifact.id);
+  const switched = { ...current.document, sourceJson: { ...current.document.sourceJson, mcp: { serverId: 'mine', toolName: 'other', readOnlyConfirmed: true } } };
+  expect((await call(owner, 'PATCH', base(`/${artifact.id}`), { input: { document: switched }, expectedRevision: current.studioRevision })).status).toBe(200);
+  expect((await refresh(owner, artifact.id)).status).toBe(200);
+  expect((await refresh(editor, artifact.id)).json.error.code).toBe('LIVE_ARTIFACT_SOURCE_RECONFIRM_REQUIRED');
+  // A descriptor written through the store directly (as the agent tools do) carries no person's confirmation.
+  const agentWritten = new StudioLiveArtifacts(db, path.join(root, 'projects')).create(projectId, document(mcpSource()));
+  expect((await refresh(owner, agentWritten.id)).json.error.code).toBe('LIVE_ARTIFACT_SOURCE_RECONFIRM_REQUIRED');
+  expect(db.prepare('SELECT COUNT(*) AS n FROM studio_live_artifact_mcp_confirmations WHERE artifact_id = ?').get(agentWritten.id)).toEqual({ n: 0 });
 });
 
 it('S62 MCP credential echoes are scrubbed before mapping and absent from SQLite/WAL, data files, logs and history', async () => {

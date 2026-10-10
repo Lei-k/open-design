@@ -4,7 +4,7 @@ import {
   buildAuthorizeUrl, deriveCodeChallenge, discoverAuthServer, discoverProtectedResource, generateCodeVerifier,
   registerClient, type AuthorizationServerMetadata,
 } from '../mcp-oauth.js';
-import { sseStopWhen } from './sse-frames.js';
+import { sseStopWhen, type SseStopWhen } from './sse-frames.js';
 import { credentialsSent, untrustedProtocolVersion, untrustedText, untrustedTokenType, type KnownSecrets } from './studio-untrusted.js';
 
 /**
@@ -57,17 +57,16 @@ export function asFetch(safe: SafeOutboundFetch, options: { signal?: AbortSignal
 
 const PROTOCOL_VERSION = '2025-06-18';
 
-function firstSseData(text: string, event?: string): string | null {
-  for (const block of text.split(/\r?\n\r?\n/)) {
-    const lines = block.split(/\r?\n/);
-    const name = lines.find((line) => line.startsWith('event:'))?.slice(6).trim() ?? 'message';
-    const data = lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n');
-    if (data && (event === undefined || name === event)) return data;
-  }
-  return null;
+/**
+ * Stop once an event (of `event`, when given) with data arrives, keeping its
+ * data; incremental and spec-framed (CR/LF/CRLF, EOF), see `sse-frames.ts`.
+ * The body is never re-split afterwards.
+ */
+function sseFirst(event?: string): { stopWhen: SseStopWhen; data(): string | null } {
+  let first: string | null = null;
+  const stopWhen = sseStopWhen((frame) => (event === undefined || frame.event === event) && (first = frame.data, true));
+  return { stopWhen, data: () => { if (first === null) stopWhen.end(); return first; } };
 }
-/** Stop once an event (of `event`, when given) with data arrives; incremental, see `sse-frames.ts` (S62 A1). */
-const sseDone = (event?: string) => sseStopWhen((frame) => event === undefined || frame.event === event);
 
 export interface StudioMcpProbeAccess {
   /**
@@ -97,23 +96,25 @@ export async function probeStudioMcpServer(safe: SafeOutboundFetch, server: { tr
   };
   try {
     if (server.transport === 'sse') {
-      const response = await safe(server.url, { method: 'GET', headers: { accept: 'text/event-stream' }, stopWhen: sseDone('endpoint'),
+      const endpoint = sseFirst('endpoint');
+      const response = await safe(server.url, { method: 'GET', headers: { accept: 'text/event-stream' }, stopWhen: endpoint.stopWhen,
         beforeConnect, ...(signal ? { signal } : {}) });
       if (response.status === 401 || response.status === 403) return { ...base, code: 'unauthorized', httpStatus: response.status, needsAuth: true };
       if (response.status < 200 || response.status >= 300) return { ...base, code: 'status', httpStatus: response.status };
-      return firstSseData(response.text(), 'endpoint') !== null ? { ...base, ok: true, httpStatus: response.status }
+      return endpoint.data() !== null ? { ...base, ok: true, httpStatus: response.status }
         : { ...base, code: 'protocol', httpStatus: response.status };
     }
+    const answer = sseFirst();
     const response = await safe(server.url, { method: 'POST', ...(signal ? { signal } : {}), beforeConnect,
       headers: { accept: 'application/json, text/event-stream', 'content-type': 'application/json', 'mcp-protocol-version': PROTOCOL_VERSION },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize',
         params: { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'OpenDesign Studio', version: '1' } } }),
       // A JSON answer is read to its end; an event-stream answer stops after its first event.
-      stopWhen: sseDone() });
+      stopWhen: answer.stopWhen });
     if (response.status === 401 || response.status === 403) return { ...base, code: 'unauthorized', httpStatus: response.status, needsAuth: true };
     if (response.status < 200 || response.status >= 300) return { ...base, code: 'status', httpStatus: response.status };
     const type = response.headers.get('content-type') ?? '';
-    const raw = /text\/event-stream/i.test(type) ? firstSseData(response.text()) : response.text();
+    const raw = /text\/event-stream/i.test(type) ? answer.data() : response.text();
     type InitializeMessage = { result?: { protocolVersion?: unknown; serverInfo?: { name?: unknown } } };
     let message: InitializeMessage | null;
     try { message = raw ? JSON.parse(raw) as InitializeMessage : null; } catch { message = null; }

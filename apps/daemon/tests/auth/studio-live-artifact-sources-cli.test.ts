@@ -52,6 +52,20 @@ it('S62 od live-artifact create --source-mcp … and refresh --json read the cal
   const history = success(await cli(['live-artifact', 'history', projectId, artifact.id, '--session-file', session, '--json'])).refreshes;
   expect(history.at(-1).studioSource).toEqual({ kind: 'mcp', id: 'mine', tool: 'lookup' });
   for (const form of encodedForms(MCP_HEADER_SENTINEL)) expect(JSON.stringify(refreshed) + JSON.stringify(history)).not.toContain(form);
+  // S62 Repair 1: after alice re-points her server the refresh asks her to reconfirm; `update
+  // --source-mcp … --confirm-read-only` is that reconfirmation, then refresh reads the new endpoint.
+  const servers = await daemon.request({ method: 'GET', path: '/api/multiuser/mcp/servers', cookie: alice.cookie, headers: { origin: MU_TEST_ORIGIN } });
+  expect((await daemon.request({ method: 'PATCH', path: '/api/multiuser/mcp/servers/mine', cookie: alice.cookie, headers: { origin: MU_TEST_ORIGIN },
+    body: { revision: servers.json.servers[0].revision, url: fixture.url('/runtime', 'moved.fixture.test') } })).status).toBe(200);
+  const sent = fixture.requests.length;
+  const stale = await cli(['live-artifact', 'refresh', projectId, artifact.id, '--session-file', session, '--json']);
+  expect(stale.code).not.toBe(0); expect(stale.stderr).toContain('LIVE_ARTIFACT_SOURCE_RECONFIRM_REQUIRED'); expect(fixture.requests).toHaveLength(sent);
+  const info = success(await cli(['live-artifact', 'info', projectId, artifact.id, '--session-file', session, '--json'])).artifact;
+  success(await cli(['live-artifact', 'update', projectId, artifact.id, '--prompt-file', '-', '--source-mcp', 'mine:lookup', '--confirm-read-only',
+    '--source-input-file', args, '--session-file', session, '--json'], JSON.stringify({ input: { document: info.document }, expectedRevision: info.studioRevision })));
+  const reconfirmed = success(await cli(['live-artifact', 'refresh', projectId, artifact.id, '--session-file', session, '--json']));
+  expect(reconfirmed.artifact.document.dataJson).toEqual({ total: 12 });
+  expect(fixture.requests.at(-1)!.host.split(':')[0]).toBe('moved.fixture.test');
   // Another account (no project access) gets the same not-found refusal, as JSON on stderr.
   const foreign = await cli(['live-artifact', 'refresh', projectId, artifact.id, '--session-file', bobSession, '--json']);
   expect(foreign.code).not.toBe(0); expect(foreign.stderr).toContain('NOT_FOUND');

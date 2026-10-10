@@ -10,7 +10,12 @@
 //   /http/bulk, /sse/bulk   tools/call answers with 900 one-KiB `ping` frames,
 //                           then the result (under every frame/size cap);
 //   /http/notes             tools/call answers with 900 one-KiB JSON-RPC
-//                           notifications (`event: message`), then the result.
+//                           notifications (`event: message`), then the result;
+//   /http/grow, /sse/grow   tools/call answers with ONE unfinished frame: ~930 KiB
+//                           at once, then one more byte every millisecond, never
+//                           a line end (S62 Repair 1, the reviewer's case);
+//   /probe/grow             the same growing frame answers the connection test's
+//                           `initialize` (streamable HTTP).
 // GET /stats reports the bytes written for tools/call streams so far.
 import { spawn, type ChildProcess } from 'node:child_process';
 
@@ -23,6 +28,11 @@ const answer = (msg) => msg.method === 'initialize' ? { protocolVersion: '2025-0
 const frame = (id, msg) => 'event: message\ndata: ' + JSON.stringify({ jsonrpc: '2.0', id, result: answer(msg) }) + '\n\n';
 function stream(res, kind, msg, end) {
   let n = 0;
+  if (kind === 'grow') {
+    write(res, 'event: message\ndata: ' + 'x'.repeat(950000));
+    const tick = () => { if (n++ >= 50000 || !write(res, 'x')) return end && res.end(); setTimeout(tick, 1); };
+    return tick();
+  }
   if (kind === 'drip') {
     const tick = () => { if (n++ >= 12000 || !write(res, 'event: ping\ndata: ' + 'p'.repeat(60) + '\n\n')) return end && res.end(); setTimeout(tick, 1); };
     return tick();
@@ -51,7 +61,7 @@ const server = http.createServer((req, res) => {
       return void write(out, frame(msg.id, msg));
     }
     if (msg.id === undefined) { res.writeHead(202); return void res.end(); }
-    if (msg.method === 'tools/call') { res.writeHead(200, { 'content-type': 'text/event-stream' }); return stream(res, kind, msg, true); }
+    if (msg.method === 'tools/call' || transport === 'probe') { res.writeHead(200, { 'content-type': 'text/event-stream' }); return stream(res, kind, msg, true); }
     res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: answer(msg) }));
   });
 });

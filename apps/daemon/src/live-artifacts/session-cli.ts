@@ -15,6 +15,9 @@ Source options (create/update; the JSON must carry input.document):
   --source-input-file <path|->                  JSON object of tool arguments (default {})
 A connector/MCP source stores ids only. Refresh always runs with the refreshing
 account's own connection or server; an existing outputMapping in the JSON is kept.
+The MCP read-only confirmation is yours and holds for your server as it is now: when
+refresh answers LIVE_ARTIFACT_SOURCE_RECONFIRM_REQUIRED (you never confirmed, or your
+server was re-pointed or recreated), run update with --source-mcp and --confirm-read-only.
 
 Common options: --session-file <path>, --daemon-url <url>, --json.`;
 

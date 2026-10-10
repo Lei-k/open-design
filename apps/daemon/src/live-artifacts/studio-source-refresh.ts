@@ -9,7 +9,7 @@ import { StudioMcpRuntimeError, studioMcpToolName, type StudioMcpRuntime } from 
 import { getStaticComposioCatalogDefinitions } from '../connectors/composio.js';
 import { CompanyComposioStore, StudioConnectorStore } from '../storage/studio-connectors.js';
 import { StudioMcpStore } from '../storage/studio-mcp.js';
-import { StudioLiveArtifactRefusal, studioRefreshChanged, studioSourceNotReadOnly, type StudioLiveArtifacts,
+import { StudioLiveArtifactRefusal, studioRefreshChanged, studioSourceNotReadOnly, studioSourceReconfirm, type StudioLiveArtifacts,
   type StudioSourceSnapshot } from '../storage/studio-live-artifacts.js';
 
 /**
@@ -32,12 +32,23 @@ import { StudioLiveArtifactRefusal, studioRefreshChanged, studioSourceNotReadOnl
  *   `beforeConnect`, liveness and budget checks therefore apply unchanged.
  * - Only read-only tools: the S59 connector safety classifier (read/auto), or
  *   the MCP server's own `annotations.readOnlyHint === true` together with the
- *   creator's stored confirmation. MCP annotations are untrusted hints; the
- *   call still runs only with the actor's own authority.
- * - The caller's authority, project write access, the artifact revision and
- *   descriptor are re-checked after every await, by the runtime before every
- *   outbound request, and synchronously inside the transaction that replaces
- *   the data. Any loss writes nothing and sends nothing further.
+ *   REFRESHING account's own stored confirmation. A confirmation is bound to
+ *   the server instance and generation (endpoint) it was given for, the tool,
+ *   and the readOnlyHint it accepted (true); after a server is replaced,
+ *   re-pointed or deleted and recreated under the same id — or for an account
+ *   that never confirmed — the refresh is refused with
+ *   `LIVE_ARTIFACT_SOURCE_RECONFIRM_REQUIRED` before anything is sent or
+ *   written, until that account confirms again (S62 Repair 1). MCP annotations
+ *   are untrusted hints; the call still runs only with the actor's own
+ *   authority.
+ * - The caller's authority (project write access; the run for an agent), the
+ *   refresh grant itself (token not revoked or expired, account authority), the
+ *   artifact revision and descriptor are re-checked after every await, by the
+ *   runtime before every outbound request, and synchronously inside the
+ *   transaction that writes. A refresh that loses authority writes nothing at
+ *   all — not even a failed-refresh record; only its audit row remains. A
+ *   controlled deadline or a source failure while authority holds records a
+ *   failed refresh and keeps the previous data (S62 Repair 1).
  * - Tool output is scrubbed by the runtime (known credential representations),
  *   bounded, mapped (S53) and rendered before the atomic replace; provenance
  *   records kind, id, tool, actor, byte count and SHA-256 of the mapped input.
@@ -51,6 +62,8 @@ export interface StudioSourceRefreshActor {
   authorized(): boolean;
 }
 
+/** How long a refresh grant's token outlives the refresh deadline (see `grant`). */
+const DEADLINE_GRACE_MS = 5_000;
 const unavailable = () => new StudioLiveArtifactRefusal(409, 'this source is not available to your account', 'LIVE_ARTIFACT_SOURCE_UNAVAILABLE');
 const failed = (reason: string) => new StudioLiveArtifactRefusal(502, 'the source could not be refreshed', 'LIVE_ARTIFACT_SOURCE_FAILED', { reason });
 type RuntimeError = StudioConnectorRuntimeError | StudioMcpRuntimeError;
@@ -90,6 +103,27 @@ export class StudioLiveArtifactSourceRefresh {
     return { connectors, mcpServers };
   }
 
+  /**
+   * Record the actor's own read-only confirmation of the artifact's MCP source,
+   * bound to the actor's current server instance and generation and the tool
+   * (S62 Repair 1). Called after an owner/editor saves the descriptor with the
+   * confirmation ticked (Web editor, CLI `--confirm-read-only`). No provider
+   * call; without a usable server of that id nothing is recorded (a refresh
+   * then answers SOURCE_UNAVAILABLE). Agent-written descriptors record nothing:
+   * the confirmation is a person's.
+   */
+  confirmMcpSource(projectId: string, artifactId: string, actor: AuthActor): boolean {
+    if (!this.deps.mcp) return false;
+    const { source } = this.deps.store.sourceSnapshot(projectId, artifactId);
+    if (source.type !== 'mcp_tool') return false;
+    let server;
+    try { server = this.deps.mcp.capture(actor, [source.mcp.serverId])?.servers[0]; } catch { return false; }
+    if (!server) return false;
+    this.deps.store.confirmMcpSource(projectId, artifactId, actor.accountId,
+      { serverId: source.mcp.serverId, instanceId: server.instanceId, generation: server.generation, toolName: source.mcp.toolName, readOnlyHint: true });
+    return true;
+  }
+
   /** Grant for one refresh/discovery: the actor's own connection/server, a one-call budget, the deadline as TTL. */
   private grant(kind: 'connector' | 'mcp', sourceId: string, projectId: string, who: StudioSourceRefreshActor, operation: 'list' | 'execute') {
     const runtime = kind === 'connector' ? this.deps.connectors : this.deps.mcp;
@@ -103,7 +137,9 @@ export class StudioLiveArtifactSourceRefresh {
     if (!bound) throw unavailable();
     const id = `live-artifact-refresh:${randomUUID()}`;
     const endpoint = `/api/tools/${kind === 'connector' ? 'connectors' : 'mcp'}/${operation}`;
-    const grant = this.tokens.mint({ runId: id, projectId, ttlMs: this.deadlineMs, callLimit: LIMITS.calls,
+    // The token outlives the controlled deadline by a short grace, so the deadline (not the
+    // token's own expiry) always ends a slow refresh; any other loss of the token is a revocation.
+    const grant = this.tokens.mint({ runId: id, projectId, ttlMs: this.deadlineMs + DEADLINE_GRACE_MS, callLimit: LIMITS.calls,
       allowedEndpoints: [endpoint], allowedOperations: [`${kind === 'connector' ? 'connectors' : 'mcp'}:${operation}`],
       ...(kind === 'connector' ? { studioConnectors: bound as NonNullable<ToolTokenGrant['studioConnectors']> } : { studioMcp: bound as NonNullable<ToolTokenGrant['studioMcp']> }) });
     runtime.registerEphemeral(id);
@@ -112,8 +148,15 @@ export class StudioLiveArtifactSourceRefresh {
     return {
       grant, runtime,
       timedOut: () => timedOut,
-      /** The grant's own account authority (account, role, pilot, epoch, session, connection/server versions). */
-      assert: () => { kind === 'connector' ? this.deps.connectors!.assert(grant.studioConnectors!) : this.deps.mcp!.assert(grant.studioMcp!); },
+      /**
+       * The grant itself: its token still valid (not revoked, not expired) unless the
+       * controlled deadline retired it, and its account authority (account, role,
+       * pilot, epoch, session, connection/server versions).
+       */
+      assert: () => {
+        if (!timedOut && !this.tokens.validate(grant.token).ok) throw studioRefreshChanged();
+        kind === 'connector' ? this.deps.connectors!.assert(grant.studioConnectors!) : this.deps.mcp!.assert(grant.studioMcp!);
+      },
       release: () => { clearTimeout(timer); this.tokens.revokeToken(grant.token); runtime.releaseEphemeral(id); },
     };
   }
@@ -127,11 +170,19 @@ export class StudioLiveArtifactSourceRefresh {
     const tool = source.type === 'connector_tool' ? source.connector.toolName : source.mcp.toolName;
     let outcome = 'refused';
     let lease: ReturnType<StudioLiveArtifactSourceRefresh['grant']> | null = null;
-    /** Caller authority, project access, revision and descriptor; then the grant's own authority once minted. */
+    /** The actor's own MCP confirmation still matches the pinned server instance/generation and tool. */
+    const confirmed = () => {
+      if (kind !== 'mcp' || !lease) return;
+      const server = lease.grant.studioMcp!.servers[0]!; const confirmation = this.deps.store.mcpConfirmation(artifactId, who.actor.accountId);
+      if (!confirmation || confirmation.serverId !== sourceId || confirmation.toolName !== tool || confirmation.readOnlyHint !== true
+        || confirmation.instanceId !== server.instanceId || confirmation.generation !== server.generation) throw studioSourceReconfirm();
+    };
+    /** Caller authority, project access, revision and descriptor; then the grant's own authority and the confirmation once minted. */
     const current = () => {
       if (!who.authorized()) throw studioRefreshChanged();
       this.deps.store.assertSourceCurrent(projectId, artifactId, snapshot.revision, snapshot.key);
       try { lease?.assert(); } catch { throw studioRefreshChanged(); }
+      confirmed();
     };
     try {
       lease = this.grant(kind, sourceId, projectId, who, 'execute');

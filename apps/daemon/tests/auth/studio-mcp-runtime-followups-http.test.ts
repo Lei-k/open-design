@@ -73,6 +73,32 @@ it.each([['http', 'drip'], ['sse', 'drip'], ['http', 'bulk'], ['sse', 'bulk'], [
     expect(used, `cpu ${Math.round(used)} ms for ${Math.round(kib)} KiB`).toBeLessThan(2000 + 2 * kib);
   }, 60_000);
 
+// S62 Repair 1 (P1): ONE frame that grows a byte at a time and never ends must also cost
+// CPU proportional to its bytes — on streamable HTTP, legacy SSE and the connection test.
+// Promoted from the S62 reviewer's large-frame probes (a scratch handoff outside git).
+it.each(['http', 'sse'] as const)('S62 R1 a %s tools/call answered by one ever-growing unfinished frame costs CPU proportional to its bytes', async (transport) => {
+  const grant = await grantFor(slow.url(`/${transport}/grow`), transport);
+  const bytesBefore = await slow.streamBytes();
+  const since = process.cpuUsage();
+  const result = await tools(grant.token, args);
+  const used = cpuMs(since); const kib = (await slow.streamBytes() - bytesBefore) / 1024;
+  expect(result.status, result.text).toBeGreaterThanOrEqual(400); // never completes: refused at the deadline
+  process.stderr.write(`S62 R1 ${transport}/grow: status ${result.status}, cpu ${Math.round(used)} ms for ${Math.round(kib)} KiB\n`);
+  expect(kib).toBeGreaterThan(900);
+  expect(used, `cpu ${Math.round(used)} ms for ${Math.round(kib)} KiB`).toBeLessThan(2000 + 2 * kib);
+}, 60_000);
+it('S62 R1 the connection test answered by one ever-growing unfinished frame costs CPU proportional to its bytes', async () => {
+  const made = await call(a, 'POST', '/api/multiuser/mcp/servers', { id: 'probe', transport: 'http', url: slow.url('/probe/grow'), headers: { 'X-Api-Key': MCP_HEADER_SENTINEL } });
+  expect(made.status, made.text).toBe(201);
+  const bytesBefore = await slow.streamBytes();
+  const since = process.cpuUsage();
+  const result = await call(a, 'POST', '/api/multiuser/mcp/servers/probe/test', {});
+  const used = cpuMs(since); const kib = (await slow.streamBytes() - bytesBefore) / 1024;
+  process.stderr.write(`S62 R1 probe/grow: status ${result.status}, cpu ${Math.round(used)} ms for ${Math.round(kib)} KiB\n`);
+  expect(kib).toBeGreaterThan(900);
+  expect(used, `cpu ${Math.round(used)} ms for ${Math.round(kib)} KiB`).toBeLessThan(2000 + 2 * kib);
+}, 60_000);
+
 // A2: discovery counts against the run budget, stops after exhaustion and is audited.
 it('S62 A2 mcp_list after the run budget is exhausted sends nothing and writes an audit row', async () => {
   const grant = await grantFor(fixture.url('/runtime'));

@@ -38,9 +38,11 @@ export async function studioMcpSession(input: {
   const post = async (url: string, method: string, params: unknown, id?: number) => {
     input.live();
     let matched: string | undefined;
+    const stopWhen = id === undefined ? undefined : sseStopWhen((frame) => frameId(frame) === id && (matched = frame.data, true));
     const response = await input.safe(url, { method: 'POST', headers: headers(), body: envelope(method, params, id), signal: input.signal,
-      beforeConnect: input.beforeConnect,
-      ...(id === undefined ? {} : { stopWhen: sseStopWhen((frame) => frameId(frame) === id && (matched = frame.data, true)) }) });
+      beforeConnect: input.beforeConnect, ...(stopWhen ? { stopWhen } : {}) });
+    // The body ended without a match: finalize the reader at EOF (an unterminated block is discarded).
+    if (stopWhen && matched === undefined) stopWhen.end();
     input.live();
     if (response.status < 200 || response.status >= 300) throw new StudioMcpProtocolError();
     const next = response.headers.get('mcp-session-id');
@@ -79,25 +81,9 @@ export async function studioMcpSession(input: {
   };
   try {
     await input.safe(input.url, { headers: { accept: 'text/event-stream' }, signal, beforeConnect: input.beforeConnect,
-      onChunk: (chunk) => {
-        // Recheck authority before acting on any message; data-less and unrelated
-        // blocks are only counted (the runtime's 20 ms watch covers idle streams).
-        for (const frame of reader.push(chunk)) {
-          if (frame.event !== 'endpoint' && frame.event !== 'message') continue;
-          input.live();
-          if (frame.event === 'endpoint' && !started) {
-            const target = new URL(frame.data, input.url);
-            if (target.origin !== new URL(input.url).origin || !input.endpointAllowed(target.toString())) throw new StudioMcpProtocolError();
-            endpoint = target.toString(); started = true;
-            work = initialize(rpc, async () => { await post(endpoint!, 'notifications/initialized', undefined); input.live(); });
-            // End the inbound socket on both success and refusal, including while idle.
-            work.then(() => stop.abort(), () => stop.abort());
-          } else if (frame.event === 'message') {
-            const value = message(frame.data); const waiter = waits.get(Number(value.id));
-            if (waiter) { waits.delete(Number(value.id)); try { waiter.resolve(checkedResult(value, Number(value.id))); } catch (error) { waiter.reject(error); } }
-          }
-        }
-      } });
+      onChunk: (chunk) => handle(reader.push(chunk)) });
+    // EOF: finalize the reader (complete blocks only; an unterminated one is discarded).
+    handle(reader.end());
     input.live();
     if (!work) throw new StudioMcpProtocolError();
   } catch (error) {
@@ -107,4 +93,23 @@ export async function studioMcpSession(input: {
   } finally { stop.abort(); }
   if (!work) throw new StudioMcpProtocolError();
   const result = await work; input.live(); return result;
+  function handle(frames: SseFrame[]): void {
+    // Recheck authority before acting on any message; data-less and unrelated
+    // blocks are only counted (the runtime's 20 ms watch covers idle streams).
+    for (const frame of frames) {
+      if (frame.event !== 'endpoint' && frame.event !== 'message') continue;
+      input.live();
+      if (frame.event === 'endpoint' && !started) {
+        const target = new URL(frame.data, input.url);
+        if (target.origin !== new URL(input.url).origin || !input.endpointAllowed(target.toString())) throw new StudioMcpProtocolError();
+        endpoint = target.toString(); started = true;
+        work = initialize(rpc, async () => { await post(endpoint!, 'notifications/initialized', undefined); input.live(); });
+        // End the inbound socket on both success and refusal, including while idle.
+        work.then(() => stop.abort(), () => stop.abort());
+      } else if (frame.event === 'message') {
+        const value = message(frame.data); const waiter = waits.get(Number(value.id));
+        if (waiter) { waits.delete(Number(value.id)); try { waiter.resolve(checkedResult(value, Number(value.id))); } catch (error) { waiter.reject(error); } }
+      }
+    }
+  }
 }

@@ -327,8 +327,10 @@ export class StudioConnectorStore {
  *   revoke, password reset, disable, role change, logout) bumps it, and a grant
  *   captured under an older epoch is refused at the provider boundary.
  * - The immutable per-call tool audit: actor, connector, tool slug, run id,
- *   outcome category and time only — never arguments, results, entities,
- *   provider ids or keys. Completed rows also count toward the per-run limit.
+ *   outcome category, duration and time only — never arguments, results,
+ *   entities, provider ids or keys. Provider tool discovery is audited with an
+ *   empty tool slug (S62 Repair 1). Completed rows also count toward the
+ *   per-run limit.
  */
 export class StudioConnectorGrantStore {
   constructor(private readonly db: Database.Database, private readonly now: () => number = Date.now) {
@@ -347,6 +349,9 @@ export class StudioConnectorGrantStore {
         BEGIN SELECT RAISE(ABORT, 'audit rows are immutable'); END;
       CREATE TRIGGER IF NOT EXISTS studio_connector_tool_audit_no_delete BEFORE DELETE ON studio_connector_tool_audit
         BEGIN SELECT RAISE(ABORT, 'audit rows are immutable'); END;`);
+    // S62 Repair 1: discovery attempts are audited with their duration too (older rows read 0).
+    const columns = db.prepare('PRAGMA table_info(studio_connector_tool_audit)').all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === 'duration_ms')) db.exec('ALTER TABLE studio_connector_tool_audit ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0');
   }
   epoch(owner: string): number {
     return (this.db.prepare('SELECT version FROM studio_connector_grant_epochs WHERE account_id = ?').get(owner) as { version: number } | undefined)?.version ?? 0;
@@ -363,8 +368,9 @@ export class StudioConnectorGrantStore {
     this.db.prepare(`INSERT INTO studio_mcp_tool_audit (actor_account_id, server_id, tool_name, run_id, outcome, duration_ms, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)`).run(row.owner, row.serverId, row.toolName, row.runId, row.outcome, row.durationMs, this.now());
   }
-  appendToolAudit(row: { owner: string; connectorId: string; toolSlug: string; runId: string; outcome: string }): void {
-    this.db.prepare(`INSERT INTO studio_connector_tool_audit (actor_account_id, connector_id, tool_slug, run_id, outcome, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)`).run(row.owner, row.connectorId, row.toolSlug, row.runId, row.outcome, this.now());
+  /** One provider attempt; `toolSlug` is empty for a discovery (S62 Repair 1). */
+  appendToolAudit(row: { owner: string; connectorId: string; toolSlug: string; runId: string; outcome: string; durationMs?: number }): void {
+    this.db.prepare(`INSERT INTO studio_connector_tool_audit (actor_account_id, connector_id, tool_slug, run_id, outcome, duration_ms, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(row.owner, row.connectorId, row.toolSlug, row.runId, row.outcome, Math.max(0, Math.round(row.durationMs ?? 0)), this.now());
   }
 }

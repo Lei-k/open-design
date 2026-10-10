@@ -151,10 +151,30 @@ it('S62 keeps a stored MCP source editable and offers no tool sources when the t
   render(<StudioLiveArtifactEditor projectId="project" artifact={stored} onClose={vi.fn()} onSaved={vi.fn()} toolSources={{ connectors: false, mcp: false }} />);
   expect((screen.getByRole('combobox', { name: 'Data source' }) as HTMLSelectElement).value).toBe('mcp');
   expect((screen.getByRole('combobox', { name: 'Read-only tool' }) as HTMLSelectElement).value).toBe('lookup');
-  expect((screen.getByLabelText('I confirm this MCP tool only reads data') as HTMLInputElement).checked).toBe(true);
+  // S62 Repair 1: the confirmation is the saver's own, bound to their server instance — never pre-ticked.
+  expect((screen.getByLabelText('I confirm this MCP tool only reads data') as HTMLInputElement).checked).toBe(false);
   cleanup();
   render(<StudioLiveArtifactEditor projectId="project" onClose={vi.fn()} onSaved={vi.fn()} toolSources={{ connectors: false, mcp: false }} />);
   expect(screen.queryByRole('combobox', { name: 'Data source' })).toBeNull();
+});
+it('S62 R1 an owner/editor reconfirms a stored MCP source by ticking the confirmation and saving', async () => {
+  const calls = mockSources(); const saved = vi.fn();
+  const stored: LiveArtifact = { ...artifact, document: { ...artifact.document, sourceJson: { type: 'mcp_tool', mcp: { serverId: 'mine', toolName: 'lookup', readOnlyConfirmed: true },
+    input: { q: 'x' }, refreshPermission: 'manual_refresh_granted_for_read_only' } } };
+  render(<StudioLiveArtifactEditor projectId="project" artifact={stored} onClose={vi.fn()} onSaved={saved} toolSources={{ connectors: false, mcp: true }} />);
+  const save = await screen.findByRole('button', { name: 'Save' });
+  await waitFor(() => expect(save).toHaveProperty('disabled', false));
+  fireEvent.click(save);
+  expect(screen.getByRole('alert').textContent).toContain('confirm');
+  expect(calls.some((call) => call.method === 'PATCH')).toBe(false);
+  fireEvent.click(screen.getByLabelText('I confirm this MCP tool only reads data'));
+  fireEvent.click(save);
+  await waitFor(() => expect(saved).toHaveBeenCalledOnce());
+  const patch = calls.find((call) => call.method === 'PATCH')!;
+  expect(patch.url).toBe('/api/live-artifacts/live-fixture?projectId=project');
+  expect(patch.body.expectedRevision).toBe(1);
+  expect(patch.body.input.document.sourceJson).toEqual({ type: 'mcp_tool', mcp: { serverId: 'mine', toolName: 'lookup', readOnlyConfirmed: true },
+    input: { q: 'x' }, refreshPermission: 'manual_refresh_granted_for_read_only' });
 });
 it('S62 opens the source routes only with files+preview and the matching capability', () => {
   const usable = (lane: string) => ['files', 'preview'].includes(lane);

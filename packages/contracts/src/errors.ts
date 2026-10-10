@@ -264,11 +264,16 @@ export const API_ERROR_CODES = [
   // refresh ran, so nothing was written and nothing further was sent;
   // SOURCE_FAILED: the source failed, timed out or answered with output that
   // could not be mapped (details.reason), so the previous data was kept and a
-  // failed refresh was recorded.
+  // failed refresh was recorded. SOURCE_RECONFIRM_REQUIRED (S62 Repair 1): the
+  // refreshing account's own read-only confirmation of an MCP source is missing
+  // or was given for another server instance, generation (endpoint) or tool;
+  // nothing was sent or written until that account confirms again
+  // (details.reason = "reconfirm").
   'LIVE_ARTIFACT_SOURCE_UNAVAILABLE',
   'LIVE_ARTIFACT_SOURCE_FAILED',
   'LIVE_ARTIFACT_SOURCE_NOT_READ_ONLY',
   'LIVE_ARTIFACT_REFRESH_AUTHORITY_CHANGED',
+  'LIVE_ARTIFACT_SOURCE_RECONFIRM_REQUIRED',
   'INTERNAL_ERROR',
 ] as const;
 

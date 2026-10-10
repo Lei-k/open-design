@@ -25,6 +25,19 @@ export interface StudioSourceSnapshot { artifact: LiveArtifact; source: StudioTo
 export interface StudioSourceAuditRow {
   actor: string; projectId: string; artifactId: string; kind: 'connector' | 'mcp'; sourceId: string; tool: string; outcome: string; durationMs: number;
 }
+/**
+ * One account's read-only confirmation of an MCP source (S62 Repair 1): valid only for
+ * the server instance and generation, and the tool, it was given for.
+ */
+export interface StudioMcpConfirmation { serverId: string; instanceId: string; generation: number; toolName: string; readOnlyHint: boolean }
+/** The MCP server and tool a descriptor names (confirmations are void when it changes). */
+const mcpIdentity = (source: LiveArtifact['document']['sourceJson']): string | null =>
+  source?.type === 'mcp_tool' && source.mcp ? JSON.stringify([source.mcp.serverId, source.mcp.toolName]) : null;
+/** The refreshing account has no valid confirmation for this MCP server instance/generation and tool. */
+export const studioSourceReconfirm = () => new StudioLiveArtifactRefusal(409,
+  'confirm again that this MCP tool only reads data: your confirmation is missing or was given for a different server instance, endpoint or tool. '
+  + 'Re-save the source with the read-only confirmation ticked (CLI: od live-artifact update with --source-mcp and --confirm-read-only).',
+  'LIVE_ARTIFACT_SOURCE_RECONFIRM_REQUIRED', { reason: 'reconfirm' });
 const invalid = () => new StudioLiveArtifactRefusal(400, 'invalid live artifact');
 const closed = (value: unknown, keys: string[]): value is Record<string, unknown> => value !== null && typeof value === 'object'
   && !Array.isArray(value) && Object.keys(value).every((key) => keys.includes(key));
@@ -52,7 +65,13 @@ export class StudioLiveArtifacts {
     CREATE TRIGGER IF NOT EXISTS studio_live_artifact_source_audit_immutable BEFORE UPDATE ON studio_live_artifact_source_audit
       BEGIN SELECT RAISE(ABORT, 'audit rows are immutable'); END;
     CREATE TRIGGER IF NOT EXISTS studio_live_artifact_source_audit_no_delete BEFORE DELETE ON studio_live_artifact_source_audit
-      BEGIN SELECT RAISE(ABORT, 'audit rows are immutable'); END;`);
+      BEGIN SELECT RAISE(ABORT, 'audit rows are immutable'); END;
+    -- S62 Repair 1: each refreshing account's own read-only confirmation of an MCP source, bound to the
+    -- server instance and generation it confirmed, the tool and the readOnlyHint it saw (ids only).
+    CREATE TABLE IF NOT EXISTS studio_live_artifact_mcp_confirmations (
+      artifact_id TEXT NOT NULL REFERENCES studio_live_artifacts(id) ON DELETE CASCADE, account_id TEXT NOT NULL,
+      server_id TEXT NOT NULL, instance_id TEXT NOT NULL, generation INTEGER NOT NULL, tool_name TEXT NOT NULL,
+      read_only_hint INTEGER NOT NULL, confirmed_at INTEGER NOT NULL, PRIMARY KEY (artifact_id, account_id));`);
   }
   private row(project: string, id: string): RecordRow {
     const row = this.db.prepare('SELECT artifact_json, template_html FROM studio_live_artifacts WHERE project_id = ? AND id = ?')
@@ -170,8 +189,14 @@ export class StudioLiveArtifacts {
     }
     const template = value.templateHtml === undefined ? previous.template_html : value.templateHtml;
     this.validateDocument(artifact); this.render(artifact, template);
-    this.db.prepare('UPDATE studio_live_artifacts SET artifact_json = ?, template_html = ? WHERE project_id = ? AND id = ?')
-      .run(JSON.stringify(artifact), template as string, project, id);
+    this.db.transaction(() => {
+      this.db.prepare('UPDATE studio_live_artifacts SET artifact_json = ?, template_html = ? WHERE project_id = ? AND id = ?')
+        .run(JSON.stringify(artifact), template as string, project, id);
+      // A different MCP server or tool (or no MCP source) voids every account's confirmation.
+      if (mcpIdentity(current.document.sourceJson) !== mcpIdentity(artifact.document.sourceJson)) {
+        this.db.prepare('DELETE FROM studio_live_artifact_mcp_confirmations WHERE artifact_id = ?').run(id);
+      }
+    })();
     return artifact;
   }
   code(project: string, id: string, variant: 'template' | 'rendered'): string {
@@ -327,6 +352,28 @@ export class StudioLiveArtifacts {
         { code: input.code, message: 'the source could not be refreshed' }, input.snapshot.source));
       return saved;
     })();
+  }
+  /**
+   * Record `accountId`'s own read-only confirmation of the artifact's MCP source,
+   * bound to the server instance/generation it was given for (S62 Repair 1).
+   * Only for the stored descriptor's server and tool; replaces that account's
+   * previous confirmation.
+   */
+  confirmMcpSource(project: string, id: string, accountId: string, binding: StudioMcpConfirmation): void {
+    const source = this.read(project, id).document.sourceJson;
+    if (source?.type !== 'mcp_tool' || source.mcp?.serverId !== binding.serverId || source.mcp.toolName !== binding.toolName || binding.readOnlyHint !== true) {
+      throw new StudioLiveArtifactRefusal(409, 'the source changed; nothing was confirmed');
+    }
+    this.db.prepare(`INSERT INTO studio_live_artifact_mcp_confirmations (artifact_id, account_id, server_id, instance_id, generation, tool_name, read_only_hint, confirmed_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?) ON CONFLICT(artifact_id, account_id) DO UPDATE SET server_id = excluded.server_id, instance_id = excluded.instance_id,
+      generation = excluded.generation, tool_name = excluded.tool_name, read_only_hint = excluded.read_only_hint, confirmed_at = excluded.confirmed_at`)
+      .run(id, accountId, binding.serverId, binding.instanceId, binding.generation, binding.toolName, Date.now());
+  }
+  /** `accountId`'s stored confirmation of this artifact's MCP source, if any. */
+  mcpConfirmation(id: string, accountId: string): StudioMcpConfirmation | null {
+    const row = this.db.prepare(`SELECT server_id, instance_id, generation, tool_name, read_only_hint FROM studio_live_artifact_mcp_confirmations
+      WHERE artifact_id = ? AND account_id = ?`).get(id, accountId) as { server_id: string; instance_id: string; generation: number; tool_name: string; read_only_hint: number } | undefined;
+    return row ? { serverId: row.server_id, instanceId: row.instance_id, generation: row.generation, toolName: row.tool_name, readOnlyHint: row.read_only_hint === 1 } : null;
   }
   appendSourceAudit(row: StudioSourceAuditRow): void {
     this.db.prepare(`INSERT INTO studio_live_artifact_source_audit (actor_account_id, project_id, artifact_id, source_kind, source_id, tool, outcome, duration_ms, created_at)

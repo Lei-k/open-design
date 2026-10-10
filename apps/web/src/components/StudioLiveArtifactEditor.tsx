@@ -40,7 +40,10 @@ export function StudioLiveArtifactEditor({ projectId, artifact, onClose, onSaved
   const [sourceId, setSourceId] = useState(existing?.connector?.connectorId ?? existing?.mcp?.serverId ?? '');
   const [tool, setTool] = useState(existing?.connector?.toolName ?? existing?.mcp?.toolName ?? '');
   const [args, setArgs] = useState(() => existing && existing.type !== 'local_file' ? JSON.stringify(existing.input, null, 2) : '{}');
-  const [confirmed, setConfirmed] = useState(existing?.mcp?.readOnlyConfirmed === true);
+  // The read-only confirmation is personal and bound to the saver's own server instance
+  // (S62 Repair 1): a stored MCP source is never pre-confirmed; ticking it and saving
+  // is how an owner/editor (re)confirms after the daemon asks for it.
+  const [confirmed, setConfirmed] = useState(false);
   const [catalog, setCatalog] = useState<StudioLiveArtifactSourceCatalog | null>(null);
   const [loadedTools, setLoadedTools] = useState<{ key: string; tools: StudioLiveArtifactSourceTool[] } | null>(null);
   const [toolsBusy, setToolsBusy] = useState(false);

@@ -1,22 +1,29 @@
 /**
- * Incremental, bounded Server-Sent Events reader for remote MCP streams (S62 A1).
+ * Incremental, bounded Server-Sent Events reader for remote MCP streams (S62 A1,
+ * S62 Repair 1).
  *
- * A hostile server can answer one request with a long stream of tiny frames.
- * The S61 parser re-joined and re-parsed the whole buffer on every chunk, so one
- * `tools/call` cost CPU quadratic in the stream length. This reader is linear:
+ * A hostile server can answer one request with a long stream of tiny frames, or
+ * with ONE frame that grows a byte at a time and never ends. Both must cost CPU
+ * linear in the bytes received:
  *
  * - each chunk is decoded once (a streaming UTF-8 decoder keeps a split code
- *   point for the next chunk) and appended to the unfinished tail only;
- * - only newly completed blocks are split out, by a forward scan from where the
- *   previous scan stopped, and the consumed prefix is dropped once per chunk;
+ *   point for the next chunk) and only the newly decoded characters are scanned
+ *   for a line end; the scan never revisits earlier text;
+ * - the unfinished line is kept as a list of fragments and joined exactly once,
+ *   when its line end arrives; a completed block is never re-joined or re-split;
+ * - line endings follow the SSE specification: CRLF, LF and lone CR. A CR ends
+ *   its line immediately; an LF that directly follows it (possibly in the next
+ *   chunk) is swallowed, so a block terminated by `\r\r` is dispatched without
+ *   waiting for more bytes;
  * - blocks without a `data:` line (comments such as `: ping`, `retry:` only)
  *   are skipped (S62 A3), and the caller decides cheaply by event name whether a
  *   block is worth parsing at all;
  * - at most `maxFrames` blocks per stream and `maxFrameChars` (decoded
- *   characters) per block, including an unfinished one; exceeding either throws
- *   `SseLimitExceeded`.
- *
- * Line endings follow the SSE specification: CRLF, LF and lone CR.
+ *   characters, line ends included) per block; the size bound is enforced on the
+ *   accumulated length of the unfinished block BEFORE anything is joined.
+ *   Exceeding either throws `SseLimitExceeded`;
+ * - `end()` finalizes the stream at EOF as the specification says: a pending
+ *   unterminated block is discarded, never dispatched.
  */
 import { OutboundRequestRefused } from '../http/safe-outbound-fetch.js';
 
@@ -27,68 +34,110 @@ export interface SseFrame { event: string; data: string }
 
 export const SSE_DEFAULT_LIMITS = { maxFrames: 1024, maxFrameChars: 1024 * 1024 } as const;
 
+const LF = 0x0a; const CR = 0x0d;
+
 export class SseFrameReader {
   private readonly decoder = new TextDecoder('utf-8');
-  private tail = '';
-  /** Index in `tail` up to which no block separator can start (resume the scan here). */
-  private scanned = 0;
-  private pendingCr = false;
+  /** Fragments of the current unfinished line, joined once at its line end. */
+  private line: string[] = [];
+  private lineChars = 0;
+  /** Characters (line ends included) of the completed lines of the current block. */
+  private blockChars = 0;
+  private event = 'message';
+  private data: string[] | null = null;
+  /** The previous chunk ended in CR: an LF opening the next chunk belongs to it. */
+  private swallowLf = false;
   private frames = 0;
+  private ended = false;
   constructor(private readonly limits: { maxFrames: number; maxFrameChars: number } = SSE_DEFAULT_LIMITS) {}
 
   /** Feed the next chunk; returns only the blocks it completed (data-less blocks omitted). */
   push(bytes: Uint8Array): SseFrame[] {
-    let text = this.decoder.decode(bytes, { stream: true });
-    if (this.pendingCr) { text = `\r${text}`; this.pendingCr = false; }
-    // A CR at the very end may be the first half of a CRLF; decide with the next chunk.
-    if (text.endsWith('\r')) { this.pendingCr = true; text = text.slice(0, -1); }
-    if (text.includes('\r')) text = text.replace(/\r\n?/g, '\n');
-    this.tail += text;
-    const out: SseFrame[] = [];
-    let start = 0;
-    for (;;) {
-      const end = this.tail.indexOf('\n\n', Math.max(start, this.scanned));
-      if (end < 0) break;
-      const block = this.tail.slice(start, end);
-      start = end + 2; this.scanned = start;
-      if (block.length > this.limits.maxFrameChars || ++this.frames > this.limits.maxFrames) throw new SseLimitExceeded();
-      const frame = parseBlock(block);
-      if (frame) out.push(frame);
-    }
-    if (start) { this.tail = this.tail.slice(start); this.scanned = 0; }
-    // Resume the next scan one character early: a separator may straddle chunks.
-    this.scanned = Math.max(0, this.tail.length - 1);
-    if (this.tail.length > this.limits.maxFrameChars) throw new SseLimitExceeded();
+    if (this.ended) return [];
+    return this.feed(this.decoder.decode(bytes, { stream: true }));
+  }
+
+  /** EOF: flush the decoder; an unterminated trailing block is discarded (SSE spec). */
+  end(): SseFrame[] {
+    if (this.ended) return [];
+    const out = this.feed(this.decoder.decode());
+    this.ended = true; this.line = []; this.lineChars = 0; this.resetBlock();
     return out;
   }
-}
 
-function parseBlock(block: string): SseFrame | null {
-  let event = 'message'; let data: string[] | null = null;
-  for (const line of block.split('\n')) {
-    if (line.startsWith('data:')) (data ??= []).push(line.slice(line.startsWith('data: ') ? 6 : 5));
-    else if (line.startsWith('event:')) event = line.slice(6).trim() || 'message';
+  private feed(text: string): SseFrame[] {
+    const out: SseFrame[] = [];
+    const n = text.length; let i = 0;
+    if (this.swallowLf && n) { if (text.charCodeAt(0) === LF) i = 1; this.swallowLf = false; }
+    while (i < n) {
+      // Forward scan of the new characters only.
+      let j = i; let code = 0;
+      for (; j < n; j++) { code = text.charCodeAt(j); if (code === LF || code === CR) break; }
+      if (j > i) {
+        this.lineChars += j - i;
+        // The cap applies to the accumulated block before any join.
+        if (this.blockChars + this.lineChars > this.limits.maxFrameChars) throw new SseLimitExceeded();
+        this.line.push(text.slice(i, j));
+      }
+      if (j >= n) break;
+      i = j + 1;
+      if (code === CR) {
+        if (i < n) { if (text.charCodeAt(i) === LF) i += 1; } else this.swallowLf = true;
+      }
+      const frame = this.endLine();
+      if (frame) out.push(frame);
+    }
+    return out;
   }
-  return data ? { event, data: data.join('\n') } : null;
+
+  private endLine(): SseFrame | null {
+    const line = this.line.length === 0 ? '' : this.line.length === 1 ? this.line[0]! : this.line.join('');
+    this.line = []; this.lineChars = 0;
+    if (line === '') {
+      // A blank line ends the block: count it, dispatch it if it carried data.
+      if (++this.frames > this.limits.maxFrames) throw new SseLimitExceeded();
+      const frame = this.data ? { event: this.event, data: this.data.join('\n') } : null;
+      this.resetBlock();
+      return frame;
+    }
+    this.blockChars += line.length + 1;
+    if (this.blockChars > this.limits.maxFrameChars) throw new SseLimitExceeded();
+    if (line.charCodeAt(0) === 0x3a) return null; // `:` comment / keep-alive
+    const colon = line.indexOf(':');
+    const field = colon < 0 ? line : line.slice(0, colon);
+    let value = colon < 0 ? '' : line.slice(colon + 1);
+    if (value.charCodeAt(0) === 0x20) value = value.slice(1);
+    if (field === 'data') (this.data ??= []).push(value);
+    else if (field === 'event') this.event = value.trim() || 'message';
+    return null;
+  }
+
+  private resetBlock(): void { this.event = 'message'; this.data = null; this.blockChars = 0; }
 }
 
 const isSpace = (byte: number) => byte === 0x20 || byte === 0x09 || byte === 0x0a || byte === 0x0d;
 
+/** A `stopWhen` that can also be finalized at EOF (`end`), see `SseFrameReader.end`. */
+export type SseStopWhen = ((chunk: Uint8Array) => boolean) & { end(): boolean };
+
 /**
  * A `stopWhen` for a response that may be JSON or an event stream, decided by
- * its first non-space byte: JSON (`{`/`[`) is read to its end (still bounded by
- * the guarded fetch), an event stream stops at the first block `matches`
- * accepts. Each chunk is parsed once; see `SseFrameReader`.
+ * its first non-space byte: JSON (`{`/`[`) is read to its end (the guarded
+ * fetch keeps chunks in a list and joins them once), an event stream stops at
+ * the first block `matches` accepts. Each chunk is parsed once; see
+ * `SseFrameReader`. Call `end()` after the body ended without a match.
  */
 export function sseStopWhen(matches: (frame: SseFrame) => boolean,
-  limits: { maxFrames: number; maxFrameChars: number } = SSE_DEFAULT_LIMITS): (chunk: Uint8Array) => boolean {
+  limits: { maxFrames: number; maxFrameChars: number } = SSE_DEFAULT_LIMITS): SseStopWhen {
   const reader = new SseFrameReader(limits); let mode: 'json' | 'sse' | null = null;
-  return (chunk) => {
+  const stop = ((chunk: Uint8Array) => {
     if (mode === null) {
       const first = chunk.findIndex((byte) => !isSpace(byte));
       if (first >= 0) mode = chunk[first] === 0x7b || chunk[first] === 0x5b ? 'json' : 'sse';
     }
     if (mode === 'json') return false;
     return reader.push(chunk).some(matches);
-  };
+  }) as SseStopWhen;
+  stop.end = () => mode !== 'json' && reader.end().some(matches);
+  return stop;
 }

@@ -60,13 +60,22 @@ export function registerStudioLiveArtifactRoutes(app: Express, input: {
     const actor = multiUserActorOf(res)!;
     return { actor, authorized: () => access.canWrite(project, actor.accountId) };
   };
+  /**
+   * S62 Repair 1: an owner/editor who saves an MCP source with `readOnlyConfirmed`
+   * confirms it for THEIR OWN server's current instance and generation; another
+   * account (or the same one after its server changed) must confirm again.
+   */
+  const confirmMcp = (project: string, artifact: LiveArtifact, res: Response) => {
+    const source = artifact.document.sourceJson;
+    if (source?.type === 'mcp_tool' && source.mcp?.readOnlyConfirmed === true) sourceRefresh.confirmMcpSource(project, artifact.id, multiUserActorOf(res)!);
+  };
   app.get(base, route(false, (_req, res, project) => res.json({ artifacts: store.list(project) })));
   app.post(base, route(true, (req, res, project) => {
     const sessionId = req.body?.input?.sessionId;
     if (sessionId !== undefined && getConversation(input.db, sessionId)?.projectId !== project) {
       throw new StudioLiveArtifactRefusal(404, 'resource not found');
     }
-    const artifact = store.create(project, req.body); changed(project, 'created', artifact);
+    const artifact = store.create(project, req.body); confirmMcp(project, artifact, res); changed(project, 'created', artifact);
     return res.status(201).json({ artifact });
   }));
   app.get(`${base}/:artifactId`, route(false, (_req, res, project, id) => res.json({ artifact: store.read(project, id) })));
@@ -74,7 +83,10 @@ export function registerStudioLiveArtifactRoutes(app: Express, input: {
   app.patch(`${base}/:artifactId`, route(true, (req, res, project, id) => {
     // The existing viewer sends a plain metadata update. The envelope also supports template editing.
     const value = req.body && Object.hasOwn(req.body, 'input') ? req.body : { input: req.body };
-    const artifact = store.update(project, id, value); changed(project, 'updated', artifact); return res.json({ artifact });
+    const artifact = store.update(project, id, value);
+    // Saving an MCP descriptor with the confirmation ticked is this person's own (re)confirmation.
+    if (value?.input?.document?.sourceJson !== undefined) confirmMcp(project, artifact, res);
+    changed(project, 'updated', artifact); return res.json({ artifact });
   }));
   app.delete(`${base}/:artifactId`, route(true, (_req, res, project, id) => {
     const artifact = store.read(project, id); store.delete(project, id); changed(project, 'deleted', artifact); return res.json({ ok: true });

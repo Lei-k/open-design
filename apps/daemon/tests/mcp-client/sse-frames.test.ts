@@ -39,6 +39,40 @@ describe('SseFrameReader', () => {
     const used = process.cpuUsage(started); expect(total).toBe(200_000);
     expect((used.user + used.system) / 1000).toBeLessThan(2_000);
   });
+  // S62 Repair 1, promoted from the S62 reviewer's parser probes (a scratch handoff outside git).
+  it('R1 a block terminated by a lone CR pair is dispatched at once; an LF opening the next chunk belongs to that CR', () => {
+    const reader = new SseFrameReader();
+    expect(reader.push(bytes('data: {"id":1}\r\r'))).toEqual([{ event: 'message', data: '{"id":1}' }]);
+    expect(reader.push(bytes('\ndata: a\r'))).toEqual([]);
+    expect(reader.push(bytes('\ndata: b\r'))).toEqual([]);
+    expect(reader.push(bytes('\r'))).toEqual([{ event: 'message', data: 'a\nb' }]);
+    expect(reader.end()).toEqual([]);
+  });
+  it('R1 at EOF complete blocks are kept and an unterminated trailing block is discarded', () => {
+    const reader = new SseFrameReader();
+    expect(reader.push(bytes('data: one\n\ndata: two\n'))).toEqual([{ event: 'message', data: 'one' }]);
+    expect(reader.end()).toEqual([]); expect(reader.push(bytes('\n'))).toEqual([]);
+    const stop = sseStopWhen((frame) => frame.data === 'x');
+    expect(stop(bytes('data: x'))).toBe(false); expect(stop.end()).toBe(false);
+  });
+  it('R1 one frame growing a byte per chunk is read in linear CPU and capped before it is ever joined', () => {
+    for (const size of [65_536, 262_144]) {
+      const reader = new SseFrameReader(); reader.push(bytes('data: ')); const one = bytes('x');
+      const started = process.cpuUsage();
+      for (let i = 0; i < size; i++) reader.push(one);
+      const used = process.cpuUsage(started); const ms = (used.user + used.system) / 1000;
+      process.stderr.write(`S62 R1 single growing frame: ${size} chunks, cpu ${Math.round(ms)} ms\n`);
+      // The S62 parser re-copied the frame per chunk: 23 s for 256 Ki chunks.
+      expect(ms).toBeLessThan(1_500);
+      expect(reader.push(bytes('\n\n'))).toEqual([{ event: 'message', data: 'x'.repeat(size) }]);
+    }
+    const capped = new SseFrameReader({ maxFrames: 10, maxFrameChars: 1_000 }); capped.push(bytes('data: '));
+    let pushed = 0;
+    expect(() => { for (; pushed < 2_000; pushed++) capped.push(bytes('x')); }).toThrow(SseLimitExceeded);
+    expect(pushed).toBe(1_000 - 'data: '.length);
+    // Lines of one block count together, line ends included.
+    expect(() => new SseFrameReader({ maxFrames: 10, maxFrameChars: 12 }).push(bytes('data: 12345\ndata: 6'))).toThrow(SseLimitExceeded);
+  });
 });
 
 describe('sseStopWhen', () => {
