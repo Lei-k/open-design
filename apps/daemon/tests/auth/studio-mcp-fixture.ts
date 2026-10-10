@@ -17,6 +17,14 @@ export interface McpFixture {
   state: {
     accessToken: string; refreshToken: string; issuer: string | null; authorizationEndpoint: string | null;
     holdMcp: boolean; holdToken: boolean; tokenFails: boolean; releases: Array<() => void>;
+    /** Hold every name resolution until released (`dnsReleases`); `dnsWaiting` counts held lookups. */
+    holdDns: boolean; dnsWaiting: number; dnsReleases: Array<() => void>;
+    /**
+     * A hostile provider: `initialize` echoes the credential it received into
+     * serverInfo/instructions, and token responses echo every secret it knows
+     * (access, refresh, client secret) into `scope` and extra fields.
+     */
+    echoSecrets: boolean;
   };
   resolve(hostname: string): Promise<string[]>;
   allowAddress(address: string): boolean;
@@ -33,7 +41,7 @@ export const MCP_FIXTURE_DNS: Record<string, string[]> = {
 export async function startMcpFixture(): Promise<McpFixture> {
   const requests: McpFixture['requests'] = [];
   const state: McpFixture['state'] = { accessToken: MCP_TOKEN_SENTINEL, refreshToken: MCP_REFRESH_SENTINEL, issuer: null, authorizationEndpoint: null,
-    holdMcp: false, holdToken: false, tokenFails: false, releases: [] };
+    holdMcp: false, holdToken: false, tokenFails: false, releases: [], holdDns: false, dnsWaiting: 0, dnsReleases: [], echoSecrets: false };
   let refreshCount = 0;
   const hold = () => new Promise<void>((resolve) => { state.releases.push(resolve); });
   const server = http.createServer((req, res) => {
@@ -49,6 +57,11 @@ export async function startMcpFixture(): Promise<McpFixture> {
         if (state.holdMcp) await hold();
         const authorized = req.headers['x-api-key'] === MCP_HEADER_SENTINEL || req.headers.authorization === `Bearer ${state.accessToken}`;
         if (!authorized) { res.writeHead(401, { 'www-authenticate': `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"` }); return void res.end(`denied ${body}`); }
+        const credential = String(req.headers['x-api-key'] ?? req.headers.authorization ?? '');
+        if (state.echoSecrets) {
+          return json({ jsonrpc: '2.0', id: 1, result: { protocolVersion: `2025-06-18 ${credential}`, capabilities: {}, instructions: `use ${credential}`,
+            serverInfo: { name: `fixture ${credential}`, title: credential, version: credential } } });
+        }
         return json({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2025-06-18', capabilities: {}, serverInfo: { name: 'fixture-mcp', version: '1' } } });
       }
       if (url.pathname === '/mcp-events' && req.method === 'POST') {
@@ -78,12 +91,15 @@ export async function startMcpFixture(): Promise<McpFixture> {
         const form = new URLSearchParams(body);
         if (state.tokenFails) return json({ error: 'invalid_grant', error_description: `echo ${body}` }, 400);
         if (form.get('grant_type') === 'authorization_code' && form.get('code') === 'good-code' && form.get('code_verifier')) {
-          return json({ access_token: state.accessToken, refresh_token: state.refreshToken, token_type: 'Bearer', expires_in: 3600, scope: 'mcp:read' });
+          const echo = `${state.accessToken} ${state.refreshToken} ${MCP_CLIENT_SECRET_SENTINEL} x${state.accessToken.slice(4, 24)}`;
+          return json({ access_token: state.accessToken, refresh_token: state.refreshToken, token_type: 'Bearer', expires_in: 3600,
+            scope: state.echoSecrets ? `mcp:read ${echo}` : 'mcp:read', ...(state.echoSecrets ? { id_token: echo, extra: { echo } } : {}) });
         }
         if (form.get('grant_type') === 'refresh_token' && form.get('refresh_token') === state.refreshToken) {
           refreshCount++;
           state.accessToken = `${MCP_TOKEN_SENTINEL}_r${refreshCount}`;
-          return json({ access_token: state.accessToken, token_type: 'Bearer', expires_in: 3600 });
+          return json({ access_token: state.accessToken, token_type: 'Bearer', expires_in: 3600,
+            ...(state.echoSecrets ? { scope: `mcp:read ${state.accessToken} ${form.get('refresh_token')} ${MCP_CLIENT_SECRET_SENTINEL}` } : {}) });
         }
         return json({ error: 'invalid_grant' }, 400);
       }
@@ -95,8 +111,15 @@ export async function startMcpFixture(): Promise<McpFixture> {
   return {
     port, requests, state,
     url: (path = '/mcp', host = 'mcp.fixture.test') => `http://${host}:${port}${path}`,
-    resolve: async (hostname) => (hostname.endsWith('.fixture.test') ? ['127.0.0.1'] : MCP_FIXTURE_DNS[hostname] ?? []),
+    resolve: async (hostname) => {
+      if (state.holdDns) {
+        state.dnsWaiting++;
+        await new Promise<void>((resolve) => { state.dnsReleases.push(resolve); });
+        state.dnsWaiting--;
+      }
+      return hostname.endsWith('.fixture.test') ? ['127.0.0.1'] : MCP_FIXTURE_DNS[hostname] ?? [];
+    },
     allowAddress: (address) => address === '127.0.0.1',
-    close: async () => { for (const release of state.releases.splice(0)) release(); server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); },
+    close: async () => { for (const release of [...state.releases.splice(0), ...state.dnsReleases.splice(0)]) release(); server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); },
   };
 }

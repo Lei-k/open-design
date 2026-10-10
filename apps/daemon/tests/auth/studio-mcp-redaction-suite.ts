@@ -58,6 +58,8 @@ export function studioMcpRedactionSuite(nodeEnv: 'development' | 'production'): 
         responses.push(`${res.status} ${JSON.stringify(res.headers)} ${res.text}`);
         return res;
       };
+      // A hostile remote (S60 Repair 1): initialize and token responses echo every secret they know.
+      fixture.state.echoSecrets = true;
       expect((await call('POST', '/api/multiuser/mcp/servers', { id: 'keyed', url: fixture.url(), headers: { 'X-Api-Key': MCP_HEADER_SENTINEL } })).status).toBe(201);
       expect((await call('POST', '/api/multiuser/mcp/servers/keyed/test', {})).json.result.ok).toBe(true);
       await call('PATCH', '/api/multiuser/mcp/servers/keyed', { revision: 1, headers: { 'X-Api-Key': `${MCP_HEADER_SENTINEL}\r\nX: y` } });

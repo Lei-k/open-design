@@ -68,7 +68,10 @@ beforeAll(async () => {
   const provisioned = await provisionAccounts(daemon, ['mcp-alice', 'mcp-bob']);
   admin = provisioned.admin; [alice, bob] = provisioned.users as [Principal, Principal];
 }, 120_000);
-beforeEach(() => { clock = Date.now(); fixture.state.holdMcp = false; fixture.state.holdToken = false; fixture.state.tokenFails = false; fixture.state.issuer = null; fixture.state.authorizationEndpoint = null; });
+beforeEach(() => {
+  clock = Date.now(); fixture.state.holdMcp = false; fixture.state.holdToken = false; fixture.state.tokenFails = false; fixture.state.issuer = null; fixture.state.authorizationEndpoint = null;
+  fixture.state.holdDns = false; fixture.state.echoSecrets = false;
+});
 afterAll(async () => { await daemon?.close(); await fixture?.close(); vi.restoreAllMocks(); cleanupIsolatedDataRoot(); });
 
 describe('stdio is refused on multi-user Web', () => {
@@ -401,6 +404,135 @@ describe('lifecycle and authority at every effect', () => {
     const row = appDb((db) => db.prepare('SELECT last_test_json FROM studio_mcp_servers WHERE owner_account_id = ? AND server_id = ?')
       .get(user.id, 'race') as { last_test_json: string | null } | undefined);
     expect(row?.last_test_json ?? null).toBeNull();
+  });
+});
+
+// S60 Repair 1 (P1, promoted from the reviewer reproducer `mcp-authority.test.ts`):
+// authority is re-validated synchronously after DNS resolution and immediately
+// before every outbound request, and credentials are decrypted only after that
+// final check — a change while the name is resolving sends nothing at all.
+describe('authority is re-validated after DNS resolution, before any byte is sent', () => {
+  const logout = (user: Principal) => daemon.request({ method: 'POST', path: '/api/auth/logout', cookie: user.cookie, headers: { origin: MU_TEST_ORIGIN }, body: {} });
+  /** Start `effect` with name resolution held, apply `change` while it waits, then release. */
+  async function whileResolving<T>(effect: () => Promise<T>, change: () => Promise<unknown>): Promise<{ result: T; sent: McpFixture['requests'] }> {
+    const before = fixture.requests.length;
+    fixture.state.holdDns = true;
+    const pending = effect();
+    await until(() => fixture.state.dnsWaiting, (n) => n > 0, 'name resolution entered');
+    expect(fixture.requests.length).toBe(before);
+    fixture.state.holdDns = false;
+    await change();
+    for (const release of fixture.state.dnsReleases.splice(0)) release();
+    const result = await pending;
+    return { result, sent: fixture.requests.slice(before) };
+  }
+  async function connected(user: Principal, id: string) {
+    await remote(user, id, { authMode: 'oauth', headers: {} });
+    const { state } = await startAuth(user, id);
+    expect((await callback(state)).status).toBe(200);
+  }
+  it('connection test: logout while resolving → typed refusal, zero requests (reviewer reproducer)', async () => {
+    const user = await freshUser();
+    await remote(user, 'dns-race');
+    const { result, sent } = await whileResolving(() => call(user, 'POST', '/api/multiuser/mcp/servers/dns-race/test', {}), () => logout(user));
+    expect(result.status, result.text).toBe(409);
+    expect(result.json.error).toMatchObject({ code: 'MULTIUSER_MCP_AUTHORITY_CHANGED', details: { reason: 'session' } });
+    expect(sent).toEqual([]);
+  });
+  it('connection test: a header value rotated while resolving → the old value is never sent', async () => {
+    const user = await freshUser();
+    const server = await remote(user, 'rotate');
+    const { result, sent } = await whileResolving(() => call(user, 'POST', '/api/multiuser/mcp/servers/rotate/test', {}),
+      async () => expect((await call(user, 'PATCH', '/api/multiuser/mcp/servers/rotate', { revision: server.revision, headers: { 'X-Api-Key': `${MCP_HEADER_SENTINEL}-v2` } })).status).toBe(200));
+    expect(result.status, result.text).toBe(409);
+    expect(result.json.error).toMatchObject({ code: 'MULTIUSER_MCP_AUTHORITY_CHANGED', details: { reason: 'server-changed' } });
+    expect(sent).toEqual([]);
+  });
+  it('connection test: an OAuth token disconnected while resolving → the token is never sent', async () => {
+    const user = await freshUser();
+    await connected(user, 'tok');
+    const { result, sent } = await whileResolving(() => call(user, 'POST', '/api/multiuser/mcp/servers/tok/test', {}),
+      async () => expect((await call(user, 'POST', '/api/mcp/oauth/disconnect', { serverId: 'tok' })).status).toBe(200));
+    expect(result.status, result.text).toBe(409);
+    expect(result.json.error.details.reason).toBe('server-changed');
+    expect(sent).toEqual([]);
+  });
+  it('OAuth discovery: logout while resolving → typed refusal, zero requests, no state', async () => {
+    const user = await freshUser();
+    await remote(user, 'disc', { authMode: 'oauth', headers: {} });
+    const { result, sent } = await whileResolving(() => call(user, 'POST', '/api/mcp/oauth/start', { serverId: 'disc' }), () => logout(user));
+    expect(result.status, result.text).toBe(409);
+    expect(result.json.error).toMatchObject({ code: 'MULTIUSER_MCP_AUTHORITY_CHANGED', details: { reason: 'session' } });
+    expect(sent).toEqual([]);
+    expect(appDb((db) => db.prepare('SELECT COUNT(*) AS n FROM studio_mcp_oauth_states WHERE owner_account_id = ?').get(user.id))).toEqual({ n: 0 });
+  });
+  it.each([['logout'], ['user cancel']])('token exchange: %s while resolving → refused, the code and verifier are never sent', async (change) => {
+    const user = await freshUser();
+    await remote(user, 'exch', { authMode: 'oauth', headers: {} });
+    const { state } = await startAuth(user, 'exch');
+    const { result, sent } = await whileResolving(() => callback(state), async () => {
+      if (change === 'logout') await logout(user);
+      else expect((await call(user, 'POST', '/api/multiuser/mcp/oauth/cancel', { serverId: 'exch' })).status).toBe(200);
+    });
+    expect(result.json?.error, result.text).toMatchObject({ code: 'MULTIUSER_MCP_AUTHORIZATION_INVALID' });
+    expect(change === 'logout' ? ['session', 'state'] : ['state']).toContain(result.json.error.details.reason);
+    expect(sent).toEqual([]);
+    expect(tokenRows(user.id)).toEqual([]);
+  });
+  it('token refresh: logout while resolving → typed refusal, the refresh token is never sent', async () => {
+    const user = await freshUser();
+    await connected(user, 'ref');
+    const { result, sent } = await whileResolving(() => call(user, 'POST', '/api/multiuser/mcp/oauth/refresh', { serverId: 'ref' }), () => logout(user));
+    expect(result.status, result.text).toBe(409);
+    expect(result.json.error).toMatchObject({ code: 'MULTIUSER_MCP_AUTHORITY_CHANGED', details: { reason: 'session' } });
+    expect(sent).toEqual([]);
+  });
+});
+
+// S60 Repair 1 (P1, promoted from the reviewer reproducer `mcp-redaction-repro.test.ts`):
+// everything a remote MCP server or its authorization server returns is untrusted.
+describe('provider-returned metadata is untrusted', () => {
+  const SECRETS = [MCP_HEADER_SENTINEL, MCP_TOKEN_SENTINEL, MCP_REFRESH_SENTINEL, MCP_CLIENT_SECRET_SENTINEL, MCP_TOKEN_SENTINEL.slice(4, 24)];
+  it('echoed credentials never reach a response, a plaintext column or a data file; only allowlisted metadata is kept', async () => {
+    fixture.state.echoSecrets = true;
+    const user = await freshUser();
+    const texts: string[] = [];
+    await remote(user, 'echo-key');
+    const tested = await call(user, 'POST', '/api/multiuser/mcp/servers/echo-key/test', {});
+    texts.push(tested.text);
+    expect(tested.status, tested.text).toBe(200);
+    expect(tested.json.result).toMatchObject({ ok: true, protocolVersion: null });
+    expect(tested.json.result.serverName).toMatch(/^fixture\b/);
+    await remote(user, 'echo-oauth', { authMode: 'oauth', headers: {} });
+    const { state } = await startAuth(user, 'echo-oauth');
+    const done = await callback(state);
+    texts.push(done.text);
+    expect(done.status, done.text).toBe(200);
+    const status = await call(user, 'GET', '/api/mcp/oauth/status?serverId=echo-oauth');
+    texts.push(status.text);
+    // Granted scopes that carry (or overlap) a known secret are dropped; the real scope stays.
+    expect(status.json).toMatchObject({ connected: true, scope: 'mcp:read' });
+    const oauthTest = await call(user, 'POST', '/api/multiuser/mcp/servers/echo-oauth/test', {});
+    texts.push(oauthTest.text);
+    expect(oauthTest.json.result.ok).toBe(true);
+    const refreshed = await call(user, 'POST', '/api/multiuser/mcp/oauth/refresh', { serverId: 'echo-oauth' });
+    texts.push(refreshed.text);
+    expect(refreshed.status, refreshed.text).toBe(200);
+    expect(refreshed.json.scope).toBe('mcp:read');
+    texts.push((await call(user, 'GET', '/api/mcp/servers')).text);
+    for (const text of texts) for (const secret of SECRETS) expect(text.includes(secret), `response carries ${secret.slice(0, 24)}`).toBe(false);
+    // Plaintext scan: no column of any table holds a sentinel; the sealed columns hold the secrets.
+    const plaintext = appDb((db) => {
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
+      return tables.map(({ name }) => JSON.stringify(db.prepare(`SELECT * FROM "${name}"`).all())).join('\n');
+    });
+    for (const secret of SECRETS) expect(plaintext.includes(secret), `a column carries ${secret.slice(0, 24)}`).toBe(false);
+    expect(appDb((db) => db.prepare('SELECT scope, sealed FROM studio_mcp_oauth_tokens WHERE owner_account_id = ?').get(user.id))).toMatchObject({ scope: 'mcp:read', sealed: expect.any(String) });
+    for (const file of filesUnder(dataRoot)) {
+      const bytes = readFileSync(file).toString('latin1');
+      for (const secret of SECRETS) expect(bytes.includes(secret), `${path.relative(dataRoot, file)} carries ${secret.slice(0, 24)}`).toBe(false);
+    }
+    for (const secret of SECRETS) expect(logs.filter((line) => line.includes(secret))).toEqual([]);
   });
 });
 

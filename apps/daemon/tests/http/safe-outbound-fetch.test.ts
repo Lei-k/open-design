@@ -5,7 +5,7 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { createSafeOutboundFetch, isPublicUnicastAddress, OutboundRequestRefused, type SafeOutboundFetch } from '../../src/http/safe-outbound-fetch.js';
+import { createSafeOutboundFetch, isPublicUnicastAddress, OutboundAuthorityRefused, OutboundRequestRefused, type SafeOutboundFetch } from '../../src/http/safe-outbound-fetch.js';
 
 let server: http.Server; let port: number;
 const seen: Array<{ url: string; host: string; authorization: string | undefined }> = [];
@@ -116,4 +116,73 @@ it('can stop reading an open event stream after the first event', async () => {
   const response = await fixture({ timeoutMs: 2_000 })(`http://mcp.fixture.test:${port}/sse`, {
     stopWhen: (received) => Buffer.from(received).toString('utf8').includes('\n\n') });
   expect(response.text()).toContain('"jsonrpc":"2.0"');
+});
+
+// ---- S60 Repair 1 ---------------------------------------------------------------
+// Promoted from the reviewer reproducer `outbound-extra.test.ts` (P2) and the
+// authority finding (P1): DNS waiting is inside the deadline, and the caller's
+// synchronous `beforeConnect` hook runs after resolution, per hop, both before
+// dispatch and again once the socket is open — a throw sends nothing.
+const settledWithin = <T>(promise: Promise<T>, ms: number) => Promise.race([promise,
+  new Promise<'STILL_PENDING'>((resolve) => { setTimeout(() => resolve('STILL_PENDING'), ms).unref(); })]);
+
+it('the total deadline includes a stalled DNS lookup', async () => {
+  let release!: () => void; const held = new Promise<void>((resolve) => { release = resolve; });
+  const pending = refusal(createSafeOutboundFetch({ timeoutMs: 50, resolve: async () => { await held; return ['127.0.0.1']; },
+    allowAddress: (address) => address === '127.0.0.1' })(`http://slow.fixture.test:${port}/ok`));
+  const before = seen.length;
+  try {
+    expect(await settledWithin(pending, 200)).toBe('timeout');
+  } finally { release(); }
+  // A lookup that answers after the deadline opens no socket.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(seen.length).toBe(before);
+});
+it('a caller abort ends a pending DNS lookup at once', async () => {
+  let release!: () => void; const held = new Promise<void>((resolve) => { release = resolve; });
+  const controller = new AbortController();
+  const pending = refusal(createSafeOutboundFetch({ resolve: async () => { await held; return ['127.0.0.1']; },
+    allowAddress: (address) => address === '127.0.0.1' })(`http://slow.fixture.test:${port}/ok`, { signal: controller.signal }));
+  setTimeout(() => controller.abort(), 20);
+  try { expect(await settledWithin(pending, 200)).toBe('network'); } finally { release(); }
+});
+it('beforeConnect runs after DNS resolution, per hop, before dispatch and on the open socket; additions are per hop and same-origin only', async () => {
+  seen.length = 0;
+  const order: string[] = [];
+  const guarded = createSafeOutboundFetch({ resolve: async (host) => { order.push(`resolve ${host}`); return ['127.0.0.1']; },
+    allowAddress: (address) => address === '127.0.0.1' });
+  const response = await guarded(`http://mcp.fixture.test:${port}/to-other-origin`, { headers: { accept: 'application/json' },
+    beforeConnect: (hop) => { order.push(`${hop.phase} ${hop.hop} ${hop.url.hostname} ${hop.sameOrigin}`); return hop.phase === 'dispatch' ? { headers: { authorization: 'Bearer HOOK_SENTINEL' } } : undefined; } });
+  expect(response.status).toBe(200);
+  expect(order).toEqual(['resolve mcp.fixture.test', 'dispatch 0 mcp.fixture.test true', 'socket 0 mcp.fixture.test true',
+    'resolve other.fixture.test', 'dispatch 1 other.fixture.test false', 'socket 1 other.fixture.test false']);
+  // Credentials the hook supplies never cross to another origin.
+  expect(seen.map((item) => item.authorization)).toEqual(['Bearer HOOK_SENTINEL', undefined]);
+});
+it.each([['dispatch', 0], ['socket', 0], ['dispatch', 1], ['socket', 1]] as const)(
+  'a beforeConnect refusal at %s of hop %i is a typed refusal and that hop sends nothing', async (phase, refusedHop) => {
+    seen.length = 0;
+    const cause = new Error('authority changed');
+    let caught: unknown;
+    try {
+      await fixture()(`http://mcp.fixture.test:${port}/to-self`, { beforeConnect: (hop) => { if (hop.phase === phase && hop.hop === refusedHop) throw cause; } });
+    } catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(OutboundAuthorityRefused);
+    expect((caught as OutboundAuthorityRefused).reason).toBe('authority');
+    expect((caught as OutboundAuthorityRefused).cause).toBe(cause);
+    expect(seen).toHaveLength(refusedHop);
+  });
+it('a POST body supplied by beforeConnect is sent only after the final check', async () => {
+  const received: string[] = [];
+  const echo = http.createServer((req, res) => { let body = ''; req.on('data', (chunk) => { body += chunk; }); req.on('end', () => { received.push(body); res.end('{}'); }); });
+  await new Promise<void>((resolve) => echo.listen(0, '127.0.0.1', resolve));
+  const echoPort = (echo.address() as AddressInfo).port;
+  try {
+    let decrypted = 0;
+    const response = await fixture()(`http://mcp.fixture.test:${echoPort}/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      beforeConnect: (hop) => { if (hop.phase !== 'dispatch') return undefined; decrypted++; return { body: 'refresh_token=LATE_SENTINEL' }; } });
+    expect(response.status).toBe(200);
+    expect(decrypted).toBe(1);
+    expect(received).toEqual(['refresh_token=LATE_SENTINEL']);
+  } finally { echo.closeAllConnections(); await new Promise((resolve) => echo.close(resolve)); }
 });

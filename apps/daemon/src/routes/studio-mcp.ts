@@ -11,12 +11,15 @@ import {
 } from '@open-design/contracts';
 import { sendApiError } from '../http/api-errors.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
-import { createSafeOutboundFetch, isPublicUnicastAddress, OutboundRequestRefused, type OutboundRefusalReason, type SafeOutboundOptions } from '../http/safe-outbound-fetch.js';
+import {
+  createSafeOutboundFetch, isPublicUnicastAddress, OutboundAuthorityRefused, OutboundRequestRefused, type OutboundRefusalReason, type SafeOutboundOptions,
+} from '../http/safe-outbound-fetch.js';
 import { MCP_TEMPLATES } from '../mcp-config.js';
 import {
-  asFetch, discoverStudioMcpAuthorization, exchangeStudioMcpCode, probeStudioMcpServer, refreshStudioMcpToken, registerStudioMcpClient,
+  asFetch, discoverStudioMcpAuthorization, probeStudioMcpServer, registerStudioMcpClient, requestStudioMcpToken,
   newStudioMcpCodeVerifier, StudioMcpRemoteError, studioMcpAuthorizeUrl,
 } from '../mcp-client/studio-remote.js';
+import { carriesSecret, knownSecrets, untrustedScope, type KnownSecrets } from '../mcp-client/studio-untrusted.js';
 import type { AuthActor } from '../services/auth-service.js';
 import { StudioMcpStore, StudioMcpStoreError, type StudioMcpServerBinding, type StudioMcpServerFields, type StudioMcpServerRow, type StudioMcpStateBinding } from '../storage/studio-mcp.js';
 
@@ -44,8 +47,14 @@ class McpInputError extends Error {
   constructor(readonly kind: 'invalid' | 'stdio' | 'outbound', readonly reason?: OutboundRefusalReason) { super(`mcp input refused: ${kind}`); }
 }
 
-/** What an effect was started under; it must still hold when the effect runs. */
-interface McpAuthority { actor: AuthActor; server?: StudioMcpServerBinding }
+/**
+ * What an effect was started under; it must still hold when the effect runs.
+ * `revision` pins the server's settings (including its header values) and
+ * `tokenSavedAt` the OAuth token version, for effects that send them.
+ */
+interface McpAuthority { actor: AuthActor; server?: StudioMcpServerBinding; revision?: number; tokenSavedAt?: number | null }
+/** A synchronous authority check for outbound hooks that remembers why it refused. */
+interface McpGuard { check(): void; refused(): StudioMcpAuthorityRefusal | null }
 
 const REMOTE_TEMPLATES = MCP_TEMPLATES.filter((template) => template.transport !== 'stdio');
 const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -70,9 +79,16 @@ export function registerStudioMcpRoutes(app: Express, deps: RegisterStudioMcpRou
    * immediately before every outbound request and every local mutation — the
    * account is active, the session is still its live current session (same
    * role and pilot revision), and, where the effect acts on a server, that
-   * server is still the same instance and endpoint generation and enabled.
-   * Any change refuses with `MULTIUSER_MCP_AUTHORITY_CHANGED`: nothing further
-   * is sent and nothing changes locally.
+   * server is still the same instance and endpoint generation and enabled
+   * (and, for effects that send stored credentials, the same settings revision
+   * and OAuth token version). Any change refuses with
+   * `MULTIUSER_MCP_AUTHORITY_CHANGED`: nothing further is sent and nothing
+   * changes locally.
+   *
+   * Outbound requests (S60 Repair 1): the check runs inside the guarded
+   * fetch's `beforeConnect` hook — after DNS resolution, for every hop,
+   * immediately before dispatch and again on the open socket — and the
+   * credentials of that request are decrypted inside the hook only after it.
    */
   const authorityRefusal = (expected: McpAuthority): StudioMcpAuthorityRefusal | null => {
     if (!deps.accountActive(expected.actor.accountId)) return 'account';
@@ -80,9 +96,24 @@ export function registerStudioMcpRoutes(app: Express, deps: RegisterStudioMcpRou
     if (expected.server) {
       const row = store.bound(expected.actor.accountId, expected.server);
       if (!row || row.enabled !== 1) return 'server-changed';
+      if (expected.revision !== undefined && row.revision !== expected.revision) return 'server-changed';
+      if (expected.tokenSavedAt !== undefined && expected.tokenSavedAt !== null) {
+        const token = store.tokenMeta(expected.actor.accountId, row.server_id);
+        if (!token || token.instance_id !== row.instance_id || token.generation !== row.generation || token.saved_at !== expected.tokenSavedAt) return 'server-changed';
+      }
     }
     return null;
   };
+  const guardFor = (expected: McpAuthority): McpGuard => {
+    let refused: StudioMcpAuthorityRefusal | null = null;
+    return {
+      check: () => { const reason = authorityRefusal(expected); if (reason) { refused ??= reason; throw new McpAuthorityError(reason); } },
+      refused: () => refused,
+    };
+  };
+  /** Scrubbing set for what this server's remotes return (header values, tokens, client secrets, plus `extra`). */
+  const secretsFor = (owner: string, serverId: string, extra: Array<string | null | undefined> = []): KnownSecrets =>
+    knownSecrets([...store.knownSecrets(owner, serverId), ...extra]);
   const assertAuthority = (expected: McpAuthority) => {
     const refused = authorityRefusal(expected);
     if (refused) throw new McpAuthorityError(refused);
@@ -104,8 +135,13 @@ export function registerStudioMcpRoutes(app: Express, deps: RegisterStudioMcpRou
       { details: { reason } });
   };
   /** A failed effect: an authority change outranks whatever raced it; then guard refusals; then a fixed provider failure. */
-  const effectFailed = (res: Response, error: unknown, authority: McpAuthority, action: string, serverId: string | null, refusals: OutboundRefusalReason[] = []) => {
-    const reason = error instanceof McpAuthorityError ? error.reason : authorityRefusal(authority);
+  const effectFailed = (res: Response, error: unknown, authority: McpAuthority, action: string, serverId: string | null,
+    refusals: OutboundRefusalReason[] = [], guard?: McpGuard) => {
+    const hookCause = error instanceof OutboundAuthorityRefused ? error.cause : null;
+    const reason = guard?.refused() ?? (error instanceof McpAuthorityError ? error.reason : hookCause instanceof McpAuthorityError ? hookCause.reason : null)
+      ?? authorityRefusal(authority)
+      // A hook refusal (the shared OAuth helpers may swallow it) is an authority refusal even when nothing is visibly changed any more.
+      ?? (error instanceof OutboundAuthorityRefused || refusals.includes('authority') ? 'server-changed' : null);
     if (reason) return authorityChanged(res, authority.actor.accountId, action, serverId, reason);
     const blocked = error instanceof OutboundRequestRefused ? error.reason : refusals[0];
     if (blocked) return outboundRefused(res, authority.actor.accountId, action, serverId, blocked);
@@ -119,7 +155,9 @@ export function registerStudioMcpRoutes(app: Express, deps: RegisterStudioMcpRou
     if (row.auth_mode !== 'oauth') return { status: 'not-required', expiresAt: null, scope: null, connectedAt: null };
     const token = store.tokenMeta(row.owner_account_id, row.server_id);
     if (!token || token.instance_id !== row.instance_id || token.generation !== row.generation) return { status: 'needs-auth', expiresAt: null, scope: null, connectedAt: null };
-    return { status: token.expires_at !== null && token.expires_at <= now() ? 'expired' : 'connected', expiresAt: token.expires_at, scope: token.scope, connectedAt: token.saved_at };
+    // The stored scope was sanitised on write; projection applies the same allowlist and scrub again.
+    const scope = token.scope === null ? null : untrustedScope(token.scope, secretsFor(row.owner_account_id, row.server_id));
+    return { status: token.expires_at !== null && token.expires_at <= now() ? 'expired' : 'connected', expiresAt: token.expires_at, scope, connectedAt: token.saved_at };
   };
   const dto = (row: StudioMcpServerRow): StudioMcpServer => {
     let lastTest: StudioMcpServer['lastTest'] = null;
@@ -307,16 +345,28 @@ export function registerStudioMcpRoutes(app: Express, deps: RegisterStudioMcpRou
     const row = ownedRow(actor, req.params.serverId);
     if (!row) return notFound(res);
     if (row.enabled !== 1) return sendApiError(res, 409, 'CONFLICT', 'this MCP server is disabled');
-    const authority: McpAuthority = { actor, server: binding(row) };
-    const headers = { ...store.headers(row) };
-    const token = row.auth_mode === 'oauth' ? store.token(actor.accountId, binding(row)) : null;
-    if (token && !Object.keys(headers).some((name) => name.toLowerCase() === 'authorization')) headers.Authorization = `Bearer ${token.secret.accessToken}`;
+    const tokenMeta = row.auth_mode === 'oauth' ? store.tokenMeta(actor.accountId, row.server_id) : null;
+    const tokenSavedAt = tokenMeta && tokenMeta.instance_id === row.instance_id && tokenMeta.generation === row.generation ? tokenMeta.saved_at : null;
+    // Pinned: the server's settings revision (its header values) and the token version the test will send.
+    const authority: McpAuthority = { actor, server: binding(row), revision: row.revision, tokenSavedAt };
+    const guard = guardFor(authority);
+    /** Decrypted only here: inside the hook, after its authority check, for the request being dispatched. */
+    const credentials = (): Record<string, string> => {
+      const headers = { ...store.headers(row) };
+      const token = tokenSavedAt !== null ? store.token(actor.accountId, binding(row)) : null;
+      if (tokenSavedAt !== null && token?.row.saved_at !== tokenSavedAt) throw new McpAuthorityError('server-changed');
+      if (token && !Object.keys(headers).some((name) => name.toLowerCase() === 'authorization')) headers.Authorization = `Bearer ${token.secret.accessToken}`;
+      return headers;
+    };
     let result;
     try {
-      assertAuthority(authority);
-      result = await probeStudioMcpServer(safe, { transport: row.transport, url: row.url }, headers);
-      assertAuthority(authority);
-    } catch (error) { return effectFailed(res, error, authority, 'server_test', row.server_id); }
+      guard.check();
+      result = await probeStudioMcpServer(safe, { transport: row.transport, url: row.url }, {
+        beforeConnect: (hop) => { guard.check(); return hop.phase === 'dispatch' ? credentials() : undefined; },
+        secrets: () => secretsFor(actor.accountId, row.server_id),
+      });
+      guard.check();
+    } catch (error) { return effectFailed(res, error, authority, 'server_test', row.server_id, [], guard); }
     store.recordTest(actor.accountId, binding(row), { ok: result.ok, code: result.code });
     store.audit(actor.accountId, 'server_test', row.server_id, result.ok ? 'ok' : result.code ?? 'failed');
     if (result.code?.startsWith('outbound:')) return outboundRefused(res, actor.accountId, 'server_test', row.server_id, result.code.slice(9) as OutboundRefusalReason);
@@ -341,19 +391,24 @@ export function registerStudioMcpRoutes(app: Express, deps: RegisterStudioMcpRou
     const server = binding(row);
     const authority: McpAuthority = { actor, server };
     const refusals: OutboundRefusalReason[] = [];
-    const fetchImpl = asFetch(safe, { refusals, beforeRequest: () => assertAuthority(authority) });
+    const guard = guardFor(authority);
+    // Discovery and registration send no stored secret; authority is still re-checked after DNS, per hop.
+    const fetchImpl = asFetch(safe, { refusals, beforeRequest: guard.check, beforeConnect: () => { guard.check(); } });
     let token: string; let expiresAt: number; let authorizeUrl: string;
     try {
-      const plan = await discoverStudioMcpAuthorization(fetchImpl, row.url);
-      assertAuthority(authority);
+      const discovered = await discoverStudioMcpAuthorization(fetchImpl, row.url);
+      guard.check();
+      // Provider metadata is untrusted: the requested scope is allowlisted and scrubbed like a granted one.
+      const discoveredScope = discovered.scope === undefined ? null : untrustedScope(discovered.scope, secretsFor(actor.accountId, row.server_id));
+      const plan = { ...discovered, scope: discoveredScope ?? undefined };
       let client = store.client(actor.accountId, server, plan.authServer.issuer, redirectUri);
       if (!client) {
         client = await registerStudioMcpClient(fetchImpl, plan.authServer, redirectUri);
-        assertAuthority(authority);
+        guard.check();
         store.saveClient(actor.accountId, server, plan.authServer.issuer, redirectUri, client);
       }
       // The state is a local binding effect: created under authority checked just now.
-      assertAuthority(authority);
+      guard.check();
       const codeVerifier = newStudioMcpCodeVerifier();
       const stateBinding: StudioMcpStateBinding = { ...server, accountId: actor.accountId, sessionId: actor.sessionId, role: actor.role,
         studioRevision: actor.studioRevision ?? null, sessionExpiresAt: actor.sessionExpiresAt };
@@ -361,7 +416,12 @@ export function registerStudioMcpRoutes(app: Express, deps: RegisterStudioMcpRou
         ...(client.clientSecret ? { clientSecret: client.clientSecret } : {}), tokenEndpoint: plan.authServer.token_endpoint, redirectUri,
         resource: plan.resource, ...(plan.scope ? { scope: plan.scope } : {}) }));
       authorizeUrl = studioMcpAuthorizeUrl(plan, { clientId: client.clientId, redirectUri, state: token, codeVerifier });
-    } catch (error) { return effectFailed(res, error, authority, 'oauth_start', row.server_id, refusals); }
+      // The authorize URL is provider-built and goes back to the browser: it must not carry a stored secret.
+      if (carriesSecret(authorizeUrl, secretsFor(actor.accountId, row.server_id))) {
+        store.discardState(token);
+        throw new StudioMcpRemoteError('authorize-endpoint');
+      }
+    } catch (error) { return effectFailed(res, error, authority, 'oauth_start', row.server_id, refusals, guard); }
     store.audit(actor.accountId, 'oauth_start', row.server_id, 'redirect');
     noStore(res);
     res.json({ authorizeUrl, redirectUri, expiresAt: new Date(expiresAt).toISOString() } satisfies StudioMcpOAuthStartResponse);
@@ -386,24 +446,39 @@ export function registerStudioMcpRoutes(app: Express, deps: RegisterStudioMcpRou
     const before = recheck();
     if (before) return refuse(before);
     if (typeof req.query.error === 'string' || typeof req.query.code !== 'string' || !req.query.code || req.query.code.length > 4096) return refuse('not-completed');
-    const pending = consumed.pending;
-    let tokenResponse;
+    const stateToken = String(req.query.state);
+    const code = req.query.code;
+    // After DNS, per hop: account, session, server identity, and the state itself still live (not cancelled).
+    let refusedBy: StudioMcpCallbackRefusal | null = null;
+    const callbackCheck = () => {
+      const reason = recheck() ?? (store.stateLive(stateToken, binding_) ? null : 'state');
+      if (reason) { refusedBy ??= reason; throw new Error('mcp callback authority changed'); }
+    };
+    let tokenResult;
     try {
-      tokenResponse = await exchangeStudioMcpCode(asFetch(safe, { beforeRequest: () => assertAuthority(authority) }), {
-        tokenEndpoint: pending.tokenEndpoint, clientId: pending.clientId, ...(pending.clientSecret ? { clientSecret: pending.clientSecret } : {}),
-        redirectUri: pending.redirectUri, code: req.query.code, codeVerifier: pending.codeVerifier, ...(pending.resource ? { resource: pending.resource } : {}) });
+      tokenResult = await requestStudioMcpToken(safe, consumed.tokenEndpoint, {
+        authorize: callbackCheck,
+        // The code verifier and client secret are opened only here, after the final check.
+        grant: () => {
+          const pending = store.openState(stateToken, binding_);
+          if (!pending) { refusedBy ??= 'state'; throw new Error('mcp callback state gone'); }
+          return { grantType: 'authorization_code', code, codeVerifier: pending.codeVerifier, redirectUri: pending.redirectUri, clientId: pending.clientId,
+            ...(pending.clientSecret ? { clientSecret: pending.clientSecret } : {}), ...(pending.resource ? { resource: pending.resource } : {}) };
+        },
+      });
     } catch {
-      const changed = recheck();
-      return refuse(changed ?? 'provider');
+      return refuse(refusedBy ?? recheck() ?? 'provider');
     }
-    const completed = store.completeState(String(req.query.state), binding_, {
-      accessToken: tokenResponse.access_token, ...(tokenResponse.refresh_token ? { refreshToken: tokenResponse.refresh_token } : {}),
-      tokenType: typeof tokenResponse.token_type === 'string' ? tokenResponse.token_type.slice(0, 32) : 'Bearer',
+    const pending = store.openState(stateToken, binding_);
+    if (!pending) return refuse(recheck() ?? 'state');
+    const secrets = secretsFor(binding_.accountId, binding_.serverId,
+      [tokenResult.accessToken, tokenResult.refreshToken, pending.clientSecret, pending.codeVerifier, code]);
+    const scope = tokenResult.untrustedScope !== null ? untrustedScope(tokenResult.untrustedScope, secrets) : untrustedScope(consumed.requestedScope, secrets);
+    const completed = store.completeState(stateToken, binding_, {
+      accessToken: tokenResult.accessToken, ...(tokenResult.refreshToken ? { refreshToken: tokenResult.refreshToken } : {}), tokenType: tokenResult.tokenType,
       tokenEndpoint: pending.tokenEndpoint, clientId: pending.clientId, ...(pending.clientSecret ? { clientSecret: pending.clientSecret } : {}),
       ...(pending.resource ? { resource: pending.resource } : {}),
-    }, { scope: typeof tokenResponse.scope === 'string' ? tokenResponse.scope : pending.scope ?? null,
-      expiresAt: typeof tokenResponse.expires_in === 'number' && Number.isFinite(tokenResponse.expires_in) && tokenResponse.expires_in > 0
-        ? now() + Math.min(tokenResponse.expires_in, 366 * 24 * 3600) * 1000 : null }, recheck);
+    }, { scope, expiresAt: tokenResult.expiresInSeconds !== null ? now() + tokenResult.expiresInSeconds * 1000 : null }, recheck);
     if (!completed.ok) return refuse(completed.reason);
     store.audit(binding_.accountId, 'oauth_complete', binding_.serverId, 'ok');
     sendConnectedPage(res, binding_.serverId);
@@ -425,20 +500,31 @@ export function registerStudioMcpRoutes(app: Express, deps: RegisterStudioMcpRou
     if (!row) return;
     if (row.enabled !== 1) return sendApiError(res, 409, 'CONFLICT', 'this MCP server is disabled');
     const server = binding(row);
-    const current = store.token(actor.accountId, server);
-    if (!current?.secret.refreshToken) return sendApiError(res, 409, 'CONFLICT', 'this MCP server has no refreshable authorization');
-    const authority: McpAuthority = { actor, server };
-    const refusals: OutboundRefusalReason[] = [];
+    // Routing facts only; the refresh token and client secret are opened inside the hook, after its final check.
+    const meta = store.tokenEndpoint(actor.accountId, server);
+    if (!meta?.refreshable) return sendApiError(res, 409, 'CONFLICT', 'this MCP server has no refreshable authorization');
+    const authority: McpAuthority = { actor, server, tokenSavedAt: meta.savedAt };
+    const guard = guardFor(authority);
     let refreshed;
     try {
-      refreshed = await refreshStudioMcpToken(asFetch(safe, { refusals, beforeRequest: () => assertAuthority(authority) }), {
-        tokenEndpoint: current.secret.tokenEndpoint, clientId: current.secret.clientId, refreshToken: current.secret.refreshToken,
-        ...(current.secret.clientSecret ? { clientSecret: current.secret.clientSecret } : {}), ...(current.secret.resource ? { resource: current.secret.resource } : {}) });
-    } catch (error) { return effectFailed(res, error, authority, 'oauth_refresh', row.server_id, refusals); }
-    const saved = store.saveToken(actor.accountId, server, { ...current.secret, accessToken: refreshed.access_token,
-      ...(refreshed.refresh_token ? { refreshToken: refreshed.refresh_token } : {}) }, {
-      scope: typeof refreshed.scope === 'string' ? refreshed.scope : current.row.scope,
-      expiresAt: typeof refreshed.expires_in === 'number' && refreshed.expires_in > 0 ? now() + Math.min(refreshed.expires_in, 366 * 24 * 3600) * 1000 : null,
+      guard.check();
+      refreshed = await requestStudioMcpToken(safe, meta.tokenEndpoint, {
+        authorize: guard.check,
+        grant: () => {
+          const current = store.token(actor.accountId, server);
+          if (!current?.secret.refreshToken || current.row.saved_at !== meta.savedAt) throw new McpAuthorityError('server-changed');
+          return { grantType: 'refresh_token', refreshToken: current.secret.refreshToken, clientId: current.secret.clientId,
+            ...(current.secret.clientSecret ? { clientSecret: current.secret.clientSecret } : {}), ...(current.secret.resource ? { resource: current.secret.resource } : {}) };
+        },
+      });
+    } catch (error) { return effectFailed(res, error, authority, 'oauth_refresh', row.server_id, [], guard); }
+    const current = store.token(actor.accountId, server);
+    if (!current || current.row.saved_at !== meta.savedAt) return sendApiError(res, 409, 'CONFLICT', 'the authorization changed while refreshing; reload');
+    const secrets = secretsFor(actor.accountId, row.server_id, [refreshed.accessToken, refreshed.refreshToken]);
+    const saved = store.saveToken(actor.accountId, server, { ...current.secret, accessToken: refreshed.accessToken, tokenType: refreshed.tokenType,
+      ...(refreshed.refreshToken ? { refreshToken: refreshed.refreshToken } : {}) }, {
+      scope: refreshed.untrustedScope !== null ? untrustedScope(refreshed.untrustedScope, secrets) : untrustedScope(current.row.scope, secrets),
+      expiresAt: refreshed.expiresInSeconds !== null ? now() + refreshed.expiresInSeconds * 1000 : null,
     }, () => authorityRefusal(authority), current.row.saved_at);
     if (saved === 'replaced') return sendApiError(res, 409, 'CONFLICT', 'the authorization changed while refreshing; reload');
     if (saved) return authorityChanged(res, actor.accountId, 'oauth_refresh', row.server_id, saved);

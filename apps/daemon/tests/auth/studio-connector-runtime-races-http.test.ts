@@ -191,3 +191,22 @@ it('S60 A1: the in-process company tool path refuses a call whose run was cancel
   expect(executes()).toHaveLength(0);
   expect(modelSawToolOutput.join('\n')).not.toContain('private');
 });
+
+// S60 Repair 1 regression guard: the S59 reviewer's run-time connector liveness
+// cases (revoked grant, cancelled run — above) keep refusing, and so do the
+// other authority losses that can land while discovery is in flight.
+it.each([['account disabled'], ['connection replaced'], ['grant revoked']])(
+  'S60 Repair 1 regression: %s while discovery is in flight → typed refusal, zero provider executes', async (change) => {
+    const bound = runtime.capture(routineActor(a), ['hubspot']);
+    const g = toolTokenRegistry.mint({ runId: randomUUID(), projectId: 'p', studioConnectors: bound! });
+    const pending = execute(g.token, { connectorId: 'hubspot', toolName: 'hubspot.hubspot_get_contact', input: { id: 'x' } });
+    await until(() => releaseMetadata, (r) => !!r, 'metadata entered');
+    if (change === 'account disabled') expect((await mutate(admin, 'PATCH', `/api/auth/users/${a.id}`, { active: false })).status).toBe(200);
+    if (change === 'connection replaced') store.saveConnection(a.id, 'hubspot', { providerConnectionId: `ca_other_${a.id}`, accountLabel: 'A', credentialRevision: company.read().credentialRevision });
+    if (change === 'grant revoked') toolTokenRegistry.revokeToken(g.token);
+    releaseMetadata!();
+    const result = await pending;
+    expect([401, 403, 409], result.text).toContain(result.status);
+    expect(result.json.error.code).toMatch(/^(TOOL_TOKEN_INVALID|MULTIUSER_CONNECTOR_AUTHORITY_CHANGED)$/);
+    expect(executes()).toHaveLength(0);
+  });

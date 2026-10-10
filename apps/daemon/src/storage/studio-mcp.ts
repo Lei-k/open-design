@@ -23,6 +23,12 @@ import { AccountSecretSealer } from './personal-provider-keys.js';
  *   generation, and a ten-minute expiry; it is consumed once. Cancellation is
  *   authoritative (it also retires a state an in-flight callback consumed).
  * - The audit is append-only: action, server id and outcome category only.
+ * - Nothing a provider returned is stored in clear except an allowlisted,
+ *   bounded, secret-scrubbed `scope` (the caller sanitises it with
+ *   `untrustedScope`); the authorization-server issuer is kept only as a
+ *   SHA-256 lookup key. Raw token / registration responses are never stored.
+ *   Secrets are read (decrypted) only by the effect that sends them, after its
+ *   final authority check (`openState`, `token`, `headers`).
  */
 
 export const STUDIO_MCP_STATE_TTL_MS = 10 * 60 * 1000;
@@ -67,11 +73,14 @@ interface StateRow {
   cancelled: 'state' | 'session' | 'server-changed' | null; completed_at: number | null; created_at: number;
 }
 export type StudioMcpConsumedState =
-  | { ok: true; binding: StudioMcpStateBinding; pending: StudioMcpPendingSecret }
+  /** Only the non-secret routing facts; the pending secret is opened later with `openState`. */
+  | { ok: true; binding: StudioMcpStateBinding; tokenEndpoint: string; requestedScope: string | null }
   | { ok: false; reason: 'state' | 'expired' | 'replayed' | 'session' | 'server-changed' };
 export type StudioMcpCompleted<R extends string> = { ok: true } | { ok: false; reason: 'state' | 'expired' | 'replayed' | 'session' | 'server-changed' | R };
 
 const hashState = (token: string) => createHash('sha256').update(`studio-mcp-state:${token}`).digest('hex');
+/** Provider-controlled issuer strings are never stored in clear; only this lookup key. */
+const issuerKey = (issuer: string) => `sha256:${createHash('sha256').update(`studio-mcp-issuer:${issuer}`).digest('hex')}`;
 const STATE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
 const tailOf = (value: string) => (value.length >= 16 ? value.slice(-4) : '');
 
@@ -235,6 +244,36 @@ export class StudioMcpStore {
     if (!opened) return null;
     try { return { row, secret: JSON.parse(opened) as StudioMcpTokenSecret }; } catch { return null; }
   }
+  /** Routing facts for a refresh without keeping any secret: endpoint, refreshability and the token version. */
+  tokenEndpoint(owner: string, binding: StudioMcpServerBinding): { tokenEndpoint: string; refreshable: boolean; savedAt: number } | null {
+    const current = this.token(owner, binding);
+    return current ? { tokenEndpoint: current.secret.tokenEndpoint, refreshable: Boolean(current.secret.refreshToken), savedAt: current.row.saved_at } : null;
+  }
+  /**
+   * Every secret this account holds for the server — static header values, the
+   * OAuth access/refresh token and client secret, the registered client secret —
+   * for scrubbing provider-returned metadata. Never returned to a client.
+   */
+  knownSecrets(owner: string, serverId: string): string[] {
+    const out: string[] = [];
+    const row = this.get(owner, serverId);
+    if (row) out.push(...Object.values(this.headers(row)));
+    const token = this.db.prepare('SELECT * FROM studio_mcp_oauth_tokens WHERE owner_account_id = ? AND server_id = ?').get(owner, serverId) as StudioMcpTokenRow | undefined;
+    if (token) {
+      const opened = this.sealer.open(owner, `token:${serverId}:${token.instance_id}:${token.generation}`, token.sealed);
+      try {
+        const secret = opened ? JSON.parse(opened) as StudioMcpTokenSecret : null;
+        if (secret) out.push(secret.accessToken, ...(secret.refreshToken ? [secret.refreshToken] : []), ...(secret.clientSecret ? [secret.clientSecret] : []));
+      } catch { /* unreadable: nothing to add */ }
+    }
+    const client = this.db.prepare('SELECT * FROM studio_mcp_oauth_clients WHERE owner_account_id = ? AND server_id = ?').get(owner, serverId) as
+      { instance_id: string; generation: number; sealed: string } | undefined;
+    if (client) {
+      const opened = this.sealer.open(owner, `client:${serverId}:${client.instance_id}:${client.generation}`, client.sealed);
+      try { const secret = opened ? JSON.parse(opened) as StudioMcpClientSecret : null; if (secret?.clientSecret) out.push(secret.clientSecret); } catch { /* ignore */ }
+    }
+    return out.filter((value) => typeof value === 'string' && value.length > 0);
+  }
   tokenMeta(owner: string, serverId: string): StudioMcpTokenRow | null {
     return (this.db.prepare('SELECT * FROM studio_mcp_oauth_tokens WHERE owner_account_id = ? AND server_id = ?').get(owner, serverId) as StudioMcpTokenRow | undefined) ?? null;
   }
@@ -266,7 +305,7 @@ export class StudioMcpStore {
   }
   client(owner: string, binding: StudioMcpServerBinding, issuer: string, redirectUri: string): StudioMcpClientSecret | null {
     const row = this.db.prepare(`SELECT sealed FROM studio_mcp_oauth_clients WHERE owner_account_id = ? AND server_id = ? AND instance_id = ?
-      AND generation = ? AND issuer = ? AND redirect_uri = ?`).get(owner, binding.serverId, binding.instanceId, binding.generation, issuer, redirectUri) as { sealed: string } | undefined;
+      AND generation = ? AND issuer = ? AND redirect_uri = ?`).get(owner, binding.serverId, binding.instanceId, binding.generation, issuerKey(issuer), redirectUri) as { sealed: string } | undefined;
     const opened = this.sealer.open(owner, `client:${binding.serverId}:${binding.instanceId}:${binding.generation}`, row?.sealed);
     if (!opened) return null;
     try { return JSON.parse(opened) as StudioMcpClientSecret; } catch { return null; }
@@ -275,7 +314,7 @@ export class StudioMcpStore {
     this.db.prepare(`INSERT INTO studio_mcp_oauth_clients (owner_account_id, server_id, instance_id, generation, issuer, redirect_uri, sealed, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(owner_account_id, server_id) DO UPDATE SET instance_id = excluded.instance_id, generation = excluded.generation,
       issuer = excluded.issuer, redirect_uri = excluded.redirect_uri, sealed = excluded.sealed, created_at = excluded.created_at`)
-      .run(owner, binding.serverId, binding.instanceId, binding.generation, issuer.slice(0, 2048), redirectUri,
+      .run(owner, binding.serverId, binding.instanceId, binding.generation, issuerKey(issuer), redirectUri,
         this.sealer.seal(owner, `client:${binding.serverId}:${binding.instanceId}:${binding.generation}`, JSON.stringify(secret)), this.now());
   }
 
@@ -309,11 +348,29 @@ export class StudioMcpStore {
       if (row.used_at !== null) return { ok: false, reason: 'replayed' };
       this.db.prepare('UPDATE studio_mcp_oauth_states SET used_at = ? WHERE state_hash = ?').run(at, row.state_hash);
       if (row.expires_at <= at) return { ok: false, reason: 'expired' };
-      const opened = this.sealer.open(row.owner_account_id, `state:${row.state_hash}`, row.pending_sealed);
-      if (!opened) return { ok: false, reason: 'state' };
-      return { ok: true, pending: JSON.parse(opened) as StudioMcpPendingSecret, binding: { accountId: row.owner_account_id, sessionId: row.session_id, role: row.role,
+      const pending = this.openPending(row);
+      if (!pending) return { ok: false, reason: 'state' };
+      return { ok: true, tokenEndpoint: pending.tokenEndpoint, requestedScope: pending.scope ?? null, binding: { accountId: row.owner_account_id, sessionId: row.session_id, role: row.role,
         studioRevision: row.studio_revision, sessionExpiresAt: row.session_expires_at, serverId: row.server_id, instanceId: row.instance_id, generation: row.generation } };
     }).immediate();
+  }
+  private openPending(row: StateRow): StudioMcpPendingSecret | null {
+    const opened = this.sealer.open(row.owner_account_id, `state:${row.state_hash}`, row.pending_sealed);
+    if (!opened) return null;
+    try { return JSON.parse(opened) as StudioMcpPendingSecret; } catch { return null; }
+  }
+  private liveStateRow(token: string, binding: StudioMcpStateBinding): StateRow | null {
+    const row = this.db.prepare('SELECT * FROM studio_mcp_oauth_states WHERE state_hash = ?').get(hashState(token)) as StateRow | undefined;
+    if (!row || row.owner_account_id !== binding.accountId || row.server_id !== binding.serverId || row.instance_id !== binding.instanceId
+      || row.generation !== binding.generation || row.used_at === null || row.cancelled !== null || row.completed_at !== null || row.expires_at <= this.now()) return null;
+    return row;
+  }
+  /** A consumed state is still live (not cancelled, completed or expired) for its callback. */
+  stateLive(token: string, binding: StudioMcpStateBinding): boolean { return this.liveStateRow(token, binding) !== null; }
+  /** The pending secret of a consumed, still-live state — opened only by the effect that sends it. */
+  openState(token: string, binding: StudioMcpStateBinding): StudioMcpPendingSecret | null {
+    const row = this.liveStateRow(token, binding);
+    return row ? this.openPending(row) : null;
   }
   /**
    * Store the account's token for a consumed state, in one transaction that

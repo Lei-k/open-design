@@ -1,6 +1,6 @@
 import { promises as dns } from 'node:dns';
 import net from 'node:net';
-import { Agent, fetch as undiciFetch } from 'undici';
+import { Agent, buildConnector, fetch as undiciFetch } from 'undici';
 
 /**
  * SSRF-guarded outbound HTTP for requests whose destination an account chose
@@ -22,19 +22,44 @@ import { Agent, fetch as undiciFetch } from 'undici';
  * - redirects are followed manually for GET/HEAD only (bounded hops, each hop
  *   re-validated, caller headers dropped when the origin changes); any other
  *   method refuses a redirect;
- * - a total deadline covers connect, headers and body, and the body is read
- *   into a bounded buffer (an oversized `content-length` is refused before
- *   reading).
+ * - a total deadline covers name resolution, connect, headers and body (a
+ *   lookup still pending at the deadline, or at a caller abort, is abandoned
+ *   and its late answer never opens a socket), and the body is read into a
+ *   bounded buffer (an oversized `content-length` is refused before reading);
+ * - the caller's synchronous `beforeConnect` hook runs for every hop AFTER the
+ *   host is resolved and vetted: once immediately before dispatch (nothing is
+ *   awaited between it and the request being issued; it may supply that hop's
+ *   credential headers / body, so secrets are produced only after the final
+ *   check) and once more when the pinned socket is open, before any request
+ *   byte is written. A throw refuses with `OutboundAuthorityRefused`, the
+ *   socket is destroyed, and nothing is sent.
  *
  * There is no environment switch. Tests reach a loopback fixture only through
  * the programmatic `resolve` / `allowAddress` injection.
  */
 
-export type OutboundRefusalReason = 'scheme' | 'credentials' | 'host' | 'address' | 'redirect' | 'timeout' | 'size' | 'network';
+export type OutboundRefusalReason = 'scheme' | 'credentials' | 'host' | 'address' | 'redirect' | 'timeout' | 'size' | 'network' | 'authority';
 
 export class OutboundRequestRefused extends Error {
   constructor(readonly reason: OutboundRefusalReason) { super(`outbound request refused: ${reason}`); this.name = 'OutboundRequestRefused'; }
 }
+/** The caller's `beforeConnect` hook refused this hop; `cause` is what it threw. Nothing was sent. */
+export class OutboundAuthorityRefused extends OutboundRequestRefused {
+  constructor(override readonly cause: unknown) { super('authority'); this.name = 'OutboundAuthorityRefused'; }
+}
+
+/** One hop as `beforeConnect` sees it: already resolved and vetted. */
+export interface OutboundHop {
+  url: URL;
+  /** 0 for the first request, then one per followed redirect. */
+  hop: number;
+  /** False once a redirect left the first request's origin (hook headers are then dropped). */
+  sameOrigin: boolean;
+  /** `dispatch`: immediately before the request is issued; `socket`: the pinned socket is open, nothing written yet. */
+  phase: 'dispatch' | 'socket';
+}
+/** Per-hop additions a `dispatch` hook may return (credentials produced only after its final check). */
+export interface OutboundHopAdditions { headers?: Record<string, string>; body?: string }
 
 export interface SafeOutboundOptions {
   /** Test-only resolver injection; production resolves with the system resolver. */
@@ -56,6 +81,12 @@ export interface SafeOutboundInit {
   /** Per-call ceilings (never above the helper's own). */
   timeoutMs?: number;
   maxResponseBytes?: number;
+  /**
+   * Synchronous authority hook, see the module comment. Throw to refuse. A
+   * `dispatch` call may return headers (same-origin hops only) and a body
+   * (non-GET/HEAD) to send with this hop.
+   */
+  beforeConnect?: (hop: OutboundHop) => OutboundHopAdditions | void;
 }
 
 export interface SafeOutboundResponse {
@@ -156,7 +187,18 @@ export function isPublicUnicastAddress(address: string): boolean {
 
 interface Target { url: URL; address: string; family: 4 | 6 }
 
-async function vet(raw: string, options: SafeOutboundOptions): Promise<Target> {
+/** Resolve, abandoning the lookup when `signal` aborts (its late answer is ignored). */
+function resolveWithin(lookup: Promise<string[]>, signal: AbortSignal): Promise<string[]> {
+  if (signal.aborted) { lookup.catch(() => {}); return Promise.reject(signal.reason); }
+  return new Promise<string[]>((resolve, reject) => {
+    const onAbort = () => { lookup.catch(() => {}); reject(signal.reason); };
+    signal.addEventListener('abort', onAbort, { once: true });
+    lookup.then((value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (error: unknown) => { signal.removeEventListener('abort', onAbort); reject(error); });
+  });
+}
+
+async function vet(raw: string, options: SafeOutboundOptions, signal: AbortSignal, deadline: AbortSignal): Promise<Target> {
   let url: URL;
   try { url = new URL(raw); } catch { throw new OutboundRequestRefused('scheme'); }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new OutboundRequestRefused('scheme');
@@ -169,9 +211,13 @@ async function vet(raw: string, options: SafeOutboundOptions): Promise<Target> {
   else {
     if (host === 'localhost' || host.endsWith('.localhost')) throw new OutboundRequestRefused('address');
     try {
-      addresses = options.resolve ? await options.resolve(host)
-        : (await dns.lookup(host, { all: true, verbatim: true })).map((entry) => entry.address);
-    } catch { throw new OutboundRequestRefused('host'); }
+      const lookup = options.resolve ? options.resolve(host)
+        : dns.lookup(host, { all: true, verbatim: true }).then((entries) => entries.map((entry) => entry.address));
+      addresses = await resolveWithin(lookup, signal);
+    } catch {
+      if (signal.aborted) throw new OutboundRequestRefused(deadline.aborted ? 'timeout' : 'network');
+      throw new OutboundRequestRefused('host');
+    }
   }
   if (!addresses.length) throw new OutboundRequestRefused('host');
   // Every answer must be admissible: a name that also points into private space is refused outright.
@@ -180,15 +226,25 @@ async function vet(raw: string, options: SafeOutboundOptions): Promise<Target> {
   return { url, address, family: net.isIPv6(address) ? 6 : 4 };
 }
 
-/** A dispatcher whose sockets can only reach the vetted address. */
-function pinnedAgent(target: Target): Agent {
+/**
+ * A dispatcher whose sockets can only reach the vetted address. `onSocket`
+ * runs once the socket is connected, before undici writes the request; a
+ * throw destroys the socket and fails the request.
+ */
+function pinnedAgent(target: Target, onSocket?: () => void): Agent {
+  const connector = buildConnector({
+    lookup: ((_hostname: string, options: { all?: boolean } | undefined, callback: (...args: unknown[]) => void) => {
+      if (options?.all) callback(null, [{ address: target.address, family: target.family }]);
+      else callback(null, target.address, target.family);
+    }) as never,
+  });
   return new Agent({
-    connect: {
-      lookup: ((_hostname: string, options: { all?: boolean } | undefined, callback: (...args: unknown[]) => void) => {
-        if (options?.all) callback(null, [{ address: target.address, family: target.family }]);
-        else callback(null, target.address, target.family);
-      }) as never,
-    },
+    connect: (connectOptions, callback) => connector(connectOptions, (error, socket) => {
+      if (error || !socket) return void (callback as (e: Error | null, s: unknown) => void)(error ?? new Error('no socket'), null);
+      try { onSocket?.(); }
+      catch (refused) { socket.destroy(); return void (callback as (e: Error | null, s: unknown) => void)(refused instanceof Error ? refused : new Error('refused'), null); }
+      callback(null, socket);
+    }),
     connections: 1, pipelining: 0,
   });
 }
@@ -229,19 +285,33 @@ export function createSafeOutboundFetch(options: SafeOutboundOptions = {}): Safe
     let headers = { ...(init.headers ?? {}) };
     let origin: string | null = null;
     for (let hop = 0; ; hop++) {
-      const target = await vet(current, options);
+      if (signal.aborted) throw new OutboundRequestRefused(deadline.aborted ? 'timeout' : 'network');
+      const target = await vet(current, options, signal, deadline);
       if (origin !== null && target.url.origin !== origin) {
         // Never carry the caller's credentials to a different origin.
         headers = Object.fromEntries(Object.entries(headers).filter(([name]) => name.toLowerCase() === 'accept'));
       }
       origin ??= target.url.origin;
-      const agent = pinnedAgent(target);
+      const sameOrigin = target.url.origin === origin;
+      // Authority hook, after resolution: synchronously before dispatch, and again on the open socket.
+      let hookError: { error: unknown } | null = null;
+      const runHook = (phase: OutboundHop['phase']): OutboundHopAdditions | void => {
+        if (!init.beforeConnect) return undefined;
+        try { return init.beforeConnect({ url: new URL(target.url), hop, sameOrigin, phase }); }
+        catch (error) { hookError = { error }; throw new OutboundAuthorityRefused(error); }
+      };
+      const additions = runHook('dispatch') ?? {};
+      const hopHeaders = sameOrigin && additions.headers ? { ...headers, ...additions.headers } : headers;
+      const requestBody = method === 'GET' || method === 'HEAD' ? undefined : additions.body ?? init.body;
+      const agent = pinnedAgent(target, init.beforeConnect ? () => { runHook('socket'); } : undefined);
       try {
         let response;
         try {
-          response = await undiciFetch(target.url, { method, headers, redirect: 'manual', signal, dispatcher: agent,
-            ...(init.body !== undefined && method !== 'GET' && method !== 'HEAD' ? { body: init.body } : {}) });
+          // No await between the dispatch-phase hook above and issuing the request here.
+          response = await undiciFetch(target.url, { method, headers: hopHeaders, redirect: 'manual', signal, dispatcher: agent,
+            ...(requestBody !== undefined ? { body: requestBody } : {}) });
         } catch (error) {
+          if (hookError) throw new OutboundAuthorityRefused((hookError as { error: unknown }).error);
           if (error instanceof OutboundRequestRefused) throw error;
           throw new OutboundRequestRefused(deadline.aborted ? 'timeout' : 'network');
         }
