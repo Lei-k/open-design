@@ -9,28 +9,39 @@ export class CompanyOpenAIConfigError extends Error {
   constructor(readonly status: 400 | 409) { super('Company provider configuration refused'); }
 }
 
+/**
+ * The deployment's company-credential key: a private 0600, single-link, 32-byte
+ * file under the resolved daemon data root (root AGENTS.md data-directory
+ * contract), created once. Shared by every admin-owned company credential
+ * (OpenAI pool, S9; Composio, S58); each store authenticates its ciphertext
+ * with its own AAD, so a row cannot be replayed into another store.
+ */
+export function loadCompanyCredentialKey(dataRoot: string): Buffer {
+  const dir = path.join(dataRoot, 'company-providers');
+  mkdirSync(dir, { mode: 0o700, recursive: true });
+  const info = lstatSync(dir);
+  if (!info.isDirectory() || info.isSymbolicLink() || process.getuid && info.uid !== process.getuid()) throw new Error('Invalid company credential directory');
+  chmodSync(dir, 0o700);
+  const file = path.join(dir, 'encryption.key');
+  try {
+    const created = openSync(file, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+    try { writeFileSync(created, randomBytes(32)); } finally { closeSync(created); }
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size !== 32 || stat.mode & 0o077 || process.getuid && stat.uid !== process.getuid()) throw new Error('Invalid company encryption key');
+    return readFileSync(fd);
+  } finally { closeSync(fd); }
+}
+
 /** Company key custody is independent from both host settings and personal
  * subscriptions. SQLite stores authenticated ciphertext; the 0600 key file
  * derives exclusively from the resolved daemon data root. */
 export class CompanyOpenAIStore {
   private readonly key: Buffer;
   constructor(private readonly db: Database.Database, dataRoot: string) {
-    const dir = path.join(dataRoot, 'company-providers');
-    mkdirSync(dir, { mode: 0o700, recursive: true });
-    const info = lstatSync(dir);
-    if (!info.isDirectory() || info.isSymbolicLink() || process.getuid && info.uid !== process.getuid()) throw new Error('Invalid company credential directory');
-    chmodSync(dir, 0o700);
-    const file = path.join(dir, 'encryption.key');
-    try {
-      const created = openSync(file, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-      try { writeFileSync(created, randomBytes(32)); } finally { closeSync(created); }
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
-    const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-    try {
-      const stat = fstatSync(fd);
-      if (!stat.isFile() || stat.nlink !== 1 || stat.size !== 32 || stat.mode & 0o077 || process.getuid && stat.uid !== process.getuid()) throw new Error('Invalid company encryption key');
-      this.key = readFileSync(fd);
-    } finally { closeSync(fd); }
+    this.key = loadCompanyCredentialKey(dataRoot);
     db.exec(`CREATE TABLE IF NOT EXISTS company_openai_config (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1), revision INTEGER NOT NULL,
       credential_revision INTEGER NOT NULL, enabled INTEGER NOT NULL CHECK (enabled IN (0,1)),

@@ -553,6 +553,41 @@ describe('damaged queued run requests', () => {
     } finally { launch.mockRestore(); }
   });
 
+  it('fails the run typed, without an unhandled rejection, when a dependency throws after the version await (S58 A1)', async () => {
+    await personalCapacity(0);
+    const convo = await newProject(alice);
+    const broken = (await personal(alice, 'dispatch-dependency-throws', convo)).json.run.id;
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => { rejections.push(reason); };
+    process.on('unhandledRejection', onRejection);
+    let armed = true;
+    const original = personalCodexAccounts.PersonalCodexAccounts.prototype.usableAccount;
+    // A synchronous dependency (DB/fs) throwing after `await assertSupportedVersion()`.
+    const usable = vi.spyOn(personalCodexAccounts.PersonalCodexAccounts.prototype, 'usableAccount').mockImplementation(function (this: personalCodexAccounts.PersonalCodexAccounts, ownerId: string) {
+      if (armed) { armed = false; throw new Error('planted dispatch dependency failure /secret/path'); }
+      return original.call(this, ownerId);
+    });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await personalCapacity(1);
+      const run = await finished(alice, broken);
+      expect(run).toMatchObject({ status: 'failed', output: { reason: 'MULTIUSER_PERSONAL_RUN_FAILED' } });
+      expect(armed).toBe(false);
+      // Give the event loop a turn so a stray rejection would be reported.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(rejections).toEqual([]);
+      const logged = log.mock.calls.map((args) => args.join(' ')).join('\n');
+      expect(logged).toContain('MULTIUSER_PERSONAL_RUN_FAILED');
+      expect(logged).not.toContain('/secret/path');
+      // The lane keeps dispatching: the daemon is still up and the next run succeeds.
+      const next = (await personal(alice, 'after-dispatch-throws', convo)).json.run.id;
+      expect((await finished(alice, next)).status).toBe('succeeded');
+    } finally {
+      usable.mockRestore(); log.mockRestore();
+      process.off('unhandledRejection', onRejection);
+    }
+  });
+
   const maxCompanyTurn = () => appDb((db) => (db.prepare('SELECT MAX(last_seq) AS n FROM multiuser_pool_turns').get() as { n: number | null }).n ?? 0);
   const companyTurn = (user: Principal) => appDb((db) => (db.prepare('SELECT last_seq FROM multiuser_pool_turns WHERE account_id = ?')
     .get(user.id) as { last_seq: number } | undefined)?.last_seq);

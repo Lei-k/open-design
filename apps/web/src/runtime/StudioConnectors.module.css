@@ -1,0 +1,49 @@
+.key {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border, #ebe8e1);
+}
+
+.keyHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.keyHead h3 {
+  margin: 0;
+}
+
+.keyRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.keyRow input {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+
+.confirm {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--red-border, #f1c4c0);
+  border-radius: 8px;
+  background: var(--red-bg, #fdf1f0);
+}
+
+.confirm p {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+.unavailable {
+  margin: 0 0 12px;
+}

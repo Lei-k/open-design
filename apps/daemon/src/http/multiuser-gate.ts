@@ -237,6 +237,19 @@ export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
       ...(deps.isRunOwner ? { isRunOwner: deps.isRunOwner } : {}),
       ...(deps.isAgentAccountOwner ? { isAgentAccountOwner: deps.isAgentAccountOwner } : {}) });
     if (decision.kind === 'pass-unauthenticated') {
+      // A reviewed cookie-less alias (S58 OAuth callback) still reaches its
+      // multi-user handler, never the host-global one at the standard path.
+      const aliases = matches.filter((match) => match.entry.rewriteTo).map((match) =>
+        match.entry.rewriteTo!.replace(/:([A-Za-z_]\w*)/g, (_all, name: string) => encodeURIComponent(match.params[name] ?? '')));
+      if (aliases.length && (aliases.length !== matches.length || new Set(aliases).size !== 1)) {
+        res.setHeader('Cache-Control', 'no-store');
+        sendApiError(res, 404, 'NOT_FOUND', 'not found');
+        return;
+      }
+      if (aliases.length) {
+        const query = req.url.indexOf('?');
+        req.url = `${aliases[0]!}${query >= 0 ? req.url.slice(query) : ''}`;
+      }
       next();
       return;
     }
@@ -506,6 +519,13 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   if (policy === 'provider-key') return only(['revision', 'apiKey', 'model']) && Number.isSafeInteger(body.revision)
     && (body.apiKey === undefined || body.apiKey === null || typeof body.apiKey === 'string' && body.apiKey.length <= 4096)
     && (body.model === undefined || typeof body.model === 'string' && body.model.length <= 128);
+  // S58: the administrator's company Composio key; null clears it. Never echoed.
+  if (policy === 'composio-config') return only(['revision', 'apiKey']) && Object.keys(body).length === 2
+    && Number.isSafeInteger(body.revision) && Number(body.revision) >= 0
+    && (body.apiKey === null || typeof body.apiKey === 'string' && body.apiKey.trim().length >= 8 && body.apiKey.length <= 4096);
+  if (policy === 'connector-prepare') return only(['connectorIds']) && Array.isArray(body.connectorIds)
+    && body.connectorIds.length > 0 && body.connectorIds.length <= 8
+    && body.connectorIds.every((id) => typeof id === 'string' && /^[a-z0-9_]{1,64}$/.test(id));
   if (policy === 'company-openai') return only(['revision', 'enabled', 'model', 'capacity', 'apiKey'])
     && Number.isSafeInteger(body.revision) && Number(body.revision) >= 0 && typeof body.enabled === 'boolean'
     && typeof body.model === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(body.model)
@@ -631,6 +651,12 @@ export interface MultiUserFront {
   projectOwnershipHooks: ProjectOwnershipRouteHooks;
   /** Current account state for project authority rechecks in route services. */
   accountActive: (accountId: string) => boolean;
+  /**
+   * Whether a previously resolved actor's session is still its live, current
+   * session (same account, role and pilot revision); never extends the idle
+   * window. Used where identity is carried by server-side state (S58 OAuth).
+   */
+  sessionCurrent: (actor: AuthActor) => boolean;
   /** Attach the ownership store to the main daemon database once it is open. */
   attachProjectOwnership: (db: Database.Database) => void;
   setCancelAccountRuns: (cancel: (accountId: string) => void) => void;
@@ -733,6 +759,7 @@ export function installMultiUserFront(
   return {
     projectOwnershipHooks,
     accountActive: (accountId) => store.getAccountById(accountId)?.active === true,
+    sessionCurrent: (actor) => auth.isActorCurrent(actor),
     attachProjectOwnership(db) {
       access = new ProjectAccessStore(db, { accountActive: (accountId) => store.getAccountById(accountId)?.active === true });
     },

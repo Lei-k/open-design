@@ -1402,6 +1402,14 @@ function popupBlockedMessage(): string {
 }
 
 export async function openExternalUrl(url: string): Promise<boolean> {
+  // A Web account has no daemon-side browser: open a new tab, keep the Studio page.
+  if (!studioUsesLocalServices()) {
+    try {
+      const opened = window.open(url, '_blank');
+      if (opened) opened.opener = null;
+      return opened !== null;
+    } catch { return false; }
+  }
   const bridgedUrl = await bridgeFirstPartyUrl(url);
   const targetUrl = bridgedUrl ?? url;
   if (isOpenDesignHostAvailable()) {

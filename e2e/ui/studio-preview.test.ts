@@ -1284,3 +1284,48 @@ test('[P1] Studio bundled plugins: every plugin shows its Web availability, unav
   expect(bCatalog.length).toBeGreaterThan(100);
   expect(bCatalog.filter((plugin) => plugin.availability.applicable)).toHaveLength(1);
 });
+
+test('[P1] Studio connectors: the administrator sets the company Composio key, an account connects and disconnects its own app', async ({ page, studio }, info) => {
+  const key = 'ak_browser_company_composio_key_Zz91';
+  await page.goto(`${studio.origin}/settings`);
+  await page.locator('input[name="username"]').fill(studio.admin.username);
+  await page.locator('input[name="password"]').fill(studio.admin.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.getByTestId('studio-settings-nav-connectors').click();
+  await expect(page.getByTestId('studio-connectors-unavailable')).toContainText('Add it above', { timeout: T.long });
+  await page.getByTestId('studio-connectors-key-input').fill(key);
+  const saved = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === '/api/connectors/composio/config');
+  await page.getByTestId('studio-connectors-key-save').click();
+  const response = await saved;
+  expect(response.status()).toBe(200);
+  expect(await response.text()).not.toContain(key);
+  await expect(page.getByTestId('studio-connectors-key-saved')).toContainText('Zz91');
+  await expect(page.getByTestId('studio-connectors-notice')).toHaveText('Company key saved.');
+  expect(await page.content()).not.toContain(key);
+  await page.screenshot({ path: info.outputPath('studio-connectors-admin-key.png'), animations: 'disabled' });
+
+  // Account A, same browser after the administrator's session is gone.
+  await page.context().clearCookies();
+  await page.goto(`${studio.origin}/settings`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.getByTestId('studio-settings-nav-connectors').click();
+  await expect(page.getByTestId('studio-connectors-not-in-runs')).toBeVisible({ timeout: T.long });
+  await expect(page.getByTestId('studio-connectors-key')).toHaveCount(0);
+  const card = page.locator('[data-connector-id="github"]');
+  await expect(card).toBeVisible({ timeout: T.long });
+  const popup = page.waitForEvent('popup');
+  await card.getByRole('button', { name: 'Connect', exact: true }).click();
+  const window = await popup;
+  await window.waitForURL(/\/api\/connectors\/oauth\/callback\/github/, { timeout: T.long }).catch(() => {});
+  await expect(card.getByRole('button', { name: 'Disconnect', exact: true })).toBeVisible({ timeout: T.long });
+  await card.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: info.outputPath('studio-connectors-connected.png'), animations: 'disabled' });
+  // B and the administrator see none of A's connection.
+  expect((await studio.request('GET', '/api/connectors/github', studio.b.cookie)).json.connector.status).toBe('available');
+  expect((await studio.request('GET', '/api/connectors/github', studio.admin.cookie)).json.connector.status).toBe('available');
+  expect((await studio.request('DELETE', '/api/connectors/github/connection', studio.b.cookie)).status).toBe(404);
+  await card.getByRole('button', { name: 'Disconnect', exact: true }).click();
+  await expect(card.getByRole('button', { name: 'Connect', exact: true })).toBeVisible({ timeout: T.long });
+});

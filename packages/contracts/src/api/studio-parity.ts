@@ -51,6 +51,12 @@ export interface StudioRuntimeCapabilities {
    * means unavailable. A key still has to be saved before a search succeeds.
    */
   researchSearch?: boolean;
+  /**
+   * Account connectors control plane (#62, S58): the actor can see the
+   * company Composio key state and connect/disconnect its own apps. Absent
+   * means unavailable. Connections are not usable in runs yet.
+   */
+  connectors?: boolean;
 }
 
 export interface StudioRouteParity {
@@ -147,8 +153,10 @@ export function parseStudioRuntimeCapabilities(value: unknown): StudioRuntimeCap
     || new Set(choices.map((choice) => choice.source)).size !== choices.length)) return null;
   if (studio.renderedExports !== undefined && typeof studio.renderedExports !== 'boolean') return null;
   if (studio.researchSearch !== undefined && typeof studio.researchSearch !== 'boolean') return null;
+  if (studio.connectors !== undefined && typeof studio.connectors !== 'boolean') return null;
   return { schemaVersion: 1, shell: studio.shell!, features,
     ...(choices !== undefined ? { executionSources: choices.map((choice) => ({ ...choice })) } : {}),
     ...(studio.renderedExports !== undefined ? { renderedExports: studio.renderedExports } : {}),
-    ...(studio.researchSearch !== undefined ? { researchSearch: studio.researchSearch } : {}) };
+    ...(studio.researchSearch !== undefined ? { researchSearch: studio.researchSearch } : {}),
+    ...(studio.connectors !== undefined ? { connectors: studio.connectors } : {}) };
 }

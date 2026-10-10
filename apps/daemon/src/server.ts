@@ -901,6 +901,7 @@ import {
   setLiveArtifactPreviewHeaders,
 } from './live-artifacts/http-helpers.js';
 import { registerConnectorRoutes } from './connectors/routes.js';
+import { registerStudioConnectorRoutes } from './routes/studio-connectors.js';
 import { registerActiveContextRoutes } from './routes/active-context.js';
 import { registerAutomationRoutes } from './routes/automation.js';
 import { registerAttributionRoutes } from './routes/attribution.js';
@@ -17701,6 +17702,13 @@ export async function startServer({
   }) : null;
   // Account research on each account's own Tavily key (#63); never the host research key.
   if (multiUserRuns) registerStudioResearchRoutes(app, { research: multiUserRuns.research });
+  // Account connectors (#62, S58): the company Composio key and each account's own OAuth connections.
+  const studioConnectors = multiUserMode ? registerStudioConnectorRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, publicOrigin: multiUserMode.allowedOrigins[0]!,
+    sessionCurrent: (actor) => multiUserFront!.sessionCurrent(actor), accountActive: multiUserFront!.accountActive,
+    ...(multiUserMode.testComposioFetch ? { fetch: multiUserMode.testComposioFetch } : {}),
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
+  }) : null;
   // Account-owned automation packets/proposals (#64); apply writes only into account stores.
   const studioAutomations = studioSettings ? registerStudioAutomationRoutes(app, { db, settings: studioSettings }) : null;
   // Account-owned Automations dispatch through the same run admission policy.
@@ -17710,6 +17718,8 @@ export async function startServer({
     ...(multiUserMode?.poolClock ? { clock: multiUserMode.poolClock } : {}),
   }) : null;
   if (multiUserRuns) multiUserFront?.setCancelAccountRuns((accountId) => {
+    // Pending connector authorizations die with the session (S58); connections stay recorded.
+    studioConnectors?.invalidateAccount(accountId);
     multiUserRuns.cancelAccountRuns(accountId);
     personalCodex?.cancelPendingFor(accountId).catch(() => {});
   });

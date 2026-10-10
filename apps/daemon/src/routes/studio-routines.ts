@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
-import { automationTemplateRoutinePrompt, studioRoutineAgentId, studioRoutineExecutionSource, type StudioExecutionSource,
+import { STUDIO_CONNECTORS_NOT_USABLE_IN_RUNS, automationTemplateRoutinePrompt, studioRoutineAgentId, studioRoutineExecutionSource, type StudioExecutionSource,
   type CreateRoutineRequest, type Routine, type RoutineRun, type RoutineSchedule, type RoutineProjectTarget, type UpdateRoutineRequest } from '@open-design/contracts';
 import { getProject, insertConversation, insertProject } from '../db.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
@@ -227,6 +227,7 @@ export function registerStudioRoutineRoutes(app: Express, input: {
     }
     const context = (body.context ?? {}) as Record<string, unknown>;
     const empty = (value: unknown) => value === undefined || value === null || Array.isArray(value) && value.length === 0;
+    if (!empty(context.connectorIds)) throw new RoutineRefusal(403, `not available for routines yet: ${STUDIO_CONNECTORS_NOT_USABLE_IN_RUNS}`);
     if (Object.keys(context).some((key) => !['skillIds', 'pluginIds', 'mcpServerIds', 'connectorIds', 'workspaceScope'].includes(key))
       || !empty(context.pluginIds) || !empty(context.mcpServerIds) || !empty(context.connectorIds) || !empty(context.workspaceScope))
       throw new RoutineRefusal(403, 'plugins, MCP servers, connectors and workspace scopes are not available for routines');

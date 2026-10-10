@@ -25,6 +25,38 @@ else process.stdout.write('codex-cli 0.162.1');`, { mode: 0o700 });
     await expect(Promise.resolve().then(() => assertPersonalCodexVersion(bin, path.dirname(bin)))).resolves.toBeUndefined();
     expect(readFileSync(calls, 'utf8')).toBe('11');
   });
+  it('settles (refused, not cached) when the probe binary ignores SIGTERM, and still removes the probe home', async () => {
+    const { bin, calls } = binary(''); const root = path.dirname(bin); const pidFile = path.join(root, 'pid');
+    writeFileSync(bin, `#!${process.execPath}\nconst fs = require('node:fs'); fs.appendFileSync(${JSON.stringify(calls)}, '1');
+if (fs.readFileSync(${JSON.stringify(calls)}, 'utf8').length === 1) { fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); }
+else process.stdout.write('codex-cli 0.162.1');`, { mode: 0o700 });
+    const started = Date.now();
+    await expect(assertPersonalCodexVersion(bin, root, { timeoutMs: 300 })).rejects.toMatchObject({ code: 'MULTIUSER_CODEX_UNSUPPORTED_VERSION' });
+    expect(Date.now() - started).toBeLessThan(4_000);
+    const pid = Number(readFileSync(pidFile, 'utf8'));
+    expect(() => process.kill(pid, 0)).toThrow();
+    expect(readdirSync(root).filter((entry) => entry.startsWith('codex-version-probe-'))).toEqual([]);
+    await assertPersonalCodexVersion(bin, root, { timeoutMs: 300 });
+    expect(readFileSync(calls, 'utf8')).toBe('11');
+  }, 10_000);
+  it('settles at the hard deadline when a descendant keeps the probe output open', async () => {
+    const { bin, calls } = binary(''); const root = path.dirname(bin); const pidFile = path.join(root, 'grandchild');
+    writeFileSync(bin, `#!${process.execPath}\nconst fs = require('node:fs'); fs.appendFileSync(${JSON.stringify(calls)}, '1');
+if (fs.readFileSync(${JSON.stringify(calls)}, 'utf8').length === 1) {
+  const child = require('node:child_process').spawn(process.execPath, ['-e', "process.on('SIGTERM', () => {}); setTimeout(() => {}, 30000)"], { stdio: ['ignore', 'inherit', 'inherit'] });
+  fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid)); process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);
+} else process.stdout.write('codex-cli 0.162.1');`, { mode: 0o700 });
+    try {
+      const started = Date.now();
+      await expect(assertPersonalCodexVersion(bin, root, { timeoutMs: 300 })).rejects.toMatchObject({ code: 'MULTIUSER_CODEX_UNSUPPORTED_VERSION' });
+      expect(Date.now() - started).toBeLessThan(4_000);
+      expect(readdirSync(root).filter((entry) => entry.startsWith('codex-version-probe-'))).toEqual([]);
+      await assertPersonalCodexVersion(bin, root, { timeoutMs: 300 });
+      expect(readFileSync(calls, 'utf8')).toBe('11');
+    } finally {
+      try { process.kill(Number(readFileSync(pidFile, 'utf8')), 'SIGKILL'); } catch { /* already gone */ }
+    }
+  }, 10_000);
   it('uses and removes a dedicated empty probe home without polluting the data root', async () => {
     const { bin } = binary(''); const root = path.dirname(bin); const trace = path.join(root, 'probe-env');
     writeFileSync(bin, `#!${process.execPath}\nconst fs = require('node:fs'); const path = require('node:path');

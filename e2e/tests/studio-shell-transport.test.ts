@@ -4,7 +4,7 @@ import { expect, it } from 'vitest';
 import { MULTIUSER_ROUTE_CLASSIFICATION, matchMultiUserRoute } from '../../apps/daemon/src/http/multiuser-route-classes.js';
 const runtime = fileURLToPath(new URL('../../apps/web/src/runtime/studio-transport.ts', import.meta.url));
 const { studioRequestAvailable } = await import(runtime) as {
-  studioRequestAvailable(method: string, path: string, usable?: (lane: string) => boolean, renderedExports?: boolean, researchSearch?: boolean): boolean;
+  studioRequestAvailable(method: string, path: string, usable?: (lane: string) => boolean, renderedExports?: boolean, researchSearch?: boolean, connectors?: boolean): boolean;
 };
 
 it('classifies every observed request from the real App and cookie entry lifecycle', () => {
@@ -375,6 +375,30 @@ it('opens account research and the Tavily key only where the server advertises a
   for (const [method, path] of [['GET', '/api/research/search'], ['POST', '/api/xai/search'], ['PUT', '/api/media/config']] as const) {
     expect(studioRequestAvailable(method, path, () => true, true, true), `${method} ${path}`).toBe(false);
   }
+});
+
+it('opens the account connectors control plane only with the settings lane and the connectors capability (S58)', () => {
+  const settings = (lane: string) => lane === 'settings';
+  const opened = [['GET', '/api/connectors'], ['GET', '/api/connectors/status'], ['GET', '/api/connectors/discovery'], ['GET', '/api/connectors/github'],
+    ['GET', '/api/connectors/composio/config'], ['PUT', '/api/connectors/composio/config'], ['POST', '/api/connectors/auth-configs/prepare'],
+    ['POST', '/api/connectors/github/connect'], ['POST', '/api/connectors/github/authorization/cancel'], ['DELETE', '/api/connectors/github/connection'],
+    ['GET', '/api/multiuser/connectors'], ['GET', '/api/multiuser/connectors/company-key'], ['PUT', '/api/multiuser/connectors/company-key'],
+    ['POST', '/api/multiuser/connectors/github/connect'], ['DELETE', '/api/multiuser/connectors/github/connection']] as const;
+  for (const [method, path] of opened) {
+    expect(studioRequestAvailable(method, path, settings, false, false, true), `${method} ${path}`).toBe(true);
+    expect(studioRequestAvailable(method, path, settings, false, false, false), `${method} ${path} without capability`).toBe(false);
+    expect(studioRequestAvailable(method, path, () => false, false, false, true), `${method} ${path} without settings`).toBe(false);
+    const matches = matchMultiUserRoute(method, path);
+    expect(matches.length, `${method} ${path}`).toBeGreaterThan(0);
+    expect(matches.every(({ entry }) => entry.routeClass === 'actor-scoped' || entry.routeClass === 'admin-only'), `${method} ${path}`).toBe(true);
+  }
+  // The cookie-less OAuth return is a navigation, never a transport request; logos, tools and memory stay closed.
+  for (const [method, path] of [['GET', '/api/connectors/oauth/callback/github'], ['GET', '/api/connectors/logos/github'],
+    ['GET', '/api/tools/connectors/list'], ['POST', '/api/tools/connectors/execute'], ['POST', '/api/memory/connectors/suggest'],
+    ['GET', '/api/connectors/github/connection'], ['PUT', '/api/connectors/github']] as const) {
+    expect(studioRequestAvailable(method, path, () => true, true, true, true), `${method} ${path}`).toBe(false);
+  }
+  expect(matchMultiUserRoute('GET', '/api/connectors/oauth/callback/github').every(({ entry }) => entry.routeClass === 'auth')).toBe(true);
 });
 
 it('opens team catalog grants only with usable catalogs and collaboration lanes, and only where the daemon classifies them', () => {

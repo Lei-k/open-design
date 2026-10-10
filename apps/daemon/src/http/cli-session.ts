@@ -1,7 +1,7 @@
 import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseStudioRuntimeCapabilities, type AuthAccount, type AuthSessionResponse, type StudioPilotState, type CompanyOpenAIConfigResponse,
-  type StudioProviderKeyResponse, type StudioProviderKeySummary, type StudioProviderKeysResponse } from '@open-design/contracts';
+  type StudioProviderKeyResponse, type StudioProviderKeySummary, type StudioProviderKeysResponse, type StudioComposioConfigResponse } from '@open-design/contracts';
 
 export interface CliSessionCredential {
   schemaVersion: 1;
@@ -206,8 +206,9 @@ export async function runSessionCli(args: string[], sessionFile: string | null):
 /** Explicit optimistic write; never silently read/retry a conflicting mutation. */
 export async function runStudioPilotCli(args: string[], sessionFile: string | null): Promise<void> {
   if (args[0] === 'pool') return runCompanyOpenAICli(args.slice(1), sessionFile);
+  if (args[0] === 'connectors') return runCompanyComposioCli(args.slice(1), sessionFile);
   if (args.includes('--help')) {
-    process.stdout.write('Usage: od admin pool openai get|set --help\n       od admin studio-pilot get <account-id> --session-file <path> [--json]\n       od admin studio-pilot set <account-id> --enabled true|false --revision <integer> --session-file <path> [--json]\n');
+    process.stdout.write('Usage: od admin pool openai get|set --help\n       od admin connectors composio get|set|clear --help\n       od admin studio-pilot get <account-id> --session-file <path> [--json]\n       od admin studio-pilot set <account-id> --enabled true|false --revision <integer> --session-file <path> [--json]\n');
     return;
   }
   const [domain, command, accountId, ...rest] = args;
@@ -278,6 +279,50 @@ async function runCompanyOpenAICli(args: string[], sessionFile: string | null): 
   // Project only the public contract even if a server response gains fields.
   process.stdout.write(`${JSON.stringify({ provider: { providerId: 'openai', enabled: result.enabled, configured: result.configured,
     model: result.model, capacity: result.capacity, revision: result.revision, credentialRevision: result.credentialRevision } })}\n`);
+}
+
+/**
+ * The company Composio key (#62, S58): administrators only, the CLI twin of
+ * Settings → Connectors. The key comes from a private file or stdin, never
+ * argv, and no output carries it: only configured, the last four characters
+ * and the revisions, exactly as the server projects them.
+ */
+async function runCompanyComposioCli(args: string[], sessionFile: string | null): Promise<void> {
+  if (args.includes('--help')) {
+    process.stdout.write('Usage: od admin connectors composio get --session-file <path> [--json]\n'
+      + '       od admin connectors composio set --revision <integer> --api-key-file <path|-> --session-file <path> [--json]\n'
+      + '       od admin connectors composio clear --revision <integer> --session-file <path> [--json]\n'
+      + '  Rotating or clearing the key marks every account connection for re-check; accounts reconnect.\n');
+    return;
+  }
+  const [provider, command, ...rest] = args;
+  if (provider !== 'composio' || !['get', 'set', 'clear'].includes(command ?? '') || !sessionFile) throw new Error('Invalid connectors key command; use admin connectors composio --help');
+  const flags: Record<string, string> = {};
+  for (let i = 0; i < rest.length; i++) {
+    const key = rest[i]!;
+    if (key === '--json') continue;
+    const allowed = command === 'set' ? ['--revision', '--api-key-file'] : command === 'clear' ? ['--revision'] : [];
+    if (!allowed.includes(key) || flags[key] !== undefined || !rest[i + 1] || rest[i + 1]!.startsWith('--')) throw new Error('Invalid connectors key options; keys require --api-key-file');
+    flags[key] = rest[++i]!;
+  }
+  let body: Record<string, unknown> | undefined;
+  if (command !== 'get') {
+    if (!/^(0|[1-9][0-9]*)$/.test(flags['--revision'] ?? '') || !Number.isSafeInteger(Number(flags['--revision']))
+      || command === 'set' && !flags['--api-key-file']) throw new Error('Invalid connectors key update');
+    body = { revision: Number(flags['--revision']), apiKey: command === 'clear' ? null : await secretInput(flags['--api-key-file']!, 'API key') };
+  }
+  if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') throw new Error('TLS verification must not be disabled');
+  const credential = readCliSession(sessionFile);
+  const response = await cliSessionFetch(credential)(`${credential.origin}/api/connectors/composio/config`, body ? {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  } : undefined);
+  if (!response.ok) throw new Error(`Connectors key request refused (${response.status})`);
+  const result = await response.json() as Partial<StudioComposioConfigResponse>;
+  if (typeof result.configured !== 'boolean' || typeof result.apiKeyTail !== 'string' || result.apiKeyTail.length > 4
+    || !Number.isSafeInteger(result.revision) || !Number.isSafeInteger(result.credentialRevision) || typeof result.canManage !== 'boolean') throw new Error('Invalid connectors key response');
+  // Project only the public contract even if a server response gains fields.
+  process.stdout.write(`${JSON.stringify({ composio: { configured: result.configured, apiKeyTail: result.apiKeyTail, revision: result.revision,
+    credentialRevision: result.credentialRevision, canManage: result.canManage } })}\n`);
 }
 
 /**

@@ -382,6 +382,18 @@ describe('route classification covers the real inventory', () => {
       'actor-scoped POST /api/multiuser/research/search',
       'actor-scoped GET /api/multiuser/settings/provider-keys',
       'actor-scoped PUT /api/multiuser/settings/provider-keys/:provider',
+      // S58 (#62): account connectors control plane; the standard paths are aliases.
+      'actor-scoped GET /api/connectors/composio/config',
+      'actor-scoped GET /api/multiuser/connectors/company-key',
+      'admin-only PUT /api/connectors/composio/config',
+      'admin-only PUT /api/multiuser/connectors/company-key',
+      ...['GET ', 'GET /status', 'GET /discovery', 'GET /:connectorId', 'POST /auth-configs/prepare', 'POST /:connectorId/connect',
+        'POST /:connectorId/authorization/cancel', 'DELETE /:connectorId/connection'].flatMap((route) => {
+        const [method, suffix] = route.split(' ');
+        return [`actor-scoped ${method} /api/connectors${suffix}`, `actor-scoped ${method} /api/multiuser/connectors${suffix}`];
+      }),
+      'auth GET /api/connectors/oauth/callback/:connectorId',
+      'auth GET /api/multiuser/connectors/oauth/callback/:connectorId',
       'owner-scoped-project PUT /api/multiuser/projects/:id/shares',
       'owner-scoped-project DELETE /api/multiuser/projects/:id/shares/:accountId',
       'owner-scoped-project GET /api/multiuser/projects/:id/access',
@@ -849,7 +861,8 @@ describe('fail-closed classification', () => {
       { method: 'POST', path: '/api/import/folder', body: { baseDir: '/' } },
       { method: 'POST', path: '/api/dialog/open-folder', body: {} },
       { method: 'GET', path: '/api/mcp/servers' },
-      { method: 'GET', path: '/api/connectors' },
+      { method: 'GET', path: '/api/tools/connectors/list' },
+      { method: 'GET', path: '/api/connectors/logos/github' },
       { method: 'POST', path: '/api/plugins/install', body: {} },
       { method: 'POST', path: '/api/chat', body: {} },
       { method: 'GET', path: '/api/daemon/status' },

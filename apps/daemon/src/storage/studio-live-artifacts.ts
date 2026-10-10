@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { STUDIO_LIVE_ARTIFACT_LIMITS as LIMITS, type LiveArtifact, type LiveArtifactSummary,
+import { STUDIO_CONNECTORS_NOT_USABLE_IN_RUNS, STUDIO_LIVE_ARTIFACT_LIMITS as LIMITS, type LiveArtifact, type LiveArtifactSummary,
   type LiveArtifactRefreshLogEntry, type LiveArtifactRefreshResponse } from '@open-design/contracts';
 import { validateBoundedJsonObject, validateLiveArtifactCreateInput, validateLiveArtifactUpdateInput } from '../live-artifacts/schema.js';
 import { LiveArtifactRenderLimitError, renderHtmlTemplateV1 } from '../live-artifacts/render.js';
@@ -9,7 +9,7 @@ import { captureStudioProject } from '../projects/studio-snapshot.js';
 import { validateProjectPath } from '../projects.js';
 
 export class StudioLiveArtifactRefusal extends Error {
-  constructor(readonly status: 400 | 404 | 409 | 413, message: string) { super(message); }
+  constructor(readonly status: 400 | 403 | 404 | 409 | 413, message: string) { super(message); }
 }
 const invalid = () => new StudioLiveArtifactRefusal(400, 'invalid live artifact');
 const closed = (value: unknown, keys: string[]): value is Record<string, unknown> => value !== null && typeof value === 'object'
@@ -49,7 +49,10 @@ export class StudioLiveArtifacts {
     if (artifact.preview.type !== 'html' || artifact.preview.entry !== 'index.html') throw invalid();
     const source = artifact.document.sourceJson;
     if (source) {
-      // Actor-owned connector execution is a separate closure. Never dispatch a host tool.
+      // Actor-owned connector execution is a separate closure (S59). Never dispatch a host tool.
+      if (source.type === 'connector_tool' || source.connector !== undefined) {
+        throw new StudioLiveArtifactRefusal(403, `connector sources are not available yet: ${STUDIO_CONNECTORS_NOT_USABLE_IN_RUNS}`);
+      }
       if (source.type !== 'local_file' || source.toolName !== undefined || source.connector !== undefined
         || !closed(source.input, ['path']) || typeof source.input.path !== 'string') throw invalid();
       const normalized = validateProjectPath(source.input.path);

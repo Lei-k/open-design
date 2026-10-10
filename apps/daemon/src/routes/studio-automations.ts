@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
 import {
   MEMORY_TYPES, STUDIO_AUTOMATION_LIMITS, STUDIO_AUTOMATION_PROPOSAL_ACTIONS, STUDIO_AUTOMATION_PROPOSAL_TARGETS,
-  STUDIO_AUTOMATION_SOURCE_KINDS, studioAutomationTemplateUnavailable,
+  STUDIO_AUTOMATION_SOURCE_KINDS, STUDIO_CONNECTORS_NOT_USABLE_IN_RUNS, studioAutomationTemplateUnavailable,
   type AutomationContentPacket, type AutomationEvolutionProposal, type AutomationProposalStatus, type AutomationSourceIngestionResponse,
   type AutomationTemplate, type CreateAutomationEvolutionProposalRequest, type CreateAutomationSourceIngestionRequest,
   type JsonValue, type MemoryType, type StudioAutomationTemplate,
@@ -30,6 +30,8 @@ export class AutomationRefusal extends Error {
 }
 const notFound = () => new AutomationRefusal(404, 'resource not found');
 const unavailable = (what: string) => new AutomationRefusal(403, `${what} are not available for Web accounts`);
+/** S58: connectors are connectable per account, but automations cannot use them yet (S59). */
+const connectorsNotInRuns = (what: string) => new AutomationRefusal(403, `${what} are not available for Web accounts yet: ${STUDIO_CONNECTORS_NOT_USABLE_IN_RUNS}`);
 
 const text = (value: unknown, max: number) => typeof value === 'string' && value.length <= max && !value.includes('\0');
 const optionalText = (value: unknown, max: number) => value === undefined || value === null || text(value, max);
@@ -50,7 +52,7 @@ export function studioAutomationTemplates(privateTemplates: AutomationTemplate[]
 export function studioRunnableAutomationTemplate(id: unknown, privateTemplates: AutomationTemplate[] = []): AutomationTemplate {
   const template = typeof id === 'string' ? [...BUILT_IN_AUTOMATION_TEMPLATES, ...privateTemplates].find((item) => item.id === id) : undefined;
   if (!template) throw notFound();
-  if (studioAutomationTemplateUnavailable(template)) throw unavailable('connector-only automation templates');
+  if (studioAutomationTemplateUnavailable(template)) throw connectorsNotInRuns('connector-only automation templates');
   return template;
 }
 
@@ -112,7 +114,7 @@ export function registerStudioAutomationRoutes(app: Express, input: {
     if (!plainObject(body)) throw new AutomationRefusal(400, 'ingestion body is required');
     if (body.sourceKind === 'connector' || body.triggerKind === 'connector'
       || body.connectorId !== undefined && body.connectorId !== null || body.accountLabel !== undefined && body.accountLabel !== null) {
-      throw unavailable('connector sources');
+      throw connectorsNotInRuns('connector sources');
     }
     if (!(STUDIO_AUTOMATION_SOURCE_KINDS as readonly string[]).includes(String(body.sourceKind))) throw new AutomationRefusal(400, 'unsupported source kind');
     if (typeof body.bodyMarkdown !== 'string' || !body.bodyMarkdown.trim() || Buffer.byteLength(body.bodyMarkdown) > STUDIO_AUTOMATION_LIMITS.bodyBytes

@@ -226,6 +226,16 @@ export const API_ERROR_CODES = [
   'MULTIUSER_PERSONAL_WORKSPACE_NOT_ALLOWED',
   'MULTIUSER_EXECUTION_SOURCE_MISMATCH',
   'MULTIUSER_CAPABILITY_UNAVAILABLE',
+  // Account connectors (#62, S58). NOT_CONFIGURED: no company Composio key;
+  // AUTHORIZATION_INVALID: an OAuth callback whose server-side state is
+  // unknown, expired, replayed, or whose bound session/account/key/provider
+  // account no longer matches (details.reason); PROVIDER_FAILED: Composio
+  // refused or failed (its body is never echoed); RECHECK_REQUIRED: the
+  // company key changed since the account connected.
+  'MULTIUSER_CONNECTORS_NOT_CONFIGURED',
+  'MULTIUSER_CONNECTOR_AUTHORIZATION_INVALID',
+  'MULTIUSER_CONNECTOR_PROVIDER_FAILED',
+  'MULTIUSER_CONNECTOR_RECHECK_REQUIRED',
   'INTERNAL_ERROR',
 ] as const;
 

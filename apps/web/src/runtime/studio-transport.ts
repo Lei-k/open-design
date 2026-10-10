@@ -5,13 +5,13 @@ import { withdrawStudioResources } from './studio-resources';
 type Scope = {
   session: CookieSession; generation: number; abort: AbortController; storage: Map<string, string>;
   messageIdPrefix: string | null; usable: (lane: StudioParityLaneId) => boolean; lastRecheck: number;
-  renderedExports: boolean; researchSearch: boolean;
+  renderedExports: boolean; researchSearch: boolean; connectors: boolean;
 };
 // undefined is the original local runtime; null is a withdrawn cookie runtime.
 let scope: Scope | null | undefined;
 
 export function activateStudioTransport(session: CookieSession, generation: number,
-  options: { messageIdPrefix?: string | undefined; usable?: (lane: StudioParityLaneId) => boolean; renderedExports?: boolean; researchSearch?: boolean } = {}): void {
+  options: { messageIdPrefix?: string | undefined; usable?: (lane: StudioParityLaneId) => boolean; renderedExports?: boolean; researchSearch?: boolean; connectors?: boolean } = {}): void {
   if (scope?.session === session && scope.generation === generation && !scope.abort.signal.aborted) return;
   // Called during render so children never fetch before activation (their
   // effects run first). Only the session's current generation may activate:
@@ -22,7 +22,7 @@ export function activateStudioTransport(session: CookieSession, generation: numb
   withdrawStudioResources();
   const next: Scope = { session, generation, abort: new AbortController(), storage: new Map(),
     messageIdPrefix: options.messageIdPrefix ?? null, usable: options.usable ?? (() => false), lastRecheck: 0,
-    renderedExports: options.renderedExports === true, researchSearch: options.researchSearch === true };
+    renderedExports: options.renderedExports === true, researchSearch: options.researchSearch === true, connectors: options.connectors === true };
   scope = next;
   session.bindResource(() => {
     next.abort.abort(); next.storage.clear();
@@ -49,7 +49,8 @@ const RUN_ACTION = /^\/api\/runs\/[^/]+\/(?:events|cancel|steer|feedback)$/;
 export function studioRequestAvailable(method: string, path: string,
   usable: (lane: StudioParityLaneId) => boolean = (lane) => scope?.usable(lane) ?? false,
   renderedExports: boolean = scope?.renderedExports ?? false,
-  researchSearch: boolean = scope?.researchSearch ?? false): boolean {
+  researchSearch: boolean = scope?.researchSearch ?? false,
+  connectors: boolean = scope?.connectors ?? false): boolean {
   if (/^\/api\/(?:version|health)$/.test(path)) return method === 'GET';
   // Public, no-store deployment version (About → check for a newer deployment).
   if (path === '/api/version') return method === 'GET';
@@ -130,6 +131,19 @@ export function studioRequestAvailable(method: string, path: string,
     if (path === '/api/multiuser/settings/provider-keys/openai') return method === 'PUT';
     // Research keys (#63) exist only where the server advertises account research.
     if (path === '/api/multiuser/settings/provider-keys/tavily') return researchSearch && method === 'PUT';
+  }
+  // Account connectors (#62, S58): the company key state (administrators write it) and the
+  // actor's own connections. Logos, the OAuth callback (a navigation) and tool routes stay closed.
+  if (usable('settings') && connectors) {
+    const connectorPath = path.replace(/^\/api\/multiuser\/connectors(?=\/|$)/, '/api/connectors')
+      .replace(/^\/api\/connectors\/company-key$/, '/api/connectors/composio/config');
+    if (connectorPath === '/api/connectors/composio/config') return method === 'GET' || method === 'PUT';
+    if (['/api/connectors', '/api/connectors/status', '/api/connectors/discovery'].includes(connectorPath)) return method === 'GET';
+    if (connectorPath === '/api/connectors/auth-configs/prepare') return method === 'POST';
+    const connector = /^\/api\/connectors\/([a-z0-9_]+)(\/connect|\/authorization\/cancel|\/connection)?$/.exec(connectorPath);
+    if (connector && !['logos', 'oauth', 'composio', 'auth-configs', 'status', 'discovery'].includes(connector[1]!)) {
+      return connector[2] === '/connection' ? method === 'DELETE' : connector[2] ? method === 'POST' : method === 'GET';
+    }
   }
   // Account research (#63) on the account's own Tavily key.
   if (usable('generation') && researchSearch && /^\/api\/(?:multiuser\/)?research\/search$/.test(path)) return method === 'POST';

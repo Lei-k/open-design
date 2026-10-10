@@ -8,6 +8,7 @@ import { runArtifactsCli } from './artifacts-cli.js';
 import { runResource } from './resource-cli.js';
 import { runProjectHandoff } from './handoff-cli.js';
 import { runConnectorsToolCli } from './tools-connectors-cli.js';
+import { runConnectorsCli } from './connectors/connectors-cli.js';
 import { runDesignSystemsToolCli } from './tools-design-systems-cli.js';
 import { DESIGN_SYSTEMS_USAGE, isDesignSystemsHelpArg } from './cli-help/index.js';
 import { BRAND_USAGE, isBrandHelpArg } from './cli-help/index.js';
@@ -421,6 +422,8 @@ const PLUGIN_LIST_BOOLEAN_FLAGS = new Set([
 const SUBCOMMAND_MAP = {
   admin: (args) => runStudioPilotCli(args, remoteSessionFile),
   account: (args) => runAccountCli(args, remoteSessionFile),
+  // Account connectors (#62, S58): the same /api/connectors endpoints as Settings → Connectors.
+  connectors: async (args) => { process.exitCode = await runConnectorsCli(args, cliDaemonUrl); },
   session: async (args) => {
     try { await runSessionCli(args, remoteSessionFile); }
     catch {
@@ -1032,6 +1035,8 @@ function printRootHelp() {
 
   od tools connectors <list|execute|github-design-context> [options]
       Discover and execute configured connectors.
+  od connectors <list|status|show|connect|cancel|disconnect> [id] [--json]
+      Connect your own apps (Settings → Connectors); with --session-file, the signed-in account's own connections.
 
   od tools design-systems read --path <manifest-declared-path>
       Read active design-system pull-layer files through daemon wrapper commands.

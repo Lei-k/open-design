@@ -10,6 +10,8 @@ import { getComposioToolkitMetadata } from './composio-descriptions.js';
 import { ConnectorServiceError, type ConnectorCredentialMaterial } from './service.js';
 
 const DEFAULT_COMPOSIO_BASE_URL = 'https://backend.composio.dev';
+/** The fixed Composio API origin; Studio connectors (S58) never take a client-chosen endpoint. */
+export const COMPOSIO_API_BASE_URL = DEFAULT_COMPOSIO_BASE_URL;
 const DEFAULT_COMPOSIO_TIMEOUT_MS = 30_000;
 const DEFAULT_COMPOSIO_USER_ID = 'open-design-local-user';
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
@@ -1432,7 +1434,7 @@ function appendOAuthStateToCallbackUrl(callbackUrl: string, state: string): stri
   return url.toString();
 }
 
-function connectorIdForToolkitSlug(toolkitSlug: string): string {
+export function connectorIdForToolkitSlug(toolkitSlug: string): string {
   const normalized = normalizeComposioSlug(toolkitSlug);
   if (normalized === 'googledrive' || normalized === 'gdrive' || normalized === 'drive') return 'google_drive';
   return normalized;

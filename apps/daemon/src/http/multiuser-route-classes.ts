@@ -45,7 +45,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'studio-memory-rules-suggest' | 'studio-memory-extract' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'catalog-share' | 'provider-key' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'studio-plugin-apply' | 'studio-live-artifact' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'studio-memory-rules-suggest' | 'studio-memory-extract' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'catalog-share' | 'provider-key' | 'composio-config' | 'connector-prepare' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'studio-plugin-apply' | 'studio-live-artifact' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -167,6 +167,8 @@ const R_RUNS = 'real provider execution requires the shared pool/quota (#11) and
 const R_TOOL_TOKENS = 'agent tool endpoint authorized by run-scoped tool tokens, not accounts; blocked until run isolation (#5)';
 const R_HOST_FS = 'host filesystem / desktop integration; not an actor resource';
 const R_CREDENTIALS = 'connector/MCP/OAuth/provider credentials are host-level secrets; admin/pool surfaces are #10/#11';
+/** S58 (#62): the connector control plane is open; run-time use opens in S59. */
+const R_CONNECTORS_NOT_IN_RUNS = 'connectors are connectable in Settings but not yet usable in runs, tools, Live Artifact sources or automations (#62/#63/#64)';
 const R_SHARED_CATALOG = 'shared catalog whose user-created entries are global across accounts (not actor-scoped yet)';
 const R_PLUGINS = 'plugin install/registry/snapshots are host-level and shared across accounts';
 const R_WORKSPACE = 'Vela team workspace feature; workspace/member identity is not the Web login principal';
@@ -610,9 +612,12 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'GET /api/plugins/events/stats',
     'POST /api/plugins/events/purge',
   ]),
-  ...blocked(R_TOOL_TOKENS, [
+  // S58: connectors are connectable per account but not yet usable by agent tools (S59).
+  ...refused('connectors', R_CONNECTORS_NOT_IN_RUNS, [
     'GET /api/tools/connectors/list',
     'POST /api/tools/connectors/execute',
+  ]),
+  ...blocked(R_TOOL_TOKENS, [
     'POST /api/tools/library/search',
     'POST /api/tools/library/apply',
     'POST /api/tools/live-artifacts/create',
@@ -650,18 +655,6 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'POST /api/agents/:agentId/oauth-launch',
     'POST /api/agents/:agentId/companion/install',
     'GET /api/agents',
-    'GET /api/connectors',
-    'GET /api/connectors/status',
-    'GET /api/connectors/discovery',
-    'GET /api/connectors/logos/:slug',
-    'GET /api/connectors/composio/config',
-    'PUT /api/connectors/composio/config',
-    'GET /api/connectors/:connectorId',
-    'POST /api/connectors/auth-configs/prepare',
-    'POST /api/connectors/:connectorId/connect',
-    'GET /api/connectors/oauth/callback/:connectorId',
-    'POST /api/connectors/:connectorId/authorization/cancel',
-    'DELETE /api/connectors/:connectorId/connection',
     'GET /api/mcp/install-info',
     'GET /api/mcp/install/codex/status',
     'POST /api/mcp/install/codex',
@@ -748,14 +741,16 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
   ...blocked('daemon-global app configuration (agent CLI env, providers, labs); admin surface is #10', [
     'GET /api/strategies/od-next/rollout',
   ]),
+  ...refused('connectors', R_CONNECTORS_NOT_IN_RUNS, [
+    'POST /api/memory/connectors/suggest',
+    'POST /api/memory/connectors/extract',
+  ]),
   ...blocked(R_GLOBAL_STATE, [
     'GET /api/analytics/config',
     'POST /api/analytics/mcp/context',
     'POST /api/analytics/mcp/event',
     'POST /api/attribution/claim',
     'POST /api/attribution/bridge-url',
-    'POST /api/memory/connectors/suggest',
-    'POST /api/memory/connectors/extract',
     'POST /api/upload',
     'POST /api/artifacts/save',
     'POST /api/artifacts/lint',
@@ -801,6 +796,36 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
   ...group('actor-scoped', 'the actor\'s own provider key summaries; never the key, never another account', ['GET /api/multiuser/settings/provider-keys']),
   ...group('actor-scoped', 'write-only account provider key sealed with the deployment master key; revision-checked; no admin read path',
     ['PUT /api/multiuser/settings/provider-keys/:provider'], { bodyPolicy: 'provider-key', maxBodyBytes: 8 * 1024 }),
+  // Account connectors control plane (#62, S58; owner decision 2026-10-10). The
+  // standard routes are reviewed aliases; the host connector service, its
+  // credential file and its fixed local Composio user never run for a cookie actor.
+  ...group('actor-scoped', 'redacted company Composio key state (tail for administrators only)',
+    ['GET /api/connectors/composio/config'], { rewriteTo: '/api/multiuser/connectors/company-key' }),
+  ...group('actor-scoped', 'redacted company Composio key state (tail for administrators only)', ['GET /api/multiuser/connectors/company-key']),
+  ...group('admin-only', 'write-only encrypted company Composio key; set, rotate or clear with a revision',
+    ['PUT /api/connectors/composio/config'], { bodyPolicy: 'composio-config', maxBodyBytes: 8 * 1024, rewriteTo: '/api/multiuser/connectors/company-key' }),
+  ...group('admin-only', 'write-only encrypted company Composio key; set, rotate or clear with a revision',
+    ['PUT /api/multiuser/connectors/company-key'], { bodyPolicy: 'composio-config', maxBodyBytes: 8 * 1024 }),
+  ...([
+    ['GET', '', {}], ['GET', '/status', {}], ['GET', '/discovery', {}], ['GET', '/:connectorId', {}],
+    ['POST', '/auth-configs/prepare', { bodyPolicy: 'connector-prepare' as const, maxBodyBytes: 4 * 1024 }],
+    ['POST', '/:connectorId/connect', { bodyPolicy: 'empty' as const, maxBodyBytes: 1024 }],
+    ['POST', '/:connectorId/authorization/cancel', { bodyPolicy: 'empty' as const, maxBodyBytes: 1024 }],
+    ['DELETE', '/:connectorId/connection', {}],
+  ] as const).flatMap(([method, suffix, policy]) => [
+    ...group('actor-scoped', 'the actor\'s own connections only (its server-derived Composio entity); no admin bypass',
+      [`${method} /api/connectors${suffix}`], { ...policy, rewriteTo: `/api/multiuser/connectors${suffix}` }),
+    ...group('actor-scoped', 'the actor\'s own connections only (its server-derived Composio entity); no admin bypass',
+      [`${method} /api/multiuser/connectors${suffix}`], policy),
+  ]),
+  // The OAuth return carries no session cookie (SameSite=Strict on a cross-site
+  // navigation): identity comes from the single-use server-side state, which
+  // re-checks the bound account, session, pilot revision and key revision.
+  ...group('auth', 'OAuth callback: no session at the gate; the handler binds identity from a single-use state and rechecks it',
+    ['GET /api/connectors/oauth/callback/:connectorId'], { rewriteTo: '/api/multiuser/connectors/oauth/callback/:connectorId' }),
+  ...group('auth', 'OAuth callback: no session at the gate; the handler binds identity from a single-use state and rechecks it',
+    ['GET /api/multiuser/connectors/oauth/callback/:connectorId']),
+  ...refused('connectors', 'connector logos are fetched from a third-party host; Studio shows initials instead', ['GET /api/connectors/logos/:slug']),
   // Actor preferences and manual memory (#62); host registrars never run.
   ...[
     ['GET /api/app-config', undefined],

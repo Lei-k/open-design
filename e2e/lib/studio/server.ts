@@ -45,6 +45,26 @@ process.once('message', async (input: { dataRoot: string; appOrigin: string; pre
     const events = [...(wrote ? [{ type: 'response.output_text.delta', delta: 'Company browser design complete.\n' }] : []), { type: 'response.completed', response: { output } }];
     return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
   };
+  // Account connectors (#62, S58): a Composio fake whose OAuth "redirect" returns
+  // straight to the app's own callback, so the browser never leaves the fixture.
+  const composioAccounts = new Map<string, { userId: string }>();
+  const composioFetch: typeof fetch = async (url, init) => {
+    const target = new URL(String(url));
+    const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {};
+    if (target.pathname === '/api/v3/auth_configs') return Response.json({ items: [{ id: 'ac_browser', toolkit: { slug: target.searchParams.get('toolkit_slug') }, status: 'ENABLED' }] });
+    if (target.pathname === '/api/v3.1/connected_accounts/link') {
+      const id = `ca_browser_${composioAccounts.size + 1}`;
+      composioAccounts.set(id, { userId: String(body.user_id) });
+      const back = new URL(String(body.callback_url));
+      back.searchParams.set('status', 'success'); back.searchParams.set('connected_account_id', id);
+      return Response.json({ id, redirect_url: back.toString(), status: 'INITIATED' });
+    }
+    const id = /^\/api\/v3\/connected_accounts\/([^/]+)$/.exec(target.pathname)?.[1];
+    const account = id ? composioAccounts.get(decodeURIComponent(id)) : undefined;
+    if (account && init?.method === 'DELETE') { composioAccounts.delete(decodeURIComponent(id!)); return Response.json({}); }
+    if (account) return Response.json({ id, user_id: account.userId, auth_config: { id: 'ac_browser' }, toolkit: { slug: 'github' }, status: 'ACTIVE', email: 'octo@apps.example' });
+    return Response.json({ error: 'not found' }, { status: 404 });
+  };
   const started = await startServer({ port: 0, host: '127.0.0.1', returnServer: true,
     staticDir: path.join(input.workspaceRoot, 'apps/web/out'),
     multiUser: { acknowledgeNotLaunchReady: MULTIUSER_NOT_LAUNCH_READY_ACK,
@@ -55,6 +75,7 @@ process.once('message', async (input: { dataRoot: string; appOrigin: string; pre
       // Account research (#63): a fixed Tavily answer; accounts still need their own key.
       testTavilyFetch: async () => Response.json({ answer: 'Calm, muted palettes lead this season.',
         results: [{ title: 'Palette trends', url: 'https://example.test/palette-trends', content: 'Muted greens and warm greys.' }] }),
+      testComposioFetch: composioFetch,
       testPersonalCodexAppServer: path.join(input.workspaceRoot, 'mocks/personal-codex-app-server.ts'),
       // Server-rendered exports through Playwright's managed Chromium; no external asset hosts in tests.
       studioRenderer: { assetHosts: [],

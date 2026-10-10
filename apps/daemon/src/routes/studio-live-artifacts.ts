@@ -36,7 +36,7 @@ export function registerStudioLiveArtifactRoutes(app: Express, input: {
       try { return work(req, res, project, String(req.params.artifactId ?? '')); }
       catch (error) {
         const status = error instanceof StudioLiveArtifactRefusal ? error.status : 400;
-        return sendApiError(res, status, status === 404 ? 'NOT_FOUND' : status === 409 ? 'CONFLICT'
+        return sendApiError(res, status, status === 404 ? 'NOT_FOUND' : status === 403 ? 'MULTIUSER_CAPABILITY_UNAVAILABLE' : status === 409 ? 'CONFLICT'
           : status === 413 ? 'PAYLOAD_TOO_LARGE' : 'BAD_REQUEST', error instanceof StudioLiveArtifactRefusal ? error.message : 'invalid live artifact');
       }
     };

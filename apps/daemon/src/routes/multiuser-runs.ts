@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
-import { workspaceToolsUnavailable, API_ERROR_CODES, STUDIO_RESEARCH_MAX_SOURCES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
+import { workspaceToolsUnavailable, STUDIO_CONNECTORS_NOT_USABLE_IN_RUNS, API_ERROR_CODES, STUDIO_RESEARCH_MAX_SOURCES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
 import { PersonalRunEvents } from '../runtimes/personal-run-events.js';
 import { formatProjectAttachmentHint, normalizeCommentAttachments, renderCommentAttachmentHint, resolveSafeProjectAttachments } from '../runtimes/chat-prompt-inputs.js';
 import { renderRunContextPrompt } from '../runtimes/chat-run-context.js';
@@ -199,6 +199,10 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
     if (record.skillIds !== undefined && !validSkillIds(record.skillIds)) return refuse(400, 'BAD_REQUEST', 'invalid skill selections');
     if (record.pluginIds !== undefined && !(Array.isArray(record.pluginIds) && record.pluginIds.length <= 1
       && record.pluginIds.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 256))) return refuse(400, 'BAD_REQUEST', 'invalid plugin selection');
+    // S58: accounts can connect apps in Settings, but runs cannot use them yet (S59).
+    if (Array.isArray(record.connectorIds) && record.connectorIds.length > 0) {
+      return refuse(403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', `not available for Studio runs yet: ${STUDIO_CONNECTORS_NOT_USABLE_IN_RUNS}`);
+    }
     if (Object.keys(record).some((key) => ![...selections, 'skillIds', 'pluginIds', 'workspaceItems'].includes(key))
       || selections.some((key) => record[key] !== undefined && !(Array.isArray(record[key]) && (record[key] as unknown[]).length === 0))) {
       return refuse(403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'not available for personal Studio runs: context selections');
@@ -1212,7 +1216,36 @@ export function registerMultiUserRunRoutes(app: Express, input: {
    * user and round-robin across users by their last personal dispatch turn.
    * The company ledger and company slots are never touched.
    */
-  dispatchPersonal = async () => {
+  /**
+   * S58 A1: dispatch is asynchronous (it awaits the Codex version floor), and
+   * every caller fires it without awaiting. No rejection may escape: a
+   * synchronous DB/fs/dependency throw after that await fails the run it was
+   * dispatching with a typed code, is logged without its message (it can carry
+   * private paths), and the lane keeps dispatching. A failure outside any run
+   * (the queue read itself) is logged the same way.
+   */
+  const logPersonalDispatchFailure = (error: unknown) => {
+    const name = error instanceof Error ? error.name : typeof error;
+    console.error(`[Studio] MULTIUSER_PERSONAL_RUN_FAILED: personal dispatch failed (${name})`);
+  };
+  const failPersonalDispatch = (runId: string, error: unknown): boolean => {
+    logPersonalDispatchFailure(error);
+    try {
+      if (storesClosed || shuttingDown) return true;
+      const status = row(runId)?.status;
+      if (status === 'queued' || (status === 'active' && !children.has(runId))) {
+        finish(runId, 'failed', { reason: error instanceof PersonalAccountError ? error.code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
+      }
+      return row(runId)?.status !== 'queued';
+    } catch (secondary) {
+      logPersonalDispatchFailure(secondary);
+      return false;
+    }
+  };
+  dispatchPersonal = () => {
+    void dispatchPersonalQueue().catch(logPersonalDispatchFailure);
+  };
+  const dispatchPersonalQueue = async () => {
     const launch = personal?.appServerLaunch();
     if (personalDispatching || shuttingDown || !personal || !launch) return;
     personalDispatching = true;
@@ -1225,177 +1258,182 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           .get(run.owner_account_id))
           .sort((a, b) => (turns.get(a.owner_account_id) ?? 0) - (turns.get(b.owner_account_id) ?? 0) || Number(a.queue_seq) - Number(b.queue_seq))[0];
         if (!next) break;
-        try { await personal.assertSupportedVersion(); } catch {
-          if (storesClosed || shuttingDown) return;
-          if (row(next.id)?.status === 'queued') finish(next.id, 'failed', { reason: 'MULTIUSER_CODEX_UNSUPPORTED_VERSION' });
-          continue;
-        }
-        if (storesClosed || shuttingDown) return;
-        if (row(next.id)?.status !== 'queued') continue;
-        if (!accounts.getAccountById(next.owner_account_id)?.active) { finish(next.id, 'canceled'); continue; }
-        const project = getProject(db, next.project_id);
-        const conversation = getConversation(db, next.conversation_id);
-        const metadata = project?.metadata as Record<string, unknown> | null | undefined;
-        let realCwd: string | null = null;
-        try { realCwd = fs.realpathSync(path.join(projectsRoot, next.project_id)); } catch { /* failed below */ }
-        if (!projects.canWrite(next.project_id, next.owner_account_id) || conversation?.projectId !== next.project_id ||
-            metadata?.baseDir || metadata?.linkedDirs || metadata?.imported || !realCwd || path.dirname(realCwd) !== fs.realpathSync(projectsRoot)) {
-          finish(next.id, 'failed');
-          continue;
-        }
-        // Re-validate the binding at dispatch: same account, same credential version, still usable.
-        const account = personal.usableAccount(next.owner_account_id);
-        const session = personalSession(next.conversation_id);
-        if (!account || account.id !== next.personal_account_id || account.credentialVersion !== next.credential_version ||
-            !session || session.personal_account_id !== next.personal_account_id) {
-          personal.audit(next.owner_account_id, next.owner_account_id, 'run_rejected', 'MULTIUSER_PERSONAL_UNAVAILABLE', next.id);
-          finish(next.id, 'failed', { reason: 'MULTIUSER_PERSONAL_UNAVAILABLE' });
-          continue;
-        }
-        // A damaged request never starts: no runtime home, active mark, personal turn or start event.
-        const request = storedRequest(next.request_json);
-        const userPrompt = withInstruction(next.request_json, storedMessage(next.request_json));
-        const stablePrompt = typeof request?.stablePrompt === 'string' ? request.stablePrompt : '';
-        const stablePromptHash = typeof request?.stablePromptHash === 'string' ? request.stablePromptHash : '';
-        if (userPrompt === null) {
-          finish(next.id, 'failed', { reason: 'MULTIUSER_RUN_REQUEST_INVALID' });
-          continue;
-        }
-        const runHome = path.join(dataRoot, 'multiuser-runtime', createHash('sha256').update(next.owner_account_id).digest('hex'), next.id);
-        const temp = path.join(runHome, 'tmp');
-        fs.mkdirSync(temp, { recursive: true, mode: 0o700 });
-        for (const dir of [path.dirname(runHome), runHome, temp]) fs.chmodSync(dir, 0o700);
-        const runId = next.id;
         try {
-          const skillPackages = studioRunResourcePackages(request);
-          const skillRoot = stageStudioSkillPackages(runHome, skillPackages);
-          artifactBaselines.set(runId, { cwd: realCwd, before: snapshotProjectArtifacts(realCwd) });
-          startRun(next);
-          const owner = next.owner_account_id;
-          const accountId = account.id;
-          const includeStable = Boolean(stablePrompt) && (!session.thread_id || session.stable_prompt_hash !== stablePromptHash);
-          // Attachments were owner-checked at admission; re-resolve against the
-          // real project root now, since files may have moved since.
-          const attached = formatProjectAttachmentHint(resolveSafeProjectAttachments(realCwd,
-            Array.isArray(request?.attachments) ? request.attachments.filter((value): value is string => typeof value === 'string') : []));
-          // Narrowed at admission to project files/folders; rendered exactly like a standard run's context.
-          const focused = Array.isArray(request?.workspaceItems) && request.workspaceItems.length
-            ? `\n\n${renderRunContextPrompt({ workspaceItems: request.workspaceItems }, null)}` : '';
-          const commented = renderCommentAttachmentHint(normalizeCommentAttachments(Array.isArray(request?.commentAttachments) ? request.commentAttachments : []));
-          const resources = skillRoot ? '\n\n# Captured skill resources\n\nThese directories are read-only, fixed to this conversation’s selected revision. Resolve each skill’s relative references and scripts from its own directory:\n'
-            + skillPackages.map((resource) => `- ${resource.id}: ${path.join(skillRoot, resource.key)}`).join('\n') : '';
-          const prompt = `${includeStable ? `${stablePrompt}\n\n---\n\n# User request\n\n${userPrompt}` : userPrompt}${attached}${commented}${focused}${resources}`;
-          const projection = new PersonalRunEvents(realCwd, [dataRoot, account.codexHome, runHome, realCwd], (event) => emit(runId, event.event, event.data));
-          projections.set(runId, projection);
-          const allowed = () => !storesClosed && !shuttingDown && !cancelPending.has(runId)
-            && row(runId)?.status === 'active' && accounts.getAccountById(owner)?.active === true
-            && projects.canWrite(next.project_id, owner) && personal.usableAccount(owner)?.id === accountId
-            && personal.usableAccount(owner)?.credentialVersion === next.credential_version;
-          const liveArtifacts = artifactToolsFor(next, allowed, (event) => projection.accept(event));
-          let resumeThreadId = session.thread_id;
-          let stageCount = 0;
-          void runStudioPipeline({ db, runId, snapshot: pluginSnapshotOf(request), resumeStage: request?.pipelineResumeStage,
-            check: () => { if (!allowed()) throw new Error('personal_authority_changed'); },
-            emit: (stage) => { projection.flush(); emit(runId, 'agent', { type: 'pipeline_stage', stage }); },
-            runStage: async (directive) => {
-              if (stageCount++) { projection.accept({ type: 'text_delta', delta: '\n\n' }); projection.flush(); }
-              const turn = await runPersonalCodexTurn({
-                reportToolStartupFailures: true,
-                beforeSpawn: () => { if (!allowed()) throw new Error('personal_authority_changed'); },
-                command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
-                ...(skillRoot ? { skillPackages: skillRoot } : {}),
-                prompt: `${stageCount === 1 ? prompt : userPrompt}${directive}`, resumeThreadId,
-                ...(liveArtifacts ? { dynamicToolsPrompt: STUDIO_LIVE_ARTIFACT_PROMPT, dynamicTools: STUDIO_LIVE_ARTIFACT_TOOLS.map(({ properties, required, ...tool }) => ({ ...tool,
-                  inputSchema: { type: 'object', properties, required: [...required], additionalProperties: false } })),
-                  onDynamicToolCall: (name: string, args: Record<string, unknown>) => liveArtifacts.execute(name, args) } : {}),
-                ...(isStudioCodexModel(request?.model) ? { model: request.model } : {}),
-                ...(isStudioCodexReasoning(request?.reasoning) ? { reasoning: request.reasoning } : {}),
-                // A real personal provider always runs inside the per-run bubblewrap
-                // boundary. Its filesystem already contains only this account's
-                // CODEX_HOME, run HOME/TMPDIR and project cwd, with system paths
-                // read-only. Do not ask Codex to create a second Linux sandbox
-                // inside it: unprivileged container hosts commonly reject that
-                // nested sandbox and every file/command tool then fails to start.
-                // `danger-full-access` is scoped to the outer boundary, not the
-                // daemon container or host. Mock-only unsandboxed test lanes keep
-                // the normal platform/operator-resolved Codex policy.
-                sandboxMode: launch.sandbox ? 'danger-full-access' : codexResolvedSandboxMode(),
-                onThread: (threadId) => { if (allowed()) db.prepare(`UPDATE multiuser_personal_sessions SET thread_id = ?, updated_at = ?
-                  WHERE conversation_id = ? AND personal_account_id = ?`).run(threadId, now(), next.conversation_id, accountId); },
-                onAgentEvent: (event) => { if (allowed()) projection.accept(event); },
-              });
-              children.set(runId, turn.child);
-              interrupts.set(runId, turn.interrupt);
-              const result = await turn.done;
-              personal.secureHome(owner);
-              resumeThreadId = result.threadId;
-              return { value: result, ok: result.ok, text: result.text };
-            },
-          }).then(async ({ value: result, progress }) => {
-            personal.secureHome(owner);
-            /** #78: checked on both sides of the artifact snapshot; a terminal reached while it runs wins. */
-            const settled = (): boolean => {
-              if (row(runId)?.status !== 'active') return true;
-              if (shuttingDown) { finish(runId, 'canceled', { reason: 'daemon_shutdown' }); return true; }
-              if (!cancelPending.has(runId)) return false;
-              finish(runId, 'canceled', sourceInvalidated.has(runId) ? { reason: 'MULTIUSER_PERSONAL_UNAVAILABLE' } : undefined);
-              return true;
-            };
-            if (settled()) return;
-            const baseline = artifactBaselines.get(runId);
-            let files: string[] = [];
-            let producedFiles: import('@open-design/contracts').ProjectFile[] = [];
-            if (baseline) {
-              try {
-                const after = await snapshotProjectArtifactsAsync(baseline.cwd);
-                files = diffRunArtifacts(baseline.before, after).touchedPaths.map((filePath) => path.relative(baseline.cwd, filePath).replaceAll('\\', '/'))
-                  .filter((filePath) => filePath && filePath !== '..' && !filePath.startsWith('../') && !path.isAbsolute(filePath)).slice(0, 128);
-                producedFiles = files.flatMap((name) => {
-                  const fingerprint = after.get(path.join(baseline.cwd, name));
-                  return fingerprint ? [{ name, path: name, type: 'file' as const, size: fingerprint.size,
-                    mtime: fingerprint.mtimeMs, kind: kindFor(name), mime: mimeFor(name) }] : [];
+          try { await personal.assertSupportedVersion(); } catch {
+            if (storesClosed || shuttingDown) return;
+            if (row(next.id)?.status === 'queued') finish(next.id, 'failed', { reason: 'MULTIUSER_CODEX_UNSUPPORTED_VERSION' });
+            continue;
+          }
+          if (storesClosed || shuttingDown) return;
+          if (row(next.id)?.status !== 'queued') continue;
+          if (!accounts.getAccountById(next.owner_account_id)?.active) { finish(next.id, 'canceled'); continue; }
+          const project = getProject(db, next.project_id);
+          const conversation = getConversation(db, next.conversation_id);
+          const metadata = project?.metadata as Record<string, unknown> | null | undefined;
+          let realCwd: string | null = null;
+          try { realCwd = fs.realpathSync(path.join(projectsRoot, next.project_id)); } catch { /* failed below */ }
+          if (!projects.canWrite(next.project_id, next.owner_account_id) || conversation?.projectId !== next.project_id ||
+              metadata?.baseDir || metadata?.linkedDirs || metadata?.imported || !realCwd || path.dirname(realCwd) !== fs.realpathSync(projectsRoot)) {
+            finish(next.id, 'failed');
+            continue;
+          }
+          // Re-validate the binding at dispatch: same account, same credential version, still usable.
+          const account = personal.usableAccount(next.owner_account_id);
+          const session = personalSession(next.conversation_id);
+          if (!account || account.id !== next.personal_account_id || account.credentialVersion !== next.credential_version ||
+              !session || session.personal_account_id !== next.personal_account_id) {
+            personal.audit(next.owner_account_id, next.owner_account_id, 'run_rejected', 'MULTIUSER_PERSONAL_UNAVAILABLE', next.id);
+            finish(next.id, 'failed', { reason: 'MULTIUSER_PERSONAL_UNAVAILABLE' });
+            continue;
+          }
+          // A damaged request never starts: no runtime home, active mark, personal turn or start event.
+          const request = storedRequest(next.request_json);
+          const userPrompt = withInstruction(next.request_json, storedMessage(next.request_json));
+          const stablePrompt = typeof request?.stablePrompt === 'string' ? request.stablePrompt : '';
+          const stablePromptHash = typeof request?.stablePromptHash === 'string' ? request.stablePromptHash : '';
+          if (userPrompt === null) {
+            finish(next.id, 'failed', { reason: 'MULTIUSER_RUN_REQUEST_INVALID' });
+            continue;
+          }
+          const runHome = path.join(dataRoot, 'multiuser-runtime', createHash('sha256').update(next.owner_account_id).digest('hex'), next.id);
+          const temp = path.join(runHome, 'tmp');
+          fs.mkdirSync(temp, { recursive: true, mode: 0o700 });
+          for (const dir of [path.dirname(runHome), runHome, temp]) fs.chmodSync(dir, 0o700);
+          const runId = next.id;
+          try {
+            const skillPackages = studioRunResourcePackages(request);
+            const skillRoot = stageStudioSkillPackages(runHome, skillPackages);
+            artifactBaselines.set(runId, { cwd: realCwd, before: snapshotProjectArtifacts(realCwd) });
+            startRun(next);
+            const owner = next.owner_account_id;
+            const accountId = account.id;
+            const includeStable = Boolean(stablePrompt) && (!session.thread_id || session.stable_prompt_hash !== stablePromptHash);
+            // Attachments were owner-checked at admission; re-resolve against the
+            // real project root now, since files may have moved since.
+            const attached = formatProjectAttachmentHint(resolveSafeProjectAttachments(realCwd,
+              Array.isArray(request?.attachments) ? request.attachments.filter((value): value is string => typeof value === 'string') : []));
+            // Narrowed at admission to project files/folders; rendered exactly like a standard run's context.
+            const focused = Array.isArray(request?.workspaceItems) && request.workspaceItems.length
+              ? `\n\n${renderRunContextPrompt({ workspaceItems: request.workspaceItems }, null)}` : '';
+            const commented = renderCommentAttachmentHint(normalizeCommentAttachments(Array.isArray(request?.commentAttachments) ? request.commentAttachments : []));
+            const resources = skillRoot ? '\n\n# Captured skill resources\n\nThese directories are read-only, fixed to this conversation’s selected revision. Resolve each skill’s relative references and scripts from its own directory:\n'
+              + skillPackages.map((resource) => `- ${resource.id}: ${path.join(skillRoot, resource.key)}`).join('\n') : '';
+            const prompt = `${includeStable ? `${stablePrompt}\n\n---\n\n# User request\n\n${userPrompt}` : userPrompt}${attached}${commented}${focused}${resources}`;
+            const projection = new PersonalRunEvents(realCwd, [dataRoot, account.codexHome, runHome, realCwd], (event) => emit(runId, event.event, event.data));
+            projections.set(runId, projection);
+            const allowed = () => !storesClosed && !shuttingDown && !cancelPending.has(runId)
+              && row(runId)?.status === 'active' && accounts.getAccountById(owner)?.active === true
+              && projects.canWrite(next.project_id, owner) && personal.usableAccount(owner)?.id === accountId
+              && personal.usableAccount(owner)?.credentialVersion === next.credential_version;
+            const liveArtifacts = artifactToolsFor(next, allowed, (event) => projection.accept(event));
+            let resumeThreadId = session.thread_id;
+            let stageCount = 0;
+            void runStudioPipeline({ db, runId, snapshot: pluginSnapshotOf(request), resumeStage: request?.pipelineResumeStage,
+              check: () => { if (!allowed()) throw new Error('personal_authority_changed'); },
+              emit: (stage) => { projection.flush(); emit(runId, 'agent', { type: 'pipeline_stage', stage }); },
+              runStage: async (directive) => {
+                if (stageCount++) { projection.accept({ type: 'text_delta', delta: '\n\n' }); projection.flush(); }
+                const turn = await runPersonalCodexTurn({
+                  reportToolStartupFailures: true,
+                  beforeSpawn: () => { if (!allowed()) throw new Error('personal_authority_changed'); },
+                  command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
+                  ...(skillRoot ? { skillPackages: skillRoot } : {}),
+                  prompt: `${stageCount === 1 ? prompt : userPrompt}${directive}`, resumeThreadId,
+                  ...(liveArtifacts ? { dynamicToolsPrompt: STUDIO_LIVE_ARTIFACT_PROMPT, dynamicTools: STUDIO_LIVE_ARTIFACT_TOOLS.map(({ properties, required, ...tool }) => ({ ...tool,
+                    inputSchema: { type: 'object', properties, required: [...required], additionalProperties: false } })),
+                    onDynamicToolCall: (name: string, args: Record<string, unknown>) => liveArtifacts.execute(name, args) } : {}),
+                  ...(isStudioCodexModel(request?.model) ? { model: request.model } : {}),
+                  ...(isStudioCodexReasoning(request?.reasoning) ? { reasoning: request.reasoning } : {}),
+                  // A real personal provider always runs inside the per-run bubblewrap
+                  // boundary. Its filesystem already contains only this account's
+                  // CODEX_HOME, run HOME/TMPDIR and project cwd, with system paths
+                  // read-only. Do not ask Codex to create a second Linux sandbox
+                  // inside it: unprivileged container hosts commonly reject that
+                  // nested sandbox and every file/command tool then fails to start.
+                  // `danger-full-access` is scoped to the outer boundary, not the
+                  // daemon container or host. Mock-only unsandboxed test lanes keep
+                  // the normal platform/operator-resolved Codex policy.
+                  sandboxMode: launch.sandbox ? 'danger-full-access' : codexResolvedSandboxMode(),
+                  onThread: (threadId) => { if (allowed()) db.prepare(`UPDATE multiuser_personal_sessions SET thread_id = ?, updated_at = ?
+                    WHERE conversation_id = ? AND personal_account_id = ?`).run(threadId, now(), next.conversation_id, accountId); },
+                  onAgentEvent: (event) => { if (allowed()) projection.accept(event); },
                 });
-                if (settled()) return;
-                const messageId = studioMessages.ids(runId).assistantMessageId;
-                // A damaged/quarantined transcript binding must never let a
-                // capture write refs onto another conversation's message.
-                if (getMessage(db, messageId, next.conversation_id)?.runId === runId) {
-                  await captureRunChatArtifactSnapshots({ db, blobs: artifactBlobs }, {
-                    projectId: next.project_id, projectRoot: baseline.cwd, messageId, runId,
-                    touchedPaths: files.map((file) => path.join(baseline.cwd, file)),
+                children.set(runId, turn.child);
+                interrupts.set(runId, turn.interrupt);
+                const result = await turn.done;
+                personal.secureHome(owner);
+                resumeThreadId = result.threadId;
+                return { value: result, ok: result.ok, text: result.text };
+              },
+            }).then(async ({ value: result, progress }) => {
+              personal.secureHome(owner);
+              /** #78: checked on both sides of the artifact snapshot; a terminal reached while it runs wins. */
+              const settled = (): boolean => {
+                if (row(runId)?.status !== 'active') return true;
+                if (shuttingDown) { finish(runId, 'canceled', { reason: 'daemon_shutdown' }); return true; }
+                if (!cancelPending.has(runId)) return false;
+                finish(runId, 'canceled', sourceInvalidated.has(runId) ? { reason: 'MULTIUSER_PERSONAL_UNAVAILABLE' } : undefined);
+                return true;
+              };
+              if (settled()) return;
+              const baseline = artifactBaselines.get(runId);
+              let files: string[] = [];
+              let producedFiles: import('@open-design/contracts').ProjectFile[] = [];
+              if (baseline) {
+                try {
+                  const after = await snapshotProjectArtifactsAsync(baseline.cwd);
+                  files = diffRunArtifacts(baseline.before, after).touchedPaths.map((filePath) => path.relative(baseline.cwd, filePath).replaceAll('\\', '/'))
+                    .filter((filePath) => filePath && filePath !== '..' && !filePath.startsWith('../') && !path.isAbsolute(filePath)).slice(0, 128);
+                  producedFiles = files.flatMap((name) => {
+                    const fingerprint = after.get(path.join(baseline.cwd, name));
+                    return fingerprint ? [{ name, path: name, type: 'file' as const, size: fingerprint.size,
+                      mtime: fingerprint.mtimeMs, kind: kindFor(name), mime: mimeFor(name) }] : [];
                   });
+                  if (settled()) return;
+                  const messageId = studioMessages.ids(runId).assistantMessageId;
+                  // A damaged/quarantined transcript binding must never let a
+                  // capture write refs onto another conversation's message.
+                  if (getMessage(db, messageId, next.conversation_id)?.runId === runId) {
+                    await captureRunChatArtifactSnapshots({ db, blobs: artifactBlobs }, {
+                      projectId: next.project_id, projectRoot: baseline.cwd, messageId, runId,
+                      touchedPaths: files.map((file) => path.join(baseline.cwd, file)),
+                    });
+                  }
+                } catch {
+                  // Artifact discovery is best-effort. A filesystem race must
+                  // not leave a completed provider turn stuck as active.
                 }
-              } catch {
-                // Artifact discovery is best-effort. A filesystem race must
-                // not leave a completed provider turn stuck as active.
               }
-            }
-            if (settled()) return;
-            if (result.ok) {
-              if (workspaceToolsUnavailable(projection.toolStartupFailed, files.length, projection.artifactCount)) {
-                return finish(runId, 'failed', { reason: 'MULTIUSER_RUN_TOOLS_UNAVAILABLE', files, producedFiles });
+              if (settled()) return;
+              if (result.ok) {
+                if (workspaceToolsUnavailable(projection.toolStartupFailed, files.length, projection.artifactCount)) {
+                  return finish(runId, 'failed', { reason: 'MULTIUSER_RUN_TOOLS_UNAVAILABLE', files, producedFiles });
+                }
+                projection.flush();
+                if (includeStable && stablePromptHash) {
+                  db.prepare(`UPDATE multiuser_personal_sessions SET stable_prompt_hash = ?, updated_at = ?
+                    WHERE conversation_id = ? AND personal_account_id = ?`).run(stablePromptHash, now(), next.conversation_id, accountId);
+                }
+                return finish(runId, 'succeeded', { text: projection.text, textTruncated: projection.truncated, files, producedFiles, threadId: result.threadId, ...(progress ? { pipeline: progress } : {}) });
               }
-              projection.flush();
-              if (includeStable && stablePromptHash) {
-                db.prepare(`UPDATE multiuser_personal_sessions SET stable_prompt_hash = ?, updated_at = ?
-                  WHERE conversation_id = ? AND personal_account_id = ?`).run(stablePromptHash, now(), next.conversation_id, accountId);
-              }
-              return finish(runId, 'succeeded', { text: projection.text, textTruncated: projection.truncated, files, producedFiles, threadId: result.threadId, ...(progress ? { pipeline: progress } : {}) });
-            }
-            if (result.problem) personal.recordProblem(owner, accountId, result.problem);
-            finish(runId, 'failed', { reason: result.problem ? PROBLEM_ERRORS[result.problem].code : 'MULTIUSER_PERSONAL_RUN_FAILED', files, producedFiles });
-          }).catch((error: unknown) => {
-            if (storesClosed || row(runId)?.status !== 'active') return;
-            // Same reason ladder as `settled()` above: a turn that REJECTS
-            // because the daemon is stopping is still a shutdown cancel, not
-            // a provider failure.
-            if (shuttingDown) { finish(runId, 'canceled', { reason: 'daemon_shutdown' }); return; }
-            finish(runId, !allowed() ? 'canceled' : 'failed', { reason: sourceInvalidated.has(runId)
-              ? 'MULTIUSER_PERSONAL_UNAVAILABLE' : error instanceof PersonalAccountError ? error.code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
-          });
+              if (result.problem) personal.recordProblem(owner, accountId, result.problem);
+              finish(runId, 'failed', { reason: result.problem ? PROBLEM_ERRORS[result.problem].code : 'MULTIUSER_PERSONAL_RUN_FAILED', files, producedFiles });
+            }).catch((error: unknown) => {
+              if (storesClosed || row(runId)?.status !== 'active') return;
+              // Same reason ladder as `settled()` above: a turn that REJECTS
+              // because the daemon is stopping is still a shutdown cancel, not
+              // a provider failure.
+              if (shuttingDown) { finish(runId, 'canceled', { reason: 'daemon_shutdown' }); return; }
+              finish(runId, !allowed() ? 'canceled' : 'failed', { reason: sourceInvalidated.has(runId)
+                ? 'MULTIUSER_PERSONAL_UNAVAILABLE' : error instanceof PersonalAccountError ? error.code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
+            }).catch(logPersonalDispatchFailure);
+          } catch (error) {
+            // A rolled-back start stays queued; a committed start keeps its turn and worker timestamps.
+            if (!children.has(runId)) finish(runId, 'failed', { reason: error instanceof PersonalAccountError ? error.code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
+          }
         } catch (error) {
-          // A rolled-back start stays queued; a committed start keeps its turn and worker timestamps.
-          if (!children.has(runId)) finish(runId, 'failed', { reason: error instanceof PersonalAccountError ? error.code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
+          // A run that cannot be failed (its store is gone) stops this pass rather than spinning on it.
+          if (!failPersonalDispatch(next.id, error)) break;
         }
       }
     } finally {

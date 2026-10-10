@@ -19,10 +19,11 @@ import { clearStudioBrowserData } from './studio-browser-data';
 import type { AppConfig } from '../types';
 import { useStudioCapabilities, StudioUnavailable } from './studio-capabilities';
 import { StudioProviderKeys } from './StudioProviderKeys';
+import { StudioConnectors } from './StudioConnectors';
 
 /** Account sections, plus the desktop sections whose lane is still open: those
  * stay in the navigation with the server's reason instead of disappearing. */
-type StudioSettingsSection = 'agentAccounts' | 'skills' | 'general' | 'instructions' | 'memory' | 'media' | 'integrations' | 'privacy' | 'about';
+type StudioSettingsSection = 'agentAccounts' | 'skills' | 'general' | 'instructions' | 'memory' | 'media' | 'connectors' | 'integrations' | 'privacy' | 'about';
 const PENDING: Partial<Record<StudioSettingsSection, StudioParityLaneId>> = { media: 'generation', integrations: 'settings' };
 
 function studioSection(section: SettingsSection): StudioSettingsSection {
@@ -30,7 +31,8 @@ function studioSection(section: SettingsSection): StudioSettingsSection {
     case 'execution': case 'agentAccounts': return 'agentAccounts';
     case 'designSystems': return 'skills';
     case 'instructions': case 'memory': case 'media': case 'privacy': case 'about': return section;
-    case 'integrations': case 'mcpClient': case 'composio': return 'integrations';
+    case 'composio': return 'connectors';
+    case 'integrations': case 'mcpClient': return 'integrations';
     default: return 'general';
   }
 }
@@ -81,6 +83,7 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
     instructions: { title: t('settings.instructionsTitle'), subtitle: t('settings.instructionsNavSub') },
     memory: { title: t('settings.memory'), subtitle: t('settings.memoryHint') },
     media: { title: t('settings.mediaProviders'), subtitle: 'Image / video / audio' },
+    connectors: { title: t('studio.connectors.navTitle'), subtitle: t('studio.connectors.navHint') },
     integrations: { title: t('settings.mcpServerTitle'), subtitle: t('settings.mcpServerHint') },
     privacy: { title: t('settings.privacy'), subtitle: t('settings.privacyHint') },
     about: { title: t('settings.about'), subtitle: t('settings.aboutHint') },
@@ -104,6 +107,7 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
       {item('instructions', 'edit')}
       {item('memory', 'brain')}
       {item('media', 'image')}
+      {item('connectors', 'link')}
       {item('integrations', 'puzzle')}
       {item('privacy', 'eye')}
       {item('about', 'settings')}
@@ -159,6 +163,9 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
       <h3>{t('studio.privacyOffTitle')}</h3>
       <p className="hint">{t('studio.privacyOffBody')}</p>
     </section>}
+    {/* #62 S58: the company Composio key (administrators) and each account's own connections. */}
+    {section === 'connectors' && (studio.available('settings') && studio.capabilities?.connectors
+      ? <StudioConnectors /> : <StudioUnavailable lane="settings" />)}
     {section === 'about' && <StudioAbout loaded={appVersionInfo ?? null} />}
   </SettingsFrame>;
 }
