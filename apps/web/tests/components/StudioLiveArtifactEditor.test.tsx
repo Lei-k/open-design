@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { LiveArtifact } from '@open-design/contracts';
 import { StudioLiveArtifactEditor } from '../../src/components/StudioLiveArtifactEditor';
@@ -79,4 +79,91 @@ it('confirms deletion before issuing the shared DELETE request', async () => {
   expect(screen.getByRole('status').textContent).toContain('Sales'); expect(calls.filter((call) => call.method === 'DELETE')).toHaveLength(0);
   fireEvent.click(screen.getByRole('button', { name: 'Delete' })); await waitFor(() => expect(deleted).toHaveBeenCalledOnce());
   expect(calls.at(-1)).toMatchObject({ method: 'DELETE', url: '/api/live-artifacts/live-fixture?projectId=project' });
+});
+
+// S62: connector/MCP sources come only from the actor's own usable connections and servers.
+const catalog = { connectors: [
+  { connectorId: 'github', name: 'GitHub', available: true, tools: [{ name: 'github.github_search_repositories', title: 'Search repositories', readOnly: true },
+    { name: 'github.github_create_issue', title: 'Create issue', readOnly: false }] },
+  { connectorId: 'notion', name: 'Notion', available: false, reason: 'not_connected', tools: [] }],
+  mcpServers: [{ serverId: 'mine', label: 'Docs', available: true }, { serverId: 'off', label: null, available: false, reason: 'disabled' }] };
+function mockSources() {
+  const calls: Array<{ url: string; method: string; body: any }> = [];
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push({ url, method: init?.method ?? 'GET', body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    if (url.startsWith('/api/multiuser/live-artifact-sources?')) return Response.json(catalog);
+    if (url.includes('/live-artifact-sources/mcp/mine/tools')) return Response.json({ tools: [{ name: 'lookup', readOnly: true }, { name: 'write_row', readOnly: false }] });
+    return Response.json({ artifact }, { status: init?.method === 'POST' ? 201 : 200 });
+  }));
+  return calls;
+}
+const fill = () => {
+  fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Pipeline' } });
+  fireEvent.change(screen.getByLabelText('Data'), { target: { value: '{"total":0}' } });
+  fireEvent.change(screen.getByLabelText('Template HTML'), { target: { value: '<h1>{{data.total}}</h1>' } });
+};
+it('S62 offers the actor\'s own connected apps, marks unavailable apps and write tools, and saves an ids-only connector source', async () => {
+  const calls = mockSources(); const saved = vi.fn();
+  render(<StudioLiveArtifactEditor projectId="project" onClose={vi.fn()} onSaved={saved} toolSources={{ connectors: true, mcp: true }} />);
+  fill();
+  fireEvent.change(screen.getByRole('combobox', { name: 'Data source' }), { target: { value: 'connector' } });
+  const app = await screen.findByRole('combobox', { name: 'My connected app' });
+  await waitFor(() => expect(within(app).getByRole('option', { name: 'Notion — not connected' })).toHaveProperty('disabled', true));
+  fireEvent.change(app, { target: { value: 'github' } });
+  const tool = screen.getByRole('combobox', { name: 'Read-only tool' });
+  expect(within(tool).getByRole('option', { name: 'Create issue — not read-only' })).toHaveProperty('disabled', true);
+  fireEvent.change(tool, { target: { value: 'github.github_search_repositories' } });
+  fireEvent.change(screen.getByLabelText('Tool arguments (JSON)'), { target: { value: '{"query":"open design"}' } });
+  fireEvent.change(screen.getByLabelText('Output mapping (JSON)'), { target: { value: '{"dataPaths":[{"from":"total","to":"total"}]}' } });
+  expect(screen.getByText(/person who refreshes/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+  await waitFor(() => expect(saved).toHaveBeenCalledOnce());
+  expect(calls.at(-1)!.body.input.document.sourceJson).toEqual({ type: 'connector_tool', connector: { connectorId: 'github', toolName: 'github.github_search_repositories' },
+    input: { query: 'open design' }, refreshPermission: 'manual_refresh_granted_for_read_only', outputMapping: { dataPaths: [{ from: 'total', to: 'total' }] } });
+});
+it('S62 MCP sources load tools from the actor\'s own server and require the read-only confirmation', async () => {
+  const calls = mockSources(); const saved = vi.fn();
+  render(<StudioLiveArtifactEditor projectId="project" onClose={vi.fn()} onSaved={saved} toolSources={{ connectors: false, mcp: true }} />);
+  fill();
+  const kind = screen.getByRole('combobox', { name: 'Data source' });
+  expect(within(kind).queryByRole('option', { name: 'My connected app' })).toBeNull();
+  fireEvent.change(kind, { target: { value: 'mcp' } });
+  const server = await screen.findByRole('combobox', { name: 'My MCP server' });
+  await waitFor(() => expect(within(server).getByRole('option', { name: 'off — disabled' })).toHaveProperty('disabled', true));
+  fireEvent.change(server, { target: { value: 'mine' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Load tools' }));
+  const tool = screen.getByRole('combobox', { name: 'Read-only tool' });
+  await waitFor(() => expect(within(tool).getByRole('option', { name: 'write_row — not read-only' })).toHaveProperty('disabled', true));
+  expect(calls.find((call) => call.url.includes('/tools'))).toMatchObject({ method: 'POST', url: '/api/multiuser/live-artifact-sources/mcp/mine/tools?projectId=project' });
+  fireEvent.change(tool, { target: { value: 'lookup' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+  expect(screen.getByRole('alert').textContent).toContain('confirm'); expect(calls.some((call) => call.url.startsWith('/api/live-artifacts'))).toBe(false);
+  fireEvent.click(screen.getByLabelText('I confirm this MCP tool only reads data'));
+  fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+  await waitFor(() => expect(saved).toHaveBeenCalledOnce());
+  expect(calls.at(-1)!.body.input.document.sourceJson).toEqual({ type: 'mcp_tool', mcp: { serverId: 'mine', toolName: 'lookup', readOnlyConfirmed: true },
+    input: {}, refreshPermission: 'manual_refresh_granted_for_read_only' });
+});
+it('S62 keeps a stored MCP source editable and offers no tool sources when the transport closes them', async () => {
+  mockSources();
+  const stored: LiveArtifact = { ...artifact, document: { ...artifact.document, sourceJson: { type: 'mcp_tool', mcp: { serverId: 'mine', toolName: 'lookup', readOnlyConfirmed: true },
+    input: { q: 'x' }, refreshPermission: 'manual_refresh_granted_for_read_only' } } };
+  render(<StudioLiveArtifactEditor projectId="project" artifact={stored} onClose={vi.fn()} onSaved={vi.fn()} toolSources={{ connectors: false, mcp: false }} />);
+  expect((screen.getByRole('combobox', { name: 'Data source' }) as HTMLSelectElement).value).toBe('mcp');
+  expect((screen.getByRole('combobox', { name: 'Read-only tool' }) as HTMLSelectElement).value).toBe('lookup');
+  expect((screen.getByLabelText('I confirm this MCP tool only reads data') as HTMLInputElement).checked).toBe(true);
+  cleanup();
+  render(<StudioLiveArtifactEditor projectId="project" onClose={vi.fn()} onSaved={vi.fn()} toolSources={{ connectors: false, mcp: false }} />);
+  expect(screen.queryByRole('combobox', { name: 'Data source' })).toBeNull();
+});
+it('S62 opens the source routes only with files+preview and the matching capability', () => {
+  const usable = (lane: string) => ['files', 'preview'].includes(lane);
+  expect(studioRequestAvailable('GET', '/api/multiuser/live-artifact-sources', usable, false, false, true, false)).toBe(true);
+  expect(studioRequestAvailable('GET', '/api/multiuser/live-artifact-sources', usable, false, false, false, false)).toBe(false);
+  expect(studioRequestAvailable('POST', '/api/multiuser/live-artifact-sources/connector/github/tools', usable, false, false, true, false)).toBe(true);
+  expect(studioRequestAvailable('POST', '/api/multiuser/live-artifact-sources/mcp/mine/tools', usable, false, false, true, false)).toBe(false);
+  expect(studioRequestAvailable('POST', '/api/multiuser/live-artifact-sources/mcp/mine/tools', usable, false, false, false, true)).toBe(true);
+  expect(studioRequestAvailable('POST', '/api/multiuser/live-artifact-sources/mcp/mine/tools', () => false, false, false, true, true)).toBe(false);
+  expect(studioRequestAvailable('GET', '/api/multiuser/live-artifact-sources/mcp/mine/tools', usable, false, false, true, true)).toBe(false);
+  expect(studioRequestAvailable('POST', '/api/multiuser/live-artifact-sources/other/mine/tools', usable, false, false, true, true)).toBe(false);
 });

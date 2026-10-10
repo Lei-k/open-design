@@ -5,7 +5,8 @@ import { STUDIO_CONNECTOR_TOOL_DESCRIPTORS } from '../connectors/tool-descriptor
 import { STUDIO_RUN_CONNECTOR_GRANT_MAX_MS, StudioConnectorRuntimeError, type StudioConnectorRuntime } from '../connectors/studio-runtime.js';
 import { toolTokenRegistry, type StudioConnectorGrant, type ToolTokenGrant } from '../tool-tokens.js';
 import { createStudioLiveArtifactTools, STUDIO_LIVE_ARTIFACT_TOOLS } from '../live-artifacts/studio-tools.js';
-import type { StudioLiveArtifacts } from '../storage/studio-live-artifacts.js';
+import { StudioLiveArtifactRefusal, type StudioLiveArtifacts } from '../storage/studio-live-artifacts.js';
+import type { StudioLiveArtifactSourceRefresh } from '../live-artifacts/studio-source-refresh.js';
 import { STUDIO_LIVE_ARTIFACT_PROMPT } from '../prompts/studio-live-artifacts.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -13,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
-import { workspaceToolsUnavailable, API_ERROR_CODES, STUDIO_RESEARCH_MAX_SOURCES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
+import { workspaceToolsUnavailable, STUDIO_LIVE_ARTIFACT_BACKGROUND_REFRESH_REFUSED, API_ERROR_CODES, STUDIO_RESEARCH_MAX_SOURCES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
 import { PersonalRunEvents } from '../runtimes/personal-run-events.js';
 import { formatProjectAttachmentHint, normalizeCommentAttachments, renderCommentAttachmentHint, resolveSafeProjectAttachments } from '../runtimes/chat-prompt-inputs.js';
 import { renderRunContextPrompt } from '../runtimes/chat-run-context.js';
@@ -350,7 +351,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   projectsRoot: string;
   mockAgentScript?: string;
   companyFetch?: typeof fetch;
-  liveArtifacts?: StudioLiveArtifacts;
+  liveArtifacts?: StudioLiveArtifacts & { sourceRefresh?: StudioLiveArtifactSourceRefresh };
   connectors?: StudioConnectorRuntime;
   mcp?: StudioMcpRuntime;
   /** The verified personal bubblewrap boundary; company skill scripts run only inside it, offline. */
@@ -578,8 +579,28 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   };
 
   const artifactBlobs = createChatArtifactBlobStore({ dataDir: dataRoot });
+  /**
+   * The admitting account session of an interactive turn (S62). An agent may refresh a
+   * connector/MCP Live Artifact source only within its run owner's authority AND that
+   * live session; routine-dispatched (scheduled/manual automation) turns have none, so
+   * background refresh of those sources stays refused.
+   */
+  const interactiveActor = (res: Response): { liveArtifactActor?: AuthActor } => {
+    const admitting = multiUserActorOf(res);
+    return admitting && !admitting.sessionId.startsWith('routine:') ? { liveArtifactActor: { ...admitting } } : {};
+  };
+  const artifactSourceRefreshFor = (run: RunRow, authorized: () => boolean) => (artifactId: string) => {
+    const owner = storedRequest(run.request_json)?.liveArtifactActor as AuthActor | undefined;
+    if (!input.liveArtifacts?.sourceRefresh || !owner || owner.accountId !== run.owner_account_id) {
+      throw new StudioLiveArtifactRefusal(403, STUDIO_LIVE_ARTIFACT_BACKGROUND_REFRESH_REFUSED, 'MULTIUSER_CAPABILITY_UNAVAILABLE');
+    }
+    return input.liveArtifacts.sourceRefresh.refresh(run.project_id, artifactId, { actor: owner,
+      // The run's own authority (live, owner active, project edit) joins the refresh's checks.
+      authorized: () => authorized() && projects.canWrite(run.project_id, owner.accountId) });
+  };
   const artifactToolsFor = (run: RunRow, authorized: () => boolean, onAgentEvent: (event: Record<string, unknown>) => void) => input.liveArtifacts
     ? createStudioLiveArtifactTools({ store: input.liveArtifacts, projectId: run.project_id, conversationId: run.conversation_id, runId: run.id,
+      refreshSource: artifactSourceRefreshFor(run, authorized),
       authorized, onChanged(action, artifact) {
         const event = { type: 'live_artifact' as const, action, projectId: run.project_id, artifactId: artifact.id, title: artifact.title, refreshStatus: artifact.refreshStatus };
         updateProject(db, run.project_id, {}); onAgentEvent(event); input.emitProjectEvent?.(run.project_id, event);
@@ -1869,7 +1890,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (mcpGrant === false) return;
     const connectorGrant = captureConnectors(fields, res);
     if (connectorGrant === false) return;
-    const request = JSON.stringify({ ...(mcpGrant ? { mcpGrant, mcpServerIds: fields.mcpServerIds } : {}), ...(connectorGrant ? { connectorGrant, connectorIds: fields.connectorIds } : {}), message: fields.text, ...(instruction ? { instruction } : {}), ...(fields.attachments.length ? { attachments: fields.attachments } : {}),
+    const request = JSON.stringify({ ...(mcpGrant ? { mcpGrant, mcpServerIds: fields.mcpServerIds } : {}), ...(connectorGrant ? { connectorGrant, connectorIds: fields.connectorIds } : {}), ...interactiveActor(res), message: fields.text, ...(instruction ? { instruction } : {}), ...(fields.attachments.length ? { attachments: fields.attachments } : {}),
       ...(inheritsSkills || withFixedSkill(fixedCapture?.skill, selectedSkills).length ? { skillIds: inheritsSkills ? inheritedSkillIds : fields.skillIds, skillSnapshots } : {}),
       ...(fields.workspaceItems.length ? { workspaceItems: fields.workspaceItems } : {}),
       ...(fields.commentAttachments.length ? { commentAttachments: fields.commentAttachments } : {}),
@@ -2066,7 +2087,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (mcpGrant === false) return;
     const connectorGrant = captureConnectors(fields, res);
     if (connectorGrant === false) return;
-    const request = JSON.stringify({ ...(mcpGrant ? { mcpGrant, mcpServerIds: fields.mcpServerIds } : {}), ...(connectorGrant ? { connectorGrant, connectorIds: fields.connectorIds } : {}), message: fields.text, ...(instruction ? { instruction } : {}),
+    const request = JSON.stringify({ ...(mcpGrant ? { mcpGrant, mcpServerIds: fields.mcpServerIds } : {}), ...(connectorGrant ? { connectorGrant, connectorIds: fields.connectorIds } : {}), ...interactiveActor(res), message: fields.text, ...(instruction ? { instruction } : {}),
       ...(findings ? { research: { provider: 'tavily' } } : {}),
       ...(own ? { personalProvider: 'openai', personalModel: currentKey!.model, personalCredentialRevision: currentKey!.credentialRevision }
         : { companyProvider: 'openai', companyModel: config.model, companyCredentialRevision: config.credentialRevision }), stablePrompt: prompt, stablePromptHash: createHash('sha256').update(prompt).digest('hex'),

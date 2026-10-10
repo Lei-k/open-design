@@ -17663,6 +17663,9 @@ export async function startServer({
   } });
   const studioLiveArtifacts = multiUserMode ? registerStudioLiveArtifactRoutes(app, { db, projectsRoot: PROJECTS_DIR, dataRoot: RUNTIME_DATA_DIR,
     previewOrigin: multiUserMode.previewOrigin, allowedOrigins: multiUserMode.allowedOrigins, accountActive: multiUserFront!.accountActive,
+    // S62: connector/MCP sources refresh with the refreshing account's own connection/server through the same runtimes.
+    ...(studioConnectorRuntime ? { connectors: studioConnectorRuntime } : {}), ...(studioMcpRuntime ? { mcp: studioMcpRuntime } : {}),
+    ...(multiUserMode.testLiveArtifactSourceDeadlineMs ? { sourceDeadlineMs: multiUserMode.testLiveArtifactSourceDeadlineMs } : {}),
     onChanged: (projectId, action, artifact) => { emitLiveArtifactEvent({ projectId }, action, artifact); } }) : null;
   if (multiUserMode) registerStudioPetRoutes(app, { bundledRoot: BUNDLED_PETS_DIR });
   // Server-side PDF/PPTX/PNG exports (#66): only when the deployment configured a renderer.

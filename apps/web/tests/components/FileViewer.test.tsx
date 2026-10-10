@@ -14555,6 +14555,18 @@ describe('LiveArtifactRefreshHistoryPanel', () => {
     expect(markup).not.toContain('Entries loaded from refreshes.jsonl');
     expect(markup).toContain('data-testid="studio-live-artifact-provenance"');
   });
+  it('S62 shows the accepted connector/MCP source and each refresh entry\'s source kind', () => {
+    const entry = (refreshId: string, studioSource: Record<string, string>) => ({ schemaVersion: 1 as const, projectId: 'p', artifactId: 'a', refreshId, sequence: 0,
+      step: 'refresh:complete', status: 'succeeded' as const, startedAt: '2026-10-10T10:00:00Z', createdAt: '2026-10-10T10:00:01Z', studioSource: studioSource as never });
+    const markup = renderToStaticMarkup(<LiveArtifactRefreshHistoryPanel
+      liveArtifact={baseLiveArtifact({ studioRevision: 4, studioProvenance: { origin: 'mcp', updatedAt: '2026-10-10T10:00:01Z',
+        toolSource: { kind: 'mcp', id: 'mine', tool: 'lookup', actorAccountId: 'acct', bytes: 12, sha256: 'b'.repeat(64) } } })}
+      fallbackRefreshStatus="never" isRunning={false} sessionEvents={[]}
+      persistedEvents={[entry('r1', { kind: 'project_file' }), entry('r2', { kind: 'connector', id: 'github', tool: 'github.x' }), entry('r3', { kind: 'mcp', id: 'mine', tool: 'lookup' })]} />);
+    expect(markup).toContain('Refreshed from MCP server mine · lookup');
+    for (const label of ['Project file', 'Connected app github', 'MCP server mine']) expect(markup).toContain(label);
+    expect(markup.match(/data-testid="live-artifact-refresh-source-kind"/g)).toHaveLength(3);
+  });
   it('renders a human-readable status instead of raw JSON when no history exists', () => {
     const markup = renderToStaticMarkup(
       <LiveArtifactRefreshHistoryPanel

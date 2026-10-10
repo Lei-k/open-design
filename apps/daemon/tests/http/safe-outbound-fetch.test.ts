@@ -112,6 +112,14 @@ it('enforces a total deadline', async () => {
   expect(await refusal(fixture({ timeoutMs: 300 })(`http://mcp.fixture.test:${port}/hang`))).toBe('timeout');
   expect(Date.now() - started).toBeLessThan(3_000);
 });
+it('S62 A1 hands stopWhen and onChunk each new chunk only, never the whole body again', async () => {
+  const seen: number[] = []; const fed: number[] = [];
+  const response = await fixture()(`http://mcp.fixture.test:${port}/sse`, {
+    stopWhen: (chunk) => { seen.push(chunk.byteLength); return Buffer.from(chunk).toString('utf8').includes('\n\n'); },
+    onChunk: (chunk) => { fed.push(chunk.byteLength); } });
+  expect(seen.reduce((sum, n) => sum + n, 0)).toBe(response.body.byteLength);
+  expect(fed).toEqual(seen);
+});
 it('can stop reading an open event stream after the first event', async () => {
   const response = await fixture({ timeoutMs: 2_000 })(`http://mcp.fixture.test:${port}/sse`, {
     stopWhen: (received) => Buffer.from(received).toString('utf8').includes('\n\n') });

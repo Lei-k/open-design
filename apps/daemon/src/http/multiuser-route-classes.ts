@@ -653,6 +653,11 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
         [`${method} /api/multiuser/live-artifacts${suffix}`], policy),
     ];
   }),
+  // S62: the actor's own connector/MCP sources for Live Artifacts (Studio-only; no standard alias).
+  ...group('actor-scoped', 'the actor\'s own connector/MCP Live Artifact sources; handler requires edit role in the project; no provider call',
+    ['GET /api/multiuser/live-artifact-sources']),
+  ...group('actor-scoped', 'tool discovery with the actor\'s own connection/server under a one-call refresh grant; handler requires edit role',
+    ['POST /api/multiuser/live-artifact-sources/:kind/:sourceId/tools'], { bodyPolicy: 'empty', maxBodyBytes: 1024 }),
   ...blocked('Live Artifact preflight is not exposed cross-origin', [
     'OPTIONS /api/live-artifacts/:artifactId/preview', 'OPTIONS /api/live-artifacts/:artifactId/refresh',
   ]),

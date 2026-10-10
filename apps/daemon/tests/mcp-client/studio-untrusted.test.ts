@@ -84,3 +84,31 @@ it('preserves valid ordinary scopes after a scope named basic', () => {
 it('preserves an ordinary provider name containing the word Mutual', () => {
   expect(untrustedText('Mutual Fund MCP', knownSecrets([]))).toBe('Mutual Fund MCP');
 });
+
+// S62 A4 (promoted from the immutable S61 review probes): an auth-scheme word
+// followed by an ordinary long word is metadata. Only a known credential or a
+// strong shape (mixed letters/digits, high entropy, or base64 of `id:secret`)
+// after a scheme word is a credential.
+describe('S62 A4 scheme words before ordinary long tokens', () => {
+  const none = knownSecrets([]);
+  it.each(['basic internationalization', 'basic read_repository_metadata', 'Bearer ReadRepositoryMetadata', 'Bearer short1234', 'Bearer abc.def.ghi'])('keeps %s', (value) => {
+    expect(untrustedScope(value, none)).toBe(value);
+    expect(untrustedText(value, none)).toBe(value);
+    expect(scrubSecrets(value, none)).toBe(value);
+  });
+  it.each(['Bearer a1b2c3d4e5f6a7b8c9d0', 'Bearer tok_ABCDEFGH12345678', `Basic ${Buffer.from('user:pass').toString('base64')}`, 'Bearer abcdefghijklmnop'])('still redacts %s', (value) => {
+    const payload = value.split(' ')[1]!;
+    expect(untrustedScope(`mcp:read ${value}`, none)).toBe('mcp:read');
+    expect(untrustedText(`srv ${value}`, none)).not.toContain(payload);
+  });
+  it('known credentials after scheme words and fragments are still removed', () => {
+    const S = 'SNTLMCP_header_value_0123456789abcdef';
+    const k = knownSecrets([S, 'Bearer tok_ABCDEFGH12345678']);
+    expect(scrubSecrets(`Bearer ${S}`, k)).not.toContain(S);
+    expect(scrubSecrets(`x ${S.slice(3, 20)} y`, k)).not.toContain(S.slice(3, 20));
+    expect(untrustedScope(`basic Bearer ${S} repo:status`, k)).toBe('basic repo:status');
+    expect(untrustedScope(`mutual ${S.slice(2, 18)} ok`, k)).toBe('ok');
+    expect(scrubSecrets('Bearer tok_ABCDEFGH12345678', k)).not.toContain('tok_ABCDEFGH');
+    expect(scrubSecrets(Buffer.from(S).toString('base64'), k)).not.toContain(Buffer.from(S).toString('base64'));
+  });
+});

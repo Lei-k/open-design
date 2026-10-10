@@ -4,6 +4,7 @@ import {
   buildAuthorizeUrl, deriveCodeChallenge, discoverAuthServer, discoverProtectedResource, generateCodeVerifier,
   registerClient, type AuthorizationServerMetadata,
 } from '../mcp-oauth.js';
+import { sseStopWhen } from './sse-frames.js';
 import { credentialsSent, untrustedProtocolVersion, untrustedText, untrustedTokenType, type KnownSecrets } from './studio-untrusted.js';
 
 /**
@@ -65,7 +66,8 @@ function firstSseData(text: string, event?: string): string | null {
   }
   return null;
 }
-const sseDone = (event?: string) => (received: Uint8Array) => firstSseData(Buffer.from(received).toString('utf8'), event) !== null;
+/** Stop once an event (of `event`, when given) with data arrives; incremental, see `sse-frames.ts` (S62 A1). */
+const sseDone = (event?: string) => sseStopWhen((frame) => event === undefined || frame.event === event);
 
 export interface StudioMcpProbeAccess {
   /**
@@ -107,7 +109,7 @@ export async function probeStudioMcpServer(safe: SafeOutboundFetch, server: { tr
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize',
         params: { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'OpenDesign Studio', version: '1' } } }),
       // A JSON answer is read to its end; an event-stream answer stops after its first event.
-      stopWhen: (received) => !/^\s*[[{]/.test(Buffer.from(received.subarray(0, 64)).toString('utf8')) && sseDone()(received) });
+      stopWhen: sseDone() });
     if (response.status === 401 || response.status === 403) return { ...base, code: 'unauthorized', httpStatus: response.status, needsAuth: true };
     if (response.status < 200 || response.status >= 300) return { ...base, code: 'status', httpStatus: response.status };
     const type = response.headers.get('content-type') ?? '';

@@ -21,8 +21,11 @@
  *   known secret (a fragment, or a secret with extra characters around it) is
  *   replaced too;
  * - shape checks reject credential-looking values even without a match: a
- *   credible payload after an auth-scheme word (`Basic`, `Bearer`, …) and a base64 run
- *   that decodes to readable text or to a known secret.
+ *   credible payload after an auth-scheme word (`Basic`, `Bearer`, …: base64 of
+ *   `id:secret`, or a run mixing letters with digits or of high entropy — S62 A4)
+ *   and a base64 run that decodes to readable text or to a known secret. These
+ *   apply to provider METADATA only; tool results use `scrubKnownSecrets`
+ *   (known credential representations only, S62 A5).
  *
  * Secrets shorter than 4 characters cannot be scrubbed meaningfully and are
  * ignored here; they are still never stored outside the sealed columns.
@@ -142,10 +145,37 @@ function overlaps(text: string, secrets: KnownSecrets): boolean {
   return false;
 }
 
-/** Scheme words are ordinary metadata too; only a credible payload makes a credential. */
+/** Shannon entropy in bits per character. */
+function entropy(text: string): number {
+  const counts = new Map<string, number>();
+  for (const char of text) counts.set(char, (counts.get(char) ?? 0) + 1);
+  let bits = 0;
+  for (const count of counts.values()) { const p = count / text.length; bits -= p * Math.log2(p); }
+  return bits;
+}
+/** Base64 of `id:secret` (an HTTP Basic payload), however short. */
+function basicPayload(text: string): boolean {
+  const decoded = /^[A-Za-z0-9+/]{4,}={0,2}$/.test(text) ? decodeBase64(text) : null;
+  return decoded !== null && /^[\x21-\x7e]+:[\x20-\x7e]+$/.test(decoded) && !decoded.startsWith(':');
+}
+/**
+ * A token-shaped run of meaningful length that also looks generated: letters
+ * mixed with digits, or high entropy (≥ 3.6 bits/char). Ordinary words and
+ * snake/camel-case identifiers (`internationalization`,
+ * `read_repository_metadata`) are not credentials (S62 A4).
+ */
+function strongToken(text: string): boolean {
+  if (!/^[A-Za-z0-9._~+/-]{16,}={0,2}$/.test(text)) return false;
+  return /[0-9]/.test(text) && /[A-Za-z]/.test(text) || entropy(text.replace(/=+$/, '')) >= 3.6;
+}
+/**
+ * Scheme words are ordinary metadata too; only a credible payload makes a
+ * credential: a known secret or fragment, base64 of `id:secret`, or a strong
+ * token shape (S62 A4; S61 used "any 16+ token run", which consumed ordinary
+ * scopes such as `basic internationalization`).
+ */
 function credentialPayload(text: string, secrets: KnownSecrets): boolean {
-  return carriesSecret(text, secrets) || readableBase64(text) !== null
-    || /^[A-Za-z0-9._~+/-]{16,}={0,2}$/.test(text);
+  return carriesSecret(text, secrets) || basicPayload(text) || strongToken(text);
 }
 
 /** True when `text` contains a known secret or a fragment of one, directly or base64-encoded. */
@@ -162,6 +192,23 @@ export function scrubSecrets(text: string, secrets: KnownSecrets): string {
   out = out.replace(/\b(basic|bearer|dpop|digest|negotiate|hoba|mutual)(\s+)(?!\[redacted\])(\S+)/gi,
     (match, scheme: string, gap: string, payload: string) => credentialPayload(payload, secrets) ? `${scheme}${gap}${REDACTED}` : match);
   return out.replace(RUN, (run) => (overlaps(run, secrets) || carriesSecret(run, secrets) || readableBase64(run) !== null ? REDACTED : run));
+}
+
+/**
+ * Tool results and discovered tool metadata handed to the model or mapped into
+ * Live Artifact data (S62 A5): only the server's known credential
+ * representations (`studioMcpOutboundCredentials`, plus any connector secrets
+ * the caller adds) are redacted — verbatim, encoded, base64-wrapped or as a
+ * fragment sharing a 12-character window. No shape filters: legitimate content
+ * such as readable base64 or the word `Bearer` before an identifier survives.
+ * The strict shape filters stay on metadata fields only (`untrustedText`,
+ * `untrustedScope`).
+ */
+export function scrubKnownSecrets(text: string, secrets: KnownSecrets): string {
+  if (!secrets.values.length) return text;
+  let out = text;
+  for (const secret of secrets.values) if (out.includes(secret)) out = out.split(secret).join(REDACTED);
+  return out.replace(RUN, (run) => (overlaps(run, secrets) || carriesSecret(run, secrets) ? REDACTED : run));
 }
 
 /** A display string from a provider: printable, bounded, scrubbed; null when nothing usable remains. */

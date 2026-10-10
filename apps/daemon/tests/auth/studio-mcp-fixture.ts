@@ -37,6 +37,12 @@ export interface McpFixture {
     scopeEchoesAuthorization: boolean;
     holdDiscovery: boolean; holdCall: boolean; holdDnsAfterDiscovery: boolean; tools: unknown[] | null; resultBytes: number;
     closedStreams: number;
+    /** S62 A3: the legacy SSE stream starts with a `: ping` comment / keep-alive block before its endpoint event. */
+    sseComment: boolean;
+    /** S62 A5: tools/call answers with this text (an `echoSecrets` credential is appended when that is set too). */
+    callText: string | null;
+    /** S62 B: tools/call answers with this structured JSON object instead of text content. */
+    callJson: Record<string, unknown> | null;
   };
   resolve(hostname: string): Promise<string[]>;
   allowAddress(address: string): boolean;
@@ -53,7 +59,8 @@ export const MCP_FIXTURE_DNS: Record<string, string[]> = {
 export async function startMcpFixture(): Promise<McpFixture> {
   const requests: McpFixture['requests'] = [];
   const state: McpFixture['state'] = { accessToken: MCP_TOKEN_SENTINEL, refreshToken: MCP_REFRESH_SENTINEL, issuer: null, authorizationEndpoint: null,
-    holdMcp: false, holdToken: false, tokenFails: false, releases: [], holdDns: false, dnsWaiting: 0, dnsReleases: [], echoSecrets: false, scopeEchoesAuthorization: false, holdDiscovery: false, holdCall: false, holdDnsAfterDiscovery: false, tools: null, resultBytes: 0, closedStreams: 0 };
+    holdMcp: false, holdToken: false, tokenFails: false, releases: [], holdDns: false, dnsWaiting: 0, dnsReleases: [], echoSecrets: false, scopeEchoesAuthorization: false, holdDiscovery: false, holdCall: false, holdDnsAfterDiscovery: false, tools: null, resultBytes: 0, closedStreams: 0,
+    sseComment: false, callText: null, callJson: null };
   let refreshCount = 0;
   const hold = () => new Promise<void>((resolve) => { state.releases.push(resolve); });
   const streams = new Map<string, http.ServerResponse>();
@@ -67,6 +74,8 @@ export async function startMcpFixture(): Promise<McpFixture> {
     }
     if (request.method === 'tools/call') {
       if (state.holdCall) await hold();
+      if (state.callJson) return state.echoSecrets ? { ...state.callJson, echoed: `${credential} ${encodedForms(credential).join(' ')}` } : state.callJson;
+      if (state.callText !== null) return { content: [{ type: 'text', text: state.echoSecrets ? `${state.callText} ${credential} ${encodedForms(credential).join(' ')}` : state.callText }] };
       return { content: [{ type: 'text', text: state.resultBytes ? 'x'.repeat(state.resultBytes) : state.echoSecrets ? `ok ${credential} ${encodedForms(credential).join(' ')}` : 'fixture result' }] };
     }
     throw new Error('fixture method');
@@ -84,6 +93,7 @@ export async function startMcpFixture(): Promise<McpFixture> {
         const session = String(streams.size + Math.random()); streams.set(session, res);
         res.on('close', () => { state.closedStreams++; streams.delete(session); });
         res.writeHead(200, { 'content-type': 'text/event-stream' });
+        if (state.sseComment) res.write(': ping\n\n:keep-alive\nretry: 1000\n\n');
         return void res.write(`event: endpoint\ndata: /runtime-messages?sessionId=${session}\n\n`);
       }
       if ((url.pathname === '/runtime' || url.pathname === '/runtime-events' || url.pathname === '/runtime-messages') && req.method === 'POST') {

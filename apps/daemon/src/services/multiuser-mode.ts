@@ -96,6 +96,8 @@ export interface MultiUserModeOptions {
    * startServer test harness only; there is no environment or config path.
    */
   testMcpOutbound?: StudioMcpOutboundTestInjection;
+  /** Programmatic, shorter Live Artifact connector/MCP refresh deadline (S62 tests only; never configurable). */
+  testLiveArtifactSourceDeadlineMs?: number;
   /** Test harness clock for pool accounting. */
   poolClock?: () => number;
   /**
@@ -174,6 +176,7 @@ export interface ResolvedMultiUserMode {
   testTavilyFetch?: typeof fetch;
   testComposioFetch?: typeof fetch;
   testMcpOutbound?: StudioMcpOutboundTestInjection;
+  testLiveArtifactSourceDeadlineMs?: number;
   poolClock?: () => number;
   /** How personal app-server children start; absent means the feature is off. */
   personalCodex?: ResolvedPersonalCodex;
@@ -268,6 +271,8 @@ export function resolveMultiUserMode(input: {
     ...(options.testTavilyFetch ? { testTavilyFetch: options.testTavilyFetch } : {}),
     ...(options.testComposioFetch ? { testComposioFetch: options.testComposioFetch } : {}),
     ...(options.testMcpOutbound ? { testMcpOutbound: { ...options.testMcpOutbound } } : {}),
+    ...(typeof options.testLiveArtifactSourceDeadlineMs === 'number' && options.testLiveArtifactSourceDeadlineMs > 0
+      ? { testLiveArtifactSourceDeadlineMs: options.testLiveArtifactSourceDeadlineMs } : {}),
     ...(options.poolClock ? { poolClock: options.poolClock } : {}),
     ...(personalCodex ? { personalCodex } : {}),
     ...(options.studioRenderer ? { studioRenderer: resolveStudioRenderer(options.studioRenderer) } : {}),

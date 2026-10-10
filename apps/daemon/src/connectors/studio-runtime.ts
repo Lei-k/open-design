@@ -10,19 +10,26 @@ import { connectorDefinitionToDetail, type ConnectorCatalogDefinition } from './
 import { assertJsonSchemaMatches, isForbiddenConnectorOutputKey, protectConnectorOutput } from './service.js';
 import { validateBoundedJsonObject, validateBoundedJsonValue } from '../live-artifacts/schema.js';
 import { StudioComposioClient } from './studio-composio.js';
+import { knownSecrets, scrubKnownSecrets, type KnownSecrets } from '../mcp-client/studio-untrusted.js';
 
 export class StudioConnectorRuntimeError extends Error {
   constructor(readonly code: ApiErrorCode, readonly status = 403) { super(code); }
 }
 const unavailable = () => new StudioConnectorRuntimeError('CONNECTOR_NOT_GRANTED');
-function redactProvider(value: unknown, apiKey: string, depth = 0): unknown {
+/**
+ * Provider output with credential-named keys dropped and every known
+ * representation of the company key (raw, percent/form/base64-encoded, or a
+ * 12-character fragment) redacted from keys and values (S62 A5). Ordinary
+ * content is never shape-filtered.
+ */
+function redactProvider(value: unknown, apiKey: string, depth = 0, secrets: KnownSecrets = knownSecrets([apiKey])): unknown {
   if (depth > 16) throw new StudioConnectorRuntimeError('CONNECTOR_OUTPUT_TOO_LARGE', 502);
-  if (Array.isArray(value)) return value.map((item) => redactProvider(item, apiKey, depth + 1));
+  if (Array.isArray(value)) return value.map((item) => redactProvider(item, apiKey, depth + 1, secrets));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value)
     .filter(([key]) => !isForbiddenConnectorOutputKey(key) && !['__proto__', 'constructor', 'prototype'].includes(key)
       && !/(?:api|access|private)[_-]?key/i.test(key))
-    .map(([key, item]) => [key, redactProvider(item, apiKey, depth + 1)]));
-  return typeof value === 'string' ? value.split(apiKey).join('[redacted]') : value;
+    .map(([key, item]) => [scrubKnownSecrets(key, secrets), redactProvider(item, apiKey, depth + 1, secrets)]));
+  return typeof value === 'string' ? scrubKnownSecrets(value, secrets) : value;
 }
 
 /**
@@ -63,6 +70,8 @@ export class StudioConnectorRuntime {
   /** In-flight provider requests per run; a cancel aborts them. */
   private readonly inflight = new Map<string, Set<AbortController>>();
   private runLive: (runId: string) => boolean = () => true;
+  /** Short-lived non-run grants (Live Artifact refresh, S62), live only while registered. */
+  private readonly ephemeral = new Set<string>();
   constructor(private readonly deps: {
     db: Database.Database; dataRoot: string;
     /** The daemon's existing auth store handle (never a second one). */
@@ -80,6 +89,9 @@ export class StudioConnectorRuntime {
   }
   /** Run state as the run service sees it: false once a run is cancelled or terminal. */
   setRunLiveness(check: (runId: string) => boolean): void { this.runLive = check; }
+  /** A non-run grant id (never a run id): live only between these two calls; release aborts its requests. */
+  registerEphemeral(id: string): void { this.ephemeral.add(id); }
+  releaseEphemeral(id: string): void { this.ephemeral.delete(id); this.abortRun(id); }
   /** A cancel or terminal transition: abort the run's in-flight discovery and provider calls. */
   abortRun(runId: string): void {
     const controllers = this.inflight.get(runId);
@@ -133,7 +145,7 @@ export class StudioConnectorRuntime {
   private assertLive(grant: ToolTokenGrant, scope: typeof LIST | typeof EXECUTE, liveness?: StudioConnectorLiveness): void {
     const validation = this.tokens.validate(grant.token, scope);
     if (!validation.ok) throw new StudioConnectorRuntimeError(validation.code, validation.code.endsWith('DENIED') ? 403 : 401);
-    if (!this.runLive(grant.runId)) throw new StudioConnectorRuntimeError('TOOL_TOKEN_INVALID', 401);
+    if (!(this.ephemeral.has(grant.runId) || this.runLive(grant.runId))) throw new StudioConnectorRuntimeError('TOOL_TOKEN_INVALID', 401);
     liveness?.();
     this.assert(grant.studioConnectors!);
   }
@@ -223,7 +235,7 @@ export class StudioConnectorRuntime {
         const credential = this.company.credential();
         // No await between the authority/liveness check, the slot reservation and the provider request.
         live();
-        releaseSlot = reserveStudioToolCall(grant.runId, this.grants.toolCalls(grant.runId), STUDIO_RUN_CONNECTOR_CALL_LIMIT);
+        releaseSlot = reserveStudioToolCall(grant.runId, this.grants.toolCalls(grant.runId), grant.callLimit ?? STUDIO_RUN_CONNECTOR_CALL_LIMIT);
         if (!releaseSlot) throw new StudioConnectorRuntimeError('CONNECTOR_RATE_LIMITED', 429);
         const result = await this.provider.executeTool(credential!.apiKey, slug, this.store.entityFor(bound.ownerAccountId),
           bound.connections.find((row) => row.connectorId === id)!.providerConnectionId, input.value, tracked.signal);

@@ -68,6 +68,10 @@ export type StudioConnectorCallbackRefusal =
  */
 export type StudioConnectorAuthorityRefusal = 'account' | 'session' | 'key-changed' | 'connection-changed';
 
-/** Legacy-named refusal for connector sources outside the S59 admitted-run grant lifecycle. */
+/**
+ * Legacy-named refusal for connector sources outside both grant lifecycles:
+ * S59 admitted-run grants and S62 live refreshing-actor grants (Live Artifact
+ * sources). Automation ingestion/event sources have neither.
+ */
 export const STUDIO_CONNECTORS_NOT_USABLE_IN_RUNS =
-  'connector sources require an asynchronous refreshing-actor grant; canonical Live Artifact refresh and ingestion do not carry one' as const;
+  'connector ingestion and event sources need an admitted run grant or a live refreshing account; automation ingestion has neither' as const;

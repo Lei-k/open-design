@@ -8,14 +8,23 @@ import { sendApiError } from '../http/api-errors.js';
 import { ProjectAccessStore, type ProjectAccessOptions } from '../storage/project-access.js';
 import { StudioLiveArtifacts, StudioLiveArtifactRefusal } from '../storage/studio-live-artifacts.js';
 import { AuthStore } from '../storage/auth-store.js';
+import { StudioLiveArtifactSourceRefresh } from '../live-artifacts/studio-source-refresh.js';
+import type { StudioConnectorRuntime } from '../connectors/studio-runtime.js';
+import type { StudioMcpRuntime } from '../mcp-client/studio-runtime.js';
 
 /** Shared viewer and session CLI use the same project-authorized database store.
- * The legacy worker-token/host-connector routes remain closed in multi-user mode. */
+ * The legacy worker-token/host-connector routes remain closed in multi-user mode.
+ * Connector/MCP sources (S62) refresh with the REFRESHING actor's own connection or
+ * server through the S59/S61 runtimes; never the host `connectorService`. */
 export function registerStudioLiveArtifactRoutes(app: Express, input: {
   db: Database.Database; projectsRoot: string; dataRoot: string; previewOrigin: string; allowedOrigins: string[]; clock?: () => number;
   onChanged?: (projectId: string, action: 'created' | 'updated' | 'deleted', artifact: LiveArtifact) => void;
-} & ProjectAccessOptions): StudioLiveArtifacts & { close(): void } {
+  connectors?: StudioConnectorRuntime; mcp?: StudioMcpRuntime; sourceDeadlineMs?: number;
+} & ProjectAccessOptions): StudioLiveArtifacts & { close(): void; sourceRefresh: StudioLiveArtifactSourceRefresh } {
   const store = new StudioLiveArtifacts(input.db, input.projectsRoot);
+  const sourceRefresh = new StudioLiveArtifactSourceRefresh({ db: input.db, dataRoot: input.dataRoot, store,
+    ...(input.connectors ? { connectors: input.connectors } : {}), ...(input.mcp ? { mcp: input.mcp } : {}),
+    ...(input.sourceDeadlineMs ? { deadlineMs: input.sourceDeadlineMs } : {}) });
   const auth = AuthStore.open({ dataRoot: input.dataRoot });
   const now = input.clock ?? Date.now;
   const previews = new Map<string, { project: string; artifact: string; actor: string; session: string; expires: number }>();
@@ -25,6 +34,14 @@ export function registerStudioLiveArtifactRoutes(app: Express, input: {
     updateProject(input.db, project, {});
     try { input.onChanged?.(project, action, artifact); } catch { /* best-effort signal */ }
   };
+  const refuse = (res: Response, error: unknown) => {
+    if (res.headersSent) return;
+    const status = error instanceof StudioLiveArtifactRefusal ? error.status : 400;
+    return sendApiError(res, status, error instanceof StudioLiveArtifactRefusal && error.code ? error.code
+      : status === 404 ? 'NOT_FOUND' : status === 403 ? 'MULTIUSER_CAPABILITY_UNAVAILABLE' : status === 409 ? 'CONFLICT'
+        : status === 413 ? 'PAYLOAD_TOO_LARGE' : 'BAD_REQUEST', error instanceof StudioLiveArtifactRefusal ? error.message : 'invalid live artifact',
+    error instanceof StudioLiveArtifactRefusal && error.details ? { details: error.details } : {});
+  };
   const route = (write: boolean, work: (req: Request, res: Response, project: string, id: string) => unknown) =>
     (req: Request, res: Response) => {
       const project = typeof req.query.projectId === 'string' ? req.query.projectId : '';
@@ -33,13 +50,16 @@ export function registerStudioLiveArtifactRoutes(app: Express, input: {
         return sendApiError(res, 404, 'NOT_FOUND', 'resource not found');
       }
       res.set('Cache-Control', 'no-store');
-      try { return work(req, res, project, String(req.params.artifactId ?? '')); }
-      catch (error) {
-        const status = error instanceof StudioLiveArtifactRefusal ? error.status : 400;
-        return sendApiError(res, status, status === 404 ? 'NOT_FOUND' : status === 403 ? 'MULTIUSER_CAPABILITY_UNAVAILABLE' : status === 409 ? 'CONFLICT'
-          : status === 413 ? 'PAYLOAD_TOO_LARGE' : 'BAD_REQUEST', error instanceof StudioLiveArtifactRefusal ? error.message : 'invalid live artifact');
-      }
+      try {
+        const result = work(req, res, project, String(req.params.artifactId ?? ''));
+        return result instanceof Promise ? result.catch((error: unknown) => refuse(res, error)) : result;
+      } catch (error) { return refuse(res, error); }
     };
+  /** The refreshing actor: the cookie session's own account, while it can still edit this project. */
+  const refreshingActor = (res: Response, project: string) => {
+    const actor = multiUserActorOf(res)!;
+    return { actor, authorized: () => access.canWrite(project, actor.accountId) };
+  };
   app.get(base, route(false, (_req, res, project) => res.json({ artifacts: store.list(project) })));
   app.post(base, route(true, (req, res, project) => {
     const sessionId = req.body?.input?.sessionId;
@@ -60,6 +80,17 @@ export function registerStudioLiveArtifactRoutes(app: Express, input: {
     const artifact = store.read(project, id); store.delete(project, id); changed(project, 'deleted', artifact); return res.json({ ok: true });
   }));
   app.post(`${base}/:artifactId/refresh`, route(true, (_req, res, project, id) => {
+    const kind = store.sourceKind(project, id);
+    if (kind === 'connector' || kind === 'mcp') {
+      const before = store.read(project, id).studioRevision;
+      return sourceRefresh.refresh(project, id, refreshingActor(res, project)).then((result) => {
+        changed(project, 'updated', result.artifact); return res.json(result);
+      }, (error: unknown) => {
+        // A recorded failed attempt also invalidates members' viewers; an authority refusal wrote nothing.
+        try { const artifact = store.read(project, id); if (artifact.studioRevision !== before) changed(project, 'updated', artifact); } catch { /* deleted */ }
+        throw error;
+      });
+    }
     try {
       const result = store.refresh(project, id); changed(project, 'updated', result.artifact); return res.json(result);
     } catch (error) {
@@ -67,6 +98,16 @@ export function registerStudioLiveArtifactRoutes(app: Express, input: {
       if (error instanceof StudioLiveArtifactRefusal && error.status === 409) changed(project, 'updated', store.read(project, id));
       throw error;
     }
+  }));
+  // S62: the actor's own connector/MCP sources for the editor (no provider call), and
+  // discovery of one source's tools with the actor's own connection/server.
+  const sources = '/api/multiuser/live-artifact-sources';
+  app.get(sources, route(true, (_req, res) => res.json(sourceRefresh.catalog(multiUserActorOf(res)!.accountId))));
+  app.post(`${sources}/:kind/:sourceId/tools`, route(true, (req, res, project) => {
+    const kind = req.params.kind === 'connector' || req.params.kind === 'mcp' ? req.params.kind : null;
+    const sourceId = String(req.params.sourceId ?? '');
+    if (!kind || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(sourceId)) throw new StudioLiveArtifactRefusal(404, 'resource not found');
+    return sourceRefresh.tools(kind, sourceId, project, refreshingActor(res, project)).then((tools) => res.json({ tools }));
   }));
   app.get(`${base}/:artifactId/preview`, route(false, (req, res, project, id) => {
     const variant = req.query.variant ?? 'rendered';
@@ -106,5 +147,5 @@ export function registerStudioLiveArtifactRoutes(app: Express, input: {
       return res.send(html);
     } catch { previews.delete(key); return sendApiError(res, 404, 'NOT_FOUND', 'resource not found'); }
   });
-  return Object.assign(store, { close() { previews.clear(); auth.close(); } });
+  return Object.assign(store, { sourceRefresh, close() { previews.clear(); auth.close(); } });
 }

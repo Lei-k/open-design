@@ -44,7 +44,7 @@ export function studioLaneForRoute(entry: Pick<MultiUserRouteClassification, 'me
     if (parts[2] === 'design-catalog') return 'catalogs';
     if (parts[2] === 'plugin-preview') return 'catalogs';
     if (parts[2] === 'routines' || parts[2]?.startsWith('automation-')) return 'automations';
-    if (parts[2] === 'research' || parts[2] === 'live-artifacts' || parts[2] === 'live-artifact-preview') return 'generation';
+    if (parts[2] === 'research' || parts[2] === 'live-artifacts' || parts[2] === 'live-artifact-preview' || parts[2] === 'live-artifact-sources') return 'generation';
     if (path.includes('/archive') || path.includes('/export/') || path.includes('/public-links') || parts[2] === 'public') return 'delivery';
     if (/\/(?:shares|access|presence)(?:\/|$)/.test(path)) return 'collaboration';
     if (path.includes('/preview') || path.includes('/comments')) return 'preview';

@@ -7,6 +7,7 @@ import { listCompanyProjectFiles, readCompanyProjectFile, writeCompanyProjectByt
 import type { StudioSkillPackage } from '../services/studio-skill-packages.js';
 import type { StudioSkillScriptRunner } from '../services/studio-skill-scripts.js';
 import { STUDIO_LIVE_ARTIFACT_TOOLS, type StudioLiveArtifactTools } from '../live-artifacts/studio-tools.js';
+import { StudioLiveArtifactRefusal } from '../storage/studio-live-artifacts.js';
 import { STUDIO_MEDIA_TOOLS, STUDIO_MEDIA_TOOL_NAMES, StudioMediaError, emptyStudioMediaUsage, runStudioMediaTool, type StudioMediaUsage } from './studio-media.js';
 
 type Json = Record<string, unknown>;
@@ -164,7 +165,7 @@ export async function runCompanyOpenAITurn(input: {
         } else if (input.connectors && STUDIO_CONNECTOR_TOOL_DESCRIPTORS.some((tool) => tool.name === call.name)) {
           check(); result = await input.connectors.execute(call.name, args);
         } else if (input.liveArtifacts && STUDIO_LIVE_ARTIFACT_TOOLS.some((tool) => tool.name === call.name)) {
-          check(); result = input.liveArtifacts.execute(call.name, args);
+          check(); result = await input.liveArtifacts.execute(call.name, args);
         } else if (input.media && STUDIO_MEDIA_TOOL_NAMES.has(call.name)) {
           check();
           try {
@@ -208,7 +209,8 @@ export async function runCompanyOpenAITurn(input: {
       } catch (error) {
         check(); failed = true;
         // Validation refusals and a command's nonzero exit are not startup failures.
-        startupFailed = call.name === 'run_skill_script' && ['ENOENT', 'EACCES', 'EPERM', 'ENOEXEC'].includes(String((error as NodeJS.ErrnoException | null)?.code)); result = { error: (error instanceof StudioConnectorRuntimeError || error instanceof StudioMcpRuntimeError) ? error.code : 'PROJECT_TOOL_REFUSED' };
+        startupFailed = call.name === 'run_skill_script' && ['ENOENT', 'EACCES', 'EPERM', 'ENOEXEC'].includes(String((error as NodeJS.ErrnoException | null)?.code)); result = { error: (error instanceof StudioConnectorRuntimeError || error instanceof StudioMcpRuntimeError) ? error.code
+          : error instanceof StudioLiveArtifactRefusal && error.code ? error.code : 'PROJECT_TOOL_REFUSED' };
         if (call.name === 'update_plan' && !planPublished) emit({ type: 'tool_use', id: call.call_id, name: 'plan_update_refused', input: {} });
       }
       emit({ type: 'tool_result', toolUseId: call.call_id, isError: failed, ...(startupFailed ? { startupFailed: true } : {}), content: call.name.startsWith('mcp_') ? (failed ? 'account MCP call refused' : 'account MCP call completed') : call.name.startsWith('connectors_') ? (failed ? 'account connector call refused' : 'account connector call completed') : typeof result === 'string' ? result : JSON.stringify(result) });

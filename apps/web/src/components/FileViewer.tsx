@@ -3076,6 +3076,13 @@ export function LiveArtifactRefreshHistoryPanel({
                       </span>
                     </div>
                     <div className="live-artifact-refresh-event-meta">
+                      {event.studioSource ? (
+                        <span data-testid="live-artifact-refresh-source-kind">
+                          {event.studioSource.kind === 'project_file' ? t('studio.liveArtifact.historySourceProjectFile')
+                            : t(event.studioSource.kind === 'connector' ? 'studio.liveArtifact.historySourceConnector' : 'studio.liveArtifact.historySourceMcp',
+                              { id: event.studioSource.id ?? '' })}
+                        </span>
+                      ) : null}
                       <span>{event.refreshId}</span>
                       {duration ? <span>{duration}</span> : null}
                       {event.error?.message ? <span>{event.error.message}</span> : null}
@@ -3155,7 +3162,10 @@ export function LiveArtifactRefreshHistoryPanel({
           <h4>{t('plugins.availableDetails.provenance')}</h4>
           <p>{liveArtifact.studioProvenance.origin === 'project_file'
             ? t('studio.liveArtifact.originProject', { path: liveArtifact.studioProvenance.source?.path ?? '' })
-            : t(liveArtifact.studioProvenance.origin === 'agent' ? 'studio.liveArtifact.originAgent' : 'studio.liveArtifact.originUser')}</p>
+            : liveArtifact.studioProvenance.toolSource
+              ? t(liveArtifact.studioProvenance.toolSource.kind === 'connector' ? 'studio.liveArtifact.originConnector' : 'studio.liveArtifact.originMcp',
+                { id: liveArtifact.studioProvenance.toolSource.id, tool: liveArtifact.studioProvenance.toolSource.tool })
+              : t(liveArtifact.studioProvenance.origin === 'agent' ? 'studio.liveArtifact.originAgent' : 'studio.liveArtifact.originUser')}</p>
           <time dateTime={liveArtifact.studioProvenance.updatedAt}>{formatAbsoluteDateTime(liveArtifact.studioProvenance.updatedAt)}</time>
         </section>
       ) : null}
@@ -3187,6 +3197,14 @@ export function LiveArtifactRefreshHistoryPanel({
                 <dd>
                   {documentSource.connector.accountLabel ??
                     documentSource.connector.connectorId}
+                </dd>
+              </div>
+            ) : null}
+            {documentSource.mcp ? (
+              <div>
+                <dt>{t('studio.liveArtifact.sourceKindMcp')}</dt>
+                <dd>
+                  <code>{`${documentSource.mcp.serverId} · ${documentSource.mcp.toolName}`}</code>
                 </dd>
               </div>
             ) : null}

@@ -40,6 +40,28 @@ export interface Dict {
   'studio.liveArtifact.sourceHint': string;
   'studio.liveArtifact.invalidData': string;
   'studio.liveArtifact.saveFailed': string;
+  'studio.liveArtifact.originConnector': string;
+  'studio.liveArtifact.originMcp': string;
+  'studio.liveArtifact.historySourceProjectFile': string;
+  'studio.liveArtifact.historySourceConnector': string;
+  'studio.liveArtifact.historySourceMcp': string;
+  'studio.liveArtifact.sourceKind': string;
+  'studio.liveArtifact.sourceKindFile': string;
+  'studio.liveArtifact.sourceKindConnector': string;
+  'studio.liveArtifact.sourceKindMcp': string;
+  'studio.liveArtifact.sourceChoose': string;
+  'studio.liveArtifact.sourceTool': string;
+  'studio.liveArtifact.sourceLoadTools': string;
+  'studio.liveArtifact.sourceArguments': string;
+  'studio.liveArtifact.sourceConfirmReadOnly': string;
+  'studio.liveArtifact.sourceActorHint': string;
+  'studio.liveArtifact.sourceUnavailableNotConnected': string;
+  'studio.liveArtifact.sourceUnavailableNotConfigured': string;
+  'studio.liveArtifact.sourceUnavailableDisabled': string;
+  'studio.liveArtifact.sourceUnavailableSignIn': string;
+  'studio.liveArtifact.sourceNotReadOnly': string;
+  'studio.liveArtifact.sourceToolsFailed': string;
+  'studio.liveArtifact.sourceIncomplete': string;
 
   'studio.settingsReload': string;
   'studio.aboutDeployed': string;

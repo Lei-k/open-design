@@ -1,4 +1,5 @@
 import { type SafeOutboundFetch, type SafeOutboundInit } from '../http/safe-outbound-fetch.js';
+import { SseFrameReader, sseStopWhen, type SseFrame } from './sse-frames.js';
 
 const VERSION = '2025-06-18';
 export class StudioMcpProtocolError extends Error { constructor() { super('remote MCP protocol refused'); } }
@@ -8,17 +9,23 @@ function message(raw: string): Message {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new StudioMcpProtocolError();
   return value as Message;
 }
-function frames(text: string): Array<{ event: string; data: string }> {
-  const blocks = text.replaceAll('\r\n', '\n').split('\n\n'); blocks.pop();
-  return blocks.map((block) => ({ event: block.split('\n').find((line) => line.startsWith('event:'))?.slice(6).trim() ?? 'message',
-    data: block.split('\n').filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n') }));
+/** The JSON-RPC id of a `message` block, parsing each block at most once; null for anything else. */
+function frameId(frame: SseFrame): unknown {
+  if (frame.event !== 'message') return null;
+  try { return message(frame.data).id; } catch { return null; }
 }
 const checkedResult = (value: Message, id: number): unknown => {
   if (value.jsonrpc !== '2.0' || value.id !== id || value.error !== undefined || value.result === undefined) throw new StudioMcpProtocolError();
   return value.result;
 };
 
-/** One bounded session per operation. All messages, including the SSE POST endpoint, use the same guard and authority hook. */
+/**
+ * One bounded session per operation. All messages, including the SSE POST
+ * endpoint, use the same guard and authority hook. Event streams are parsed
+ * incrementally (S62 A1): every chunk is read once, data-less comment /
+ * keep-alive blocks are skipped (S62 A3), and frame count/size are capped
+ * (`SseFrameReader`), so a hostile stream costs CPU linear in its bytes.
+ */
 export async function studioMcpSession(input: {
   safe: SafeOutboundFetch; url: string; transport: 'http' | 'sse'; signal: AbortSignal;
   beforeConnect: NonNullable<SafeOutboundInit['beforeConnect']>; live(): void;
@@ -30,16 +37,15 @@ export async function studioMcpSession(input: {
   const envelope = (method: string, params: unknown, id?: number) => JSON.stringify({ jsonrpc: '2.0', ...(id ? { id } : {}), method, ...(params !== undefined ? { params } : {}) });
   const post = async (url: string, method: string, params: unknown, id?: number) => {
     input.live();
+    let matched: string | undefined;
     const response = await input.safe(url, { method: 'POST', headers: headers(), body: envelope(method, params, id), signal: input.signal,
-      beforeConnect: input.beforeConnect, stopWhen: (bytes) => {
-        const text = Buffer.from(bytes).toString('utf8');
-        return !/^\s*[[{]/.test(text) && frames(text).some((frame) => { try { return message(frame.data).id === id; } catch { return false; } });
-      } });
+      beforeConnect: input.beforeConnect,
+      ...(id === undefined ? {} : { stopWhen: sseStopWhen((frame) => frameId(frame) === id && (matched = frame.data, true)) }) });
     input.live();
     if (response.status < 200 || response.status >= 300) throw new StudioMcpProtocolError();
     const next = response.headers.get('mcp-session-id');
     if (next !== null) { if (!/^[\x21-\x7e]{1,256}$/.test(next)) throw new StudioMcpProtocolError(); session = next; }
-    return response;
+    return { response, matched };
   };
   const initialize = async (rpc: (method: string, params?: unknown) => Promise<unknown>, notify: () => Promise<void>) => {
     const init = await rpc('initialize', { protocolVersion: VERSION, capabilities: {}, clientInfo: { name: 'OpenDesign Studio', version: '1' } }); input.live();
@@ -50,9 +56,9 @@ export async function studioMcpSession(input: {
   };
   if (input.transport === 'http') {
     const rpc = async (method: string, params?: unknown) => {
-      const id = ++seq; const response = await post(input.url, method, params, id); input.live();
-      const raw = /text\/event-stream/i.test(response.headers.get('content-type') ?? '')
-        ? frames(response.text()).find((frame) => { try { return message(frame.data).id === id; } catch { return false; } })?.data : response.text();
+      const id = ++seq; const { response, matched } = await post(input.url, method, params, id); input.live();
+      // An event stream answers with the block the incremental reader already matched; never re-parse the body.
+      const raw = /text\/event-stream/i.test(response.headers.get('content-type') ?? '') ? matched : response.text();
       if (!raw) throw new StudioMcpProtocolError(); return checkedResult(message(raw), id);
     };
     return initialize(rpc, async () => { await post(input.url, 'notifications/initialized', undefined); input.live(); });
@@ -60,8 +66,9 @@ export async function studioMcpSession(input: {
   // Legacy SSE keeps its inbound stream open while initialize/list/call POSTs run.
   const stop = new AbortController(); const signal = AbortSignal.any([input.signal, stop.signal]);
   const waits = new Map<number, { resolve(value: unknown): void; reject(error: unknown): void }>();
-  let endpoint: string | null = null; let started = false; let consumed = 0;
+  let endpoint: string | null = null; let started = false;
   let work: Promise<unknown> | undefined;
+  const reader = new SseFrameReader();
   const rpc = async (method: string, params?: unknown) => {
     const id = ++seq;
     const answer = new Promise<unknown>((resolve, reject) => waits.set(id, { resolve, reject }));
@@ -72,10 +79,12 @@ export async function studioMcpSession(input: {
   };
   try {
     await input.safe(input.url, { headers: { accept: 'text/event-stream' }, signal, beforeConnect: input.beforeConnect,
-      onChunk: (bytes) => {
-        input.live();
-        const all = frames(Buffer.from(bytes).toString('utf8'));
-        for (const frame of all.slice(consumed)) {
+      onChunk: (chunk) => {
+        // Recheck authority before acting on any message; data-less and unrelated
+        // blocks are only counted (the runtime's 20 ms watch covers idle streams).
+        for (const frame of reader.push(chunk)) {
+          if (frame.event !== 'endpoint' && frame.event !== 'message') continue;
+          input.live();
           if (frame.event === 'endpoint' && !started) {
             const target = new URL(frame.data, input.url);
             if (target.origin !== new URL(input.url).origin || !input.endpointAllowed(target.toString())) throw new StudioMcpProtocolError();
@@ -88,7 +97,6 @@ export async function studioMcpSession(input: {
             if (waiter) { waits.delete(Number(value.id)); try { waiter.resolve(checkedResult(value, Number(value.id))); } catch (error) { waiter.reject(error); } }
           }
         }
-        consumed = all.length;
       } });
     input.live();
     if (!work) throw new StudioMcpProtocolError();

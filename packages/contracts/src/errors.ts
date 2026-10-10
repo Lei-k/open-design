@@ -254,6 +254,21 @@ export const API_ERROR_CODES = [
   'MULTIUSER_MCP_OUTBOUND_REFUSED',
   'MULTIUSER_MCP_PROVIDER_FAILED',
   'MULTIUSER_MCP_LIMIT_REACHED',
+  // Live Artifact refresh from the refreshing account's own connector or MCP
+  // server (#63, S62). SOURCE_UNAVAILABLE: the refreshing account has no usable
+  // connection/server for the descriptor's id (not connected, disabled,
+  // foreign or missing all answer alike); SOURCE_NOT_READ_ONLY: the tool is not
+  // classified read-only (connector safety metadata, or the MCP server's own
+  // `readOnlyHint` plus the stored confirmation); REFRESH_AUTHORITY_CHANGED:
+  // the account, session, project access, source or artifact changed while the
+  // refresh ran, so nothing was written and nothing further was sent;
+  // SOURCE_FAILED: the source failed, timed out or answered with output that
+  // could not be mapped (details.reason), so the previous data was kept and a
+  // failed refresh was recorded.
+  'LIVE_ARTIFACT_SOURCE_UNAVAILABLE',
+  'LIVE_ARTIFACT_SOURCE_FAILED',
+  'LIVE_ARTIFACT_SOURCE_NOT_READ_ONLY',
+  'LIVE_ARTIFACT_REFRESH_AUTHORITY_CHANGED',
   'INTERNAL_ERROR',
 ] as const;
 

@@ -491,6 +491,9 @@ describe('route classification covers the real inventory', () => {
       'actor-scoped GET /api/multiuser/live-artifacts/:artifactId/preview',
       'actor-scoped GET /api/multiuser/live-artifacts/:artifactId/refreshes',
       'actor-scoped POST /api/multiuser/live-artifacts/:artifactId/refresh',
+      // S62 (#63): the actor's own connector/MCP Live Artifact sources (Studio-only, no standard alias).
+      'actor-scoped GET /api/multiuser/live-artifact-sources',
+      'actor-scoped POST /api/multiuser/live-artifact-sources/:kind/:sourceId/tools',
       // S54 (#61): captured bundled HTML previews and named examples.
       'actor-scoped GET /api/plugins/:id/preview',
       'actor-scoped GET /api/plugins/:id/example/:name',

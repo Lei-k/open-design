@@ -15,7 +15,8 @@ export type LiveArtifactRefreshStatus = 'never' | 'idle' | 'running' | 'succeede
 
 export type LiveArtifactPreviewType = 'html' | 'jsx' | 'markdown';
 
-export type LiveArtifactSourceType = 'local_file' | 'daemon_tool' | 'connector_tool';
+/** `mcp_tool` is Studio-only (S62): an account remote MCP server tool, refreshed with the refreshing account's own server. */
+export type LiveArtifactSourceType = 'local_file' | 'daemon_tool' | 'connector_tool' | 'mcp_tool';
 
 export type LiveArtifactConnectorApprovalPolicy =
   | 'read_only_auto'
@@ -54,6 +55,18 @@ export interface LiveArtifactSource {
     accountLabel?: string;
     toolName: string;
     approvalPolicy?: LiveArtifactConnectorApprovalPolicy;
+  };
+  /**
+   * Studio `mcp_tool` sources (S62): ids only, never credentials or grants. A
+   * refresh resolves `serverId` among the REFRESHING account's own servers.
+   * `readOnlyConfirmed` records the creator's confirmation that the tool is
+   * read-only; the server's own `annotations.readOnlyHint` must also be true
+   * at every refresh (an untrusted hint, so both are required).
+   */
+  mcp?: {
+    serverId: string;
+    toolName: string;
+    readOnlyConfirmed: true;
   };
   outputMapping?: {
     dataPaths?: Array<{ from: string; to: string }>;
@@ -100,10 +113,26 @@ export interface LiveArtifact {
  * Failed refreshes and metadata-only edits retain the previous accepted origin. */
 export interface StudioLiveArtifactProvenance {
   updatedAt: string;
-  origin: 'user' | 'agent' | 'project_file';
+  origin: 'user' | 'agent' | 'project_file' | 'connector' | 'mcp';
   source?: { path: string; sha256: string; bytes: number };
+  /**
+   * A successful connector/MCP refresh (S62): the accepted source, the account
+   * whose own connection/server produced it, and the byte count and SHA-256 of
+   * the scrubbed tool output that was mapped. Never arguments or credentials.
+   */
+  toolSource?: StudioLiveArtifactToolSourceProvenance;
   conversationId?: string;
   runId?: string;
+}
+
+export interface StudioLiveArtifactToolSourceProvenance {
+  kind: 'connector' | 'mcp';
+  /** Connector id or the refreshing account's MCP server id. */
+  id: string;
+  tool: string;
+  actorAccountId: string;
+  bytes: number;
+  sha256: string;
 }
 
 export type LiveArtifactDaemonOwnedInputField =
@@ -195,6 +224,8 @@ export interface LiveArtifactRefreshLogEntry {
   source?: LiveArtifactRefreshSourceMetadata;
   error?: LiveArtifactRefreshErrorRecord;
   metadata?: BoundedJsonObject;
+  /** Studio: which kind of source this refresh read (S62); absent on older entries (project file). */
+  studioSource?: { kind: 'project_file' | 'connector' | 'mcp'; id?: string; tool?: string };
   createdAt: string;
 }
 
@@ -217,3 +248,55 @@ export interface StudioLiveArtifactUpdateRequest {
   /** Required when replacing the document or template. */
   expectedRevision?: number;
 }
+
+/**
+ * The refreshing account's own sources a Studio Live Artifact may read (S62).
+ * Nothing here belongs to another account: connectors are the static catalog
+ * overlaid with this account's own connections; MCP servers are this account's
+ * own remote servers. Unusable entries carry a fixed reason.
+ */
+export interface StudioLiveArtifactSourceCatalog {
+  connectors: Array<{
+    connectorId: string;
+    name: string;
+    available: boolean;
+    /** Why it cannot be used now. */
+    reason?: 'not_configured' | 'not_connected';
+    /** Statically known read-only tools; more may be loaded with the actor's own connection. */
+    tools: StudioLiveArtifactSourceTool[];
+  }>;
+  mcpServers: Array<{
+    serverId: string;
+    label: string | null;
+    available: boolean;
+    reason?: 'disabled' | 'sign_in';
+  }>;
+}
+
+export interface StudioLiveArtifactSourceTool {
+  name: string;
+  title?: string;
+  /** False when the tool cannot be a Live Artifact source (not classified read-only). */
+  readOnly: boolean;
+}
+
+/** `POST /api/multiuser/live-artifact-sources/:kind/:id/tools` — discovery with the actor's own connection/server. */
+export interface StudioLiveArtifactSourceToolsResponse {
+  tools: StudioLiveArtifactSourceTool[];
+}
+
+/** Bounds for connector/MCP Live Artifact sources (S62). */
+export const STUDIO_LIVE_ARTIFACT_SOURCE_LIMITS = {
+  /** Serialized JSON tool arguments stored on the descriptor. */
+  argumentBytes: 16 * 1024,
+  /** Scrubbed tool output accepted for mapping. */
+  outputBytes: 256 * 1024,
+  /** Wall-clock deadline of one refresh (grant TTL), including discovery. */
+  deadlineMs: 20_000,
+  /** Provider tool calls one refresh (or one source-tool discovery) may make. */
+  calls: 1,
+} as const;
+
+/** Precise refusal for connector/MCP refresh without a live refreshing actor (schedules, background work). */
+export const STUDIO_LIVE_ARTIFACT_BACKGROUND_REFRESH_REFUSED =
+  'connector and MCP Live Artifact sources refresh only for a live refreshing account (a person pressing Refresh, or an agent turn that account started in an open session); scheduled and background refresh has no live actor session' as const;

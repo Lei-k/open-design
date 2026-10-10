@@ -489,6 +489,23 @@ it('S59 connector agent endpoints are bearer-granted while cookie transport stay
   expect(studioRequestAvailable('POST', '/api/runs', () => true, true, true, true)).toBe(true);
 });
 
+it('S62 Live Artifact connector/MCP source routes are actor-scoped and open only with files+preview and the matching capability', () => {
+  const lanes = (lane: string) => lane === 'files' || lane === 'preview';
+  for (const [method, path, connectors, mcp] of [['GET', '/api/multiuser/live-artifact-sources', true, false], ['GET', '/api/multiuser/live-artifact-sources', false, true],
+    ['POST', '/api/multiuser/live-artifact-sources/connector/github/tools', true, false], ['POST', '/api/multiuser/live-artifact-sources/mcp/docs/tools', false, true]] as const) {
+    expect(studioRequestAvailable(method, path, lanes, false, false, connectors, mcp), `${method} ${path}`).toBe(true);
+    expect(studioRequestAvailable(method, path, lanes, false, false, false, false), `${method} ${path} without capability`).toBe(false);
+    expect(studioRequestAvailable(method, path, (lane) => lane === 'files', false, false, true, true), `${method} ${path} without preview`).toBe(false);
+    expect(matchMultiUserRoute(method, path).map(({ entry }) => entry.routeClass)).toEqual(['actor-scoped']);
+  }
+  // Discovery is per kind; the bearer-only refresh grants are never reachable from cookie transport.
+  expect(studioRequestAvailable('POST', '/api/multiuser/live-artifact-sources/mcp/docs/tools', lanes, false, false, true, false)).toBe(false);
+  expect(studioRequestAvailable('POST', '/api/multiuser/live-artifact-sources/connector/github/tools', lanes, false, false, false, true)).toBe(false);
+  for (const [method, path] of [['POST', '/api/tools/connectors/execute'], ['POST', '/api/tools/mcp/execute'], ['POST', '/api/tools/live-artifacts/refresh']] as const) {
+    expect(studioRequestAvailable(method, path, () => true, true, true, true, true), `${method} ${path}`).toBe(false);
+  }
+});
+
 it('S61 MCP runtime endpoints are classified but cookie transport cannot borrow a bearer grant', () => {
   for (const [method, path] of [['GET', '/api/tools/mcp/list'], ['POST', '/api/tools/mcp/execute']]) {
     expect(matchMultiUserRoute(method!, path!).map(({ entry }) => entry.routeClass)).toEqual(['actor-scoped']);

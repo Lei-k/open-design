@@ -187,6 +187,10 @@ export function studioRequestAvailable(method: string, path: string,
     if (/^\/api\/live-artifacts\/[^/]+$/.test(artifactPath)) return ['GET', 'PATCH', 'DELETE'].includes(method);
     if (/^\/api\/live-artifacts\/[^/]+\/(preview|refreshes)$/.test(artifactPath)) return method === 'GET';
     if (/^\/api\/live-artifacts\/[^/]+\/refresh$/.test(artifactPath)) return method === 'POST';
+    // S62: the actor's own connector/MCP sources (Studio-only), only with the matching capability.
+    if (path === '/api/multiuser/live-artifact-sources') return method === 'GET' && (connectors || mcpServers);
+    const source = /^\/api\/multiuser\/live-artifact-sources\/(connector|mcp)\/[a-z0-9][a-z0-9_-]{0,63}\/tools$/.exec(path);
+    if (source) return method === 'POST' && (source[1] === 'connector' ? connectors : mcpServers);
   }
   if (usable('files')) {
     const file = /^\/api\/projects\/[^/]+\/(files|folders|search|upload|raw|text-preview|file-content)(?:\/(.+))?$/.exec(path);

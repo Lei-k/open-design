@@ -141,6 +141,17 @@ async function turn(id: number, params: Json): Promise<void> {
       await call('mcp_execute', { serverId: server.serverId, toolName: tool.name, input: {} });
     } catch { return failed('MCP fixture refused', 'badRequest'); }
   }
+  // `[mock-live-artifact-refresh=<artifactId>]`: the agent refreshes a Studio Live Artifact (S62).
+  const liveRefresh = /\[mock-live-artifact-refresh=([^\]]+)\]/u.exec(text);
+  if (liveRefresh) {
+    const requestId = toolRequestId--;
+    const reply = await new Promise<Json>((resolve) => {
+      toolReplies.set(requestId, resolve);
+      send({ id: requestId, method: 'item/tool/call', params: { threadId, turnId, callId: `live_${turnId}`,
+        tool: 'live_artifacts_refresh', arguments: { artifactId: liveRefresh[1]! } } });
+    });
+    if ((reply.result as Json | undefined)?.success !== true) return failed('Live artifact fixture refused', 'badRequest');
+  }
   if (text.includes('[mock-connector]')) {
     const requestId = toolRequestId--;
     const reply = await new Promise<Json>((resolve) => {

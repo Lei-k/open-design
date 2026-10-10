@@ -76,10 +76,14 @@ export interface SafeOutboundInit {
   headers?: Record<string, string>;
   body?: string;
   signal?: AbortSignal;
-  /** Stop reading the body early once this returns true (e.g. one SSE event read). */
-  stopWhen?: (received: Uint8Array) => boolean;
-  /** Synchronous bounded stream consumer (runtime MCP SSE); throws to abort. */
-  onChunk?: (received: Uint8Array) => void;
+  /**
+   * Stop reading the body early once this returns true (e.g. one SSE event
+   * read). Receives each newly read chunk only, never the whole body so far:
+   * keep incremental state (see `mcp-client/sse-frames.ts`).
+   */
+  stopWhen?: (chunk: Uint8Array) => boolean;
+  /** Synchronous bounded stream consumer (runtime MCP SSE), fed each new chunk only; throws to abort. */
+  onChunk?: (chunk: Uint8Array) => void;
   /** Per-call ceilings (never above the helper's own). */
   timeoutMs?: number;
   maxResponseBytes?: number;
@@ -263,11 +267,10 @@ async function readBounded(body: ReadableStream<Uint8Array> | null, limit: numbe
       size += value.byteLength;
       if (size > limit) throw new OutboundRequestRefused('size');
       chunks.push(value);
-      onChunk?.(Buffer.concat(chunks));
-      if (stopWhen) {
-        const joined = Buffer.concat(chunks);
-        if (stopWhen(joined)) return joined;
-      }
+      // Only the new chunk: callers keep incremental state, so a stream of many
+      // small chunks costs linear, not quadratic, CPU (S62 A1).
+      onChunk?.(value);
+      if (stopWhen?.(value)) return Buffer.concat(chunks);
     }
     return Buffer.concat(chunks);
   } finally {
