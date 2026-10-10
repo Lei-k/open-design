@@ -14,7 +14,7 @@ import {
   cleanupIsolatedDataRoot, loadIsolatedServerModule, login, multiUserOptions, provisionAccounts, startMultiUserDaemon,
   MU_TEST_ORIGIN, type Principal, type StartedMultiUserDaemon,
 } from './multiuser-harness.js';
-import { MCP_CLIENT_SECRET_SENTINEL, MCP_HEADER_SENTINEL, MCP_REFRESH_SENTINEL, MCP_TOKEN_SENTINEL, startMcpFixture, type McpFixture } from './studio-mcp-fixture.js';
+import { encodedForms, MCP_CLIENT_SECRET_SENTINEL, MCP_HEADER_SENTINEL, MCP_REFRESH_SENTINEL, MCP_TOKEN_SENTINEL, startMcpFixture, type McpFixture } from './studio-mcp-fixture.js';
 
 let daemon: StartedMultiUserDaemon; let dataRoot: string; let fixture: McpFixture;
 let admin: Principal; let alice: Principal; let bob: Principal;
@@ -70,7 +70,7 @@ beforeAll(async () => {
 }, 120_000);
 beforeEach(() => {
   clock = Date.now(); fixture.state.holdMcp = false; fixture.state.holdToken = false; fixture.state.tokenFails = false; fixture.state.issuer = null; fixture.state.authorizationEndpoint = null;
-  fixture.state.holdDns = false; fixture.state.echoSecrets = false;
+  fixture.state.holdDns = false; fixture.state.echoSecrets = false; fixture.state.scopeEchoesAuthorization = false;
 });
 afterAll(async () => { await daemon?.close(); await fixture?.close(); vi.restoreAllMocks(); cleanupIsolatedDataRoot(); });
 
@@ -492,8 +492,52 @@ describe('authority is re-validated after DNS resolution, before any byte is sen
 // S60 Repair 1 (P1, promoted from the reviewer reproducer `mcp-redaction-repro.test.ts`):
 // everything a remote MCP server or its authorization server returns is untrusted.
 describe('provider-returned metadata is untrusted', () => {
-  const SECRETS = [MCP_HEADER_SENTINEL, MCP_TOKEN_SENTINEL, MCP_REFRESH_SENTINEL, MCP_CLIENT_SECRET_SENTINEL, MCP_TOKEN_SENTINEL.slice(4, 24)];
+  const BASE_SECRETS = [MCP_HEADER_SENTINEL, MCP_TOKEN_SENTINEL, MCP_REFRESH_SENTINEL, MCP_CLIENT_SECRET_SENTINEL].flatMap(encodedForms);
+  /** Every credential representation the daemon actually sent the fixture: header values, Basic payloads and their decodings, form values. */
+  const sentForms = (since: number) => fixture.requests.slice(since).flatMap((request) => {
+    const out: string[] = [];
+    for (const value of [request.authorization, request.apiKey]) {
+      if (!value) continue;
+      out.push(value);
+      const [scheme, payload] = value.split(' ');
+      if (payload) { out.push(payload); if (/^basic$/i.test(scheme!)) out.push(...encodedForms(Buffer.from(payload, 'base64').toString('utf8'))); }
+    }
+    for (const [name, value] of new URLSearchParams(request.body)) if (['code_verifier', 'refresh_token', 'client_secret'].includes(name)) out.push(...encodedForms(value));
+    return out;
+  });
+  function assertNowhere(user: Principal, forms: string[], texts: string[]) {
+    for (const text of texts) for (const secret of forms) expect(text.includes(secret), `response carries ${secret.slice(0, 24)}`).toBe(false);
+    const plaintext = appDb((db) => {
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
+      return tables.map(({ name }) => JSON.stringify(db.prepare(`SELECT * FROM "${name}"`).all())).join('\n');
+    });
+    for (const secret of forms) expect(plaintext.includes(secret), `a column carries ${secret.slice(0, 24)}`).toBe(false);
+    for (const file of filesUnder(dataRoot)) {
+      const bytes = readFileSync(file).toString('latin1');
+      for (const secret of forms) expect(bytes.includes(secret), `${path.relative(dataRoot, file)} carries ${secret.slice(0, 24)}`).toBe(false);
+    }
+    for (const secret of forms) expect(logs.filter((line) => line.includes(secret))).toEqual([]);
+    expect(user).toBeTruthy();
+  }
+  // Promoted from the round-2 reviewer reproducer `mcp-basic-echo.test.ts`.
+  it('a token endpoint echoing the confidential-client Basic credential into scope: never projected, never stored in clear', async () => {
+    fixture.state.scopeEchoesAuthorization = true;
+    const user = await freshUser();
+    const since = fixture.requests.length;
+    await remote(user, 'basic-echo', { authMode: 'oauth', headers: {} });
+    const { state } = await startAuth(user, 'basic-echo');
+    expect((await callback(state)).status).toBe(200);
+    const tokenRequest = fixture.requests.slice(since).find((request) => request.path === '/token')!;
+    const encoded = tokenRequest.authorization!.split(' ')[1]!;
+    expect(Buffer.from(encoded, 'base64').toString()).toContain(MCP_CLIENT_SECRET_SENTINEL);
+    const status = await call(user, 'GET', '/api/mcp/oauth/status?serverId=basic-echo');
+    expect(status.status).toBe(200);
+    expect(status.json.scope).toBeNull();
+    const listed = await call(user, 'GET', '/api/mcp/servers');
+    assertNowhere(user, [...BASE_SECRETS, ...sentForms(since), encoded, `Basic ${encoded}`], [status.text, listed.text]);
+  });
   it('echoed credentials never reach a response, a plaintext column or a data file; only allowlisted metadata is kept', async () => {
+    const since = fixture.requests.length;
     fixture.state.echoSecrets = true;
     const user = await freshUser();
     const texts: string[] = [];
@@ -520,19 +564,11 @@ describe('provider-returned metadata is untrusted', () => {
     expect(refreshed.status, refreshed.text).toBe(200);
     expect(refreshed.json.scope).toBe('mcp:read');
     texts.push((await call(user, 'GET', '/api/mcp/servers')).text);
-    for (const text of texts) for (const secret of SECRETS) expect(text.includes(secret), `response carries ${secret.slice(0, 24)}`).toBe(false);
-    // Plaintext scan: no column of any table holds a sentinel; the sealed columns hold the secrets.
-    const plaintext = appDb((db) => {
-      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
-      return tables.map(({ name }) => JSON.stringify(db.prepare(`SELECT * FROM "${name}"`).all())).join('\n');
-    });
-    for (const secret of SECRETS) expect(plaintext.includes(secret), `a column carries ${secret.slice(0, 24)}`).toBe(false);
+    // Raw, percent-, form- and base64-encoded sentinels, the fragment, and every representation actually sent (Basic payloads decoded).
+    const forms = [...BASE_SECRETS, MCP_TOKEN_SENTINEL.slice(4, 24), ...sentForms(since)];
+    expect(forms.some((form) => form.startsWith('Basic '))).toBe(true);
+    assertNowhere(user, forms, texts);
     expect(appDb((db) => db.prepare('SELECT scope, sealed FROM studio_mcp_oauth_tokens WHERE owner_account_id = ?').get(user.id))).toMatchObject({ scope: 'mcp:read', sealed: expect.any(String) });
-    for (const file of filesUnder(dataRoot)) {
-      const bytes = readFileSync(file).toString('latin1');
-      for (const secret of SECRETS) expect(bytes.includes(secret), `${path.relative(dataRoot, file)} carries ${secret.slice(0, 24)}`).toBe(false);
-    }
-    for (const secret of SECRETS) expect(logs.filter((line) => line.includes(secret))).toEqual([]);
   });
 });
 

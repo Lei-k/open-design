@@ -17,7 +17,7 @@ import {
 import { MCP_TEMPLATES } from '../mcp-config.js';
 import {
   asFetch, discoverStudioMcpAuthorization, probeStudioMcpServer, registerStudioMcpClient, requestStudioMcpToken,
-  newStudioMcpCodeVerifier, StudioMcpRemoteError, studioMcpAuthorizeUrl,
+  newStudioMcpCodeVerifier, StudioMcpRemoteError, studioMcpAuthorizeUrl, studioMcpOutboundCredentials, studioMcpProbeHeaders,
 } from '../mcp-client/studio-remote.js';
 import { carriesSecret, knownSecrets, untrustedScope, type KnownSecrets } from '../mcp-client/studio-untrusted.js';
 import type { AuthActor } from '../services/auth-service.js';
@@ -111,9 +111,14 @@ export function registerStudioMcpRoutes(app: Express, deps: RegisterStudioMcpRou
       refused: () => refused,
     };
   };
-  /** Scrubbing set for what this server's remotes return (header values, tokens, client secrets, plus `extra`). */
+  /**
+   * Scrubbing set for what this server's remotes return: every credential
+   * representation the daemon emits for it (header values as sent, `Bearer`,
+   * confidential-client `Basic`, form-encoded refresh token — derived with the
+   * outbound builders themselves), plus `extra` values actually sent or received.
+   */
   const secretsFor = (owner: string, serverId: string, extra: Array<string | null | undefined> = []): KnownSecrets =>
-    knownSecrets([...store.knownSecrets(owner, serverId), ...extra]);
+    knownSecrets([...studioMcpOutboundCredentials(store.secretMaterial(owner, serverId)), ...extra]);
   const assertAuthority = (expected: McpAuthority) => {
     const refused = authorityRefusal(expected);
     if (refused) throw new McpAuthorityError(refused);
@@ -352,11 +357,9 @@ export function registerStudioMcpRoutes(app: Express, deps: RegisterStudioMcpRou
     const guard = guardFor(authority);
     /** Decrypted only here: inside the hook, after its authority check, for the request being dispatched. */
     const credentials = (): Record<string, string> => {
-      const headers = { ...store.headers(row) };
       const token = tokenSavedAt !== null ? store.token(actor.accountId, binding(row)) : null;
       if (tokenSavedAt !== null && token?.row.saved_at !== tokenSavedAt) throw new McpAuthorityError('server-changed');
-      if (token && !Object.keys(headers).some((name) => name.toLowerCase() === 'authorization')) headers.Authorization = `Bearer ${token.secret.accessToken}`;
-      return headers;
+      return studioMcpProbeHeaders(store.headers(row), token?.secret.accessToken ?? null);
     };
     let result;
     try {
@@ -455,9 +458,10 @@ export function registerStudioMcpRoutes(app: Express, deps: RegisterStudioMcpRou
       if (reason) { refusedBy ??= reason; throw new Error('mcp callback authority changed'); }
     };
     let tokenResult;
+    const sent: string[] = [];
     try {
       tokenResult = await requestStudioMcpToken(safe, consumed.tokenEndpoint, {
-        authorize: callbackCheck,
+        authorize: callbackCheck, sent: (values) => { sent.push(...values); },
         // The code verifier and client secret are opened only here, after the final check.
         grant: () => {
           const pending = store.openState(stateToken, binding_);
@@ -471,8 +475,9 @@ export function registerStudioMcpRoutes(app: Express, deps: RegisterStudioMcpRou
     }
     const pending = store.openState(stateToken, binding_);
     if (!pending) return refuse(recheck() ?? 'state');
-    const secrets = secretsFor(binding_.accountId, binding_.serverId,
-      [tokenResult.accessToken, tokenResult.refreshToken, pending.clientSecret, pending.codeVerifier, code]);
+    const secrets = secretsFor(binding_.accountId, binding_.serverId, [...sent, ...studioMcpOutboundCredentials({ headers: {},
+      token: { accessToken: tokenResult.accessToken, ...(tokenResult.refreshToken ? { refreshToken: tokenResult.refreshToken } : {}), clientId: pending.clientId,
+        ...(pending.clientSecret ? { clientSecret: pending.clientSecret } : {}) } }), pending.clientSecret, pending.codeVerifier, code]);
     const scope = tokenResult.untrustedScope !== null ? untrustedScope(tokenResult.untrustedScope, secrets) : untrustedScope(consumed.requestedScope, secrets);
     const completed = store.completeState(stateToken, binding_, {
       accessToken: tokenResult.accessToken, ...(tokenResult.refreshToken ? { refreshToken: tokenResult.refreshToken } : {}), tokenType: tokenResult.tokenType,
@@ -506,10 +511,11 @@ export function registerStudioMcpRoutes(app: Express, deps: RegisterStudioMcpRou
     const authority: McpAuthority = { actor, server, tokenSavedAt: meta.savedAt };
     const guard = guardFor(authority);
     let refreshed;
+    const sent: string[] = [];
     try {
       guard.check();
       refreshed = await requestStudioMcpToken(safe, meta.tokenEndpoint, {
-        authorize: guard.check,
+        authorize: guard.check, sent: (values) => { sent.push(...values); },
         grant: () => {
           const current = store.token(actor.accountId, server);
           if (!current?.secret.refreshToken || current.row.saved_at !== meta.savedAt) throw new McpAuthorityError('server-changed');
@@ -520,7 +526,8 @@ export function registerStudioMcpRoutes(app: Express, deps: RegisterStudioMcpRou
     } catch (error) { return effectFailed(res, error, authority, 'oauth_refresh', row.server_id, [], guard); }
     const current = store.token(actor.accountId, server);
     if (!current || current.row.saved_at !== meta.savedAt) return sendApiError(res, 409, 'CONFLICT', 'the authorization changed while refreshing; reload');
-    const secrets = secretsFor(actor.accountId, row.server_id, [refreshed.accessToken, refreshed.refreshToken]);
+    const secrets = secretsFor(actor.accountId, row.server_id, [...sent, ...studioMcpOutboundCredentials({ headers: {},
+      token: { ...current.secret, accessToken: refreshed.accessToken, ...(refreshed.refreshToken ? { refreshToken: refreshed.refreshToken } : {}) } })]);
     const saved = store.saveToken(actor.accountId, server, { ...current.secret, accessToken: refreshed.accessToken, tokenType: refreshed.tokenType,
       ...(refreshed.refreshToken ? { refreshToken: refreshed.refreshToken } : {}) }, {
       scope: refreshed.untrustedScope !== null ? untrustedScope(refreshed.untrustedScope, secrets) : untrustedScope(current.row.scope, secrets),

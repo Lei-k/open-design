@@ -252,27 +252,26 @@ export class StudioMcpStore {
   /**
    * Every secret this account holds for the server — static header values, the
    * OAuth access/refresh token and client secret, the registered client secret —
-   * for scrubbing provider-returned metadata. Never returned to a client.
+   * for scrubbing provider-returned metadata. Returned structured so the route can
+   * derive every representation the outbound layer emits from it
+   * (`studioMcpOutboundCredentials`). Never returned to a client.
    */
-  knownSecrets(owner: string, serverId: string): string[] {
-    const out: string[] = [];
+  secretMaterial(owner: string, serverId: string): { headers: Record<string, string>; token: StudioMcpTokenSecret | null; client: StudioMcpClientSecret | null } {
     const row = this.get(owner, serverId);
-    if (row) out.push(...Object.values(this.headers(row)));
+    const material: { headers: Record<string, string>; token: StudioMcpTokenSecret | null; client: StudioMcpClientSecret | null } = {
+      headers: row ? this.headers(row) : {}, token: null, client: null };
     const token = this.db.prepare('SELECT * FROM studio_mcp_oauth_tokens WHERE owner_account_id = ? AND server_id = ?').get(owner, serverId) as StudioMcpTokenRow | undefined;
     if (token) {
       const opened = this.sealer.open(owner, `token:${serverId}:${token.instance_id}:${token.generation}`, token.sealed);
-      try {
-        const secret = opened ? JSON.parse(opened) as StudioMcpTokenSecret : null;
-        if (secret) out.push(secret.accessToken, ...(secret.refreshToken ? [secret.refreshToken] : []), ...(secret.clientSecret ? [secret.clientSecret] : []));
-      } catch { /* unreadable: nothing to add */ }
+      try { material.token = opened ? JSON.parse(opened) as StudioMcpTokenSecret : null; } catch { /* unreadable: nothing to add */ }
     }
     const client = this.db.prepare('SELECT * FROM studio_mcp_oauth_clients WHERE owner_account_id = ? AND server_id = ?').get(owner, serverId) as
       { instance_id: string; generation: number; sealed: string } | undefined;
     if (client) {
       const opened = this.sealer.open(owner, `client:${serverId}:${client.instance_id}:${client.generation}`, client.sealed);
-      try { const secret = opened ? JSON.parse(opened) as StudioMcpClientSecret : null; if (secret?.clientSecret) out.push(secret.clientSecret); } catch { /* ignore */ }
+      try { material.client = opened ? JSON.parse(opened) as StudioMcpClientSecret : null; } catch { /* ignore */ }
     }
-    return out.filter((value) => typeof value === 'string' && value.length > 0);
+    return material;
   }
   tokenMeta(owner: string, serverId: string): StudioMcpTokenRow | null {
     return (this.db.prepare('SELECT * FROM studio_mcp_oauth_tokens WHERE owner_account_id = ? AND server_id = ?').get(owner, serverId) as StudioMcpTokenRow | undefined) ?? null;

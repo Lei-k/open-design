@@ -11,7 +11,7 @@ import {
   cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts, startMultiUserDaemon,
   MU_TEST_ORIGIN, type Principal, type StartedMultiUserDaemon,
 } from './multiuser-harness.js';
-import { MCP_CLIENT_SECRET_SENTINEL, MCP_HEADER_SENTINEL, MCP_REFRESH_SENTINEL, MCP_TOKEN_SENTINEL, startMcpFixture, type McpFixture } from './studio-mcp-fixture.js';
+import { encodedForms, MCP_CLIENT_SECRET_SENTINEL, MCP_HEADER_SENTINEL, MCP_REFRESH_SENTINEL, MCP_TOKEN_SENTINEL, startMcpFixture, type McpFixture } from './studio-mcp-fixture.js';
 
 const MARK = 'SNTLMCP';
 function filesUnder(root: string): string[] {
@@ -92,6 +92,15 @@ export function studioMcpRedactionSuite(nodeEnv: 'development' | 'production'): 
       const db = new Database(path.join(dataRoot, 'app.sqlite'), { readonly: true });
       try { if (JSON.stringify(db.prepare('SELECT * FROM studio_mcp_audit').all()).includes(MARK)) problems.push('audit carries a secret'); } finally { db.close(); }
       for (const file of filesUnder(dataRoot)) if (readFileSync(file).toString('latin1').includes(MARK)) problems.push(`data file carries a secret: ${path.relative(dataRoot, file)}`);
+      // Encoded forms (S60 Repair 2): percent/form/base64 of each sentinel and the Basic client credential exactly as sent.
+      const basic = fixture.requests.flatMap((request) => (request.authorization?.startsWith('Basic ') ? [request.authorization, request.authorization.slice(6)] : []));
+      expect(basic.length).toBeGreaterThan(0);
+      const encoded = [...[MCP_HEADER_SENTINEL, MCP_TOKEN_SENTINEL, MCP_REFRESH_SENTINEL, MCP_CLIENT_SECRET_SENTINEL].flatMap((secret) => encodedForms(secret).slice(1)), ...basic];
+      for (const form of encoded) {
+        if (responses.some((text) => text.includes(form))) problems.push(`response carries encoded ${form.slice(0, 20)}`);
+        if (captured.some((line) => line.includes(form))) problems.push(`logs carry encoded ${form.slice(0, 20)}`);
+        for (const file of filesUnder(dataRoot)) if (readFileSync(file).toString('latin1').includes(form)) problems.push(`data file carries encoded ${form.slice(0, 20)}: ${path.relative(dataRoot, file)}`);
+      }
       expect(problems).toEqual([]);
     });
   });

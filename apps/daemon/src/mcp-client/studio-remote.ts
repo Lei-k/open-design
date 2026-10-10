@@ -4,7 +4,7 @@ import {
   buildAuthorizeUrl, deriveCodeChallenge, discoverAuthServer, discoverProtectedResource, generateCodeVerifier,
   registerClient, type AuthorizationServerMetadata,
 } from '../mcp-oauth.js';
-import { untrustedProtocolVersion, untrustedText, untrustedTokenType, type KnownSecrets } from './studio-untrusted.js';
+import { credentialsSent, untrustedProtocolVersion, untrustedText, untrustedTokenType, type KnownSecrets } from './studio-untrusted.js';
 
 /**
  * Account remote MCP client helpers for Studio (#62, S60). Every request goes
@@ -181,6 +181,55 @@ export interface StudioMcpTokenResult {
 
 const MAX_TOKEN_LENGTH = 16_384;
 
+/** RFC 6749 §2.3.1: a confidential client authenticates with HTTP Basic (the exact header value sent). */
+export function studioMcpClientAuthentication(clientId: string, clientSecret: string | undefined): Record<string, string> {
+  return clientSecret ? { authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}` } : {};
+}
+
+/** The exact credential-bearing headers and form body a token request emits for `grant`. */
+export function studioMcpTokenRequestCredentials(grant: StudioMcpTokenGrant): { headers: Record<string, string>; body: string } {
+  const form = new URLSearchParams();
+  form.set('grant_type', grant.grantType);
+  if (grant.grantType === 'authorization_code') {
+    form.set('code', grant.code); form.set('redirect_uri', grant.redirectUri); form.set('client_id', grant.clientId); form.set('code_verifier', grant.codeVerifier);
+  } else {
+    form.set('refresh_token', grant.refreshToken); form.set('client_id', grant.clientId);
+  }
+  if (grant.resource) form.set('resource', grant.resource);
+  return { headers: studioMcpClientAuthentication(grant.clientId, grant.clientSecret), body: form.toString() };
+}
+
+/** The exact credential headers a connection test sends: the static headers, plus a bearer token unless one is configured. */
+export function studioMcpProbeHeaders(staticHeaders: Record<string, string>, accessToken: string | null): Record<string, string> {
+  const headers = { ...staticHeaders };
+  if (accessToken && !Object.keys(headers).some((name) => name.toLowerCase() === 'authorization')) headers.Authorization = `Bearer ${accessToken}`;
+  return headers;
+}
+
+/**
+ * Every credential representation the daemon emits for a server, derived with
+ * the same builders the outbound requests use (probe headers, the refresh
+ * request, confidential-client Basic authentication for the token and the
+ * registered client). New auth methods must add their emitted form here.
+ */
+export function studioMcpOutboundCredentials(material: {
+  headers: Record<string, string>;
+  token?: { accessToken: string; refreshToken?: string; clientId: string; clientSecret?: string; resource?: string } | null;
+  client?: { clientId: string; clientSecret?: string } | null;
+}): string[] {
+  const out = credentialsSent({ headers: studioMcpProbeHeaders(material.headers, material.token?.accessToken ?? null) });
+  if (material.token) {
+    out.push(material.token.accessToken);
+    if (material.token.refreshToken) {
+      out.push(...credentialsSent(studioMcpTokenRequestCredentials({ grantType: 'refresh_token', refreshToken: material.token.refreshToken,
+        clientId: material.token.clientId, ...(material.token.clientSecret ? { clientSecret: material.token.clientSecret } : {}) })));
+    }
+    out.push(...credentialsSent({ headers: studioMcpClientAuthentication(material.token.clientId, material.token.clientSecret) }));
+  }
+  if (material.client) out.push(...credentialsSent({ headers: studioMcpClientAuthentication(material.client.clientId, material.client.clientSecret) }));
+  return out;
+}
+
 /**
  * RFC 6749 token request (authorization code or refresh) through the guarded
  * fetch. `authorize` runs after DNS resolution, before dispatch and on the
@@ -189,7 +238,9 @@ const MAX_TOKEN_LENGTH = 16_384;
  * POST, so a redirect is refused by the guard.
  */
 export async function requestStudioMcpToken(safe: SafeOutboundFetch, tokenEndpoint: string,
-  input: { authorize: () => void; grant: () => StudioMcpTokenGrant; signal?: AbortSignal }): Promise<StudioMcpTokenResult> {
+  input: { authorize: () => void; grant: () => StudioMcpTokenGrant; signal?: AbortSignal;
+    /** Receives the credential values exactly as emitted (for scrubbing the response). */
+    sent?: (credentials: string[]) => void }): Promise<StudioMcpTokenResult> {
   let response;
   try {
     response = await safe(tokenEndpoint, { method: 'POST', ...(input.signal ? { signal: input.signal } : {}),
@@ -197,19 +248,9 @@ export async function requestStudioMcpToken(safe: SafeOutboundFetch, tokenEndpoi
       beforeConnect: (hop) => {
         input.authorize();
         if (hop.phase !== 'dispatch') return undefined;
-        const grant = input.grant();
-        const form = new URLSearchParams();
-        form.set('grant_type', grant.grantType);
-        if (grant.grantType === 'authorization_code') {
-          form.set('code', grant.code); form.set('redirect_uri', grant.redirectUri); form.set('client_id', grant.clientId); form.set('code_verifier', grant.codeVerifier);
-        } else {
-          form.set('refresh_token', grant.refreshToken); form.set('client_id', grant.clientId);
-        }
-        if (grant.resource) form.set('resource', grant.resource);
-        // RFC 6749 §2.3.1: a confidential client authenticates with HTTP Basic.
-        const headers: Record<string, string> = grant.clientSecret
-          ? { authorization: `Basic ${Buffer.from(`${grant.clientId}:${grant.clientSecret}`).toString('base64')}` } : {};
-        return { headers, body: form.toString() };
+        const emitted = studioMcpTokenRequestCredentials(input.grant());
+        input.sent?.(credentialsSent(emitted));
+        return emitted;
       } });
   } catch (error) {
     if (error instanceof OutboundRequestRefused) throw error;

@@ -8,7 +8,15 @@ import type { AddressInfo } from 'node:net';
 export const MCP_HEADER_SENTINEL = 'SNTLMCP_header_value_0123456789abcdef';
 export const MCP_TOKEN_SENTINEL = 'SNTLMCP_access_token_0123456789abcdef';
 export const MCP_REFRESH_SENTINEL = 'SNTLMCP_refresh_token_0123456789abcdef';
-export const MCP_CLIENT_SECRET_SENTINEL = 'SNTLMCP_client_secret_0123456789abcd';
+// Carries characters that change under percent-, form- and base64-encoding (S60 Repair 2).
+export const MCP_CLIENT_SECRET_SENTINEL = 'SNTLMCP_client_secret_0123456789ab+/=&:';
+
+/** Every encoding of `value` the daemon could emit or a provider could echo back (for sentinel scans). */
+export function encodedForms(value: string): string[] {
+  const forms = [value, encodeURIComponent(value), new URLSearchParams({ v: value }).toString().slice(2),
+    Buffer.from(value).toString('base64'), Buffer.from(value).toString('base64url')];
+  return [...new Set(forms)];
+}
 
 export interface McpFixture {
   port: number;
@@ -25,6 +33,8 @@ export interface McpFixture {
      * (access, refresh, client secret) into `scope` and extra fields.
      */
     echoSecrets: boolean;
+    /** Round-2 reviewer variant: the authorization-code token response's `scope` is exactly the received Authorization header. */
+    scopeEchoesAuthorization: boolean;
   };
   resolve(hostname: string): Promise<string[]>;
   allowAddress(address: string): boolean;
@@ -41,7 +51,7 @@ export const MCP_FIXTURE_DNS: Record<string, string[]> = {
 export async function startMcpFixture(): Promise<McpFixture> {
   const requests: McpFixture['requests'] = [];
   const state: McpFixture['state'] = { accessToken: MCP_TOKEN_SENTINEL, refreshToken: MCP_REFRESH_SENTINEL, issuer: null, authorizationEndpoint: null,
-    holdMcp: false, holdToken: false, tokenFails: false, releases: [], holdDns: false, dnsWaiting: 0, dnsReleases: [], echoSecrets: false };
+    holdMcp: false, holdToken: false, tokenFails: false, releases: [], holdDns: false, dnsWaiting: 0, dnsReleases: [], echoSecrets: false, scopeEchoesAuthorization: false };
   let refreshCount = 0;
   const hold = () => new Promise<void>((resolve) => { state.releases.push(resolve); });
   const server = http.createServer((req, res) => {
@@ -91,15 +101,17 @@ export async function startMcpFixture(): Promise<McpFixture> {
         const form = new URLSearchParams(body);
         if (state.tokenFails) return json({ error: 'invalid_grant', error_description: `echo ${body}` }, 400);
         if (form.get('grant_type') === 'authorization_code' && form.get('code') === 'good-code' && form.get('code_verifier')) {
-          const echo = `${state.accessToken} ${state.refreshToken} ${MCP_CLIENT_SECRET_SENTINEL} x${state.accessToken.slice(4, 24)}`;
+          const echo = `${state.accessToken} ${state.refreshToken} ${MCP_CLIENT_SECRET_SENTINEL} x${state.accessToken.slice(4, 24)} ${String(req.headers.authorization ?? '')} `
+            + `${encodedForms(MCP_CLIENT_SECRET_SENTINEL).slice(1).join(' ')} ${Buffer.from(state.refreshToken).toString('base64')}`;
+          const scope = state.scopeEchoesAuthorization ? String(req.headers.authorization ?? '') : state.echoSecrets ? `mcp:read ${echo}` : 'mcp:read';
           return json({ access_token: state.accessToken, refresh_token: state.refreshToken, token_type: 'Bearer', expires_in: 3600,
-            scope: state.echoSecrets ? `mcp:read ${echo}` : 'mcp:read', ...(state.echoSecrets ? { id_token: echo, extra: { echo } } : {}) });
+            scope, ...(state.echoSecrets ? { id_token: echo, extra: { echo } } : {}) });
         }
         if (form.get('grant_type') === 'refresh_token' && form.get('refresh_token') === state.refreshToken) {
           refreshCount++;
           state.accessToken = `${MCP_TOKEN_SENTINEL}_r${refreshCount}`;
           return json({ access_token: state.accessToken, token_type: 'Bearer', expires_in: 3600,
-            ...(state.echoSecrets ? { scope: `mcp:read ${state.accessToken} ${form.get('refresh_token')} ${MCP_CLIENT_SECRET_SENTINEL}` } : {}) });
+            ...(state.echoSecrets ? { scope: `mcp:read ${state.accessToken} ${form.get('refresh_token')} ${MCP_CLIENT_SECRET_SENTINEL} ${String(req.headers.authorization ?? '')} ${encodeURIComponent(body)}` } : {}) });
         }
         return json({ error: 'invalid_grant' }, 400);
       }
