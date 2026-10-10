@@ -24,7 +24,7 @@ let db: Database.Database; let connections: StudioConnectorStore; let company: C
 const logs: string[] = [];
 type ComposioCall = { url: string; body: Record<string, unknown> };
 const composioCalls: ComposioCall[] = [];
-const composio = { holdExecute: false, releases: [] as Array<() => void>, data: null as unknown, writeTool: false };
+const composio = { holdExecute: false, failExecute: false, releases: [] as Array<() => void>, data: null as unknown, writeTool: false };
 const composioFetch: typeof fetch = async (url, init) => {
   const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
   composioCalls.push({ url: String(url), body });
@@ -35,6 +35,7 @@ const composioFetch: typeof fetch = async (url, init) => {
         input_parameters: { type: 'object', properties: { id: { type: 'string' } }, additionalProperties: false } } ] });
   if (String(url).includes('/tools/execute/')) {
     if (composio.holdExecute) await new Promise<void>((resolve) => { composio.releases.push(resolve); });
+    if (composio.failExecute) return Response.json({ successful: false, error: 'provider fixture failure' });
     // The fixture answers with whose connection it was called (never a credential the daemon sent).
     return Response.json({ successful: true, data: composio.data ?? { total: 41, rows: [{ name: 'alpha' }], connection: body.connected_account_id, echoedKey: `x ${KEY} y` } });
   }
@@ -110,7 +111,7 @@ beforeEach(async () => {
   }
   connect(owner); connect(editor);
   composioCalls.length = 0; fixture.requests.length = 0; logs.length = 0; openaiPlan = { artifactId: null, outputs: [] };
-  Object.assign(composio, { holdExecute: false, data: null, writeTool: false });
+  Object.assign(composio, { holdExecute: false, failExecute: false, data: null, writeTool: false });
   Object.assign(fixture.state, { tools: lookupTools, callJson: { content: [{ type: 'text', text: 'ok' }], structuredContent: { total: 7 } }, callText: null,
     echoSecrets: false, holdDiscovery: false, holdCall: false, sseComment: false });
 });
@@ -331,6 +332,61 @@ it('S62 R1 connector: revoking the refresh grant during the call writes nothing 
     expect(executes()).toHaveLength(1);
   } finally { captured.restore(); }
 });
+
+// S62 Repair 2 (P1): authority loss is sticky. A grant revoked — or an actor whose session,
+// account or project access was lost — at any time writes nothing, even when the refresh
+// deadline or a provider failure ends the call later. Promoted from the S62 round-2
+// reviewer case (a scratch handoff outside git); the test deadline is 1.5 s.
+const pastDeadline = () => new Promise((resolve) => setTimeout(resolve, 1_700));
+it.each(['connector', 'mcp'] as const)('S62 R2 %s: a grant revoked during the call, then the deadline, writes nothing at all', async (kind) => {
+  if (kind === 'mcp') await server(owner, 'revoke.fixture.test');
+  const artifact = await create(kind === 'connector' ? connectorSource() : mcpSource());
+  const captured = captureRefreshGrant();
+  try {
+    if (kind === 'connector') composio.holdExecute = true; else fixture.state.holdCall = true;
+    const pending = refresh(owner, artifact.id);
+    if (kind === 'connector') await until(async () => composio.releases.length, Boolean, 'execute held');
+    else await until(() => fixture.requests.some((request) => request.body.includes('tools/call')), Boolean, 'call held');
+    expect(toolTokenRegistry.revokeToken(captured.grants[0]!.token)).toBe(true);
+    await pastDeadline();
+    Object.assign(composio, { holdExecute: false }); Object.assign(fixture.state, { holdCall: false });
+    for (const release of [...composio.releases.splice(0), ...fixture.state.releases.splice(0)]) release();
+    await expectNothingWritten(artifact, await pending);
+  } finally { captured.restore(); }
+});
+it('S62 R2 connector: a grant revoked during the call, then a provider failure, writes nothing at all', async () => {
+  const artifact = await create(connectorSource());
+  const captured = captureRefreshGrant();
+  try {
+    Object.assign(composio, { holdExecute: true, failExecute: true }); const pending = refresh(owner, artifact.id);
+    await until(async () => composio.releases.length, Boolean, 'execute held');
+    expect(toolTokenRegistry.revokeToken(captured.grants[0]!.token)).toBe(true);
+    composio.holdExecute = false; for (const release of composio.releases.splice(0)) release();
+    await expectNothingWritten(artifact, await pending);
+  } finally { captured.restore(); }
+});
+it.each(['logout', 'account-disable', 'project-access', 'project-access-restored'] as const)(
+  'S62 R2 connector: %s during the call, then the deadline, writes nothing at all', async (change) => {
+    const who = editor; // the owner reads the result below
+    const artifact = await create(connectorSource(), who);
+    composio.holdExecute = true; const pending = refresh(who, artifact.id);
+    await until(async () => composio.releases.length, Boolean, 'execute held');
+    if (change === 'logout') expect((await call(who, 'POST', '/api/auth/logout', {})).status).toBeLessThan(300);
+    if (change === 'account-disable') expect((await call(admin, 'PATCH', `/api/auth/users/${who.id}`, { active: false })).status).toBe(200);
+    if (change.startsWith('project-access')) expect((await call(owner, 'DELETE', `/api/multiuser/projects/${projectId}/shares/${who.id}`)).status).toBe(200);
+    if (change === 'project-access-restored') {
+      // Lost for a moment, then restored before the deadline: still lost for this refresh.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect((await call(owner, 'PUT', `/api/multiuser/projects/${projectId}/shares`, { username: who.username, role: 'edit' })).status).toBe(200);
+    }
+    await pastDeadline();
+    composio.holdExecute = false; for (const release of composio.releases.splice(0)) release();
+    await expectNothingWritten(artifact, await pending);
+    const stored = JSON.parse((db.prepare('SELECT artifact_json FROM studio_live_artifacts WHERE id = ?').get(artifact.id) as { artifact_json: string }).artifact_json);
+    expect(stored.studioRevision).toBe(artifact.studioRevision); expect(stored.refreshStatus).toBe('never');
+    expect(db.prepare('SELECT COUNT(*) AS n FROM studio_live_artifact_refreshes WHERE artifact_id = ?').get(artifact.id)).toEqual({ n: 0 });
+    expect(sourceAudit(artifact.id)).toEqual([expect.objectContaining({ outcome: 'LIVE_ARTIFACT_REFRESH_AUTHORITY_CHANGED' })]);
+  });
 
 // S62 Repair 1 (P2): the read-only confirmation is bound to the confirming account's server
 // instance + generation and the tool. Promoted from the S62 reviewer's probe (endpoint

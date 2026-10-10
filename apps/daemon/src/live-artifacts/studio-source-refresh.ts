@@ -48,7 +48,10 @@ import { StudioLiveArtifactRefusal, studioRefreshChanged, studioSourceNotReadOnl
  *   transaction that writes. A refresh that loses authority writes nothing at
  *   all — not even a failed-refresh record; only its audit row remains. A
  *   controlled deadline or a source failure while authority holds records a
- *   failed refresh and keeps the previous data (S62 Repair 1).
+ *   failed refresh and keeps the previous data (S62 Repair 1). Loss is sticky
+ *   (S62 Repair 2): once observed — by any check, a 50 ms watch while a
+ *   request is outstanding, or just before the deadline retires the token —
+ *   a later deadline or provider failure cannot turn it into a write.
  * - Tool output is scrubbed by the runtime (known credential representations),
  *   bounded, mapped (S53) and rendered before the atomic replace; provenance
  *   records kind, id, tool, actor, byte count and SHA-256 of the mapped input.
@@ -64,6 +67,8 @@ export interface StudioSourceRefreshActor {
 
 /** How long a refresh grant's token outlives the refresh deadline (see `grant`). */
 const DEADLINE_GRACE_MS = 5_000;
+/** How often a refresh lease re-checks its authority while a request is outstanding (S62 Repair 2). */
+const AUTHORITY_WATCH_MS = 50;
 const unavailable = () => new StudioLiveArtifactRefusal(409, 'this source is not available to your account', 'LIVE_ARTIFACT_SOURCE_UNAVAILABLE');
 const failed = (reason: string) => new StudioLiveArtifactRefusal(502, 'the source could not be refreshed', 'LIVE_ARTIFACT_SOURCE_FAILED', { reason });
 type RuntimeError = StudioConnectorRuntimeError | StudioMcpRuntimeError;
@@ -144,20 +149,41 @@ export class StudioLiveArtifactSourceRefresh {
       ...(kind === 'connector' ? { studioConnectors: bound as NonNullable<ToolTokenGrant['studioConnectors']> } : { studioMcp: bound as NonNullable<ToolTokenGrant['studioMcp']> }) });
     runtime.registerEphemeral(id);
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; runtime.abortRun(id); this.tokens.revokeToken(grant.token); }, this.deadlineMs); timer.unref?.();
+    /**
+     * Sticky authority loss (S62 Repair 2). Once the grant's token was revoked or
+     * expired by anyone but this lease's own deadline, or the caller's authority
+     * (session, account, project access, run) or the grant's account authority
+     * failed — observed at any check, by the watch below, or just before the
+     * deadline retires the token — the refresh writes nothing, even when a later
+     * deadline or provider failure would otherwise record a failed refresh.
+     */
+    let lost = false;
+    const check = (): void => {
+      if (lost) return;
+      try {
+        if (!who.authorized() || !timedOut && !this.tokens.validate(grant.token).ok) throw studioRefreshChanged();
+        kind === 'connector' ? this.deps.connectors!.assert(grant.studioConnectors!) : this.deps.mcp!.assert(grant.studioMcp!);
+      } catch { lost = true; }
+    };
+    // Calls without an await boundary (a held provider request) are watched as well.
+    const watch = setInterval(check, AUTHORITY_WATCH_MS); watch.unref?.();
+    const timer = setTimeout(() => {
+      // Decide before retiring the token: a token already gone was revoked, not timed out.
+      check(); timedOut = true; runtime.abortRun(id); this.tokens.revokeToken(grant.token);
+    }, this.deadlineMs); timer.unref?.();
     return {
       grant, runtime,
       timedOut: () => timedOut,
+      /** True once authority was lost at any point of this refresh (never reset). */
+      lost: () => { check(); return lost; },
       /**
-       * The grant itself: its token still valid (not revoked, not expired) unless the
-       * controlled deadline retired it, and its account authority (account, role,
-       * pilot, epoch, session, connection/server versions).
+       * The grant itself and the caller: never lost so far (see `lost`), the token
+       * still valid (not revoked, not expired) unless this lease's own deadline
+       * retired it, the caller still authorized, and the grant's account authority
+       * (account, role, pilot, epoch, session, connection/server versions).
        */
-      assert: () => {
-        if (!timedOut && !this.tokens.validate(grant.token).ok) throw studioRefreshChanged();
-        kind === 'connector' ? this.deps.connectors!.assert(grant.studioConnectors!) : this.deps.mcp!.assert(grant.studioMcp!);
-      },
-      release: () => { clearTimeout(timer); this.tokens.revokeToken(grant.token); runtime.releaseEphemeral(id); },
+      assert: () => { check(); if (lost) throw studioRefreshChanged(); },
+      release: () => { clearTimeout(timer); clearInterval(watch); this.tokens.revokeToken(grant.token); runtime.releaseEphemeral(id); },
     };
   }
 
@@ -200,7 +226,9 @@ export class StudioLiveArtifactSourceRefresh {
         }
         current();
       } catch (error) {
-        // Authority loss outranks whatever the runtime reported: nothing is written.
+        // Authority loss at any time outranks whatever the runtime reported, the deadline
+        // included: nothing is written (S62 Repair 2).
+        if (lease.lost()) throw studioRefreshChanged();
         try { current(); } catch (refusal) { if (!lease.timedOut()) throw refusal; }
         const code = error instanceof StudioLiveArtifactRefusal ? error.code : runtimeError(error) ? error.code : undefined;
         if (code === 'LIVE_ARTIFACT_REFRESH_AUTHORITY_CHANGED' && !lease.timedOut()) throw error;
