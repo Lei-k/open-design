@@ -1,6 +1,28 @@
 import { expect, it } from 'vitest';
-import { emittedRenderableQuestionForm, type ChatSseEvent } from '@open-design/contracts';
+import { emittedRenderableQuestionForm, workspaceToolsUnavailable, type ChatSseEvent } from '@open-design/contracts';
 import { PersonalRunEvents } from '../../src/runtimes/personal-run-events.js';
+
+const mcpStartup = { type: 'workspace_tool_startup_failure', server: 'fixture', scope: 'turn-1' };
+const mcpAttempt = { type: 'workspace_tool_failed_attempt', server: 'fixture', scope: 'turn-1' };
+it.each([
+  ['text-only with unused failed MCP', [mcpStartup], 0, 0, false],
+  ['question with unused failed MCP', [mcpStartup, { type: 'text_delta', delta: '<question-form id="q">' }], 0, 0, false],
+  ['attempted failed MCP', [mcpStartup, mcpAttempt], 0, 0, true],
+  ['startup reported after attempt', [mcpAttempt, mcpStartup], 0, 0, true],
+  ['a different MCP was attempted', [mcpStartup, { ...mcpAttempt, server: 'fixture__other' }], 0, 0, false],
+  ['an unused warning in another app-server turn', [mcpStartup, { ...mcpAttempt, scope: 'turn-2' }], 0, 0, false],
+  ['ordinary MCP error', [mcpAttempt, { type: 'tool_result', toolUseId: 'lookup', isError: true, content: 'timeout' }], 0, 0, false],
+  ['successful MCP use after startup warning', [mcpStartup, { type: 'tool_result', toolUseId: 'lookup', isError: false, content: 'answer' }], 0, 0, false],
+  ['failed workspace spawn', [{ type: 'tool_result', toolUseId: 'exec', startupFailed: true }], 0, 0, true],
+  ['later changed file', [mcpStartup, mcpAttempt], 1, 0, false],
+  ['later artifact', [mcpStartup, mcpAttempt], 0, 1, false],
+] as const)('Studio delivery rule: %s', (_label, events, files, artifacts, unavailable) => {
+  const frames: ChatSseEvent[] = [];
+  const boundary = new PersonalRunEvents('/workspace', [], (event) => frames.push(event));
+  for (const event of events) boundary.accept(event);
+  expect(workspaceToolsUnavailable(boundary.toolStartupFailed, files, artifacts)).toBe(unavailable);
+  expect(frames.some((event) => event.event === 'agent' && event.data.type === 'tool_result' && event.data.toolUseId === 'mcp-startup')).toBe(false);
+});
 
 it('drops hostile tool arguments/output with a typed privacy marker and keeps safe identity and file metadata', () => {
   const frames: ChatSseEvent[] = [];

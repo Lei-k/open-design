@@ -1212,7 +1212,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
    * user and round-robin across users by their last personal dispatch turn.
    * The company ledger and company slots are never touched.
    */
-  dispatchPersonal = () => {
+  dispatchPersonal = async () => {
     const launch = personal?.appServerLaunch();
     if (personalDispatching || shuttingDown || !personal || !launch) return;
     personalDispatching = true;
@@ -1225,6 +1225,13 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           .get(run.owner_account_id))
           .sort((a, b) => (turns.get(a.owner_account_id) ?? 0) - (turns.get(b.owner_account_id) ?? 0) || Number(a.queue_seq) - Number(b.queue_seq))[0];
         if (!next) break;
+        try { await personal.assertSupportedVersion(); } catch {
+          if (storesClosed || shuttingDown) return;
+          if (row(next.id)?.status === 'queued') finish(next.id, 'failed', { reason: 'MULTIUSER_CODEX_UNSUPPORTED_VERSION' });
+          continue;
+        }
+        if (storesClosed || shuttingDown) return;
+        if (row(next.id)?.status !== 'queued') continue;
         if (!accounts.getAccountById(next.owner_account_id)?.active) { finish(next.id, 'canceled'); continue; }
         const project = getProject(db, next.project_id);
         const conversation = getConversation(db, next.conversation_id);
@@ -1237,9 +1244,6 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           continue;
         }
         // Re-validate the binding at dispatch: same account, same credential version, still usable.
-        try { personal.assertSupportedVersion(); } catch {
-          finish(next.id, 'failed', { reason: 'MULTIUSER_CODEX_UNSUPPORTED_VERSION' }); continue;
-        }
         const account = personal.usableAccount(next.owner_account_id);
         const session = personalSession(next.conversation_id);
         if (!account || account.id !== next.personal_account_id || account.credentialVersion !== next.credential_version ||
@@ -1295,7 +1299,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             emit: (stage) => { projection.flush(); emit(runId, 'agent', { type: 'pipeline_stage', stage }); },
             runStage: async (directive) => {
               if (stageCount++) { projection.accept({ type: 'text_delta', delta: '\n\n' }); projection.flush(); }
-              const turn = runPersonalCodexTurn({
+              const turn = await runPersonalCodexTurn({
+                reportToolStartupFailures: true,
+                beforeSpawn: () => { if (!allowed()) throw new Error('personal_authority_changed'); },
                 command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
                 ...(skillRoot ? { skillPackages: skillRoot } : {}),
                 prompt: `${stageCount === 1 ? prompt : userPrompt}${directive}`, resumeThreadId,
@@ -1650,7 +1656,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           || (fields.designSystemId !== null && fields.designSystemId !== fixedDesign.designSystemId))) {
       return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
     }
-    try { personal?.assertSupportedVersion(); } catch (error) {
+    try { await personal?.assertSupportedVersion(); } catch (error) {
       if (error instanceof PersonalAccountError) return sendApiError(res, error.status, error.code, error.message);
       throw error;
     }

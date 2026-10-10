@@ -145,7 +145,7 @@ describe('real provider adapters on a finite Studio pipeline (provider fixtures,
     let thread: string | null = null; const threads: Array<string | null> = [];
     const { input } = options();
     const result = await runStudioPipeline({ ...input, runStage: async (directive) => {
-      const turn = runPersonalCodexTurn({ command: [process.execPath, path.resolve('../../mocks/personal-codex-app-server.ts')],
+      const turn = await runPersonalCodexTurn({ command: [process.execPath, path.resolve('../../mocks/personal-codex-app-server.ts')],
         codexHome, home, temp: home, cwd, dataRoot: root, prompt: `Package${directive}`, resumeThreadId: thread, sandboxMode: 'workspace-write' });
       const value = await turn.done; thread = value.threadId; threads.push(thread);
       return { value, ok: value.ok, text: value.text };

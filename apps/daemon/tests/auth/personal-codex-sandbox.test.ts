@@ -52,7 +52,7 @@ async function probeReads(r: ReturnType<typeof make>, owner: string, paths: stri
   const work = path.join(actorRuntimeDir(r.root, owner), 'probe-run');
   const project = path.join(r.root, 'projects', owner);
   for (const dir of [work, path.join(work, 'tmp'), project]) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const turn = runPersonalCodexTurn({ ...r.service.appServerLaunch()!, codexHome: account.codexHome, home: work,
+  const turn = await runPersonalCodexTurn({ ...r.service.appServerLaunch()!, codexHome: account.codexHome, home: work,
     temp: path.join(work, 'tmp'), cwd: project, dataRoot: r.root, sandboxMode: 'workspace-write', resumeThreadId: null,
     prompt: paths.map((file) => `[mock-read=${file}]`).join(' ') });
   const result = await turn.done;

@@ -97,6 +97,10 @@ describe('personal subscription run lane', () => {
     ['[mock-tool-startup-failure]', 'failed'],
     ['text-only answer', 'succeeded'],
     ['[mock-tool-startup-failure] [mock-write=recovered.html]', 'succeeded'],
+    ['[mock-mcp-startup-failure] text-only answer', 'succeeded'],
+    ['[mock-mcp-attempt] ordinary tool error', 'succeeded'],
+    ['[mock-mcp-startup-failure] [mock-mcp-attempt]', 'failed'],
+    ['[mock-mcp-startup-failure] [mock-mcp-attempt] [mock-write=recovered.html]', 'succeeded'],
   ])('verifies workspace delivery for %s → %s', async (message, expected) => {
     const project = await newProject(alice);
     const accepted = await personal(alice, message!, project);

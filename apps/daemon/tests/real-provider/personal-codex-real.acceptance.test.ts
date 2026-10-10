@@ -148,11 +148,11 @@ describe.skipIf(!BIN)('personal Codex subscription against the real provider', (
     fs.mkdirSync(path.join(work, 'tmp'), { recursive: true, mode: 0o700 });
     const env = { ...service.appServerLaunch()!, codexHome: usable.codexHome, home: work,
       temp: path.join(work, 'tmp'), cwd: work, dataRoot: root, sandboxMode: 'read-only' as const };
-    const first = await runPersonalCodexTurn({ ...env, prompt: 'Remember the word "teal". Reply with OK only.', resumeThreadId: null }).done;
+    const first = await (await runPersonalCodexTurn({ ...env, prompt: 'Remember the word "teal". Reply with OK only.', resumeThreadId: null })).done;
     expect(first, JSON.stringify(first)).toMatchObject({ ok: true, problem: null });
     expect(first.threadId).toBeTruthy();
-    const second = await runPersonalCodexTurn({ ...env, prompt: 'Which word did I ask you to remember? Reply with that word only.',
-      resumeThreadId: first.threadId }).done;
+    const second = await (await runPersonalCodexTurn({ ...env, prompt: 'Which word did I ask you to remember? Reply with that word only.',
+      resumeThreadId: first.threadId })).done;
     expect(second, JSON.stringify(second)).toMatchObject({ ok: true, problem: null, threadId: first.threadId });
     expect(second.text.toLowerCase()).toContain('teal');
     service.secureHome(owner);

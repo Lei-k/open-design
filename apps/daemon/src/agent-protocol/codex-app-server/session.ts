@@ -37,6 +37,7 @@
  * its default legacy history can be archived while another process writes it.
  * Streaming itself does not require the experimental capability.
  */
+import { randomUUID } from 'node:crypto';
 import { createCodexAppServerNormalizer } from './normalize.js';
 import { codexDynamicToolsSupported } from './capabilities.js';
 import { codexHistoryCapabilities } from './thread-cleanup.js';
@@ -86,6 +87,8 @@ export interface CodexAppServerSessionOptions {
   onTurnComplete?: () => void;
   /** Instructions appended only after the running server negotiates these tools. */
   dynamicToolsPrompt?: string;
+  /** Studio only; desktop retains its historical event stream. */
+  reportToolStartupFailures?: boolean;
   /** Explicit daemon-owned tools only; approvals and arbitrary server requests remain refused. */
   dynamicTools?: readonly { name: string; description: string; inputSchema: JsonObject }[];
   onDynamicToolCall?: (name: string, args: JsonObject) => unknown;
@@ -165,7 +168,8 @@ export function attachCodexAppServerSession(
     onTurnComplete,
   } = opts;
 
-  const normalizer = createCodexAppServerNormalizer(onAgentEvent, Date.now, cwd);
+  const normalizer = createCodexAppServerNormalizer(onAgentEvent, Date.now, cwd, opts.reportToolStartupFailures);
+  const startupScope = opts.reportToolStartupFailures ? randomUUID() : null;
   const pending = new Map<number, (frame: JsonObject) => void>();
   let nextId = 1;
   let buffer = '';
@@ -406,23 +410,23 @@ export function attachCodexAppServerSession(
       });
       return;
     }
-    if (frame.method === 'mcpServer/startupStatus/updated') {
+    if (opts.reportToolStartupFailures && frame.method === 'mcpServer/startupStatus/updated') {
       const params = isRecord(frame.params) ? frame.params : {};
       // MCP may initialize before thread/start, with no thread or turn id.
-      if (!terminalReceived && params.status === 'failed' && (params.threadId == null || params.threadId === threadId)) {
-        onAgentEvent({ type: 'tool_result', toolUseId: 'mcp-startup',
-          isError: true, startupFailed: true, content: 'Workspace tool startup failed' });
+      if (!terminalReceived && params.status === 'failed'
+        && typeof params.name === 'string' && (params.threadId == null || params.threadId === threadId)) {
+        // Internal evidence, consumed by the Studio privacy boundary. It is
+        // not a tool result: no tool was invoked and no chat row belongs here.
+        onAgentEvent({ type: 'workspace_tool_startup_failure', server: params.name, scope: startupScope });
       }
       return;
     }
-    if (frame.method === 'item/completed') {
+    if (opts.reportToolStartupFailures && frame.method === 'item/completed') {
       const params = isRecord(frame.params) ? frame.params : {};
       const item = isRecord(params.item) ? params.item : {};
       if (!terminalReceived && params.threadId === threadId && (!activeTurnId || params.turnId === activeTurnId)
-        && item.type === 'dynamicToolCall' && item.status === 'failed' && item.contentItems == null) {
-        onAgentEvent({ type: 'tool_result', toolUseId: typeof item.id === 'string' ? item.id : 'dynamic-startup',
-          isError: true, startupFailed: true, content: 'Workspace tool startup failed' });
-        return;
+        && item.type === 'mcpToolCall' && item.status === 'failed' && item.result === null && typeof item.server === 'string') {
+        onAgentEvent({ type: 'workspace_tool_failed_attempt', server: item.server, scope: startupScope });
       }
     }
     if (frame.method === 'thread/started') {

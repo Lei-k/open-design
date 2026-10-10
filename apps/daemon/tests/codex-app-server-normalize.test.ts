@@ -457,7 +457,7 @@ describe('codex app-server -> OpenDesign event normalization', () => {
           name: 'mcp__echofacts__echo_fact',
           input: { topic: 'cats' },
         },
-        { type: 'tool_result', toolUseId: 'x1', content: 'denied', isError: true, startupFailed: true },
+        { type: 'tool_result', toolUseId: 'x1', content: 'denied', isError: true },
       ]);
     });
 

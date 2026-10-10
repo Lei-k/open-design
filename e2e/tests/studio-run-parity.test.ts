@@ -37,7 +37,8 @@ it('one mock app-server fixture has single-user/personal normalization and live/
   const singleClosed = once(single, 'close');
   const session = attachCodexAppServerSession({ child: single, prompt: '[mock-parity]', cwd: path.join(root, 'work'),
     sandboxMode: 'workspace-write', onAgentEvent: (event) => rawSingle.push(event) });
-  const personal = runPersonalCodexTurn({ command, codexHome: path.join(root, 'codex'), home: path.join(root, 'home'),
+  const personal = await runPersonalCodexTurn({ command, codexHome: path.join(root, 'codex'), home: path.join(root, 'home'),
+    reportToolStartupFailures: true,
     temp: path.join(root, 'tmp'), cwd: path.join(root, 'work'), dataRoot: root, prompt: '[mock-parity]',
     sandboxMode: 'workspace-write', resumeThreadId: null, onAgentEvent: (event) => rawPersonal.push(event) });
   const timeout = setTimeout(() => { single.kill('SIGKILL'); personal.child.kill('SIGKILL'); }, 10_000);

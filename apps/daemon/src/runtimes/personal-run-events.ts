@@ -48,6 +48,8 @@ export class PersonalRunEvents {
   private pendingBytes = 0;
   private lastStored = '';
   private readonly inFlight = new Map<string, string>();
+  private readonly failedMcpServers = new Set<string>();
+  private readonly attemptedMcpServers = new Set<string>();
   private pendingType: 'text_delta' | 'thinking_delta' = 'text_delta';
   private pendingOverflow = false;
   private marked = false;
@@ -138,6 +140,18 @@ export class PersonalRunEvents {
   accept(event: Record<string, unknown>): void {
     stampToolTiming(event, this.clock);
     const type = event.type;
+    if (type === 'workspace_tool_startup_failure' && typeof event.server === 'string' && typeof event.scope === 'string') {
+      const key = createHash('sha256').update(JSON.stringify([event.scope, event.server])).digest('hex');
+      if (this.failedMcpServers.size < EVENT_LIMIT) this.failedMcpServers.add(key);
+      if (this.attemptedMcpServers.has(key)) this.toolStartupFailed = true;
+      return; // Internal evidence never creates an orphan or untranslated tool row.
+    }
+    if (type === 'workspace_tool_failed_attempt' && typeof event.server === 'string' && typeof event.scope === 'string') {
+      const key = createHash('sha256').update(JSON.stringify([event.scope, event.server])).digest('hex');
+      if (this.attemptedMcpServers.size < EVENT_LIMIT) this.attemptedMcpServers.add(key);
+      if (this.failedMcpServers.has(key)) this.toolStartupFailed = true;
+      return;
+    }
     if (type === 'tool_result' && event.startupFailed === true) this.toolStartupFailed = true;
     if ((type === 'live_artifact' && ['created', 'updated'].includes(String(event.action)))
       || (type === 'live_artifact_refresh' && event.phase === 'succeeded')) this.artifactCount += 1;

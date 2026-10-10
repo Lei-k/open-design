@@ -117,6 +117,13 @@ async function turn(id: number, params: Json): Promise<void> {
     notify('item/completed', { threadId, turnId, item: { type: 'commandExecution', id: 'failed-start',
       command: 'fixture-tool', status: 'failed', exitCode: null, aggregatedOutput: 'failed to spawn workspace tool' } });
   }
+  if (text.includes('[mock-mcp-startup-failure]')) {
+    notify('mcpServer/startupStatus/updated', { threadId, name: 'fixture', status: 'failed' });
+  }
+  if (text.includes('[mock-mcp-attempt]')) {
+    notify('item/completed', { threadId, turnId, item: { type: 'mcpToolCall', id: 'mcp_attempt', server: 'fixture',
+      tool: 'lookup', arguments: {}, status: 'failed', result: null, error: { message: 'ordinary tool error' } } });
+  }
   const record = readJson(threadFile(threadId)) ?? { turns: 0 };
   record.turns = Number(record.turns ?? 0) + 1;
   fs.writeFileSync(threadFile(threadId), JSON.stringify(record));

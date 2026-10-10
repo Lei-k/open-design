@@ -90,38 +90,66 @@ describe('daemon-owned dynamic tools', () => {
     expect(h.child.sent('thread/start')!.params.dynamicTools).toEqual(supported ? tools : undefined);
     expect(h.child.sent('turn/start')!.params.input[0].text).toBe(supported ? 'hello codexLIVE_ARTIFACT_INSTRUCTIONS' : 'hello codex');
   });
-  it.each([
-    { type: 'commandExecution', id: 'startup', command: 'pwd', status: 'failed', exitCode: null },
-    { type: 'dynamicToolCall', id: 'startup', tool: 'live_artifacts_list', status: 'failed', contentItems: null, success: null },
-    { type: 'mcpToolCall', id: 'startup', server: 'fixture', tool: 'read', status: 'failed', result: null, error: { message: 'startup failed' } },
-  ])('preserves structured startup failure evidence for $type', (item) => {
-    const h = harness(); completeHandshake(h.child);
+  it.each([false, true])('reports command startup failure only with Studio opt-in %s', (reportToolStartupFailures) => {
+    const h = harness({ reportToolStartupFailures }); completeHandshake(h.child);
+    const item = { type: 'commandExecution', id: 'startup', command: 'pwd', status: 'failed', exitCode: null };
     h.child.say({ method: 'item/completed', params: { threadId: 'th-1', turnId: 'turn-1', item } });
-    expect(h.agentEvents).toContainEqual(expect.objectContaining({ type: 'tool_result', isError: true, startupFailed: true }));
+    const result = h.agentEvents.find((event) => event.type === 'tool_result');
+    if (reportToolStartupFailures) expect(result).toMatchObject({ startupFailed: true });
+    else expect(result).not.toHaveProperty('startupFailed');
+  });
+  it('desktop default session ignores MCP startup failures', () => {
+    const h = harness(); completeHandshake(h.child);
+    const before = [...h.agentEvents];
+    h.child.say({ method: 'mcpServer/startupStatus/updated', params: { name: 'fixture', threadId: 'th-1', status: 'failed' } });
+    expect(h.agentEvents).toEqual(before);
+  });
+  it.each(['mcpToolCall', 'dynamicToolCall'])('does not infer startup failure from ordinary failed %s', (type) => {
+    const h = harness({ reportToolStartupFailures: true }); completeHandshake(h.child);
+    h.child.say({ method: 'item/completed', params: { threadId: 'th-1', turnId: 'turn-1', item: {
+      type, id: 'ordinary', server: 'fixture', tool: 'read', status: 'failed', result: null,
+      contentItems: null, error: { message: 'timed out' },
+    } } });
+    expect(h.agentEvents.every((event) => event.startupFailed !== true)).toBe(true);
+  });
+  it('keeps successful MCP calls independent of earlier startup warnings', () => {
+    const h = harness({ reportToolStartupFailures: true }); completeHandshake(h.child);
+    h.child.say({ method: 'mcpServer/startupStatus/updated', params: { name: 'fixture', status: 'failed' } });
+    h.child.say({ method: 'item/completed', params: { threadId: 'th-1', turnId: 'turn-1', item: {
+      type: 'mcpToolCall', id: 'recovered', server: 'fixture', tool: 'lookup', status: 'completed', result: { content: 'answer' },
+    } } });
+    expect(h.agentEvents.some((event) => event.type === 'workspace_tool_failed_attempt')).toBe(false);
+    expect(h.agentEvents.find((event) => event.type === 'tool_result')).not.toHaveProperty('startupFailed');
   });
   it('does not classify a command with an exit code as a startup failure', () => {
-    const h = harness(); completeHandshake(h.child);
+    const h = harness({ reportToolStartupFailures: true }); completeHandshake(h.child);
     h.child.say({ method: 'item/completed', params: { threadId: 'th-1', turnId: 'turn-1', item: {
       type: 'commandExecution', id: 'exited', command: 'false', status: 'failed', exitCode: 1,
     } } });
     expect(h.agentEvents.find((event) => event.type === 'tool_result')).not.toHaveProperty('startupFailed');
   });
   it('bounds startup notifications to the active thread and keeps safe evidence', () => {
-    const h = harness(); completeHandshake(h.child);
+    const h = harness({ reportToolStartupFailures: true }); completeHandshake(h.child);
     h.child.say({ method: 'turn/started', params: { threadId: 'th-1', turn: { id: 'turn-1' } } });
     h.child.say({ method: 'mcpServer/startupStatus/updated', params: { threadId: 'foreign', name: 'fixture', status: 'failed', error: 'PRIVATE_PATH' } });
     expect(h.agentEvents.filter((event) => event.type === 'tool_result')).toHaveLength(0);
     h.child.say({ method: 'mcpServer/startupStatus/updated', params: { threadId: 'th-1', name: 'fixture', status: 'failed', error: 'PRIVATE_PATH' } });
-    expect(h.agentEvents).toContainEqual(expect.objectContaining({ type: 'tool_result', isError: true, startupFailed: true }));
+    expect(h.agentEvents).toContainEqual({ type: 'workspace_tool_startup_failure', server: 'fixture', scope: expect.any(String) });
+    expect(h.agentEvents.filter((event) => event.type === 'tool_result')).toHaveLength(0);
     expect(JSON.stringify(h.agentEvents)).not.toContain('PRIVATE_PATH');
   });
   it('keeps MCP startup evidence before a thread exists and ignores ready status', () => {
-    const h = harness();
+    const h = harness({ reportToolStartupFailures: true });
     h.child.say({ method: 'mcpServer/startupStatus/updated', params: { name: 'fixture', status: 'ready', threadId: null } });
     expect(h.agentEvents).toHaveLength(0);
     h.child.say({ method: 'mcpServer/startupStatus/updated', params: { name: 'fixture', status: 'failed', threadId: null, error: 'PRIVATE_PATH' } });
     completeHandshake(h.child);
-    expect(h.agentEvents).toContainEqual(expect.objectContaining({ type: 'tool_result', startupFailed: true }));
+    expect(h.agentEvents).toContainEqual({ type: 'workspace_tool_startup_failure', server: 'fixture', scope: expect.any(String) });
+    const startup = h.agentEvents.find((event) => event.type === 'workspace_tool_startup_failure');
+    h.child.say({ method: 'item/completed', params: { threadId: 'th-1', turnId: 'turn-1', item: {
+      type: 'mcpToolCall', id: 'failed-attempt', server: 'fixture', tool: 'lookup', status: 'failed', result: null,
+    } } });
+    expect(h.agentEvents).toContainEqual({ type: 'workspace_tool_failed_attempt', server: 'fixture', scope: startup!.scope });
     expect(JSON.stringify(h.agentEvents)).not.toContain('PRIVATE_PATH');
   });
   it.each([null, 'th-1'])('advertises tools on start/resume and answers a bounded matching call: %s', (resumeSessionId) => {

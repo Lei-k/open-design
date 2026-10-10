@@ -1,4 +1,4 @@
-import { workspaceToolsUnavailable, type ChatSessionMode } from '@open-design/contracts';
+import type { ChatSessionMode } from '@open-design/contracts';
 import {
   containsQuestionFormAsk,
   containsUnrenderableQuestionForm,
@@ -90,8 +90,6 @@ export function resolveDesignDeliveryOutcome(
   if (input.sessionMode !== 'design' || input.runStatus !== 'succeeded') {
     return 'not_required';
   }
-  if (workspaceToolsUnavailable((input.events ?? []).some((event) => event.kind === 'tool_result' && event.startupFailed === true),
-    input.producedFileCount + input.traceObjectFileCount, (input.artifactCount ?? 0) + (input.persistenceSucceeded || hasLiveArtifactDelivery(input.events) ? 1 : 0))) return 'delivery_failed';
   if (isIntermediateDesignTurn(input.content, input.events)) {
     return 'awaiting_input';
   }
@@ -131,8 +129,7 @@ export function designDeliveryVerificationPending(
 ): boolean {
   if (message.sessionMode !== 'design' || message.runStatus !== 'succeeded') return false;
   if (message.resultDeliveryState) return false;
-  const startupFailed = (message.events ?? []).some((event) => event.kind === 'tool_result' && event.startupFailed === true);
-  if (!startupFailed && isIntermediateDesignTurn(message.content, message.events)) return false;
+  if (isIntermediateDesignTurn(message.content, message.events)) return false;
   return message.producedFiles === undefined || message.traceObjectFiles === undefined;
 }
 
