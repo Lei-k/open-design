@@ -30,7 +30,7 @@ export const de: Dict = {
   "studio.connectors.error": "Konnektoren konnten nicht geladen oder gespeichert werden.",
   "studio.connectors.unavailableAdmin": "Konnektoren sind nicht verfügbar, bis ein Composio-Firmenschlüssel konfiguriert ist. Füge ihn oben hinzu.",
   "studio.connectors.unavailableMember": "Konnektoren sind nicht verfügbar: Bitte einen Administrator, den Composio-Firmenschlüssel zu konfigurieren.",
-  "studio.connectors.notInRuns": "Deine Verbindungen gehören nur deinem Konto. Agentenläufe können verbundene Apps noch nicht nutzen.",
+  "studio.connectors.notInRuns": "Für Ausführungen können Sie die verbundenen Apps Ihres Kontos auswählen. Nur deren Lesewerkzeuge sind verfügbar.",
   "studio.connectors.saved": "Firmenschlüssel gespeichert.",
   "multiuser.executionSourcePersonalKey": "OpenAI · eigener API-Schlüssel",
   "studio.keys.title": "Dein OpenAI-API-Schlüssel",

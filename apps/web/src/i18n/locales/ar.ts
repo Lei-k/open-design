@@ -30,7 +30,7 @@ export const ar: Dict = {
   "studio.connectors.error": "تعذّر تحميل الموصِّلات أو حفظها.",
   "studio.connectors.unavailableAdmin": "الموصِّلات غير متاحة حتى يُضبط مفتاح Composio الخاص بالشركة. أضفه أعلاه.",
   "studio.connectors.unavailableMember": "الموصِّلات غير متاحة: اطلب من أحد المسؤولين ضبط مفتاح Composio الخاص بالشركة.",
-  "studio.connectors.notInRuns": "اتصالاتك خاصة بحسابك. لا يمكن لتشغيلات الوكيل استخدام التطبيقات المتصلة بعد.",
+  "studio.connectors.notInRuns": "يمكنك اختيار التطبيقات المتصلة بحسابك للتشغيل. تتوفر أدوات القراءة فقط من التطبيقات المحددة.",
   "studio.connectors.saved": "تم حفظ مفتاح الشركة.",
   "multiuser.executionSourcePersonalKey": "OpenAI · مفتاح API الخاص بك",
   "studio.keys.title": "مفتاح OpenAI API الخاص بك",

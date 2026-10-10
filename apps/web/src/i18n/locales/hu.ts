@@ -30,7 +30,7 @@ export const hu: Dict = {
   "studio.connectors.error": "Az összekötők nem tölthetők be vagy menthetők.",
   "studio.connectors.unavailableAdmin": "Az összekötők nem érhetők el, amíg nincs beállítva céges Composio-kulcs. Add meg fent.",
   "studio.connectors.unavailableMember": "Az összekötők nem érhetők el: kérd meg egy adminisztrátort, hogy állítsa be a céges Composio-kulcsot.",
-  "studio.connectors.notInRuns": "A kapcsolataid csak a fiókodé. Az ügynökfuttatások egyelőre nem használhatják a csatlakoztatott alkalmazásokat.",
+  "studio.connectors.notInRuns": "A futtatásokhoz kiválaszthatja a fiókjához csatlakoztatott alkalmazásokat. Csak a kiválasztott alkalmazások olvasási eszközei érhetők el.",
   "studio.connectors.saved": "Céges kulcs mentve.",
   "multiuser.executionSourcePersonalKey": "OpenAI · saját API-kulcs",
   "studio.keys.title": "Saját OpenAI API-kulcsod",

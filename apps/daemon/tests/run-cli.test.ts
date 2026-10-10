@@ -37,7 +37,7 @@ afterEach(async () => {
   tempDir = null;
 });
 
-async function startRunStubServer(resumable: boolean): Promise<StubServer> {
+async function startRunStubServer(resumable: boolean, connectorRefusal = false): Promise<StubServer> {
   const requests: CapturedRequest[] = [];
   let taskFollowEnabled = false;
   const server = http.createServer((req, res) => {
@@ -111,6 +111,11 @@ async function startRunStubServer(resumable: boolean): Promise<StubServer> {
       }
 
       if (captured.method === 'POST' && captured.url === '/api/runs') {
+        if (connectorRefusal) {
+          res.statusCode = 403;
+          res.end(JSON.stringify({ error: { code: 'CONNECTOR_NOT_GRANTED', message: 'selected account connectors are unavailable' } }));
+          return;
+        }
         const body = JSON.parse(captured.body || '{}') as { taskExecutionId?: string };
         taskFollowEnabled = body.taskExecutionId === 'task-1';
         res.statusCode = 200;
@@ -188,6 +193,20 @@ async function runCli(args: string[]): Promise<{ stdout: string; stderr: string;
 }
 
 describe('od run CLI', () => {
+  it('S59 --json keeps connector admission refusals machine-readable', async () => {
+    stub = await startRunStubServer(true, true);
+    const result = await runCli(['run', 'start', '--project', 'project-1', '--connector', 'notion', '--json', '--daemon-url', stub.baseUrl]);
+    expect(result.code).not.toBe(0);
+    expect(JSON.parse(result.stderr).error.code).toBe('CONNECTOR_NOT_GRANTED');
+    expect(result.stdout).toBe('');
+  });
+  it('S59 --connector sends canonical selection to run admission with --json', async () => {
+    stub = await startRunStubServer(true);
+    const result = await runCli(['run', 'start', '--project', 'project-1', '--connector', 'github,notion,github', '--json', '--daemon-url', stub.baseUrl]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ runId: 'run-2' });
+    expect(JSON.parse(stub.requests[0]!.body).context).toEqual({ connectorIds: ['github', 'notion'] });
+  });
   it('keeps one --skill backward compatible and sends multiple ids canonically', async () => {
     stub = await startRunStubServer(true);
     const single = await runCli([

@@ -1,3 +1,5 @@
+import { CONNECTOR_TOOL_DESCRIPTORS } from '../connectors/tool-descriptors.js';
+import { StudioConnectorRuntimeError } from '../connectors/studio-runtime.js';
 import { EventEmitter } from 'node:events';
 import { listCompanyProjectFiles, readCompanyProjectFile, writeCompanyProjectBytes, writeCompanyProjectFile } from '../services/company-project-files.js';
 import type { StudioSkillPackage } from '../services/studio-skill-packages.js';
@@ -70,6 +72,7 @@ export async function runCompanyOpenAITurn(input: {
   /** Image, speech and video functions on the same key and bill as the turn (#63). */
   media?: boolean;
   liveArtifacts?: StudioLiveArtifactTools;
+  connectors?: { execute(name: string, args: Record<string, unknown>): Promise<unknown> };
 }): Promise<CompanyOpenAITurnResult> {
   const signal = AbortSignal.any([input.worker.abort.signal, AbortSignal.timeout(10 * 60_000)]);
   const check = () => { signal.throwIfAborted(); if (!input.authorized()) throw new Error('company_authority_changed'); };
@@ -87,7 +90,7 @@ export async function runCompanyOpenAITurn(input: {
       body: JSON.stringify({ model: input.model, store: false, stream: true, input: history,
         include: ['reasoning.encrypted_content'], max_output_tokens: 8192, parallel_tool_calls: false,
         tools: [...tools.filter((tool) => tool.name !== 'run_skill_script' || input.runSkillScript), ...(input.media ? mediaTools : []),
-          ...(input.liveArtifacts ? artifactTools : [])] }),
+          ...(input.liveArtifacts ? artifactTools : []), ...(input.connectors ? CONNECTOR_TOOL_DESCRIPTORS.map(({ inputSchema, ...tool }) => ({ type: 'function', ...tool, parameters: inputSchema, strict: false })) : [])] }),
     });
     check();
     if (!response.ok || !response.body || !response.headers.get('content-type')?.includes('text/event-stream')) {
@@ -150,6 +153,8 @@ export async function runCompanyOpenAITurn(input: {
           emit({ type: 'tool_use', id: call.call_id, name: 'update_plan', input: { todos: args.todos } });
           planPublished = true;
           result = { updated: args.todos.length };
+        } else if (input.connectors && CONNECTOR_TOOL_DESCRIPTORS.some((tool) => tool.name === call.name)) {
+          check(); result = await input.connectors.execute(call.name, args);
         } else if (input.liveArtifacts && STUDIO_LIVE_ARTIFACT_TOOLS.some((tool) => tool.name === call.name)) {
           check(); result = input.liveArtifacts.execute(call.name, args);
         } else if (input.media && STUDIO_MEDIA_TOOL_NAMES.has(call.name)) {
@@ -195,10 +200,10 @@ export async function runCompanyOpenAITurn(input: {
       } catch (error) {
         check(); failed = true;
         // Validation refusals and a command's nonzero exit are not startup failures.
-        startupFailed = call.name === 'run_skill_script' && ['ENOENT', 'EACCES', 'EPERM', 'ENOEXEC'].includes(String((error as NodeJS.ErrnoException | null)?.code)); result = { error: 'PROJECT_TOOL_REFUSED' };
+        startupFailed = call.name === 'run_skill_script' && ['ENOENT', 'EACCES', 'EPERM', 'ENOEXEC'].includes(String((error as NodeJS.ErrnoException | null)?.code)); result = { error: error instanceof StudioConnectorRuntimeError ? error.code : 'PROJECT_TOOL_REFUSED' };
         if (call.name === 'update_plan' && !planPublished) emit({ type: 'tool_use', id: call.call_id, name: 'plan_update_refused', input: {} });
       }
-      emit({ type: 'tool_result', toolUseId: call.call_id, isError: failed, ...(startupFailed ? { startupFailed: true } : {}), content: typeof result === 'string' ? result : JSON.stringify(result) });
+      emit({ type: 'tool_result', toolUseId: call.call_id, isError: failed, ...(startupFailed ? { startupFailed: true } : {}), content: call.name.startsWith('connectors_') ? (failed ? 'account connector call refused' : 'account connector call completed') : typeof result === 'string' ? result : JSON.stringify(result) });
       history.push({ type: 'function_call_output', call_id: call.call_id, output: typeof result === 'string' ? result : JSON.stringify(result) });
     }
   }

@@ -30,7 +30,7 @@ export class AutomationRefusal extends Error {
 }
 const notFound = () => new AutomationRefusal(404, 'resource not found');
 const unavailable = (what: string) => new AutomationRefusal(403, `${what} are not available for Web accounts`);
-/** S58: connectors are connectable per account, but automations cannot use them yet (S59). */
+/** Ingestion runs outside the admitted-run connector grant boundary. */
 const connectorsNotInRuns = (what: string) => new AutomationRefusal(403, `${what} are not available for Web accounts yet: ${STUDIO_CONNECTORS_NOT_USABLE_IN_RUNS}`);
 
 const text = (value: unknown, max: number) => typeof value === 'string' && value.length <= max && !value.includes('\0');
@@ -112,6 +112,7 @@ export function registerStudioAutomationRoutes(app: Express, input: {
   /** Field checks that need the owner's resources; the gate already closed the field set. */
   const checkIngestion = (owner: string, body: CreateAutomationSourceIngestionRequest): AutomationTemplate | null => {
     if (!plainObject(body)) throw new AutomationRefusal(400, 'ingestion body is required');
+    if (body.templateId && studioRunnableAutomationTemplate(body.templateId, templates.list(owner)).sourceKinds.every((kind) => kind === 'connector')) throw connectorsNotInRuns('connector template ingestion');
     if (body.sourceKind === 'connector' || body.triggerKind === 'connector'
       || body.connectorId !== undefined && body.connectorId !== null || body.accountLabel !== undefined && body.accountLabel !== null) {
       throw connectorsNotInRuns('connector sources');

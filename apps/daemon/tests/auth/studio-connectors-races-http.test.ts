@@ -4,10 +4,12 @@
 // at a chosen request, invalidates authority (session revoke, account disable,
 // company key clear/rotate, concurrent disconnect, cancel, expiry) and then
 // releases it: the held flow must make no further provider call and change no
-// local binding.
+// local binding. S59 also reconciles a DELETE that already completed remotely,
+// without overwriting a replacement binding under a newer company key.
 import Database from 'better-sqlite3';
 import path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { StudioConnectorStore } from '../../src/storage/studio-connectors.js';
 import {
   cleanupIsolatedDataRoot, loadIsolatedServerModule, login, multiUserOptions, provisionAccounts,
   startMultiUserDaemon, MU_TEST_ORIGIN, type Principal, type StartedMultiUserDaemon,
@@ -137,6 +139,30 @@ beforeEach(async () => {
 afterAll(async () => { await daemon?.close(); cleanupIsolatedDataRoot(); });
 
 describe('disconnect re-establishes authority before the provider DELETE and before the local change', () => {
+  it('S59 reconciliation preserves a newer key revision even if the provider id is reused', async () => {
+    const user = await newUser();
+    appDb((db) => {
+      const store = new StudioConnectorStore(db);
+      store.saveConnection(user.id, 'github', { providerConnectionId: 'reused-id', accountLabel: 'replacement', credentialRevision: 2 });
+      store.reconcileDeleted(user.id, 'github', 'reused-id', 1);
+      expect(store.connection(user.id, 'github')).toMatchObject({ status: 'connected', credential_revision: 2, provider_connection_id: 'reused-id' });
+    });
+  });
+  it('S59 reconciles a successful provider DELETE when authority is revoked in flight', async () => {
+    const user = await newUser();
+    const account = await connected(user);
+    const held = hold((call) => call.method === 'DELETE');
+    const pending = mutate(user, 'DELETE', '/api/connectors/github/connection');
+    await reached(held, pending);
+    await setKey(null);
+    held.release();
+    const res = await pending;
+    expectAuthorityRefusal(res, 'key-changed');
+    expect(accounts.has(account.id)).toBe(false);
+    expect(row(user)).toEqual({ status: 'disconnected', provider_connection_id: null });
+    expect(res.text).not.toContain('nothing was changed');
+    expect(calls.filter((call) => call.method === 'DELETE')).toHaveLength(1);
+  });
   it.each([
     ['session revoke', 'session'],
     ['account disable', 'account'],

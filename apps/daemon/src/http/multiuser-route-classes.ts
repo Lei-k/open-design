@@ -168,7 +168,7 @@ const R_TOOL_TOKENS = 'agent tool endpoint authorized by run-scoped tool tokens,
 const R_HOST_FS = 'host filesystem / desktop integration; not an actor resource';
 const R_CREDENTIALS = 'connector/MCP/OAuth/provider credentials are host-level secrets; admin/pool surfaces are #10/#11';
 /** S58 (#62): the connector control plane is open; run-time use opens in S59. */
-const R_CONNECTORS_NOT_IN_RUNS = 'connectors are connectable in Settings but not yet usable in runs, tools, Live Artifact sources or automations (#62/#63/#64)';
+const R_CONNECTORS_NOT_IN_RUNS = 'connector ingestion and memory extraction have no admitted run grant (#62/#64)';
 const R_SHARED_CATALOG = 'shared catalog whose user-created entries are global across accounts (not actor-scoped yet)';
 const R_PLUGINS = 'plugin install/registry/snapshots are host-level and shared across accounts';
 const R_WORKSPACE = 'Vela team workspace feature; workspace/member identity is not the Web login principal';
@@ -613,8 +613,8 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'GET /api/plugins/events/stats',
     'POST /api/plugins/events/purge',
   ]),
-  // S58: connectors are connectable per account but not yet usable by agent tools (S59).
-  ...refused('connectors', R_CONNECTORS_NOT_IN_RUNS, [
+  // S59: exact connector tool endpoints require a bearer account grant at the gate.
+  ...group('actor-scoped', 'server-minted account connector grant; bearer-only at the gate', [
     'GET /api/tools/connectors/list',
     'POST /api/tools/connectors/execute',
   ]),

@@ -38,7 +38,7 @@ const post = (user: Principal, path: string, body: unknown = {}) => daemon.reque
 const ingest = (user: Principal, extra: Record<string, unknown> = {}) => post(user, '/api/automation-ingestions', {
   sourceKind: 'upload', title: 'Brand voice notes', bodyMarkdown: 'EVOLVE_MARKER keep headlines short and warm.', candidateSinks: ['memory', 'skill', 'design-system'], ...extra });
 
-it('lists only bundled templates, flags connector-only ones and creates routines from them on the account', async () => {
+it('lists only bundled templates, opens connector templates with owner-granted context and creates routines from them on the account', async () => {
   for (const user of [a, admin]) {
     const listed = await get(user, '/api/automation-templates');
     expect(listed.status, listed.text).toBe(200);
@@ -46,7 +46,7 @@ it('lists only bundled templates, flags connector-only ones and creates routines
     const ids = listed.json.templates.map((template: { id: string }) => template.id);
     expect(ids).toContain('crystallize-run-into-skill');
     expect(listed.json.templates.find((template: { id: string }) => template.id === 'connector-digest-design-context').unavailable)
-      .toEqual({ code: 'MULTIUSER_CAPABILITY_UNAVAILABLE', requires: 'connectors' });
+      .toBeUndefined();
     expect(listed.json.templates.find((template: { id: string }) => template.id === 'ingest-source-memory-tree').unavailable).toBeUndefined();
   }
   expect((await get(a, '/api/automation-templates/host-private-template')).status).toBe(404);
@@ -60,7 +60,7 @@ it('lists only bundled templates, flags connector-only ones and creates routines
   expect((await get(b, '/api/routines')).json.routines).toEqual([]);
   const connector = await post(a, '/api/routines', { templateId: 'connector-digest-design-context', name: 'Digest', prompt: 'x', schedule, target: { mode: 'create_each_run' } });
   expect(connector.status).toBe(403);
-  expect(connector.json.error.code).toBe('MULTIUSER_CAPABILITY_UNAVAILABLE');
+  expect(connector.json.error.code).toBe('CONNECTOR_NOT_GRANTED');
   expect((await post(a, '/api/routines', { templateId: 'host-private-template', schedule, target: { mode: 'create_each_run' } })).status).toBe(404);
   expect((await daemon.request({ method: 'PATCH', path: `/api/routines/${encodeURIComponent(made.json.routine.id)}`, cookie: a.cookie,
     body: { templateId: 'compress-project-context' } })).status).toBe(400);

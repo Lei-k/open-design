@@ -22,6 +22,22 @@ export interface StudioComposioConnectedAccount {
 }
 
 const TIMEOUT_MS = 30_000;
+const MAX_RESPONSE_BYTES = 1024 * 1024;
+async function boundedBody(response: Response): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return '';
+  const chunks: Uint8Array[] = []; let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > MAX_RESPONSE_BYTES) { await reader.cancel(); throw new StudioComposioError('failed', response.status); }
+      chunks.push(value);
+    }
+    return Buffer.concat(chunks).toString('utf8');
+  } finally { reader.releaseLock(); }
+}
 const text = (value: unknown): string | null => typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
@@ -39,7 +55,7 @@ export class StudioComposioClient {
     } catch { throw new StudioComposioError('failed', null); }
     if (response.status === 404 && init.allow404) { void response.body?.cancel(); return null; }
     if (!response.ok) {
-      const body = await response.text().catch(() => '');
+      const body = await boundedBody(response).catch(() => '');
       void body; // Provider bodies are never echoed or logged.
       if (response.status === 401 || response.status === 403) throw new StudioComposioError('rejected', response.status);
       if (response.status === 404) throw new StudioComposioError('not-found', 404);
@@ -48,7 +64,7 @@ export class StudioComposioClient {
     }
     if (init.method === 'DELETE') { void response.body?.cancel(); return {}; }
     let value: unknown;
-    try { value = await response.json(); } catch { throw new StudioComposioError('failed', response.status); }
+    try { value = JSON.parse(await boundedBody(response)); } catch { throw new StudioComposioError('failed', response.status); }
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new StudioComposioError('failed', response.status);
     return value as Record<string, unknown>;
   }
@@ -104,5 +120,18 @@ export class StudioComposioClient {
 
   async deleteConnectedAccount(apiKey: string, id: string): Promise<void> {
     await this.request(apiKey, `/api/v3/connected_accounts/${encodeURIComponent(id)}`, { method: 'DELETE', allow404: true });
+  }
+
+  async toolMetadata(apiKey: string, toolkitSlug: string): Promise<Record<string, unknown>[]> {
+    const response = await this.request(apiKey, `/api/v3.1/tools?${new URLSearchParams({ toolkit_slug: toolkitSlug.toLowerCase(), limit: '1000' })}`, { method: 'GET' });
+    const items = Array.isArray(response?.items) ? response.items : Array.isArray(response?.data) ? response.data : [];
+    return items.slice(0, 1000).filter((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item));
+  }
+
+  async executeTool(apiKey: string, toolSlug: string, entity: string, connectionId: string, input: unknown): Promise<unknown> {
+    const response = await this.request(apiKey, `/api/v3.1/tools/execute/${encodeURIComponent(toolSlug)}`, { method: 'POST',
+      body: { user_id: entity, connected_account_id: connectionId, arguments: input } });
+    if (!response || response.successful === false || response.error) throw new StudioComposioError('failed', null);
+    return response.data ?? null;
   }
 }

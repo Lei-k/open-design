@@ -9,6 +9,7 @@ import { STUDIO_PARITY_LANES, type AuthAccount, type ConnectorDetail, type Studi
 import { CookieSession } from '../../src/multiuser/session';
 import { StudioCapabilitiesProvider } from '../../src/runtime/studio-capabilities';
 import { StudioConnectors } from '../../src/runtime/StudioConnectors';
+import { CONNECTORS_CHANGED_EVENT } from '../../src/components/connectors-events';
 import { studioRequestAvailable } from '../../src/runtime/studio-transport';
 
 const KEY = 'ak_web_company_composio_key_5678';
@@ -80,6 +81,7 @@ it('tells a member without a company key to ask an administrator and offers no c
 });
 
 it('lets an administrator set the key write-only, then shows the catalog; the key never stays in the DOM', async () => {
+  const dispatched = vi.spyOn(window, 'dispatchEvent');
   const fake: Fake = { admin: true, configured: false, revision: 0, tail: '', status: {}, calls: [] };
   const session = await mount(fake);
   await waitFor(() => expect(screen.getByTestId('studio-connectors-unavailable').textContent).toContain('Add it above'));
@@ -89,13 +91,17 @@ it('lets an administrator set the key write-only, then shows the catalog; the ke
   await waitFor(() => expect(screen.getByTestId('studio-connectors-key-saved').textContent).toContain('5678'));
   expect(fake.calls.filter((call) => call.method === 'PUT')).toEqual([{ method: 'PUT', url: '/api/connectors/composio/config', body: { revision: 0, apiKey: KEY } }]);
   expect((screen.getByTestId('studio-connectors-key-input') as HTMLInputElement).value).toBe('');
+  expect(dispatched.mock.calls.some(([event]) => event.type === CONNECTORS_CHANGED_EVENT)).toBe(true);
   await waitFor(() => expect(card('github')).toBeTruthy());
-  expect(screen.getByTestId('studio-connectors-not-in-runs').textContent).toContain('cannot use connected apps yet');
+  expect(screen.getByTestId('studio-connectors-not-in-runs').textContent).toContain('can be selected for runs');
   expect(document.documentElement.outerHTML).not.toContain(KEY);
+  // Clearing must invalidate the composer even when no app status changed.
+  const beforeClear = dispatched.mock.calls.filter(([event]) => event.type === CONNECTORS_CHANGED_EVENT).length;
   // Clearing needs an explicit confirmation and returns to the unavailable state.
   fireEvent.click(screen.getByTestId('studio-connectors-key-clear'));
   await act(async () => { fireEvent.click(screen.getByTestId('studio-connectors-clear-commit')); });
   await waitFor(() => expect(screen.getByTestId('studio-connectors-unavailable')).toBeTruthy());
+  expect(dispatched.mock.calls.filter(([event]) => event.type === CONNECTORS_CHANGED_EVENT).length).toBeGreaterThan(beforeClear);
   expect(fake.calls.filter((call) => call.method === 'PUT').at(-1)!.body).toEqual({ revision: 1, apiKey: null });
   expect(card('github')).toBeNull();
   session.dispose();

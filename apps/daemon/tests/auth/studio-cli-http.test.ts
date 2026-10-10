@@ -388,7 +388,7 @@ describe('same Studio APIs through remote od sessions', () => {
     const applied = success(await cli(['automation', 'proposal', 'apply', skillProposal.id, '--session-file', aFile, '--json']));
     expect(applied.result.skillId).toMatch(/^studio-skill:/);
     const templates = success(await cli(['automation', 'template', 'list', '--session-file', aFile, '--json'])).templates;
-    expect(templates.find((item: { id: string }) => item.id === 'connector-digest-design-context').unavailable.code).toBe('MULTIUSER_CAPABILITY_UNAVAILABLE');
+    expect(templates.find((item: { id: string }) => item.id === 'connector-digest-design-context').unavailable).toBeUndefined();
     const templateDraft = { title: 'CLI private template', description: 'Private description', purpose: 'Private purpose', triggerKinds: ['manual'], sourceKinds: ['chat'],
       stages: [{ id: 'propose', kind: 'propose', title: 'Review brief' }], outputSinks: ['memory'], reviewPolicy: 'always', tokenCompression: 'balanced' };
     const templateProposal = success(await cli(['automation', 'template', 'propose', '--action', 'create', '--prompt-file', '-', '--session-file', aFile, '--json'], JSON.stringify(templateDraft)));
@@ -406,8 +406,10 @@ describe('same Studio APIs through remote od sessions', () => {
     const fromTemplate = success(await cli(['automation', 'create', '--template', 'compress-project-context', '--schedule', 'daily:07:00',
       '--session-file', aFile, '--json']));
     expect(fromTemplate.routine).toMatchObject({ templateId: 'compress-project-context', name: 'Compress project context' });
-    expect((await cli(['automation', 'create', '--template', 'connector-digest-design-context', '--schedule', 'daily:07:00',
-      '--session-file', aFile, '--json'])).code).not.toBe(0);
+    const missingConnector = await cli(['automation', 'create', '--template', 'connector-digest-design-context', '--schedule', 'daily:07:00',
+      '--session-file', aFile, '--json']);
+    expect(missingConnector.code).not.toBe(0);
+    expect(JSON.parse(missingConnector.stderr).error.code).toBe('CONNECTOR_NOT_GRANTED');
     const ingested = success(await cli(['automation', 'source', 'ingest', '--source-kind', 'upload', '--title', 'CLI notes', '--body-file', '-',
       '--candidate-sinks', 'memory', '--session-file', aFile, '--json'], 'CLI_INGEST_MARKER prefer calm palettes'));
     expect(success(await cli(['automation', 'source', 'list', '--session-file', bFile, '--json'])).packets).toEqual([]);

@@ -30,7 +30,7 @@ export const en: Dict = {
   "studio.connectors.error": "Connectors could not be loaded or saved.",
   "studio.connectors.unavailableAdmin": "Connectors are unavailable until a company Composio key is configured. Add it above.",
   "studio.connectors.unavailableMember": "Connectors are unavailable: ask an administrator to configure the company Composio key.",
-  "studio.connectors.notInRuns": "Your connections are private to your account. Agent runs cannot use connected apps yet.",
+  "studio.connectors.notInRuns": "Your account’s connected apps can be selected for runs. Only read tools from selected apps are available.",
   "studio.connectors.saved": "Company key saved.",
   "multiuser.executionSourcePersonalKey": "OpenAI · your API key",
   "studio.keys.title": "Your OpenAI API key",

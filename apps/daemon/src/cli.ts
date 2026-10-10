@@ -8125,7 +8125,7 @@ async function runRun(args) {
   od run start --project <projectId> [--conversation <id>] [--message "<text>"]
                [--prompt-file <path|->] [--task-execution <id>]
                [--client-request-id <id>]
-               [--skill <id>[,<id>]] [--plugin <id>] [--inputs <json>] [--grant-caps a,b]
+               [--skill <id>[,<id>]] [--connector <id>[,<id>]] [--plugin <id>] [--inputs <json>] [--grant-caps a,b]
                [--agent claude|codex|opencode] [--model <id>] [--reasoning <effort>] [--service-tier <id>]
                [--execution-source personal_subscription|company_pool|personal_api_key] [--session-file <path>]
                [--workspace <id> --workspace-member <id>] [--follow] [--json]
@@ -8156,8 +8156,9 @@ Common options:
   }
   const sub = args[0];
   const rest = args.slice(1);
+  const RUN_STRING_FLAGS = new Set([...PROJECT_RESOURCE_STRING_FLAGS, 'connector']);
   const flags = parseFlags(rest, {
-    string: PROJECT_RESOURCE_STRING_FLAGS,
+    string: RUN_STRING_FLAGS,
     boolean: PROJECT_BOOLEAN_FLAGS,
   });
   const base = (await projectDaemonUrl(flags)).replace(/\/$/, '');
@@ -8179,7 +8180,7 @@ Common options:
       return;
     }
     case 'info': {
-      const id = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
+      const id = positionalArgs(rest, RUN_STRING_FLAGS)[0];
       if (!id) {
         console.error('Usage: od run info <runId>');
         process.exit(2);
@@ -8193,7 +8194,7 @@ Common options:
       return;
     }
     case 'result-package': {
-      const id = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
+      const id = positionalArgs(rest, RUN_STRING_FLAGS)[0];
       if (!id) {
         console.error('Usage: od run result-package <runId> [--json]');
         process.exit(2);
@@ -8222,7 +8223,7 @@ Common options:
       return;
     }
     case 'cancel': {
-      const id = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
+      const id = positionalArgs(rest, RUN_STRING_FLAGS)[0];
       if (!id) {
         console.error('Usage: od run cancel <runId>');
         process.exit(2);
@@ -8246,7 +8247,7 @@ Common options:
     // mid-turn. Long instructions go through --prompt-file <path|-> so a
     // heredoc / jq pipeline stays clean (same contract as `od automation`).
     case 'steer': {
-      const id = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
+      const id = positionalArgs(rest, RUN_STRING_FLAGS)[0];
       const text = (
         (typeof flags.message === 'string' && flags.message.length > 0
           ? flags.message
@@ -8273,7 +8274,7 @@ Common options:
       return;
     }
     case 'continue': {
-      const id = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
+      const id = positionalArgs(rest, RUN_STRING_FLAGS)[0];
       if (!id) {
         console.error('Usage: od run continue <runId> [--message "<text>"] [--follow] [--json]');
         process.exit(2);
@@ -8331,7 +8332,7 @@ Common options:
       return;
     }
     case 'watch': {
-      const id = positionalArgs(rest, PROJECT_RESOURCE_STRING_FLAGS)[0];
+      const id = positionalArgs(rest, RUN_STRING_FLAGS)[0];
       if (!id) {
         console.error('Usage: od run watch <runId>');
         process.exit(2);
@@ -8340,7 +8341,7 @@ Common options:
       return;
     }
     case 'redesign': {
-      const parts = collectCliPositionals(rest, PROJECT_RESOURCE_STRING_FLAGS);
+      const parts = collectCliPositionals(rest, RUN_STRING_FLAGS);
       const promptFromArgs = parts.join(' ').trim();
       const defaultMessage =
         'Use the redesign-existing-projects skill. Audit the current UI first, then redesign it to premium quality without breaking functionality. Preserve the existing product structure, routes, and behavior.';
@@ -8424,6 +8425,7 @@ Common options:
           body.skillIds = selectedSkillIds;
         }
       }
+      if (flags.connector) body.context = { connectorIds: splitCommaSeparatedIds(flags.connector) };
       if (flags['design-system']) body.designSystemId = flags['design-system'];
       if (flags.agent) body.agentId = flags.agent;
       if (flags.model) body.model = flags.model;
@@ -8462,6 +8464,7 @@ Common options:
             data:    data.error.data,
           });
         }
+        if (flags.json && typeof data?.error?.code === 'string') return exitWithStructuredError(data.error);
         console.error(`POST /api/runs failed: ${resp.status} ${JSON.stringify(data)}`);
         process.exit(1);
       }
@@ -12713,6 +12716,7 @@ async function runAutomation(args) {
       }
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) {
+        if (flags.json && typeof data?.error?.code === 'string') return exitWithStructuredError(data.error);
         console.error(`POST /api/routines failed: ${resp.status} ${JSON.stringify(data)}`);
         process.exit(1);
       }
@@ -12769,6 +12773,7 @@ async function runAutomation(args) {
       }
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) {
+        if (flags.json && typeof data?.error?.code === 'string') return exitWithStructuredError(data.error);
         console.error(`PATCH /api/routines/${id} failed: ${resp.status} ${JSON.stringify(data)}`);
         process.exit(1);
       }

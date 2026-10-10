@@ -420,7 +420,7 @@ export const pl: Dict = {
   "studio.connectors.error": "Nie udało się wczytać ani zapisać konektorów.",
   "studio.connectors.unavailableAdmin": "Konektory są niedostępne, dopóki nie zostanie skonfigurowany firmowy klucz Composio. Dodaj go powyżej.",
   "studio.connectors.unavailableMember": "Konektory są niedostępne: poproś administratora o skonfigurowanie firmowego klucza Composio.",
-  "studio.connectors.notInRuns": "Twoje połączenia należą tylko do Twojego konta. Uruchomienia agentów nie mogą jeszcze korzystać z połączonych aplikacji.",
+  "studio.connectors.notInRuns": "Do uruchomień możesz wybrać aplikacje połączone z Twoim kontem. Dostępne są tylko narzędzia odczytu wybranych aplikacji.",
   "studio.connectors.saved": "Zapisano klucz firmowy.",
   "multiuser.executionSourcePersonalKey": "OpenAI · Twój klucz API",
   "studio.keys.title": "Twój klucz API OpenAI",

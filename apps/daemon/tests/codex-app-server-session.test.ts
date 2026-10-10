@@ -82,6 +82,31 @@ function completeHandshake(child: FakeChild, threadId = 'th-1', userAgent = 'cod
 }
 
 describe('daemon-owned dynamic tools', () => {
+  it('S59 awaits an asynchronous connector tool and keeps bodies out of events', async () => {
+    let resolve!: (value: unknown) => void;
+    const pending = new Promise((done) => { resolve = done; });
+    const h = harness({ dynamicTools: [{ name: 'connectors_execute', description: 'fixture', inputSchema: { type: 'object' } }], onDynamicToolCall: () => pending });
+    completeHandshake(h.child);
+    h.child.say({ id: 900, method: 'item/tool/call', params: { threadId: 'th-1', turnId: 'turn-1', callId: 's59-call', tool: 'connectors_execute', arguments: { input: 'PRIVATE_ARGUMENT' } } });
+    expect(h.child.frames().find((item) => item.id === 900)).toBeUndefined();
+    resolve({ output: 'PRIVATE_RESULT' });
+    await Promise.resolve(); await Promise.resolve();
+    expect(h.child.frames().find((item) => item.id === 900)?.result).toMatchObject({ success: true, contentItems: [{ text: JSON.stringify({ output: 'PRIVATE_RESULT' }) }] });
+    expect(JSON.stringify(h.agentEvents)).not.toMatch(/PRIVATE_ARGUMENT|PRIVATE_RESULT/);
+    h.child.emit('close', 0);
+  });
+  it('S59 native connector refusal returns a fixed typed code without exception payloads', async () => {
+    const failure = Object.assign(new Error('PRIVATE_PROVIDER_PAYLOAD'), { code: 'MULTIUSER_CONNECTOR_AUTHORITY_CHANGED' });
+    const h = harness({ dynamicTools: [{ name: 'connectors_execute', description: 'fixture', inputSchema: { type: 'object' } }], onDynamicToolCall: async () => { throw failure; } });
+    completeHandshake(h.child);
+    h.child.say({ id: 901, method: 'item/tool/call', params: { threadId: 'th-1', turnId: 'turn-1', callId: 's59-refused', tool: 'connectors_execute', arguments: {} } });
+    await Promise.resolve(); await Promise.resolve();
+    const reply = h.child.frames().find((item) => item.id === 901);
+    expect(JSON.stringify(reply)).toContain('MULTIUSER_CONNECTOR_AUTHORITY_CHANGED');
+    expect(JSON.stringify(reply) + JSON.stringify(h.agentEvents)).not.toContain('PRIVATE_PROVIDER_PAYLOAD');
+    expect(reply?.result).toMatchObject({ success: false });
+    h.child.emit('close', 0);
+  });
   const tools = [{ name: 'live_artifacts_list', description: 'List this project', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }];
   it.each(['codex/0.154.0', 'codex/unknown', 'codex/0.154.0 client/0.162.1', 'codex/0.162.1'])('negotiates tools and their prompt together from %s', (userAgent) => {
     const h = harness({ dynamicTools: tools, dynamicToolsPrompt: 'LIVE_ARTIFACT_INSTRUCTIONS', onDynamicToolCall: vi.fn() });

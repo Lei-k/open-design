@@ -218,6 +218,13 @@ export class StudioConnectorStore {
       WHERE owner_account_id = ? AND connector_id = ?`).run(this.now(), owner, connectorId);
   }
 
+  /** Reconcile an already-completed DELETE without overwriting a replacement connection. */
+  reconcileDeleted(owner: string, connectorId: string, providerId: string, credentialRevision: number): void {
+    this.db.prepare(`UPDATE studio_connector_connections SET status = 'disconnected', provider_connection_id = NULL, updated_at = ?
+      WHERE owner_account_id = ? AND connector_id = ? AND provider_connection_id = ? AND credential_revision = ?`)
+      .run(this.now(), owner, connectorId, providerId, credentialRevision);
+  }
+
   /** A new single-use state bound to the starting session; returns the token (only its hash is stored). */
   createState(binding: StudioConnectorStateBinding): { token: string; expiresAt: number } {
     const token = randomBytes(32).toString('base64url');

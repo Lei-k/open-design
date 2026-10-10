@@ -63,7 +63,20 @@ export type ToolTokenErrorCode =
   | 'TOOL_ENDPOINT_DENIED'
   | 'TOOL_OPERATION_DENIED';
 
+/** Server-captured account authority. Never parsed from a tool request. */
+export interface StudioConnectorGrant {
+  ownerAccountId: string;
+  connectorIds: string[];
+  credentialRevision: number;
+  revocationVersion: number;
+  pilotRevision: number;
+  role: 'admin' | 'user';
+  actor?: import('./services/auth-service.js').AuthActor;
+  connections: Array<{ connectorId: string; providerConnectionId: string }>;
+}
+
 export interface ToolTokenGrant {
+  studioConnectors?: StudioConnectorGrant;
   token: string;
   runId: string;
   projectId: string;
@@ -83,6 +96,7 @@ export interface ToolTokenGrant {
 }
 
 export interface MintToolTokenOptions {
+  studioConnectors?: StudioConnectorGrant;
   runId: string;
   projectId: string;
   allowedEndpoints?: readonly ToolEndpoint[];
@@ -181,6 +195,7 @@ export class ToolTokenRegistry {
       expiresAt: new Date(expiresAtMs).toISOString(),
       expiresAtMs,
       timer,
+      ...(options.studioConnectors ? { studioConnectors: structuredClone(options.studioConnectors) } : {}),
       ...(options.pluginSnapshotId ? { pluginSnapshotId: options.pluginSnapshotId } : {}),
       ...(options.pluginTrust ? { pluginTrust: options.pluginTrust } : {}),
       ...(options.pluginCapabilitiesGranted

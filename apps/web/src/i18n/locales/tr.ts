@@ -30,7 +30,7 @@ export const tr: Dict = {
   "studio.connectors.error": "Bağlayıcılar yüklenemedi veya kaydedilemedi.",
   "studio.connectors.unavailableAdmin": "Şirket Composio anahtarı yapılandırılana kadar bağlayıcılar kullanılamaz. Yukarıdan ekleyin.",
   "studio.connectors.unavailableMember": "Bağlayıcılar kullanılamıyor: bir yöneticiden şirket Composio anahtarını yapılandırmasını isteyin.",
-  "studio.connectors.notInRuns": "Bağlantılarınız yalnızca hesabınıza aittir. Ajan çalıştırmaları henüz bağlı uygulamaları kullanamaz.",
+  "studio.connectors.notInRuns": "Çalıştırmalar için hesabınıza bağlı uygulamaları seçebilirsiniz. Yalnızca seçili uygulamaların okuma araçları kullanılabilir.",
   "studio.connectors.saved": "Şirket anahtarı kaydedildi.",
   "multiuser.executionSourcePersonalKey": "OpenAI · kendi API anahtarınız",
   "studio.keys.title": "OpenAI API anahtarınız",

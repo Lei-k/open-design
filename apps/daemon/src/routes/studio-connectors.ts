@@ -125,7 +125,7 @@ export function registerStudioConnectorRoutes(app: Express, deps: RegisterStudio
     // The refusal itself is audited (append-only); nothing else changes.
     store.audit(actor, `${action}_refused`, connectorId, reason);
     return sendApiError(res, 409, 'MULTIUSER_CONNECTOR_AUTHORITY_CHANGED',
-      'the account, session, company key or connection changed while this request ran; nothing was changed', { details: { reason } });
+      'the account, session, company key or connection changed while this request ran; further effects were refused', { details: { reason } });
   };
   const providerFailed = (res: Response, error: unknown, operation: string) => {
     const status = error instanceof StudioComposioError ? error.httpStatus : null;
@@ -385,7 +385,13 @@ export function registerStudioConnectorRoutes(app: Express, deps: RegisterStudio
       }
       // The account's own row only, under the same authority; history stays in the audit.
       assertConnectorAuthority(authority);
-    } catch (error) { return effectFailed(res, error, authority, 'disconnect', definition.id, 'disconnect'); }
+    } catch (error) {
+      if (outcome === 'provider' && row.provider_connection_id) {
+        store.reconcileDeleted(actor.accountId, definition.id, row.provider_connection_id, row.credential_revision);
+        store.audit(actor.accountId, 'disconnect_reconciled', definition.id, 'provider-deleted');
+      }
+      return effectFailed(res, error, authority, 'disconnect', definition.id, 'disconnect');
+    }
     store.markDisconnected(actor.accountId, definition.id);
     store.audit(actor.accountId, 'disconnect', definition.id, outcome);
     noStore(res);

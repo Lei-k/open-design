@@ -454,3 +454,11 @@ it('opens the bundled plugin catalog, owner apply, applied snapshots and read-on
     expect(matchMultiUserRoute('GET', path).every(({ entry }) => entry.routeClass === 'blocked-in-multiuser'), path).toBe(true);
   }
 });
+
+it('S59 connector agent endpoints are bearer-granted while cookie transport stays closed', () => {
+  for (const [method, path] of [['GET', '/api/tools/connectors/list'], ['POST', '/api/tools/connectors/execute']]) {
+    expect(matchMultiUserRoute(method!, path!).every(({ entry }) => entry.routeClass === 'actor-scoped')).toBe(true);
+    expect(studioRequestAvailable(method!, path!, () => true, true, true, true)).toBe(false);
+  }
+  expect(studioRequestAvailable('POST', '/api/runs', () => true, true, true, true)).toBe(true);
+});

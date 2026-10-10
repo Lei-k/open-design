@@ -1,3 +1,4 @@
+import { API_ERROR_CODES } from '@open-design/contracts';
 /** @module agent-protocol/codex-app-server/session
  *
  * Drives one codex turn over the `codex app-server` stdio JSON-RPC transport.
@@ -387,14 +388,29 @@ export function attachCodexAppServerSession(
           && toolCalls.size < 128 && !toolCalls.has(callId) && isRecord(params.arguments)
           && Buffer.byteLength(JSON.stringify(params.arguments)) <= 512 * 1024) {
           toolCalls.add(callId);
+          const connector = tool.name.startsWith('connectors_');
+          const answer = (output: unknown, failed = false) => {
+            let content = 'Dynamic tool refused'; let ok = false;
+            try {
+              if (failed || terminalReceived || aborted || fatalReported) throw new Error('tool stopped');
+              content = JSON.stringify(output) ?? 'null';
+              if (Buffer.byteLength(content) > 2 * 1024 * 1024) throw new Error('tool result too large');
+              ok = true;
+            } catch { content = connector && failed && isRecord(output) && typeof output.error === 'string'
+              && (API_ERROR_CODES as readonly string[]).includes(output.error) ? JSON.stringify({ error: output.error }) : 'Dynamic tool refused'; }
+            onAgentEvent({ type: 'tool_result', toolUseId: callId, isError: !ok,
+              content: connector ? (ok ? 'Account connector call completed' : 'Account connector call refused') : content });
+            write({ jsonrpc: '2.0', id: requestId, result: { success: ok, contentItems: [{ type: 'inputText', text: content }] } });
+          };
+          const refuse = (error: unknown) => answer({ error: isRecord(error) && typeof error.code === 'string'
+            && (API_ERROR_CODES as readonly string[]).includes(error.code) ? error.code : 'CONNECTOR_EXECUTION_FAILED' }, true);
           try {
-            onAgentEvent({ type: 'tool_use', id: callId, name: tool.name, input: params.arguments });
+            onAgentEvent({ type: 'tool_use', id: callId, name: tool.name, input: connector ? {} : params.arguments });
             const output = opts.onDynamicToolCall(tool.name, params.arguments);
-            text = JSON.stringify(output) ?? 'null';
-            if (Buffer.byteLength(text) > 2 * 1024 * 1024) throw new Error('tool result too large');
-            success = true;
-          } catch { text = 'Dynamic tool refused'; }
-          onAgentEvent({ type: 'tool_result', toolUseId: callId, isError: !success, content: text });
+            if (output instanceof Promise) void output.then((value) => answer(value), refuse);
+            else answer(output);
+          } catch (error) { refuse(error); }
+          return;
         }
         write({ jsonrpc: '2.0', id: requestId, result: { success, contentItems: [{ type: 'inputText', text }] } });
         return;

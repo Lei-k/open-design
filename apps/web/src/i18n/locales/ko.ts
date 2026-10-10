@@ -420,7 +420,7 @@ export const ko: Dict = {
   "studio.connectors.error": "커넥터를 불러오거나 저장하지 못했습니다.",
   "studio.connectors.unavailableAdmin": "회사 Composio 키가 구성될 때까지 커넥터를 사용할 수 없습니다. 위에서 추가하세요.",
   "studio.connectors.unavailableMember": "커넥터를 사용할 수 없습니다. 관리자에게 회사 Composio 키 구성을 요청하세요.",
-  "studio.connectors.notInRuns": "연결은 내 계정 전용입니다. 에이전트 실행에서는 아직 연결된 앱을 사용할 수 없습니다.",
+  "studio.connectors.notInRuns": "실행에 내 계정의 연결된 앱을 선택할 수 있습니다. 선택한 앱의 읽기 전용 도구만 사용할 수 있습니다.",
   "studio.connectors.saved": "회사 키를 저장했습니다.",
   "multiuser.executionSourcePersonalKey": "OpenAI · 내 API 키",
   "studio.keys.title": "내 OpenAI API 키",

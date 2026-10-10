@@ -30,7 +30,7 @@ export const ptBR: Dict = {
   "studio.connectors.error": "Não foi possível carregar ou salvar os conectores.",
   "studio.connectors.unavailableAdmin": "Os conectores ficam indisponíveis até que uma chave Composio da empresa seja configurada. Adicione-a acima.",
   "studio.connectors.unavailableMember": "Os conectores estão indisponíveis: peça a um administrador para configurar a chave Composio da empresa.",
-  "studio.connectors.notInRuns": "Suas conexões são privadas da sua conta. As execuções de agentes ainda não podem usar apps conectados.",
+  "studio.connectors.notInRuns": "Você pode selecionar os apps conectados à sua conta para as execuções. Apenas as ferramentas de leitura dos apps selecionados estão disponíveis.",
   "studio.connectors.saved": "Chave da empresa salva.",
   "multiuser.executionSourcePersonalKey": "OpenAI · sua chave de API",
   "studio.keys.title": "Sua chave de API da OpenAI",

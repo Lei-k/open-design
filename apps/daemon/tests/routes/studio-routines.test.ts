@@ -1,3 +1,5 @@
+import { StudioConnectorRuntime } from '../../src/connectors/studio-runtime.js';
+import { CompanyComposioStore, StudioConnectorStore } from '../../src/storage/studio-connectors.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -18,6 +20,8 @@ let service: ReturnType<typeof registerStudioRoutineRoutes>;
 const routes = new Map<string, (req: Request, res: Response) => Promise<void>>();
 const requests: Array<{ owner: string; source: unknown }> = [];
 let configured: boolean;
+let connectors: StudioConnectorRuntime;
+let connectorSelections: unknown[];
 beforeEach(() => {
   vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-09T12:59:59Z'));
   root = mkdtempSync(path.join(tmpdir(), 'studio-routine-dispatch-'));
@@ -31,9 +35,12 @@ beforeEach(() => {
   const app = Object.fromEntries(['get', 'post', 'patch', 'delete'].map((method) => [method,
     (url: string, handler: (req: Request, res: Response) => Promise<void>) => routes.set(`${method.toUpperCase()} ${url}`, handler),
   ])) as unknown as Express;
-  service = registerStudioRoutineRoutes(app, { db, dataRoot: root, projectsRoot: path.join(root, 'projects'), runs: {
+  connectors = new StudioConnectorRuntime({ db, dataRoot: root, sessionCurrent: () => true });
+  connectorSelections = [];
+  service = registerStudioRoutineRoutes(app, { db, dataRoot: root, projectsRoot: path.join(root, 'projects'), connectors, runs: {
     async admitInternal(actor, request, allowed) {
       expect(allowed()).toBe(true);
+      connectorSelections.push(request.context);
       requests.push({ owner: actor.accountId, source: request.executionSource });
       return configured ? { status: 202, body: { runId: 'admitted' } }
         : { status: 409, body: { error: { code: 'MULTIUSER_PROVIDER_KEY_MISSING' } } };
@@ -41,7 +48,7 @@ beforeEach(() => {
     runState: () => ({ status: 'succeeded', text: 'Routine done', reason: null }),
   } });
 });
-afterEach(() => { service?.stop(); auth?.close(); closeDatabase(); rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
+afterEach(() => { service?.stop(); connectors?.close(); auth?.close(); closeDatabase(); rmSync(root, { recursive: true, force: true }); vi.useRealTimers(); });
 
 async function api(method: string, suffix = '', body: unknown = {}, owner = 'A', id = '') {
   const actor = { accountId: owner, username: owner.toLowerCase(), role: 'user' as const, sessionId: `fixture-${owner}`, sessionExpiresAt: Date.now() + 60_000 };
@@ -111,4 +118,25 @@ it('uses only the owner\'s private template and refuses a later dispatch after i
   expect(requests).toHaveLength(admittedCount);
   const history = await api('GET', '/:id/runs', {}, 'A', id);
   expect(history.body.runs[0]).toMatchObject({ status: 'failed', errorCode: 'MULTIUSER_CAPABILITY_UNAVAILABLE' });
+});
+
+it('S59 routine connector context persists, dispatches as owner and fails typed after disconnect', async () => {
+  const company = new CompanyComposioStore(db, root);
+  company.update('A', { revision: 0, apiKey: 's59_fixture_composio_key' });
+  const store = new StudioConnectorStore(db);
+  store.saveConnection('A', 'github', { providerConnectionId: 'ca_A', accountLabel: 'A', credentialRevision: company.read().credentialRevision });
+  const fields = { name: 'Connected routine', prompt: 'Read the selected app', agentId: 'openai',
+    context: { connectorIds: ['github'] }, schedule: { kind: 'hourly', minute: 0, timezone: 'UTC' } };
+  expect((await api('POST', '', fields, 'B')).body.error.code).toBe('CONNECTOR_NOT_GRANTED');
+  const made = await api('POST', '', fields);
+  expect(made.status).toBe(201);
+  expect(made.body.routine.context.connectorIds).toEqual(['github']);
+  const id = made.body.routine.id;
+  expect((await api('POST', '/:id/run', {}, 'A', id)).status).toBe(202);
+  await vi.advanceTimersByTimeAsync(1100);
+  expect(connectorSelections).toContainEqual({ connectorIds: ['github'] });
+  store.markDisconnected('A', 'github');
+  await api('POST', '/:id/run', {}, 'A', id);
+  await vi.advanceTimersByTimeAsync(1100);
+  expect((await api('GET', '/:id/runs', {}, 'A', id)).body.runs[0]).toMatchObject({ status: 'failed', errorCode: 'CONNECTOR_NOT_GRANTED' });
 });

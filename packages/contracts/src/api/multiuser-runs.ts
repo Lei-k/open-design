@@ -6,6 +6,7 @@ import type { MultiUserRunOutput } from './multiuser-design.js';
 /** Test-only multi-user execution plane; independent of single-user chat runs. */
 export type MultiUserRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
 export interface MultiUserRun {
+  connectorIds?: string[];
   id: string;
   projectId: string;
   conversationId: string;
@@ -56,7 +57,7 @@ export interface MultiUserRunRequest {
  *   personal native thread already holds earlier turns, so `message` is used
  *   only when `currentPrompt` is absent). `context` is honored only as
  *   `file`/`folder`/`design-files` workspace items with project-relative
- *   paths and private text skills; MCP/connector selections must be empty.
+ *   paths and private text skills; connector selections are captured as owner grants; MCP selections must be empty.
  *   `model`/`reasoning` must be null, `default` or one of `STUDIO_CODEX_MODELS`
  *   / `STUDIO_CODEX_REASONING`, and apply to this turn only. `research`
  *   (`{ enabled, query?, maxSources? }`) runs the account's own Tavily search

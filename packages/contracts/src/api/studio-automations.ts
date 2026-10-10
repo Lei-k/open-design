@@ -26,9 +26,10 @@ export function studioRoutineAgentId(source: StudioExecutionSource['source']): S
  * account; private templates are created, updated and deleted through reviewable
  * proposals. A routine created from either runs on that account's own routine and
  * execution source. Applying a proposal writes only into the account's own
- * memory, private skills, design documents or automation templates. Connector context is not
- * available to Web accounts, so connector-only templates and connector
- * sources are refused with `MULTIUSER_CAPABILITY_UNAVAILABLE`.
+ * memory, private skills, design documents or automation templates. S59 admits
+ * owner-connected app context for manual/scheduled routines, including templates.
+ * Connector ingestion and connector event triggers remain refused with
+ * `MULTIUSER_CAPABILITY_UNAVAILABLE`: they have no admitted-run grant lifecycle.
  */
 
 /** Source kinds a Web account may ingest; they are recorded as labels, never fetched. */
@@ -67,11 +68,11 @@ export type StudioAutomationTemplateUnavailable = {
 export type StudioAutomationTemplate = AutomationTemplate & { unavailable?: StudioAutomationTemplateUnavailable; studioOwned?: boolean };
 
 /**
- * A bundled template needs connectors when it can only read connector sources
- * or only fire from connector events. Those stay closed for Web accounts.
+ * Manual/scheduled templates may select owner connectors at routine admission.
+ * Templates that only fire from connector events still lack a run grant lifecycle.
  */
 export function studioAutomationTemplateUnavailable(template: Pick<AutomationTemplate, 'sourceKinds' | 'triggerKinds'>): StudioAutomationTemplateUnavailable | null {
-  const readable = template.sourceKinds.some((kind) => kind !== 'connector');
+  const readable = template.sourceKinds.length > 0;
   const triggerable = template.triggerKinds.some((kind) => kind === 'manual' || kind === 'schedule');
   return readable && triggerable ? null : { code: 'MULTIUSER_CAPABILITY_UNAVAILABLE', requires: 'connectors' };
 }

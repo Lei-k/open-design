@@ -1,3 +1,4 @@
+import { toolTokenRegistry } from '../tool-tokens.js';
 // Multi-user authorization gate (issues #3/#4) — installed only in multi-user mode.
 //
 // `installMultiUserFront` is the single entry server.ts uses. It is called
@@ -213,6 +214,7 @@ export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
   const allowedOrigins = new Set(deps.allowedOrigins);
   const previewHost = deps.previewOrigin ? new URL(deps.previewOrigin).host : null;
   return (req, res, next) => {
+    const toolAuthorization = req.get('authorization');
     stripClientIdentityHeaders(req);
     const matches = matchMultiUserRoute(req.method, req.path);
     const requestHost = req.get('host') ?? '';
@@ -227,6 +229,18 @@ export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
     if (previewRoute) {
       next();
       return;
+    }
+    // Only these exact bearer endpoints accept an admitted account connector grant.
+    // Client x-od identities were stripped; a desktop token cannot enter Studio.
+    if (req.method === 'GET' && req.path === '/api/tools/connectors/list'
+      || req.method === 'POST' && req.path === '/api/tools/connectors/execute') {
+      const token = /^Bearer\s+(.+)$/i.exec(toolAuthorization ?? '')?.[1];
+      const validation = toolTokenRegistry.validate(token, { endpoint: req.path,
+        operation: req.method === 'GET' ? 'connectors:list' : 'connectors:execute' });
+      if (!validation.ok) return void sendApiError(res, validation.code.startsWith('TOOL_TOKEN') ? 401 : 403, validation.code, validation.message);
+      if (!validation.grant.studioConnectors) return void sendApiError(res, 403, 'CONNECTOR_NOT_GRANTED', 'account connector grant required');
+      req.headers.authorization = toolAuthorization;
+      next(); return;
     }
     const cookie = readSessionCookie(req.headers.cookie);
     const needsSession = decideMultiUserAccess({ matches, actor: null, isProjectOwner: () => false }).kind

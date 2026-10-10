@@ -420,7 +420,7 @@ export const fa: Dict = {
   "studio.connectors.error": "اتصال‌دهنده‌ها بارگذاری یا ذخیره نشدند.",
   "studio.connectors.unavailableAdmin": "تا زمانی که کلید Composio شرکت پیکربندی نشود، اتصال‌دهنده‌ها در دسترس نیستند. آن را در بالا اضافه کنید.",
   "studio.connectors.unavailableMember": "اتصال‌دهنده‌ها در دسترس نیستند: از یک مدیر بخواهید کلید Composio شرکت را پیکربندی کند.",
-  "studio.connectors.notInRuns": "اتصال‌های شما فقط متعلق به حساب شماست. اجرای عامل‌ها هنوز نمی‌تواند از برنامه‌های متصل استفاده کند.",
+  "studio.connectors.notInRuns": "می‌توانید برنامه‌های متصل به حساب خود را برای اجرا انتخاب کنید. فقط ابزارهای خواندن برنامه‌های انتخاب‌شده در دسترس هستند.",
   "studio.connectors.saved": "کلید شرکت ذخیره شد.",
   "multiuser.executionSourcePersonalKey": "OpenAI · کلید API شما",
   "studio.keys.title": "کلید API اوپن‌ای‌آی شما",

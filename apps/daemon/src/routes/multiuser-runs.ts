@@ -1,3 +1,6 @@
+import { CONNECTOR_TOOL_DESCRIPTORS } from '../connectors/tool-descriptors.js';
+import { StudioConnectorRuntimeError, type StudioConnectorRuntime } from '../connectors/studio-runtime.js';
+import { toolTokenRegistry, type StudioConnectorGrant, type ToolTokenGrant } from '../tool-tokens.js';
 import { createStudioLiveArtifactTools, STUDIO_LIVE_ARTIFACT_TOOLS } from '../live-artifacts/studio-tools.js';
 import type { StudioLiveArtifacts } from '../storage/studio-live-artifacts.js';
 import { STUDIO_LIVE_ARTIFACT_PROMPT } from '../prompts/studio-live-artifacts.js';
@@ -7,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
-import { workspaceToolsUnavailable, STUDIO_CONNECTORS_NOT_USABLE_IN_RUNS, API_ERROR_CODES, STUDIO_RESEARCH_MAX_SOURCES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
+import { workspaceToolsUnavailable, API_ERROR_CODES, STUDIO_RESEARCH_MAX_SOURCES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
 import { PersonalRunEvents } from '../runtimes/personal-run-events.js';
 import { formatProjectAttachmentHint, normalizeCommentAttachments, renderCommentAttachmentHint, resolveSafeProjectAttachments } from '../runtimes/chat-prompt-inputs.js';
 import { renderRunContextPrompt } from '../runtimes/chat-run-context.js';
@@ -124,6 +127,7 @@ type PersonalRunFields = {
   /** #61: may only confirm the turn's applied plugin (project or conversation pin); never selects another. */
   appliedPluginSnapshotId: string | null;
   pluginIds: string[];
+  connectorIds: string[];
 };
 type FieldRefusal = { status: number; code: ApiErrorCode; message: string };
 /** A project-relative path: no root, drive, backslash, NUL, empty, `.` or `..` segment. */
@@ -199,12 +203,10 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
     if (record.skillIds !== undefined && !validSkillIds(record.skillIds)) return refuse(400, 'BAD_REQUEST', 'invalid skill selections');
     if (record.pluginIds !== undefined && !(Array.isArray(record.pluginIds) && record.pluginIds.length <= 1
       && record.pluginIds.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 256))) return refuse(400, 'BAD_REQUEST', 'invalid plugin selection');
-    // S58: accounts can connect apps in Settings, but runs cannot use them yet (S59).
-    if (Array.isArray(record.connectorIds) && record.connectorIds.length > 0) {
-      return refuse(403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', `not available for Studio runs yet: ${STUDIO_CONNECTORS_NOT_USABLE_IN_RUNS}`);
-    }
+    if (record.connectorIds !== undefined && !(Array.isArray(record.connectorIds) && record.connectorIds.length <= 12
+      && record.connectorIds.every((id) => typeof id === 'string' && /^[a-z0-9_]{1,64}$/.test(id)))) return refuse(400, 'BAD_REQUEST', 'invalid connector selections');
     if (Object.keys(record).some((key) => ![...selections, 'skillIds', 'pluginIds', 'workspaceItems'].includes(key))
-      || selections.some((key) => record[key] !== undefined && !(Array.isArray(record[key]) && (record[key] as unknown[]).length === 0))) {
+      || record.mcpServerIds !== undefined && !(Array.isArray(record.mcpServerIds) && record.mcpServerIds.length === 0)) {
       return refuse(403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'not available for personal Studio runs: context selections');
     }
     const items = record.workspaceItems ?? [];
@@ -266,6 +268,7 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
     attachments: [...new Set(attachments as string[])],
     workspaceItems, commentAttachments, model, reasoning, research,
     appliedPluginSnapshotId: (body.appliedPluginSnapshotId as string | null | undefined) ?? null,
+    connectorIds: [...new Set(((context as { connectorIds?: string[] } | null)?.connectorIds ?? []))],
     pluginIds: ((context as { pluginIds?: string[] } | null)?.pluginIds ?? []),
   };
 }
@@ -342,6 +345,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   mockAgentScript?: string;
   companyFetch?: typeof fetch;
   liveArtifacts?: StudioLiveArtifacts;
+  connectors?: StudioConnectorRuntime;
   /** The verified personal bubblewrap boundary; company skill scripts run only inside it, offline. */
   scriptSandbox?: PersonalSandbox;
   repositoryRoot: string;
@@ -573,6 +577,37 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         const event = { type: 'live_artifact' as const, action, projectId: run.project_id, artifactId: artifact.id, title: artifact.title, refreshStatus: artifact.refreshStatus };
         updateProject(db, run.project_id, {}); onAgentEvent(event); input.emitProjectEvent?.(run.project_id, event);
       } }) : undefined;
+  const connectorGrants = new Map<string, ToolTokenGrant>();
+  const captureConnectors = (fields: PersonalRunFields, res: Response): StudioConnectorGrant | undefined | false => {
+    if (!fields.connectorIds.length) return undefined;
+    try {
+      if (!input.connectors) throw new StudioConnectorRuntimeError('MULTIUSER_CAPABILITY_UNAVAILABLE');
+      return input.connectors.capture(multiUserActorOf(res)!, fields.connectorIds);
+    } catch (error) {
+      const safe = error instanceof StudioConnectorRuntimeError ? error : new StudioConnectorRuntimeError('CONNECTOR_NOT_GRANTED');
+      sendApiError(res, safe.status, safe.code, 'selected account connectors are unavailable'); return false;
+    }
+  };
+  const connectorToolsFor = (run: RunRow, authorized: () => boolean) => {
+    const bound = storedRequest(run.request_json)?.connectorGrant as StudioConnectorGrant | undefined;
+    if (!bound || !input.connectors) return undefined;
+    input.connectors.assert(bound);
+    let grant = connectorGrants.get(run.id);
+    if (!grant) {
+      grant = toolTokenRegistry.mint({ runId: run.id, projectId: run.project_id, studioConnectors: bound,
+        allowedEndpoints: ['/api/tools/connectors/list', '/api/tools/connectors/execute'], allowedOperations: ['connectors:list', 'connectors:execute'] });
+      connectorGrants.set(run.id, grant);
+    }
+    const token = grant.token;
+    const tools = input.connectors.tools(grant);
+    return { execute: async (name: string, args: Record<string, unknown>) => {
+      if (!authorized()) throw new StudioConnectorRuntimeError('MULTIUSER_CONNECTOR_AUTHORITY_CHANGED', 409);
+      const validation = toolTokenRegistry.validate(token, { endpoint: name === 'connectors_list' ? '/api/tools/connectors/list' : '/api/tools/connectors/execute',
+        operation: name === 'connectors_list' ? 'connectors:list' : 'connectors:execute' });
+      if (!validation.ok) throw new StudioConnectorRuntimeError(validation.code, validation.code.endsWith('DENIED') ? 403 : 401);
+      return tools.execute(name, args);
+    } };
+  };
   const companyOpenAI = new CompanyOpenAIStore(db, dataRoot);
   db.exec(`CREATE TABLE IF NOT EXISTS multiuser_company_sessions (
     conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
@@ -825,6 +860,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
     })(),
     message: storedMessage(run.request_json),
+    ...(Array.isArray(storedRequest(run.request_json)?.connectorIds) ? { connectorIds: storedRequest(run.request_json)!.connectorIds as string[] } : {}),
     ...studioMessages.ids(run.id),
     ...(isPersonal(run) || isByok(run) ? { executionSource: run.execution_source } : isOpenAI(run) ? { executionSource: 'company_pool' as const } : {}),
   });
@@ -935,6 +971,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     settleWaiters.set(id, [...(settleWaiters.get(id) ?? []), done]);
   };
   const finish = (id: string, status: 'succeeded' | 'failed' | 'canceled', output?: unknown) => {
+    const grant = connectorGrants.get(id);
+    if (grant) { toolTokenRegistry.revokeToken(grant.token); connectorGrants.delete(id); }
     if (storesClosed) return;
     const existing = row(id);
     if (!existing || (existing.status !== 'active' && existing.status !== 'queued')) return;
@@ -1103,6 +1141,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             };
             const usage = { inputTokens: 0, outputTokens: 0 };
             const mediaUsage = { images: 0, speechCharacters: 0, videoSeconds: 0 };
+            const connectorTools = connectorToolsFor(next, authorized);
             let stageHistory = history;
             let stageCount = 0;
             void runStudioPipeline({ db, runId: next.id, snapshot: pluginSnapshotOf(request), resumeStage: request.pipelineResumeStage,
@@ -1113,6 +1152,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 let text = '';
                 const result = await runCompanyOpenAITurn({ apiKey: key.apiKey, model: key.model,
                   // Every stage stays on the turn's own source and bill (#63).
+                  ...(connectorTools ? { connectors: connectorTools } : {}),
                   systemPrompt: `${stablePrompt}${STUDIO_MEDIA_PROMPT}${input.liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : ''}`, media: true,
                   ...(input.liveArtifacts ? { liveArtifacts: artifactToolsFor(next, authorized, (event) => projection.accept(event))! } : {}),
                   prompt: `${userPrompt}${attached}${renderCommentAttachmentHint(normalizeCommentAttachments(Array.isArray(request.commentAttachments) ? request.commentAttachments : []))}${focused}${directive}`,
@@ -1157,7 +1197,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 : isByok(next) && cause === 'provider_rate_limited' ? 'MULTIUSER_PROVIDER_RATE_LIMITED' : 'MULTIUSER_RUN_FAILED' });
             })
               .finally(() => worker.close(!storesClosed && row(next.id)?.status === 'succeeded'));
-          } catch { finish(next.id, cancelPending.has(next.id) ? 'canceled' : 'failed', { reason: 'MULTIUSER_RUN_START_FAILED' }); worker.close(false); }
+          } catch (error) { finish(next.id, cancelPending.has(next.id) ? 'canceled' : 'failed', { reason: error instanceof StudioConnectorRuntimeError ? error.code : 'MULTIUSER_RUN_START_FAILED' }); worker.close(false); }
           continue;
         }
         if (!mockAgentScript) { closeLedgerSpan(next, 'failed'); finish(next.id, 'failed', { reason: 'MULTIUSER_PROVIDER_DISABLED' }); continue; }
@@ -1234,7 +1274,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       if (storesClosed || shuttingDown) return true;
       const status = row(runId)?.status;
       if (status === 'queued' || (status === 'active' && !children.has(runId))) {
-        finish(runId, 'failed', { reason: error instanceof PersonalAccountError ? error.code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
+        finish(runId, 'failed', { reason: error instanceof PersonalAccountError || error instanceof StudioConnectorRuntimeError ? error.code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
       }
       return row(runId)?.status !== 'queued';
     } catch (secondary) {
@@ -1326,6 +1366,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
               && projects.canWrite(next.project_id, owner) && personal.usableAccount(owner)?.id === accountId
               && personal.usableAccount(owner)?.credentialVersion === next.credential_version;
             const liveArtifacts = artifactToolsFor(next, allowed, (event) => projection.accept(event));
+            const connectorTools = connectorToolsFor(next, allowed);
             let resumeThreadId = session.thread_id;
             let stageCount = 0;
             void runStudioPipeline({ db, runId, snapshot: pluginSnapshotOf(request), resumeStage: request?.pipelineResumeStage,
@@ -1339,9 +1380,13 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                   command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
                   ...(skillRoot ? { skillPackages: skillRoot } : {}),
                   prompt: `${stageCount === 1 ? prompt : userPrompt}${directive}`, resumeThreadId,
-                  ...(liveArtifacts ? { dynamicToolsPrompt: STUDIO_LIVE_ARTIFACT_PROMPT, dynamicTools: STUDIO_LIVE_ARTIFACT_TOOLS.map(({ properties, required, ...tool }) => ({ ...tool,
-                    inputSchema: { type: 'object', properties, required: [...required], additionalProperties: false } })),
-                    onDynamicToolCall: (name: string, args: Record<string, unknown>) => liveArtifacts.execute(name, args) } : {}),
+                  ...(liveArtifacts || connectorTools ? { dynamicToolsPrompt: liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : '',
+                    dynamicTools: [
+                      ...(liveArtifacts ? STUDIO_LIVE_ARTIFACT_TOOLS.map(({ properties, required, ...tool }) => ({ ...tool,
+                        inputSchema: { type: 'object', properties, required: [...required], additionalProperties: false } })) : []),
+                      ...(connectorTools ? CONNECTOR_TOOL_DESCRIPTORS : [])],
+                    onDynamicToolCall: (name: string, args: Record<string, unknown>) => name.startsWith('connectors_')
+                      ? connectorTools!.execute(name, args) : liveArtifacts!.execute(name, args) } : {}),
                   ...(isStudioCodexModel(request?.model) ? { model: request.model } : {}),
                   ...(isStudioCodexReasoning(request?.reasoning) ? { reasoning: request.reasoning } : {}),
                   // A real personal provider always runs inside the per-run bubblewrap
@@ -1429,7 +1474,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             }).catch(logPersonalDispatchFailure);
           } catch (error) {
             // A rolled-back start stays queued; a committed start keeps its turn and worker timestamps.
-            if (!children.has(runId)) finish(runId, 'failed', { reason: error instanceof PersonalAccountError ? error.code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
+            if (!children.has(runId)) finish(runId, 'failed', { reason: error instanceof PersonalAccountError || error instanceof StudioConnectorRuntimeError ? error.code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
           }
         } catch (error) {
           // A run that cannot be failed (its store is gone) stops this pass rather than spinning on it.
@@ -1772,7 +1817,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const findings = await researchInstruction(owner, target.conversationId, fields, res);
     if (findings === false) return;
     if (findings) instruction = [instruction, findings].filter(Boolean).join('\n\n');
-    const request = JSON.stringify({ message: fields.text, ...(instruction ? { instruction } : {}), ...(fields.attachments.length ? { attachments: fields.attachments } : {}),
+    const connectorGrant = captureConnectors(fields, res);
+    if (connectorGrant === false) return;
+    const request = JSON.stringify({ ...(connectorGrant ? { connectorGrant, connectorIds: fields.connectorIds } : {}), message: fields.text, ...(instruction ? { instruction } : {}), ...(fields.attachments.length ? { attachments: fields.attachments } : {}),
       ...(inheritsSkills || withFixedSkill(fixedCapture?.skill, selectedSkills).length ? { skillIds: inheritsSkills ? inheritedSkillIds : fields.skillIds, skillSnapshots } : {}),
       ...(fields.workspaceItems.length ? { workspaceItems: fields.workspaceItems } : {}),
       ...(fields.commentAttachments.length ? { commentAttachments: fields.commentAttachments } : {}),
@@ -1965,7 +2012,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       return sendApiError(res, 409, 'CONFLICT', 'project defaults changed during admission');
     }
     const id = randomUUID(); const createdAt = now();
-    const request = JSON.stringify({ message: fields.text, ...(instruction ? { instruction } : {}),
+    const connectorGrant = captureConnectors(fields, res);
+    if (connectorGrant === false) return;
+    const request = JSON.stringify({ ...(connectorGrant ? { connectorGrant, connectorIds: fields.connectorIds } : {}), message: fields.text, ...(instruction ? { instruction } : {}),
       ...(findings ? { research: { provider: 'tavily' } } : {}),
       ...(own ? { personalProvider: 'openai', personalModel: currentKey!.model, personalCredentialRevision: currentKey!.credentialRevision }
         : { companyProvider: 'openai', companyModel: config.model, companyCredentialRevision: config.credentialRevision }), stablePrompt: prompt, stablePromptHash: createHash('sha256').update(prompt).digest('hex'),

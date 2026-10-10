@@ -1,8 +1,9 @@
+import { StudioConnectorRuntimeError, type StudioConnectorRuntime } from '../connectors/studio-runtime.js';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
-import { STUDIO_CONNECTORS_NOT_USABLE_IN_RUNS, automationTemplateRoutinePrompt, studioRoutineAgentId, studioRoutineExecutionSource, type StudioExecutionSource,
+import { automationTemplateRoutinePrompt, studioRoutineAgentId, studioRoutineExecutionSource, type StudioExecutionSource,
   type CreateRoutineRequest, type Routine, type RoutineRun, type RoutineSchedule, type RoutineProjectTarget, type UpdateRoutineRequest } from '@open-design/contracts';
 import { getProject, insertConversation, insertProject } from '../db.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
@@ -23,7 +24,7 @@ const POLL_MS = 1_000;
 type Source = StudioExecutionSource['source'];
 interface RoutineRow {
   id: string; owner_account_id: string; name: string; prompt: string; schedule_json: string; target_json: string;
-  skill_ids_json: string; execution_source: Source; enabled: number; created_at: number; updated_at: number; template_id: string | null;
+  connector_ids_json: string; skill_ids_json: string; execution_source: Source; enabled: number; created_at: number; updated_at: number; template_id: string | null;
 }
 interface RunRow {
   id: string; routine_id: string; trigger: RoutineRun['trigger']; status: RoutineRun['status']; project_id: string;
@@ -50,6 +51,7 @@ export function registerStudioRoutineRoutes(app: Express, input: {
   db: Database.Database; dataRoot: string; projectsRoot: string; runs: StudioRoutineRuns; clock?: () => number;
   /** Account automation store for crystallize (#64). */
   automations?: StudioAutomations;
+  connectors?: StudioConnectorRuntime;
 }): { stop(): void } {
   const { db } = input;
   const now = input.clock ?? Date.now;
@@ -81,7 +83,7 @@ export function registerStudioRoutineRoutes(app: Express, input: {
     const next = found.enabled ? service.nextRunAt(found.id) ?? nextRunAtForSchedule(schedule) : null;
     return { id: found.id, name: found.name, prompt: found.prompt, schedule, target: JSON.parse(found.target_json) as RoutineProjectTarget,
       skillId: (JSON.parse(found.skill_ids_json) as string[])[0] ?? null, agentId: studioRoutineAgentId(found.execution_source),
-      context: { skillIds: JSON.parse(found.skill_ids_json) as string[] }, enabled: found.enabled === 1,
+      context: { skillIds: JSON.parse(found.skill_ids_json) as string[], connectorIds: JSON.parse(found.connector_ids_json) as string[] }, enabled: found.enabled === 1,
       nextRunAt: next ? next.getTime() : null,
       lastRun: last ? { runId: last.id, status: last.status, trigger: last.trigger, startedAt: last.started_at,
         ...(last.completed_at ? { completedAt: last.completed_at } : {}), projectId: last.project_id, conversationId: last.conversation_id,
@@ -93,7 +95,7 @@ export function registerStudioRoutineRoutes(app: Express, input: {
   service = new RoutineService({
     // Only routines whose owner can still run are scheduled at all.
     list: () => (db.prepare('SELECT * FROM studio_routines ORDER BY created_at').all() as RoutineRow[])
-      .filter((found) => ownerUsable(found.owner_account_id)).map((found) => ({ ...dto(found), context: { skillIds: JSON.parse(found.skill_ids_json) } }) as never),
+      .filter((found) => ownerUsable(found.owner_account_id)).map((found) => dto(found) as never),
     insertRun(run, options) {
       const owner = routineRow(run.routineId)?.owner_account_id;
       if (!owner) return false;
@@ -172,9 +174,15 @@ export function registerStudioRoutineRoutes(app: Express, input: {
           catch { return settle({ status: 'failed', error: 'routine template is not available', errorCode: 'MULTIUSER_CAPABILITY_UNAVAILABLE' }); }
         }
         if (!allowed()) return settle({ status: 'failed', error: 'routine authority changed', errorCode: 'MULTIUSER_PERSONAL_UNAVAILABLE' });
+        const connectorIds = JSON.parse(found.connector_ids_json) as string[];
+        try {
+          if (connectorIds.length && !input.connectors) throw new StudioConnectorRuntimeError('CONNECTOR_NOT_GRANTED');
+          input.connectors?.capture(actor, connectorIds);
+        } catch (error) { return settle({ status: 'failed', error: 'routine connectors unavailable',
+          errorCode: error instanceof StudioConnectorRuntimeError ? error.code : 'CONNECTOR_NOT_GRANTED' }); }
         const admitted = await input.runs.admitInternal(actor, { projectId: prepared.projectId, conversationId: prepared.conversationId,
           executionSource: found.execution_source, clientRequestId: `routine-${runId}`,
-          skillIds: JSON.parse(found.skill_ids_json) as string[], message: found.prompt }, allowed,
+          skillIds: JSON.parse(found.skill_ids_json) as string[], context: { connectorIds }, message: found.prompt }, allowed,
           [`You are running an unattended scheduled routine named "${found.name}".`,
             'Do not ask follow-up questions, do not emit <question-form>, and do not wait for user input. Pick reasonable defaults and finish the task.'].join('\n'));
         const agentRunId = (admitted.body as { runId?: unknown } | null)?.runId;
@@ -202,12 +210,14 @@ export function registerStudioRoutineRoutes(app: Express, input: {
       throw new RoutineRefusal(400, 'unsupported routine field');
     // A readable template is chosen once, at creation; it supplies the captured default name and prompt.
     let templateId: string | null = existing?.template_id ?? null;
-    if (body.templateId !== undefined && body.templateId !== null) {
-      if (existing && body.templateId !== existing.template_id) throw new RoutineRefusal(400, 'a routine keeps the template it was created from');
+    let needsConnector = false;
+    if (body.templateId !== undefined && body.templateId !== null || existing?.template_id) {
+      if (existing && body.templateId != null && body.templateId !== existing.template_id) throw new RoutineRefusal(400, 'a routine keeps the template it was created from');
       let template;
-      try { template = studioRunnableAutomationTemplate(body.templateId, templates.list(owner)); }
+      try { template = studioRunnableAutomationTemplate(body.templateId ?? existing?.template_id, templates.list(owner)); }
       catch (error) { throw new RoutineRefusal((error as { status?: number }).status === 403 ? 403 : 404, 'automation template not available'); }
       templateId = template.id;
+      needsConnector = template.sourceKinds.every((kind) => kind === 'connector');
       if (!existing) {
         if (body.name === undefined) body = { ...body, name: template.title.slice(0, 100) };
         if (body.prompt === undefined) body = { ...body, prompt: automationTemplateRoutinePrompt(template) };
@@ -227,10 +237,17 @@ export function registerStudioRoutineRoutes(app: Express, input: {
     }
     const context = (body.context ?? {}) as Record<string, unknown>;
     const empty = (value: unknown) => value === undefined || value === null || Array.isArray(value) && value.length === 0;
-    if (!empty(context.connectorIds)) throw new RoutineRefusal(403, `not available for routines yet: ${STUDIO_CONNECTORS_NOT_USABLE_IN_RUNS}`);
+    const connectorIds = (body.context ? context.connectorIds ?? [] : existing ? JSON.parse(existing.connector_ids_json) : []) as unknown;
+    if (!Array.isArray(connectorIds) || connectorIds.length > 12 || connectorIds.some((id) => typeof id !== 'string' || !/^[a-z0-9_]{1,64}$/.test(id))) throw new RoutineRefusal(400, 'invalid connector selections');
+    if (needsConnector && !connectorIds.length) throw new StudioConnectorRuntimeError('CONNECTOR_NOT_GRANTED');
+    if (connectorIds.length) {
+      const actor = ownerUsable(owner);
+      if (!actor || !input.connectors) throw new StudioConnectorRuntimeError('CONNECTOR_NOT_GRANTED');
+      input.connectors.capture(actor, connectorIds);
+    }
     if (Object.keys(context).some((key) => !['skillIds', 'pluginIds', 'mcpServerIds', 'connectorIds', 'workspaceScope'].includes(key))
-      || !empty(context.pluginIds) || !empty(context.mcpServerIds) || !empty(context.connectorIds) || !empty(context.workspaceScope))
-      throw new RoutineRefusal(403, 'plugins, MCP servers, connectors and workspace scopes are not available for routines');
+      || !empty(context.pluginIds) || !empty(context.mcpServerIds) || !empty(context.workspaceScope))
+      throw new RoutineRefusal(403, 'plugins, MCP servers and workspace scopes are not available for routines');
     // The standard form sends the primary skill both as skillId and inside context.skillIds.
     const listed = body.context || body.skillId !== undefined ? context.skillIds ?? [] : existing ? JSON.parse(existing.skill_ids_json) : [];
     if (body.skillId !== undefined && body.skillId !== null && typeof body.skillId !== 'string') throw new RoutineRefusal(400, 'invalid skills');
@@ -238,7 +255,7 @@ export function registerStudioRoutineRoutes(app: Express, input: {
     if (!Array.isArray(skillIds) || skillIds.length > 12 || skillIds.some((id) => typeof id !== 'string' || !id || id.length > 256)) throw new RoutineRefusal(400, 'invalid skills');
     if (body.enabled !== undefined && typeof body.enabled !== 'boolean') throw new RoutineRefusal(400, 'invalid enabled flag');
     const source: Source = selectedSource ?? existing?.execution_source ?? 'personal_subscription';
-    return { name: body.name?.trim() ?? existing!.name, prompt: body.prompt ?? existing!.prompt, schedule, target, skillIds, source,
+    return { name: body.name?.trim() ?? existing!.name, prompt: body.prompt ?? existing!.prompt, schedule, target, skillIds, connectorIds, source,
       enabled: body.enabled ?? (existing ? existing.enabled === 1 : true), templateId };
   };
   const handle = (operation: (req: Request, res: Response, owner: string) => unknown) => async (req: Request, res: Response) => {
@@ -249,6 +266,7 @@ export function registerStudioRoutineRoutes(app: Express, input: {
       if (res.headersSent) return;
       // Routine and automation-store refusals carry their own status (no stack or host detail).
       const status = (error as { status?: unknown } | null)?.status;
+      if (error instanceof StudioConnectorRuntimeError) return sendApiError(res, error.status, error.code, 'routine connectors unavailable');
       if ((error instanceof RoutineRefusal || error instanceof AutomationRefusal) && typeof status === 'number') {
         return sendApiError(res, status, status === 404 ? 'NOT_FOUND' : status === 403 ? 'MULTIUSER_CAPABILITY_UNAVAILABLE'
           : status === 409 ? 'CONFLICT' : 'BAD_REQUEST', (error as Error).message);
@@ -270,9 +288,9 @@ export function registerStudioRoutineRoutes(app: Express, input: {
     const count = (db.prepare('SELECT COUNT(*) AS n FROM studio_routines WHERE owner_account_id = ?').get(owner) as { n: number }).n;
     if (count >= ROUTINE_LIMIT) throw new RoutineRefusal(409, 'routine limit reached');
     const id = `studio-routine-${randomUUID()}`; const at = now();
-    db.prepare(`INSERT INTO studio_routines (id, owner_account_id, name, prompt, schedule_json, target_json, skill_ids_json, execution_source, enabled, created_at, updated_at, template_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, owner, fields.name, fields.prompt, JSON.stringify(fields.schedule), JSON.stringify(fields.target),
-      JSON.stringify(fields.skillIds), fields.source, fields.enabled ? 1 : 0, at, at, fields.templateId);
+    db.prepare(`INSERT INTO studio_routines (id, owner_account_id, name, prompt, schedule_json, target_json, skill_ids_json, execution_source, enabled, created_at, updated_at, template_id, connector_ids_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, owner, fields.name, fields.prompt, JSON.stringify(fields.schedule), JSON.stringify(fields.target),
+      JSON.stringify(fields.skillIds), fields.source, fields.enabled ? 1 : 0, at, at, fields.templateId, JSON.stringify(fields.connectorIds));
     service.rescheduleOne(id);
     res.status(201).json({ routine: dto(routineRow(id)!) });
   }));
@@ -280,9 +298,9 @@ export function registerStudioRoutineRoutes(app: Express, input: {
   app.patch(`${prefix}/:id`, handle((req, res, owner) => {
     const existing = owned(owner, req.params.id);
     const fields = parse(owner, req.body ?? {}, existing);
-    db.prepare(`UPDATE studio_routines SET name = ?, prompt = ?, schedule_json = ?, target_json = ?, skill_ids_json = ?, execution_source = ?, enabled = ?, updated_at = ?
+    db.prepare(`UPDATE studio_routines SET name = ?, prompt = ?, schedule_json = ?, target_json = ?, skill_ids_json = ?, execution_source = ?, enabled = ?, updated_at = ?, connector_ids_json = ?
       WHERE id = ? AND owner_account_id = ?`).run(fields.name, fields.prompt, JSON.stringify(fields.schedule), JSON.stringify(fields.target),
-      JSON.stringify(fields.skillIds), fields.source, fields.enabled ? 1 : 0, now(), existing.id, owner);
+      JSON.stringify(fields.skillIds), fields.source, fields.enabled ? 1 : 0, now(), JSON.stringify(fields.connectorIds), existing.id, owner);
     service.rescheduleOne(existing.id);
     res.json({ routine: dto(routineRow(existing.id)!) });
   }));

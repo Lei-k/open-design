@@ -1,5 +1,5 @@
 'use client';
-import { studioSetTimeout as setTimeout, studioUsesLocalServices, studioWindowLocalStorage } from '../runtime/studio-transport';
+import { studioFetch, studioSetTimeout as setTimeout, studioUsesLocalServices, studioWindowLocalStorage } from '../runtime/studio-transport';
 import { useStudioCapabilities, useStudioRequestAvailable, StudioUnavailable } from '../runtime/studio-capabilities';
 
 
@@ -860,6 +860,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
     const [mcpServers, setMcpServers] = useState<McpServerConfig[]>([]);
     const [mcpTemplates, setMcpTemplates] = useState<McpTemplate[]>([]);
     const [connectors, setConnectors] = useState<ConnectorDetail[]>([]);
+    const [connectorKeyConfigured, setConnectorKeyConfigured] = useState(false);
     // Installed plugins, fetched lazily for the tools-menu Plugins tab and
     // the @-mention picker. Both surfaces share the same list so applying
     // a plugin from either path lands on the same project context.
@@ -1189,29 +1190,38 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
     useEffect(() => {
       if (!composerEngaged) return;
       let cancelled = false;
-      void fetchConnectorCatalogSnapshot().then((rows) => {
+      void Promise.all([fetchConnectorCatalogSnapshot(), studio.hostServices ? Promise.resolve(true)
+        : studioFetch('/api/connectors/composio/config').then(async (res) => res.ok && (await res.json()).configured === true).catch(() => false)]).then(([rows, configured]) => {
         if (cancelled) return;
-        setConnectors(rows.filter((connector) => connector.status === 'connected'));
+        setConnectorKeyConfigured(configured);
+        setConnectors(configured ? rows.filter((connector) => connector.status === 'connected') : []);
       });
       return () => {
         cancelled = true;
       };
-    }, [composerEngaged]);
+    }, [composerEngaged, studio.generation, studio.hostServices]);
 
     useEffect(() => {
       if (!composerEngaged) return;
       let cancelled = false;
       async function refreshConnectors() {
-        const rows = await fetchConnectorCatalogSnapshot({ refreshDiscovery: true });
+        const [rows, configured] = await Promise.all([fetchConnectorCatalogSnapshot({ refreshDiscovery: true }), studio.hostServices ? Promise.resolve(true)
+          : studioFetch('/api/connectors/composio/config').then(async (res) => res.ok && (await res.json()).configured === true).catch(() => false)]);
         if (cancelled) return;
-        setConnectors(rows.filter((connector) => connector.status === 'connected'));
+        setConnectorKeyConfigured(configured);
+        const connected = configured ? rows.filter((connector) => connector.status === 'connected') : [];
+        setConnectors(connected);
+        if (!studio.hostServices) setStagedConnectors((selected) => {
+          const current = selected.filter((item) => connected.some((live) => live.id === item.id));
+          return current.length === selected.length ? selected : current;
+        });
       }
       const stopListening = listenForConnectorsChanged(() => void refreshConnectors());
       return () => {
         cancelled = true;
         stopListening();
       };
-    }, [composerEngaged]);
+    }, [composerEngaged, studio.generation, studio.hostServices]);
 
     useEffect(() => {
       const inlinePlugin = inlineBackedPluginRef.current;
@@ -3687,6 +3697,8 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
               }}
               connectors={connectors}
+              connectorUnavailableReason={!studio.hostServices && connectors.length === 0
+                ? t(connectorKeyConfigured ? 'homeHero.noConnectors' : 'studio.connectors.unavailableMember') : undefined}
               onPickConnector={!studioRequest('GET', '/api/connectors/discovery') ? undefined : (connector) => {
                 trackComposerBar({
                   element: 'plus_pick',

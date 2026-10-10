@@ -8,9 +8,8 @@
  * key is configured and, to administrators only, its last four characters.
  * Connection rows never name another account or the provider entity.
  *
- * S58 is the control plane only. Connectors are connectable, listable and
- * disconnectable here but not yet usable in runs, tool calls, Live Artifact
- * sources or automation context; those keep `MULTIUSER_CAPABILITY_UNAVAILABLE`.
+ * S59 admits owner-bound connector grants for runs and routine context.
+ * Live Artifact refresh, ingestion and memory extraction still require their own grant lifecycle.
  */
 
 /** Redacted company key state, visible to every Studio account. */
@@ -69,6 +68,6 @@ export type StudioConnectorCallbackRefusal =
  */
 export type StudioConnectorAuthorityRefusal = 'account' | 'session' | 'key-changed' | 'connection-changed';
 
-/** Fixed refusal shared by run admission, tool routes and connector sources until runs may use connectors (S59). */
+/** Legacy-named refusal for connector sources outside the S59 admitted-run grant lifecycle. */
 export const STUDIO_CONNECTORS_NOT_USABLE_IN_RUNS =
-  'connectors are connectable in Settings but not yet usable in runs, tools, Live Artifact sources or automations' as const;
+  'connector sources require an asynchronous refreshing-actor grant; canonical Live Artifact refresh and ingestion do not carry one' as const;

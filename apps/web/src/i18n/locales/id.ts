@@ -30,7 +30,7 @@ export const id: Dict = {
   "studio.connectors.error": "Konektor tidak dapat dimuat atau disimpan.",
   "studio.connectors.unavailableAdmin": "Konektor tidak tersedia sampai kunci Composio perusahaan dikonfigurasi. Tambahkan di atas.",
   "studio.connectors.unavailableMember": "Konektor tidak tersedia: minta administrator mengonfigurasi kunci Composio perusahaan.",
-  "studio.connectors.notInRuns": "Koneksi Anda hanya milik akun Anda. Eksekusi agen belum dapat menggunakan aplikasi yang terhubung.",
+  "studio.connectors.notInRuns": "Pilih aplikasi yang terhubung ke akun Anda untuk proses. Hanya alat baca dari aplikasi terpilih yang tersedia.",
   "studio.connectors.saved": "Kunci perusahaan disimpan.",
   "multiuser.executionSourcePersonalKey": "OpenAI · kunci API Anda",
   "studio.keys.title": "Kunci API OpenAI Anda",

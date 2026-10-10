@@ -901,6 +901,7 @@ import {
   setLiveArtifactPreviewHeaders,
 } from './live-artifacts/http-helpers.js';
 import { registerConnectorRoutes } from './connectors/routes.js';
+import { StudioConnectorRuntime } from './connectors/studio-runtime.js';
 import { registerStudioConnectorRoutes } from './routes/studio-connectors.js';
 import { registerActiveContextRoutes } from './routes/active-context.js';
 import { registerAutomationRoutes } from './routes/automation.js';
@@ -8474,7 +8475,11 @@ export async function startServer({
     },
   });
 
+  const studioConnectorRuntime = multiUserMode ? new StudioConnectorRuntime({ db, dataRoot: RUNTIME_DATA_DIR,
+    sessionCurrent: (actor) => multiUserFront!.sessionCurrent(actor),
+    ...(multiUserMode.testComposioFetch ? { fetch: multiUserMode.testComposioFetch } : {}) }) : null;
   registerConnectorRoutes(app, {
+    ...(studioConnectorRuntime ? { studioRuntime: studioConnectorRuntime } : {}),
     sendApiError,
     authorizeToolRequest,
     projectsRoot: PROJECTS_DIR,
@@ -17683,6 +17688,7 @@ export async function startServer({
     ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
   }) : null;
   const multiUserRuns = multiUserMode ? registerMultiUserRunRoutes(app, {
+    ...(studioConnectorRuntime ? { connectors: studioConnectorRuntime } : {}),
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
     emitProjectEvent,
     ...(studioLiveArtifacts ? { liveArtifacts: studioLiveArtifacts } : {}),
@@ -17714,12 +17720,14 @@ export async function startServer({
   // Account-owned Automations dispatch through the same run admission policy.
   const studioRoutines = multiUserRuns ? registerStudioRoutineRoutes(app, {
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, runs: multiUserRuns,
+    ...(studioConnectorRuntime ? { connectors: studioConnectorRuntime } : {}),
     ...(studioAutomations ? { automations: studioAutomations } : {}),
     ...(multiUserMode?.poolClock ? { clock: multiUserMode.poolClock } : {}),
   }) : null;
   if (multiUserRuns) multiUserFront?.setCancelAccountRuns((accountId) => {
     // Pending connector authorizations die with the session (S58); connections stay recorded.
     studioConnectors?.invalidateAccount(accountId);
+    studioConnectorRuntime?.invalidateAccount(accountId);
     multiUserRuns.cancelAccountRuns(accountId);
     personalCodex?.cancelPendingFor(accountId).catch(() => {});
   });
@@ -18391,6 +18399,7 @@ export async function startServer({
       studioPluginPreviews?.close();
       studioPublicLinks?.close();
       studioLiveArtifacts?.close();
+      studioConnectorRuntime?.close();
       }
       amrTerminalReportDelivery.stop();
       clearTerminalTelemetryFallbackTimers();

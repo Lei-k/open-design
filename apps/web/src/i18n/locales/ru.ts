@@ -30,7 +30,7 @@ export const ru: Dict = {
   "studio.connectors.error": "Не удалось загрузить или сохранить коннекторы.",
   "studio.connectors.unavailableAdmin": "Коннекторы недоступны, пока не настроен ключ Composio компании. Добавьте его выше.",
   "studio.connectors.unavailableMember": "Коннекторы недоступны: попросите администратора настроить ключ Composio компании.",
-  "studio.connectors.notInRuns": "Ваши подключения доступны только вашей учётной записи. Запуски агентов пока не могут использовать подключённые приложения.",
+  "studio.connectors.notInRuns": "Для запусков можно выбрать приложения, подключённые к вашему аккаунту. Доступны только инструменты чтения выбранных приложений.",
   "studio.connectors.saved": "Ключ компании сохранён.",
   "multiuser.executionSourcePersonalKey": "OpenAI · ваш API-ключ",
   "studio.keys.title": "Ваш API-ключ OpenAI",

@@ -30,7 +30,7 @@ export const zhCN: Dict = {
   "studio.connectors.error": "无法加载或保存连接器。",
   "studio.connectors.unavailableAdmin": "在配置公司 Composio 密钥之前，连接器不可用。请在上方添加。",
   "studio.connectors.unavailableMember": "连接器不可用：请联系管理员配置公司 Composio 密钥。",
-  "studio.connectors.notInRuns": "你的连接仅属于你的账号。智能体运行暂时还不能使用已连接的应用。",
+  "studio.connectors.notInRuns": "可为运行选择你账号已连接的应用。仅可使用所选应用的只读工具。",
   "studio.connectors.saved": "公司密钥已保存。",
   "multiuser.executionSourcePersonalKey": "OpenAI · 你的 API key",
   "studio.keys.title": "你的 OpenAI API key",

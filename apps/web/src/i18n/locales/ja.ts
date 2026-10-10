@@ -420,7 +420,7 @@ export const ja: Dict = {
   "studio.connectors.error": "コネクタを読み込みまたは保存できませんでした。",
   "studio.connectors.unavailableAdmin": "会社の Composio キーが設定されるまでコネクタは使用できません。上で追加してください。",
   "studio.connectors.unavailableMember": "コネクタは使用できません。管理者に会社の Composio キーの設定を依頼してください。",
-  "studio.connectors.notInRuns": "接続はあなたのアカウント専用です。エージェントの実行ではまだ接続済みアプリを使用できません。",
+  "studio.connectors.notInRuns": "実行には自分のアカウントで接続したアプリを選択できます。選択したアプリの読み取り専用ツールのみ利用できます。",
   "studio.connectors.saved": "会社のキーを保存しました。",
   "multiuser.executionSourcePersonalKey": "OpenAI · 自分の API キー",
   "studio.keys.title": "自分の OpenAI API キー",

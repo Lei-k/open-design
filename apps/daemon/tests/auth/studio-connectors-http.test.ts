@@ -119,6 +119,7 @@ beforeAll(async () => {
 }, 120_000);
 
 beforeEach(() => { calls = []; rejectKeys = new Set(); clock = Date.now(); });
+
 afterEach(() => {
   // No request to Composio may ever carry the host user, an account id or another project's key.
   for (const call of calls) {
@@ -392,31 +393,28 @@ describe('lifecycle', () => {
   });
 });
 
-describe('run-time use stays refused (S59)', () => {
+describe('surfaces outside an admitted connector grant stay refused (S59)', () => {
   it.each([
-    ['GET', '/api/tools/connectors/list'], ['POST', '/api/tools/connectors/execute'],
     ['POST', '/api/memory/connectors/suggest'], ['POST', '/api/memory/connectors/extract'], ['GET', '/api/connectors/logos/github'],
   ])('%s %s is a typed connectors capability refusal', async (method, route) => {
     const res = await daemon.request({ method, path: route, cookie: alice.cookie, headers: { origin: MU_TEST_ORIGIN }, ...(method === 'POST' ? { body: {} } : {}) });
     expect(res.status).toBe(403);
     expect(res.json.error).toMatchObject({ code: 'MULTIUSER_CAPABILITY_UNAVAILABLE', details: { capability: 'connectors' } });
-    if (!route.includes('logos')) expect(res.json.error.details.reason).toContain('not yet usable in runs');
+    if (!route.includes('logos')) expect(res.json.error.details.reason).toContain('no admitted run grant');
   });
 
-  it('run admission, routines and Live Artifact connector sources say connectors are connectable but not usable yet', async () => {
+  it('disabled personal sources refuse typed and a foreign routine connector is unavailable', async () => {
     const project = await daemon.request({ method: 'POST', path: '/api/projects', cookie: alice.cookie, headers: { origin: MU_TEST_ORIGIN }, body: { id: randomUUID(), name: 'connectors' } });
     expect(project.status, project.text).toBe(200);
     const run = await daemon.request({ method: 'POST', path: '/api/runs', cookie: alice.cookie, headers: { origin: MU_TEST_ORIGIN }, body: {
       projectId: project.json.project.id, conversationId: project.json.conversationId, agentId: 'codex', executionSource: 'personal_subscription',
       message: 'hello', context: { connectorIds: ['github'] } } });
     expect(run.status, run.text).toBe(403);
-    expect(run.json.error.code).toBe('MULTIUSER_CAPABILITY_UNAVAILABLE');
-    expect(run.json.error.message).toContain('not yet usable in runs');
+    expect(run.json.error.code).toBe('MULTIUSER_PERSONAL_DISABLED');
     const routine = await daemon.request({ method: 'POST', path: '/api/routines', cookie: alice.cookie, headers: { origin: MU_TEST_ORIGIN }, body: {
-      name: 'r', prompt: 'p', schedule: { kind: 'daily', time: '09:00', timezone: 'UTC' }, target: { mode: 'create_each_run' }, context: { connectorIds: ['github'] } } });
+      name: 'r', prompt: 'p', schedule: { kind: 'daily', time: '09:00', timezone: 'UTC' }, target: { mode: 'create_each_run' }, context: { connectorIds: ['slack'] } } });
     expect(routine.status, routine.text).toBe(403);
-    expect(routine.json.error.code).toBe('MULTIUSER_CAPABILITY_UNAVAILABLE');
-    expect(routine.json.error.message).toContain('not yet usable in runs');
+    expect(routine.json.error.code).toBe('CONNECTOR_NOT_GRANTED');
   });
 });
 

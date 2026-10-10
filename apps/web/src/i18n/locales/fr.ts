@@ -420,7 +420,7 @@ export const fr: Dict = {
   "studio.connectors.error": "Impossible de charger ou d'enregistrer les connecteurs.",
   "studio.connectors.unavailableAdmin": "Les connecteurs sont indisponibles tant qu'aucune clé Composio d'entreprise n'est configurée. Ajoutez-la ci-dessus.",
   "studio.connectors.unavailableMember": "Les connecteurs sont indisponibles : demandez à un administrateur de configurer la clé Composio de l'entreprise.",
-  "studio.connectors.notInRuns": "Vos connexions sont privées à votre compte. Les exécutions d'agents ne peuvent pas encore utiliser les applications connectées.",
+  "studio.connectors.notInRuns": "Sélectionnez les applications connectées à votre compte pour les exécutions. Seuls leurs outils de lecture sont disponibles.",
   "studio.connectors.saved": "Clé de l'entreprise enregistrée.",
   "multiuser.executionSourcePersonalKey": "OpenAI · votre clé API",
   "studio.keys.title": "Votre clé API OpenAI",

@@ -30,7 +30,7 @@ export const esES: Dict = {
   "studio.connectors.error": "No se pudieron cargar ni guardar los conectores.",
   "studio.connectors.unavailableAdmin": "Los conectores no están disponibles hasta que se configure una clave de Composio de la empresa. Añádela arriba.",
   "studio.connectors.unavailableMember": "Los conectores no están disponibles: pide a un administrador que configure la clave de Composio de la empresa.",
-  "studio.connectors.notInRuns": "Tus conexiones son privadas de tu cuenta. Las ejecuciones de agentes aún no pueden usar las aplicaciones conectadas.",
+  "studio.connectors.notInRuns": "Puedes seleccionar las aplicaciones conectadas a tu cuenta para las ejecuciones. Solo están disponibles sus herramientas de lectura.",
   "studio.connectors.saved": "Clave de la empresa guardada.",
   "multiuser.executionSourcePersonalKey": "OpenAI · tu clave de API",
   "studio.keys.title": "Tu clave de API de OpenAI",

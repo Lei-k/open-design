@@ -30,7 +30,7 @@ export const it: Dict = {
   "studio.connectors.error": "Impossibile caricare o salvare i connettori.",
   "studio.connectors.unavailableAdmin": "I connettori non sono disponibili finché non è configurata una chiave Composio aziendale. Aggiungila sopra.",
   "studio.connectors.unavailableMember": "I connettori non sono disponibili: chiedi a un amministratore di configurare la chiave Composio aziendale.",
-  "studio.connectors.notInRuns": "Le tue connessioni sono private del tuo account. Le esecuzioni degli agenti non possono ancora usare le app collegate.",
+  "studio.connectors.notInRuns": "Puoi selezionare le app collegate al tuo account per le esecuzioni. Sono disponibili solo i loro strumenti di lettura.",
   "studio.connectors.saved": "Chiave aziendale salvata.",
   "multiuser.executionSourcePersonalKey": "OpenAI · la tua chiave API",
   "studio.keys.title": "La tua chiave API OpenAI",

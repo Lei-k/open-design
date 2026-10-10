@@ -30,7 +30,7 @@ export const th: Dict = {
   "studio.connectors.error": "ไม่สามารถโหลดหรือบันทึกตัวเชื่อมต่อได้",
   "studio.connectors.unavailableAdmin": "ตัวเชื่อมต่อจะใช้ไม่ได้จนกว่าจะตั้งค่าคีย์ Composio ของบริษัท เพิ่มคีย์ด้านบน",
   "studio.connectors.unavailableMember": "ตัวเชื่อมต่อใช้ไม่ได้: โปรดขอให้ผู้ดูแลระบบตั้งค่าคีย์ Composio ของบริษัท",
-  "studio.connectors.notInRuns": "การเชื่อมต่อของคุณเป็นของบัญชีคุณเท่านั้น การรันเอเจนต์ยังใช้แอปที่เชื่อมต่อไม่ได้",
+  "studio.connectors.notInRuns": "เลือกแอปที่เชื่อมต่อกับบัญชีของคุณสำหรับการทำงานได้ ใช้ได้เฉพาะเครื่องมืออ่านของแอปที่เลือกเท่านั้น",
   "studio.connectors.saved": "บันทึกคีย์ของบริษัทแล้ว",
   "multiuser.executionSourcePersonalKey": "OpenAI · API key ของคุณ",
   "studio.keys.title": "OpenAI API key ของคุณ",

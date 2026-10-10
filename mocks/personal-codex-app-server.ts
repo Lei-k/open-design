@@ -30,6 +30,8 @@ const threadsDir = path.join(home, 'sessions');
 
 const send = (frame: Json) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...frame })}\n`);
 const notify = (method: string, params: Json) => send({ method, params });
+const toolReplies = new Map<number, (value: Json) => void>();
+let toolRequestId = -1000;
 const readJson = (file: string): Json | null => {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) as Json; } catch { return null; }
 };
@@ -124,6 +126,15 @@ async function turn(id: number, params: Json): Promise<void> {
     notify('item/completed', { threadId, turnId, item: { type: 'mcpToolCall', id: 'mcp_attempt', server: 'fixture',
       tool: 'lookup', arguments: {}, status: 'failed', result: null, error: { message: 'ordinary tool error' } } });
   }
+  if (text.includes('[mock-connector]')) {
+    const requestId = toolRequestId--;
+    const reply = await new Promise<Json>((resolve) => {
+      toolReplies.set(requestId, resolve);
+      send({ id: requestId, method: 'item/tool/call', params: { threadId, turnId, callId: `connector_${turnId}`,
+        tool: 'connectors_execute', arguments: { connectorId: 'github', toolName: 'github.github_search_repositories', input: { query: 'fixture' } } } });
+    });
+    if ((reply.result as Json | undefined)?.success !== true) return failed('Connector fixture refused', 'badRequest');
+  }
   const record = readJson(threadFile(threadId)) ?? { turns: 0 };
   record.turns = Number(record.turns ?? 0) + 1;
   fs.writeFileSync(threadFile(threadId), JSON.stringify(record));
@@ -210,6 +221,7 @@ async function turn(id: number, params: Json): Promise<void> {
 
 function handle(frame: Json): void {
   const id = typeof frame.id === 'number' ? frame.id : null;
+  if (id !== null && toolReplies.has(id) && !frame.method) { toolReplies.get(id)!(frame); toolReplies.delete(id); return; }
   const method = String(frame.method ?? '');
   const params = (frame.params && typeof frame.params === 'object' ? frame.params : {}) as Json;
   if (id === null) return; // `initialized` and other client notifications

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@open-design/components';
 import type { StudioComposioConfigResponse, UpdateStudioComposioConfigRequest } from '@open-design/contracts';
 import { useT } from '../i18n';
+import { notifyConnectorsChanged } from '../components/connectors-events';
 import { ConnectorsBrowser } from '../components/ConnectorsBrowser';
 import { studioFetch } from './studio-transport';
 import styles from './StudioConnectors.module.css';
@@ -49,6 +50,7 @@ export function StudioConnectors() {
       if (!response.ok) { setNotice('error'); return; }
       setLoad({ status: 'ready', config: await response.json() as StudioComposioConfigResponse });
       setConfirmClear(false); setNotice('saved'); setNonce((value) => value + 1);
+      notifyConnectorsChanged();
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) setNotice('error');
     } finally { setBusy(false); }
