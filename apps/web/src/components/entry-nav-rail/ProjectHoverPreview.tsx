@@ -1,3 +1,4 @@
+import { registerStudioReset } from '../../runtime/studio-resources';
 // The hover preview card the rail's 最近项目 rows float beside themselves —
 // the cover plate over the wrapped project name — and the cover pipeline that
 // feeds it.
@@ -278,3 +279,5 @@ export function ProjectHoverPreviewCard({
     </div>
   );
 }
+
+registerStudioReset(() => { inflightResolves.clear(); });

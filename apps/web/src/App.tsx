@@ -1,3 +1,9 @@
+import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioFetch as fetch, studioWindowSessionStorage } from './runtime/studio-transport';
+import { saveStudioCodexModel, studioCodexModelChoice, withStudioAccountConfig } from './runtime/studio-account-preferences';
+import { AdminUsers, Audit } from './multiuser/MultiUserApp';
+import { useStudioCapabilities, useStudioRequestAvailable, StudioUnavailable } from './runtime/studio-capabilities';
+import { StudioAccountMenu } from './runtime/StudioAccountMenu';
+import { StudioAdminFrame } from './runtime/StudioAdminFrame';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { AnimatePresence, motion, MotionConfig } from 'motion/react';
@@ -24,6 +30,7 @@ import {
   fidelityToTracking,
 } from '@open-design/contracts/analytics';
 import type {
+  ActiveContextWriteRequest,
   AmrModelsResponse,
   ChatSessionMode,
   CreateProjectExampleReference,
@@ -223,6 +230,7 @@ import {
   duplicateProject,
   getProject,
   importClaudeDesignZip,
+  importBrowserDirectory,
   importFolderProject,
   invalidatePluginCatalogCache,
   invalidateWorkspaceProjectLists,
@@ -919,6 +927,7 @@ export async function hydrateReadyTeamProject(
 }
 
 export function App() {
+  const studio = useStudioCapabilities();
   // `reducedMotion="user"` makes every motion/react component honor the OS
   // `prefers-reduced-motion` setting: transform/layout animations are zeroed
   // out while opacity-only changes are kept. The CSS `@media (prefers-reduced-
@@ -928,7 +937,7 @@ export function App() {
   return (
     <MotionConfig reducedMotion="user">
       <IframeKeepAliveProvider>
-        <WorkspaceMemberDirectoryPreloader />
+        {studio.hostServices && <WorkspaceMemberDirectoryPreloader />}
         <AppInner />
       </IframeKeepAliveProvider>
     </MotionConfig>
@@ -936,6 +945,8 @@ export function App() {
 }
 
 function AppInner() {
+  const studio = useStudioCapabilities();
+  const studioRequest = useStudioRequestAvailable();
   const { t } = useI18n();
   const iframeKeepAlivePool = useIframeKeepAlivePool();
   const clientType = useMemo(() => detectClientType(), []);
@@ -1024,9 +1035,12 @@ function AppInner() {
       root.classList.remove('is-window-blurred');
     };
   }, [clientType, hostPlatform]);
-  const [config, setConfig] = useState<AppConfig>(() => loadConfig());
+  const [config, setConfig] = useState<AppConfig>(() => studio.hostServices ? loadConfig() : { ...loadConfig(), onboardingCompleted: true, telemetry: { metrics: false, content: false }, notifications: { ...DEFAULT_NOTIFICATIONS, soundEnabled: false, desktopEnabled: false },
+    // The actor's execution source decides the agent; there is no host agent catalog to choose from.
+    mode: 'daemon', agentId: studio.executionAgentId });
   const configRef = useRef(config);
   configRef.current = config;
+  const studioSettingsVersionRef = useRef(0);
   const latestPersistedConfigRef = useRef(config);
   latestPersistedConfigRef.current = config;
   const settingsDraftConfigRef = useRef<AppConfig | null>(null);
@@ -1074,6 +1088,7 @@ function AppInner() {
   const [workingDirError, setWorkingDirError] = useState<string | null>(null);
   const [projectCreateError, setProjectCreateError] = useState<string | null>(null);
   const [projectOpenError, setProjectOpenError] = useState<string | null>(null);
+  const teamSharedProjectsUsable = studio.available('collaboration');
   const [deepLinkResolutionFailure, setDeepLinkResolutionFailure] = useState<{
     projectId: string;
     failure: 'missing' | 'materialization-failed';
@@ -1752,7 +1767,7 @@ function AppInner() {
       clearAmrAuthRetryContinuation(amrAuthRetryContinuation);
       return;
     }
-    const timeout = window.setTimeout(() => {
+    const timeout = studioWindowSetTimeout(() => {
       clearAmrAuthRetryContinuation(amrAuthRetryContinuation);
     }, remainingMs);
     return () => window.clearTimeout(timeout);
@@ -1933,12 +1948,12 @@ function AppInner() {
   // is running. Settings is irrelevant to visibility; the banner sits above
   // the modal-backdrop layer in index.css so opening Settings does not hide
   // it.
-  const showPrivacyConsent =
+  const showPrivacyConsent = studio.hostServices &&
     daemonConfigLoaded &&
     config.privacyDecisionAt == null &&
     config.onboardingCompleted === true;
   useEffect(() => {
-    const body = activeProjectId
+    const body: ActiveContextWriteRequest = activeProjectId
       ? { projectId: activeProjectId, fileName: activeFileName }
       : { active: false };
     fetch('/api/active', {
@@ -1951,7 +1966,7 @@ function AppInner() {
   }, [activeProjectId, activeFileName]);
 
   useEffect(() => {
-    if (!daemonLive) return;
+    if (!daemonLive || !studio.hostServices) return;
     let cancelled = false;
     let timer: number | null = null;
     const pollGeneration = amrPollGenerationRef.current + 1;
@@ -1979,7 +1994,7 @@ function AppInner() {
         presetPolls < maxPresetPolls;
       if (shouldPollPreset) {
         presetPolls += 1;
-        timer = window.setTimeout(() => {
+        timer = studioWindowSetTimeout(() => {
           void applyAmrModels();
         }, pollDelayMs);
       }
@@ -2000,6 +2015,7 @@ function AppInner() {
   // AMR_LOGIN_STATUS_EVENT covers logins finishing in surfaces that
   // unmounted before their poll settled.
   useEffect(() => {
+    if (!studio.hostServices) return;
     let cancelled = false;
     const sync = async (
       options: { refresh?: boolean } = {},
@@ -2087,6 +2103,49 @@ function AppInner() {
   useEffect(() => {
     let cancelled = false;
     let effectAgentStreamAbort: AbortController | null = null;
+    if (!studio.hostServices) {
+      setDaemonLive(true); setAgentsLoading(false); setSkillsLoading(false); setDsLoading(false);
+      setPromptTemplatesLoading(false); setDaemonConfigLoaded(true); setComposioConfigLoading(false);
+      setWorkspaceSkills({ identity: currentWorkspaceCatalogIdentity, items: [] });
+      setWorkspaceDesignSystems({ identity: currentWorkspaceCatalogIdentity, items: [] });
+      if (studio.available('catalogs')) {
+        setSkillsLoading(true);
+        void fetchSkills().then((items) => {
+          if (cancelled) return;
+          setWorkspaceSkills({ identity: currentWorkspaceCatalogIdentity, items });
+          setSkillsLoading(false);
+        });
+      }
+      if (studioRequest('GET', '/api/design-systems')) {
+        setDsLoading(true);
+        void fetchDesignSystems().then((items) => {
+          if (cancelled) return;
+          setWorkspaceDesignSystems({ identity: currentWorkspaceCatalogIdentity, items }); setDsLoading(false);
+        });
+        void fetchDesignTemplates().then((items) => { if (!cancelled) setDesignTemplates(items); });
+        void fetchPromptTemplates().then((items) => { if (!cancelled) setPromptTemplates(items); });
+      }
+      if (studioRequest('GET', '/api/templates')) {
+        void listTemplates().then((items) => { if (!cancelled) setTemplates(items); });
+      }
+      if (studioRequest('GET', '/api/app-config')) {
+        // Studio's closed account DTO is independent of host config hydration.
+        // Never migrate browser defaults back to the account on boot.
+        const version = studioSettingsVersionRef.current;
+        void fetch('/api/app-config').then(async (response) => {
+          if (!response.ok) return;
+          const saved = await response.json() as import('@open-design/contracts').StudioSettingsResponse;
+          if (cancelled || studioSettingsVersionRef.current !== version) return;
+          setConfig((current) => withStudioAccountConfig(current, saved.config));
+        }).catch(() => {});
+      }
+      const request = beginProjectListRequest(workspaceProjectViewRef.current);
+      void listCurrentWorkspaceProjects().then((list) => {
+        if (cancelled) return;
+        reconcileFetchedProjects(list, request); setProjectsLoading(false);
+      });
+      return () => { cancelled = true; };
+    }
     (async () => {
       const alive = await daemonIsLive();
       if (cancelled) return;
@@ -2549,6 +2608,7 @@ function AppInner() {
     const requestGeneration =
       (designSystemsRequestGenerationRef.current.get(issuedCatalogIdentity) ?? 0) + 1;
     designSystemsRequestGenerationRef.current.set(issuedCatalogIdentity, requestGeneration);
+    if (!studioRequest('GET', '/api/design-systems')) return;
     const list = await fetchDesignSystems(issuedContext, options);
     if (
       workspaceContextStateRef.current.identityChangePending
@@ -2580,6 +2640,7 @@ function AppInner() {
   ]);
 
   const refreshSkills = useCallback(async () => {
+    if (!studio.available('catalogs')) return;
     // Always scoped. `GET /api/skills` is fail-closed on a missing
     // `x-od-workspace-id` (`skills.ts`: `if (!scopeId) return !ownerId;`), so a
     // headerless read is not the "unfiltered" list — it is the list with every
@@ -2654,6 +2715,7 @@ function AppInner() {
   ]);
 
   const refreshTemplates = useCallback(async () => {
+    if (!studioRequest('GET', '/api/templates')) return;
     const list = await listTemplates();
     setTemplates(list);
   }, []);
@@ -2726,6 +2788,7 @@ function AppInner() {
     next: AppConfig,
     options?: { forceMediaProviderSync?: boolean },
   ) => {
+    studioSettingsVersionRef.current += 1;
     // Strip the in-flight Composio secret before anything hits disk so
     // a half-typed key can't survive in localStorage. If the dialog is
     // closing, preserve any onboarding completion that the close gesture
@@ -2850,8 +2913,8 @@ function AppInner() {
       // local selection or acknowledge the action in another route/identity.
       throw new Error('Cloud configuration acknowledgement no longer owns the active selection');
     }
-    latestPersistedConfigRef.current = next;
     saveConfig(next);
+    latestPersistedConfigRef.current = next;
     setConfig(next);
   }, []);
 
@@ -2869,8 +2932,13 @@ function AppInner() {
       saveConfig(next);
       void syncConfigToDaemon(next);
       setConfig(next);
+      // Studio: the personal Codex choice is an account preference, not host config.
+      if (!studio.hostServices && agentId === 'codex') {
+        studioSettingsVersionRef.current += 1;
+        void saveStudioCodexModel(studioCodexModelChoice(merged));
+      }
     },
-    [],
+    [studio.hostServices],
   );
 
   // BYOK protocol switch — also flips `mode` to 'api' so the user does
@@ -2924,6 +2992,7 @@ function AppInner() {
 
   const refreshAgents = useCallback(
     async (options?: { throwOnError?: boolean; agentCliEnv?: AppConfig['agentCliEnv'] }) => {
+      if (!studio.hostServices) return [];
       if (options && Object.prototype.hasOwnProperty.call(options, 'agentCliEnv')) {
         const current = latestPersistedConfigRef.current;
         const nextConfig = clearStaleAmrModelChoiceOnProfileChange(current, {
@@ -2993,6 +3062,7 @@ function AppInner() {
   }, [agentsLoading, daemonLive, refreshAgents]);
 
   useEffect(() => {
+    if (!studio.hostServices) return;
     const handleAppConfigChanged = () => {
       void fetchDaemonConfig().then((daemonConfig) => {
         const previous = latestPersistedConfigRef.current;
@@ -3409,50 +3479,50 @@ function AppInner() {
           (derivedPendingPrompt !== undefined || firstMessageAttachments.length > 0)
         ) {
           try {
-            window.sessionStorage.setItem(
+            studioWindowSessionStorage().setItem(
               `od:auto-send-first:${result.project.id}`,
               '1',
             );
             if (derivedPendingPrompt !== undefined) {
-              window.sessionStorage.setItem(
+              studioWindowSessionStorage().setItem(
                 `od:auto-send-prompt:${result.project.id}`,
                 derivedPendingPrompt,
               );
             } else {
-              window.sessionStorage.removeItem(
+              studioWindowSessionStorage().removeItem(
                 `od:auto-send-prompt:${result.project.id}`,
               );
             }
             if (input.amrGatePrecheckWitness) {
-              window.sessionStorage.setItem(
+              studioWindowSessionStorage().setItem(
                 `od:auto-send-amr-gate-witness:${result.project.id}`,
                 JSON.stringify(input.amrGatePrecheckWitness),
               );
             } else {
-              window.sessionStorage.removeItem(
+              studioWindowSessionStorage().removeItem(
                 `od:auto-send-amr-gate-witness:${result.project.id}`,
               );
             }
-            window.sessionStorage.removeItem(
+            studioWindowSessionStorage().removeItem(
               `od:auto-send-amr-gate-ok:${result.project.id}`,
             );
             if (firstMessageAttachments.length > 0) {
-              window.sessionStorage.setItem(
+              studioWindowSessionStorage().setItem(
                 `od:auto-send-attachments:${result.project.id}`,
                 JSON.stringify(firstMessageAttachments),
               );
             } else {
-              window.sessionStorage.removeItem(
+              studioWindowSessionStorage().removeItem(
                 `od:auto-send-attachments:${result.project.id}`,
               );
             }
             if (input.initialRunContext && Object.keys(input.initialRunContext).length > 0) {
-              window.sessionStorage.setItem(
+              studioWindowSessionStorage().setItem(
                 `od:auto-send-context:${result.project.id}`,
                 JSON.stringify(input.initialRunContext),
               );
             } else {
-              window.sessionStorage.removeItem(
+              studioWindowSessionStorage().removeItem(
                 `od:auto-send-context:${result.project.id}`,
               );
             }
@@ -3594,10 +3664,10 @@ function AppInner() {
         sourceWorkspaceContext,
       );
       try {
-        window.sessionStorage.setItem(`od:auto-send-first:${result.project.id}`, '1');
+        studioWindowSessionStorage().setItem(`od:auto-send-first:${result.project.id}`, '1');
         const pendingPrompt = input.pendingPrompt ?? result.project.pendingPrompt;
         if (pendingPrompt !== undefined) {
-          window.sessionStorage.setItem(
+          studioWindowSessionStorage().setItem(
             `od:auto-send-prompt:${result.project.id}`,
             pendingPrompt,
           );
@@ -3663,12 +3733,12 @@ function AppInner() {
       );
       if (!outcome.ok) return outcome;
       try {
-        window.sessionStorage.setItem(
+        studioWindowSessionStorage().setItem(
           `od:auto-send-first:${outcome.project.id}`,
           '1',
         );
         if (outcome.project.pendingPrompt !== undefined) {
-          window.sessionStorage.setItem(
+          studioWindowSessionStorage().setItem(
             `od:auto-send-prompt:${outcome.project.id}`,
             outcome.project.pendingPrompt,
           );
@@ -3737,6 +3807,16 @@ function AppInner() {
       projectId: result.project.id,
       fileName: null,
     });
+  }, [rememberLocalProject]);
+
+  const handleImportBrowserDirectory = useCallback(async (files: File[]): Promise<ImportClaudeDesignOutcome> => {
+    try {
+      const result = await importBrowserDirectory(files);
+      rememberLocalProject(result.project.id);
+      setProjects((current) => [result.project, ...current.filter((project) => project.id !== result.project.id)]);
+      navigate({ kind: 'project', projectId: result.project.id, fileName: result.entryFile });
+      return { ok: true };
+    } catch (error) { return { ok: false, message: error instanceof Error ? error.message : 'Folder import failed' }; }
   }, [rememberLocalProject]);
 
   // PR #974: on desktop, the host bridge owns the picker and import POST
@@ -4102,7 +4182,7 @@ function AppInner() {
 
     void refresh();
     window.addEventListener(RUNS_CHANGED_EVENT, handleRunsChanged);
-    const id = window.setInterval(refresh, 2000);
+    const id = studioWindowSetInterval(refresh, 2000);
     return () => {
       cancelled = true;
       window.removeEventListener(RUNS_CHANGED_EVENT, handleRunsChanged);
@@ -4678,7 +4758,9 @@ function AppInner() {
   // it to that Workspace. Truly unbound local projects retain the ambient
   // account/workspace tab behavior.
   const workspaceTabsIdentityScopeKey =
-    route.kind === 'project'
+    studio.actor
+      ? `studio:${studio.actor.id}:${studio.generation}`
+      : route.kind === 'project'
       ? activeProject === null
         ? null
         : activeProject.workspaceId
@@ -4801,7 +4883,9 @@ function AppInner() {
         setRouteProjectSnapshotRevision((current) => current + 1);
         return;
       }
-      if (bootstrap.kind === 'forbidden') {
+      // Without the collaboration lane no team-shared copy can be waiting to
+      // materialize: an owner-scoped miss is final (foreign and missing alike).
+      if (bootstrap.kind === 'forbidden' || (bootstrap.kind === 'not-found' && !teamSharedProjectsUsable)) {
         setDeepLinkResolutionFailure({ projectId, failure: 'missing' });
         return;
       }
@@ -4939,6 +5023,7 @@ function AppInner() {
     projects,
     projectsLoading,
     daemonLive,
+    teamSharedProjectsUsable,
     deepLinkRetryRevision,
     beginProjectListRequest,
     listCurrentWorkspaceProjects,
@@ -5255,7 +5340,7 @@ function AppInner() {
     : null;
   useEffect(() => {
     if (!pendingCreationProjectId) return;
-    const timer = window.setTimeout(() => {
+    const timer = studioWindowSetTimeout(() => {
       setPendingProjectCreation((current) =>
         current?.projectId === pendingCreationProjectId ? null : current,
       );
@@ -5268,7 +5353,13 @@ function AppInner() {
     route.view === 'home' &&
     config.onboardingCompleted !== true &&
     !daemonConfigLoaded;
-  if (pendingFirstRunOnboardingRoute) {
+  if (studio.actor && studio.session && window.location.pathname.startsWith('/admin/')) {
+    const adminPage = studio.actor.role !== 'admin' ? <p role="alert">{t('multiuser.denied')}</p> : window.location.pathname === '/admin/audit' ? <Audit session={studio.session} account={studio.actor} generation={studio.generation} /> : <AdminUsers session={studio.session} account={studio.actor} generation={studio.generation} />;
+    appMain = <StudioAdminFrame>{adminPage}</StudioAdminFrame>;
+  } else if (!studio.hostServices && route.kind !== 'home' && route.kind !== 'project'
+    && !(['design-system-create', 'design-system-detail'].includes(route.kind) && studioRequest('GET', '/api/design-systems'))) {
+    appMain = <StudioUnavailable lane="catalogs" />;
+  } else if (pendingFirstRunOnboardingRoute) {
     appMain = (
       <div className="entry-shell entry-shell--no-header">
         <CenteredLoader label={t('entry.loadingWorkspace')} />
@@ -5358,6 +5449,7 @@ function AppInner() {
   } else if (route.kind === 'design-system-create') {
     appMain = (
       <DesignSystemCreationFlow
+        onDocumentCreated={(designSystemId) => navigate({ kind: 'design-system-detail', designSystemId })}
         onBack={handleDesignSystemCreateBack}
         designSystems={enabledDS}
         onCreated={(projectId, project, conversationId) => {
@@ -5642,6 +5734,7 @@ function AppInner() {
         onCreateProject={handleCreateProject}
         onCreatePluginShareProject={handleCreatePluginShareProject}
         onImportClaudeDesign={handleImportClaudeDesign}
+        onImportBrowserDirectory={handleImportBrowserDirectory}
         onImportFolder={handleImportFolder}
         onImportFolderResponse={handleImportFolderResponse}
         onOpenProject={handleOpenProject}
@@ -5701,8 +5794,10 @@ function AppInner() {
   }
   return (
     <>
+      {!studio.hostServices && route.kind === 'project' ? <StudioAccountMenu placement="chrome" /> : null}
       <div
         className={`workspace-shell workspace-shell--${clientType}`}
+        data-studio-pilot={!studio.hostServices || undefined}
         data-client-type={clientType}
         data-host-platform={hostPlatform}
       >
@@ -5730,7 +5825,7 @@ function AppInner() {
             though EntryShell — the cluster's usual owner — is unmounted here.
             Home and the other entry views mount theirs through EntryNavRail;
             the routes are mutually exclusive, so exactly one is on screen. */}
-        {route.kind === 'project' ? (
+        {studio.hostServices && route.kind === 'project' ? (
           <WorkspaceTopRightAccountCluster
             onOpenSettings={openSettings}
             onSignedOut={handleActiveCloudSignOut}
@@ -5796,7 +5891,7 @@ function AppInner() {
         </>
       )}
       <TooltipLayer />
-      <UpdateDialog />
+      {studio.hostServices && <UpdateDialog />}
       {/* Mounted at shell level, outside the route views, so a survey armed by
           an export inside a project stays on screen when the user navigates
           back to home. */}
@@ -5833,7 +5928,7 @@ function AppInner() {
         renderSettingsSurface('modal')
       ) : null}
       </AnimatePresence>
-      <MemoryToast
+      {studio.hostServices && <MemoryToast
         onOpenMemory={() => openSettings('memory')}
         subscriptionMode={memoryToastSubscriptionMode({
           routeKind: route.kind,
@@ -5848,7 +5943,7 @@ function AppInner() {
               || (route.kind === 'home' && route.view === 'settings')
             ),
         })}
-      />
+      />}
       {workingDirError ? (
         <Toast
           message={workingDirError}

@@ -11,6 +11,7 @@ import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   MULTIUSER_ROUTE_CLASSIFICATION,
+  findPrecedenceOrderViolations,
   findStaleClassifications,
   findUnclassifiedRegistrations,
   routeKey,
@@ -87,32 +88,242 @@ afterAll(async () => {
   }
 });
 
+/** S5 (#58): the reviewed owner file routes, including the matched regex routes. */
+const S5_OWNER_FILE_ROUTES = [
+  // S6 (#59): reviewed alias to the owner/session-bound preview capability.
+  'owner-scoped-project GET /api/projects/:id/preview-url',
+  'owner-scoped-project GET /api/projects/:id/conversations/:cid/messages/:mid/artifacts',
+  'owner-scoped-project GET /api/projects/:id/chat-artifact-snapshots/:sid',
+  'owner-scoped-project GET /api/projects/:id/chat-artifact-snapshots/:sid/content',
+  'owner-scoped-project GET /api/projects/:id/chat-artifact-snapshots/:sid/thumbnail',
+  'owner-scoped-project GET /api/projects/:id/workspace-artifacts/:aid',
+  'owner-scoped-project DELETE /^\\/api\\/projects\\/([^/]+)\\/raw\\/(.+)$/u',
+  'owner-scoped-project DELETE /api/projects/:id/files/:name',
+  // #66 deployment-local public links.
+  'owner-scoped-project GET /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)\\/publish-public$/u',
+  'owner-scoped-project POST /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)\\/publish-public$/u',
+  'owner-scoped-project DELETE /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)\\/publish-public$/u',
+  'owner-scoped-project GET /api/multiuser/projects/:id/public-links',
+  'owner-scoped-project GET /api/multiuser/projects/:id/public-links/:path',
+  'owner-scoped-project POST /api/multiuser/projects/:id/public-links/:path',
+  'owner-scoped-project DELETE /api/multiuser/projects/:id/public-links/:path',
+  'preview-capability GET /api/multiuser/public/:slug/*path',
+  'owner-scoped-project DELETE /api/projects/:id/folders',
+  'owner-scoped-project GET /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)$/u',
+  'owner-scoped-project GET /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)\\/versions$/u',
+  'owner-scoped-project GET /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)\\/versions\\/([^/]+)$/u',
+  'owner-scoped-project GET /^\\/api\\/projects\\/([^/]+)\\/raw\\/(.+)$/u',
+  'owner-scoped-project GET /^\\/api\\/projects\\/([^/]+)\\/text-preview\\/(.+)$/u',
+  'owner-scoped-project GET /api/projects/:id/folders',
+  'owner-scoped-project GET /api/projects/:id/search',
+  'owner-scoped-project POST /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)\\/versions$/u',
+  'owner-scoped-project POST /^\\/api\\/projects\\/([^/]+)\\/files\\/(.+)\\/versions\\/([^/]+)\\/restore$/u',
+  'owner-scoped-project POST /api/projects/:id/files',
+  'owner-scoped-project POST /api/projects/:id/files/rename',
+  'owner-scoped-project POST /api/projects/:id/folders',
+  'owner-scoped-project POST /api/projects/:id/upload',
+];
+
 describe('route classification covers the real inventory', () => {
   it('classifies every registered route and has no stale entries', () => {
     const registrations = [...daemon.routeInventory, ...daemon.patternRouteInventory, ...daemon.pathlessRouteInventory];
     expect(daemon.pathlessRouteInventory.length).toBeGreaterThan(0);
     expect(findUnclassifiedRegistrations(registrations)).toEqual([]);
     expect(findStaleClassifications(registrations)).toEqual([]);
+    // #81: Express answers every overlapping static/param pair with the route the gate chose.
+    expect(findPrecedenceOrderViolations(registrations)).toEqual([]);
   });
 
-  it('allows exactly the reviewed minimum set; everything else is blocked or middleware', () => {
+  it('allows exactly the reviewed actor-safe set; everything else is blocked or middleware', () => {
     const allowed = MULTIUSER_ROUTE_CLASSIFICATION
       .filter((entry) => entry.routeClass !== 'blocked-in-multiuser' && entry.routeClass !== 'middleware')
       .map((entry) => `${entry.routeClass} ${entry.key}`)
       .sort();
-    expect(allowed).toEqual([
+    expect(allowed).toEqual([...S5_OWNER_FILE_ROUTES, ...[
+      'actor-scoped GET /api/app-config',
+      'actor-scoped GET /api/multiuser/settings/config',
+      'actor-scoped PUT /api/app-config',
+      'actor-scoped PUT /api/multiuser/settings/config',
+      'actor-scoped GET /api/codex-pets',
+      'actor-scoped GET /api/multiuser/catalog/codex-pets',
+      'actor-scoped GET /api/codex-pets/:id/spritesheet',
+      'actor-scoped GET /api/multiuser/catalog/codex-pets/:id/spritesheet',
+      // S41 (#61): bundled plugin catalog, owner-only apply, applied snapshots and read-only marketplaces.
+      'actor-scoped GET /api/plugins',
+      'actor-scoped GET /api/multiuser/catalog/plugins',
+      'actor-scoped GET /api/plugins/:id',
+      'actor-scoped GET /api/multiuser/catalog/plugins/:id',
+      'actor-scoped POST /api/plugins/:id/apply',
+      'actor-scoped POST /api/multiuser/catalog/plugins/:id/apply',
+      'actor-scoped GET /api/applied-plugins/:snapshotId',
+      'actor-scoped GET /api/multiuser/catalog/applied-plugins/:snapshotId',
+      'actor-scoped GET /api/marketplaces',
+      'actor-scoped GET /api/multiuser/catalog/marketplaces',
+      'actor-scoped GET /api/marketplaces/:id',
+      'actor-scoped GET /api/multiuser/catalog/marketplaces/:id',
+      'actor-scoped GET /api/marketplaces/:id/plugins',
+      'actor-scoped GET /api/multiuser/catalog/marketplaces/:id/plugins',
+      'actor-scoped GET /api/memory',
+      'actor-scoped GET /api/multiuser/settings/memory',
+      'actor-scoped GET /api/memory/tree',
+      'actor-scoped GET /api/multiuser/settings/memory/tree',
+      'actor-scoped PATCH /api/memory/tree/:id',
+      'actor-scoped PATCH /api/multiuser/settings/memory/tree/:id',
+      'actor-scoped PUT /api/memory/index',
+      'actor-scoped PUT /api/multiuser/settings/memory/index',
+      'actor-scoped PATCH /api/memory/config',
+      'actor-scoped PATCH /api/multiuser/settings/memory/config',
+      'actor-scoped GET /api/memory/events',
+      'actor-scoped GET /api/multiuser/settings/memory/events',
+      'actor-scoped GET /api/memory/system-prompt',
+      'actor-scoped GET /api/multiuser/settings/memory/system-prompt',
+      'actor-scoped POST /api/memory',
+      'actor-scoped POST /api/multiuser/settings/memory',
+      'actor-scoped GET /api/memory/:id',
+      'actor-scoped GET /api/multiuser/settings/memory/:id',
+      'actor-scoped PUT /api/memory/:id',
+      'actor-scoped PUT /api/multiuser/settings/memory/:id',
+      'actor-scoped DELETE /api/memory/:id',
+      'actor-scoped DELETE /api/multiuser/settings/memory/:id',
+      'actor-scoped GET /api/memory/extractions',
+      'actor-scoped GET /api/multiuser/settings/memory/extractions',
+      'actor-scoped DELETE /api/memory/extractions',
+      'actor-scoped DELETE /api/multiuser/settings/memory/extractions',
+      'actor-scoped DELETE /api/memory/extractions/:id',
+      'actor-scoped DELETE /api/multiuser/settings/memory/extractions/:id',
+      'actor-scoped GET /api/memory/verifications',
+      'actor-scoped GET /api/multiuser/settings/memory/verifications',
+      'actor-scoped DELETE /api/memory/verifications',
+      'actor-scoped DELETE /api/multiuser/settings/memory/verifications',
+      'actor-scoped DELETE /api/memory/verifications/:id',
+      'actor-scoped DELETE /api/multiuser/settings/memory/verifications/:id',
+      'actor-scoped POST /api/memory/rules/suggest',
+      'actor-scoped POST /api/multiuser/settings/memory/rules/suggest',
+      'actor-scoped POST /api/memory/extract',
+      'actor-scoped POST /api/multiuser/settings/memory/extract',
+      'actor-scoped GET /api/craft',
+      'actor-scoped GET /api/multiuser/catalog/craft',
+      'actor-scoped GET /api/craft/:id',
+      'actor-scoped GET /api/multiuser/catalog/craft/:id',
+      'actor-scoped GET /api/design-templates',
+      'actor-scoped GET /api/multiuser/catalog/design-templates',
+      'actor-scoped GET /api/design-templates/:id',
+      'actor-scoped GET /api/multiuser/catalog/design-templates/:id',
+      'actor-scoped GET /api/prompt-templates',
+      'actor-scoped GET /api/multiuser/catalog/prompt-templates',
+      'actor-scoped GET /api/prompt-templates/:surface/:id',
+      'actor-scoped GET /api/multiuser/catalog/prompt-templates/:surface/:id',
+      'actor-scoped GET /api/design-systems',
+      'actor-scoped GET /api/multiuser/catalog/design-systems',
+      'actor-scoped POST /api/design-systems',
+      'actor-scoped POST /api/multiuser/catalog/design-systems',
+      'actor-scoped PATCH /api/design-systems/:id',
+      'actor-scoped PATCH /api/multiuser/catalog/design-systems/:id',
+      'actor-scoped DELETE /api/design-systems/:id',
+      'actor-scoped DELETE /api/multiuser/catalog/design-systems/:id',
+      'actor-scoped GET /api/design-systems/:id',
+      'actor-scoped GET /api/multiuser/catalog/design-systems/:id',
+      'actor-scoped GET /api/design-systems/:id/revisions',
+      'actor-scoped GET /api/multiuser/catalog/design-systems/:id/revisions',
+      'actor-scoped GET /api/design-systems/:id/files',
+      'actor-scoped GET /api/multiuser/catalog/design-systems/:id/files',
+      'actor-scoped GET /api/design-systems/:id/file',
+      'actor-scoped GET /api/multiuser/catalog/design-systems/:id/file',
+      'actor-scoped GET /api/design-systems/:id/preview',
+      'actor-scoped GET /api/multiuser/catalog/design-systems/:id/preview',
+      'actor-scoped GET /api/design-systems/:id/showcase',
+      'actor-scoped GET /api/multiuser/catalog/design-systems/:id/showcase',
+      'actor-scoped GET /api/skills',
+      'actor-scoped GET /api/skills/:id',
+      'actor-scoped GET /api/skills/:id/files',
+      'actor-scoped POST /api/skills/import',
+      'actor-scoped PUT /api/skills/:id',
+      'actor-scoped DELETE /api/skills/:id',
+      'actor-scoped GET /api/multiuser/catalog/skills',
+      'actor-scoped GET /api/multiuser/catalog/skills/:id',
+      'actor-scoped GET /api/multiuser/catalog/skills/:id/files',
+      'actor-scoped POST /api/multiuser/catalog/skills/import',
+      'actor-scoped PUT /api/multiuser/catalog/skills/:id',
+      'actor-scoped DELETE /api/multiuser/catalog/skills/:id',
+      'actor-scoped POST /api/skills/import-files',
+      // #61/#65 team catalogs: owner-managed use grants; the handler answers one 404 for missing/foreign.
+      ...['skills', 'design-systems'].flatMap((segment) => [
+        `actor-scoped GET /api/multiuser/catalog/${segment}/:id/access`,
+        `actor-scoped DELETE /api/multiuser/catalog/${segment}/:id/access`,
+        `actor-scoped PUT /api/multiuser/catalog/${segment}/:id/shares`,
+        `actor-scoped DELETE /api/multiuser/catalog/${segment}/:id/shares/:accountId`,
+      ]),
+      'actor-scoped POST /api/multiuser/catalog/skills/import-files',
+      'actor-scoped GET /api/routines',
+      'actor-scoped GET /api/multiuser/routines',
+      'actor-scoped POST /api/routines',
+      'actor-scoped POST /api/multiuser/routines',
+      'actor-scoped GET /api/routines/:id',
+      'actor-scoped GET /api/multiuser/routines/:id',
+      'actor-scoped PATCH /api/routines/:id',
+      'actor-scoped PATCH /api/multiuser/routines/:id',
+      'actor-scoped DELETE /api/routines/:id',
+      'actor-scoped DELETE /api/multiuser/routines/:id',
+      'actor-scoped POST /api/routines/:id/run',
+      'actor-scoped POST /api/multiuser/routines/:id/run',
+      'actor-scoped GET /api/routines/:id/runs',
+      'actor-scoped GET /api/multiuser/routines/:id/runs',
+      'actor-scoped GET /api/automation-templates',
+      'actor-scoped GET /api/multiuser/automation-templates',
+      'actor-scoped GET /api/automation-templates/:id',
+      'actor-scoped GET /api/multiuser/automation-templates/:id',
+      'actor-scoped GET /api/automation-source-packets',
+      'actor-scoped GET /api/multiuser/automation-source-packets',
+      'actor-scoped GET /api/automation-source-packets/:id',
+      'actor-scoped GET /api/multiuser/automation-source-packets/:id',
+      'actor-scoped POST /api/automation-ingestions',
+      'actor-scoped POST /api/multiuser/automation-ingestions',
+      'actor-scoped GET /api/automation-proposals',
+      'actor-scoped GET /api/multiuser/automation-proposals',
+      'actor-scoped POST /api/automation-proposals',
+      'actor-scoped POST /api/multiuser/automation-proposals',
+      'actor-scoped GET /api/automation-proposals/:id',
+      'actor-scoped GET /api/multiuser/automation-proposals/:id',
+      'actor-scoped POST /api/automation-proposals/:id/apply',
+      'actor-scoped POST /api/multiuser/automation-proposals/:id/apply',
+      'actor-scoped POST /api/automation-proposals/:id/reject',
+      'actor-scoped POST /api/multiuser/automation-proposals/:id/reject',
+      'actor-scoped POST /api/routines/:id/runs/:runId/crystallize',
+      'actor-scoped POST /api/multiuser/routines/:id/runs/:runId/crystallize',
+      'actor-scoped GET /api/active',
       'actor-scoped GET /api/agent-accounts',
       'actor-scoped GET /api/multiuser/design-catalog',
       'actor-scoped GET /api/projects',
       'actor-scoped GET /api/runs',
+      'actor-scoped POST /api/active',
       'actor-scoped POST /api/agent-accounts/codex/logins',
       'actor-scoped POST /api/projects',
+      'actor-scoped POST /api/multiuser/projects',
+      'actor-scoped POST /api/import/claude-design',
+      'actor-scoped POST /api/multiuser/import/claude-design',
+      'actor-scoped POST /api/import/files',
+      'actor-scoped GET /api/tools/mcp/list',
+      'actor-scoped POST /api/tools/mcp/execute',
+      'actor-scoped GET /api/tools/connectors/list',
+      'actor-scoped POST /api/tools/connectors/execute',
+      'actor-scoped GET /api/templates',
+      'actor-scoped GET /api/templates/:id',
+      'actor-scoped POST /api/templates',
+      'actor-scoped DELETE /api/templates/:id',
+      'actor-scoped GET /api/multiuser/catalog/templates',
+      'actor-scoped GET /api/multiuser/catalog/templates/:id',
+      'actor-scoped POST /api/multiuser/catalog/templates',
+      'actor-scoped DELETE /api/multiuser/catalog/templates/:id',
       'actor-scoped POST /api/runs',
       'admin-only GET /api/admin/agent-accounts',
       'admin-only GET /api/admin/pool',
+      'admin-only GET /api/admin/pool/openai',
+      'admin-only PUT /api/admin/pool/openai',
+      'admin-only GET /api/admin/users/:id/studio-pilot',
       'admin-only PUT /api/admin/agent-accounts/personal-capacity',
       'admin-only PUT /api/admin/pool/providers/:providerId',
       'admin-only PUT /api/admin/pool/users/:id/quota',
+      'admin-only PUT /api/admin/users/:id/studio-pilot',
       'auth GET /api/auth/audit',
       'auth GET /api/auth/me',
       'auth GET /api/auth/users',
@@ -131,21 +342,95 @@ describe('route classification covers the real inventory', () => {
       'owner-scoped-agent-account POST /api/agent-accounts/codex/accounts/:accountId/verify',
       'owner-scoped-agent-account POST /api/agent-accounts/codex/logins/:attemptId/cancel',
       'owner-scoped-project DELETE /api/projects/:id',
+      'owner-scoped-project DELETE /api/projects/:id/conversations/:cid',
       'owner-scoped-project GET /api/multiuser/projects/:id/conversations/:cid/design',
       'owner-scoped-project GET /api/multiuser/projects/:id/design-selections',
       'owner-scoped-project GET /api/multiuser/projects/:id/preview-url',
       'owner-scoped-project GET /api/projects/:id',
       'owner-scoped-project GET /api/projects/:id/conversations',
       'owner-scoped-project GET /api/projects/:id/conversations/:cid/messages',
+      'owner-scoped-project GET /api/projects/:id/events',
       'owner-scoped-project GET /api/projects/:id/file-content/*path',
       'owner-scoped-project GET /api/projects/:id/files',
+      'owner-scoped-project GET /api/projects/:id/tabs',
       'owner-scoped-project PATCH /api/projects/:id',
+      'owner-scoped-project PATCH /api/projects/:id/conversations/:cid',
       'owner-scoped-project POST /api/multiuser/projects/:id/conversations',
       'owner-scoped-project POST /api/multiuser/projects/:id/preview/:scope/renew',
       'owner-scoped-project POST /api/projects/:id/conversations',
+      'owner-scoped-project GET /api/projects/:id/archive',
+      'owner-scoped-project POST /api/projects/:id/archive/batch',
+      'owner-scoped-project GET /api/multiuser/projects/:id/archive',
+      'owner-scoped-project POST /api/multiuser/projects/:id/archive/batch',
+      'owner-scoped-project POST /api/projects/:id/export/html',
+      'owner-scoped-project POST /api/multiuser/projects/:id/export/html',
+      'owner-scoped-project POST /api/projects/:id/export/pptx',
+      'owner-scoped-project POST /api/multiuser/projects/:id/export/pptx',
+      'owner-scoped-project POST /api/projects/:id/export/pdf-image',
+      'owner-scoped-project POST /api/multiuser/projects/:id/export/pdf-image',
+      'owner-scoped-project POST /api/projects/:id/export/image',
+      'owner-scoped-project POST /api/multiuser/projects/:id/export/image',
+      'owner-scoped-project GET /api/projects/:id/conversations/:cid/comments',
+      'owner-scoped-project GET /api/multiuser/projects/:id/conversations/:cid/comments',
+      'owner-scoped-project POST /api/projects/:id/conversations/:cid/comments',
+      'owner-scoped-project POST /api/multiuser/projects/:id/conversations/:cid/comments',
+      'owner-scoped-project PATCH /api/projects/:id/conversations/:cid/comments/:commentId',
+      'owner-scoped-project PATCH /api/multiuser/projects/:id/conversations/:cid/comments/:commentId',
+      'owner-scoped-project PATCH /api/projects/:id/conversations/:cid/comments/:commentId/anchor',
+      'owner-scoped-project PATCH /api/multiuser/projects/:id/conversations/:cid/comments/:commentId/anchor',
+      'owner-scoped-project PATCH /api/projects/:id/conversations/:cid/comments/:commentId/reorder',
+      'owner-scoped-project PATCH /api/multiuser/projects/:id/conversations/:cid/comments/:commentId/reorder',
+      'owner-scoped-project DELETE /api/projects/:id/conversations/:cid/comments/:commentId',
+      'owner-scoped-project DELETE /api/multiuser/projects/:id/conversations/:cid/comments/:commentId',
+      'actor-scoped POST /api/research/search',
+      'actor-scoped POST /api/multiuser/research/search',
+      'actor-scoped GET /api/multiuser/settings/provider-keys',
+      'actor-scoped PUT /api/multiuser/settings/provider-keys/:provider',
+      // S58 (#62): account connectors control plane; the standard paths are aliases.
+      'actor-scoped GET /api/connectors/composio/config',
+      'actor-scoped GET /api/multiuser/connectors/company-key',
+      'admin-only PUT /api/connectors/composio/config',
+      'admin-only PUT /api/multiuser/connectors/company-key',
+      ...['GET ', 'GET /status', 'GET /discovery', 'GET /:connectorId', 'POST /auth-configs/prepare', 'POST /:connectorId/connect',
+        'POST /:connectorId/authorization/cancel', 'DELETE /:connectorId/connection'].flatMap((route) => {
+        const [method, suffix] = route.split(' ');
+        return [`actor-scoped ${method} /api/connectors${suffix}`, `actor-scoped ${method} /api/multiuser/connectors${suffix}`];
+      }),
+      'auth GET /api/connectors/oauth/callback/:connectorId',
+      'auth GET /api/multiuser/connectors/oauth/callback/:connectorId',
+      // S60 (#62, decision 2A): account remote MCP servers; the standard paths are aliases, stdio stays refused.
+      ...['GET ', 'PUT '].flatMap((route) => [`actor-scoped ${route}/api/mcp/servers`, `actor-scoped ${route}/api/multiuser/mcp/servers`]),
+      'actor-scoped POST /api/multiuser/mcp/servers',
+      'actor-scoped PATCH /api/multiuser/mcp/servers/:serverId',
+      'actor-scoped DELETE /api/multiuser/mcp/servers/:serverId',
+      'actor-scoped POST /api/multiuser/mcp/servers/:serverId/test',
+      ...['POST /start', 'POST /disconnect', 'GET /status'].flatMap((route) => {
+        const [method, suffix] = route.split(' ');
+        return [`actor-scoped ${method} /api/mcp/oauth${suffix}`, `actor-scoped ${method} /api/multiuser/mcp/oauth${suffix}`];
+      }),
+      'actor-scoped POST /api/multiuser/mcp/oauth/refresh',
+      'actor-scoped POST /api/multiuser/mcp/oauth/cancel',
+      'auth GET /api/mcp/oauth/callback',
+      'auth GET /api/multiuser/mcp/oauth/callback',
+      'owner-scoped-project PUT /api/multiuser/projects/:id/shares',
+      'owner-scoped-project DELETE /api/multiuser/projects/:id/shares/:accountId',
+      'owner-scoped-project GET /api/multiuser/projects/:id/access',
+      'owner-scoped-project DELETE /api/multiuser/projects/:id/access',
+      'owner-scoped-project GET /api/projects/:id/presence',
+      'owner-scoped-project GET /api/multiuser/projects/:id/presence',
+      'owner-scoped-project POST /api/projects/:id/presence/heartbeat',
+      'owner-scoped-project POST /api/multiuser/projects/:id/presence/heartbeat',
+      'owner-scoped-project POST /api/projects/:id/presence/leave',
+      'owner-scoped-project POST /api/multiuser/projects/:id/presence/leave',
+      'owner-scoped-project POST /api/projects/:id/duplicate',
+      'owner-scoped-project POST /api/multiuser/projects/:id/duplicate',
+      'owner-scoped-project PUT /api/projects/:id/conversations/:cid/messages/:mid',
+      'owner-scoped-project PUT /api/projects/:id/tabs',
       'owner-scoped-run GET /api/runs/:id',
       'owner-scoped-run GET /api/runs/:id/events',
       'owner-scoped-run POST /api/runs/:id/cancel',
+      'owner-scoped-run POST /api/runs/:id/feedback',
+      'owner-scoped-run POST /api/runs/:id/steer',
       'preview-capability GET /api/multiuser/projects/:id/preview/:scope/*path',
       'public-probe GET /api/health',
       'public-probe GET /api/ready',
@@ -155,35 +440,92 @@ describe('route classification covers the real inventory', () => {
       'public-web GET /account/agents',
       'public-web GET /admin/audit',
       'public-web GET /admin/users',
+      'public-web GET /agent-icons/:icon',
+      'public-web GET /all-projects',
       'public-web GET /app-icon.png',
+      'public-web GET /automations',
+      'public-web GET /board',
+      'public-web GET /brands',
+      'public-web GET /brands/:brandId',
+      'public-web GET /collab-demo',
+      'public-web GET /collab-demo/:projectId',
+      'public-web GET /community',
+      'public-web GET /design-systems',
+      'public-web GET /design-systems/:designSystemId',
+      'public-web GET /design-systems/create',
+      'public-web GET /drafts',
+      'public-web GET /editor-icons/:icon',
       'public-web GET /fonts/AlbertSans-Italic-VariableFont_wght.ttf',
       'public-web GET /fonts/AlbertSans-VariableFont_wght.ttf',
       'public-web GET /fonts/JiduMonoPro-Regular.otf',
+      'public-web GET /integrations',
+      'public-web GET /library',
       'public-web GET /login',
+      'public-web GET /marketplace',
+      'public-web GET /marketplace/:pluginId',
+      'public-web GET /members',
+      'public-web GET /onboarding',
+      'public-web GET /plugins',
       'public-web GET /projects',
       'public-web GET /projects/:projectId',
       'public-web GET /projects/:projectId/conversations/:conversationId',
+      'public-web GET /projects/:projectId/conversations/:conversationId/files/*file',
+      'public-web GET /projects/:projectId/files/*file',
+      'public-web GET /settings',
       'public-web GET /setup',
-    ]);
+      'public-web GET /workspace-settings',
+      // S52/S53 (#63): canonical Studio Live Artifacts; the standard path is the alias.
+      'actor-scoped GET /api/live-artifacts',
+      'actor-scoped POST /api/live-artifacts',
+      'actor-scoped GET /api/live-artifacts/:artifactId',
+      'actor-scoped PATCH /api/live-artifacts/:artifactId',
+      'actor-scoped DELETE /api/live-artifacts/:artifactId',
+      'actor-scoped GET /api/live-artifacts/:artifactId/preview',
+      'actor-scoped GET /api/live-artifacts/:artifactId/refreshes',
+      'actor-scoped POST /api/live-artifacts/:artifactId/refresh',
+      'actor-scoped GET /api/multiuser/live-artifacts',
+      'actor-scoped POST /api/multiuser/live-artifacts',
+      'actor-scoped GET /api/multiuser/live-artifacts/:artifactId',
+      'actor-scoped PATCH /api/multiuser/live-artifacts/:artifactId',
+      'actor-scoped DELETE /api/multiuser/live-artifacts/:artifactId',
+      'actor-scoped GET /api/multiuser/live-artifacts/:artifactId/preview',
+      'actor-scoped GET /api/multiuser/live-artifacts/:artifactId/refreshes',
+      'actor-scoped POST /api/multiuser/live-artifacts/:artifactId/refresh',
+      // S54 (#61): captured bundled HTML previews and named examples.
+      'actor-scoped GET /api/plugins/:id/preview',
+      'actor-scoped GET /api/plugins/:id/example/:name',
+      'actor-scoped GET /api/multiuser/catalog/plugins/:id/preview',
+      'actor-scoped GET /api/multiuser/catalog/plugins/:id/example/:name',
+      // Cookie-free capability reads on the dedicated preview origin (#39).
+      'preview-capability GET /api/multiuser/live-artifact-preview/:scope',
+      'preview-capability GET /api/multiuser/plugin-preview/:scope/*path',
+    ]].sort());
   });
 
-  it('keeps static mounts, the SPA fallback, SSE streams and regex preview routes blocked', () => {
+  it('keeps static mounts, the SPA fallback, global SSE streams and regex preview routes blocked', () => {
     const byKey = new Map(MULTIUSER_ROUTE_CLASSIFICATION.map((entry) => [entry.key, entry]));
     for (const key of [
       'USE /artifacts',
       'USE /frames',
       'USE /api/plugin-previews',
       'GET /*splat',
-      'GET /api/projects/:id/events',
       'GET /api/library/events',
-      'GET /api/memory/events',
       'GET /api/workspace/events',
       'GET /api/plugins/events',
     ]) {
       expect(byKey.get(key)?.routeClass, key).toBe('blocked-in-multiuser');
     }
+    // Every regex route is blocked unless it is a reviewed owner-scoped entry with its exact pattern.
     for (const pattern of daemon.patternRouteInventory) {
-      expect(byKey.get(routeKey(pattern.method, pattern.path))?.routeClass).toBe('blocked-in-multiuser');
+      const entry = byKey.get(routeKey(pattern.method, pattern.path));
+      if (entry?.pattern) {
+        expect([entry.key, entry.routeClass]).toEqual([entry.key, 'owner-scoped-project']);
+        expect(String(entry.pattern)).toBe(pattern.path);
+      } else expect(entry?.routeClass, pattern.path).toBe('blocked-in-multiuser');
+    }
+    for (const blockedPattern of ['GET /^\\/api\\/projects\\/([^/]+)\\/preview\\/([^/]+)\\/(.+)$/u', 'GET /^\\/api\\/projects\\/([^/]+)\\/powered\\/(.+)$/u',
+      'OPTIONS /^\\/api\\/projects\\/([^/]+)\\/raw\\/(.+)$/u']) {
+      expect(byKey.get(blockedPattern)?.routeClass, blockedPattern).toBe('blocked-in-multiuser');
     }
     expect(daemon.patternRouteInventory.length).toBeGreaterThan(0);
   });
@@ -485,6 +827,34 @@ describe('client-supplied identity is never authority', () => {
   });
 });
 
+describe('route precedence (#81)', () => {
+  // `PUT /api/memory/index` also matches `PUT /api/memory/:id`. The static
+  // route answers in Express, so the gate must authorize, police and rewrite
+  // it with its own policy, not the parameterized entry's.
+  it('saves the actor\'s own memory index through the standard route and its alias', async () => {
+    const read = async (user: Principal) => (await daemon.request({ path: '/api/memory', cookie: user.cookie })).json.index as string;
+    const bobBefore = await read(bob);
+    const adminBefore = await read(admin);
+    for (const [route, marker] of [['/api/memory/index', 'ALICE_INDEX_STANDARD'], ['/api/multiuser/settings/memory/index', 'ALICE_INDEX_ALIAS']] as const) {
+      const index = `# Memory\n\n- ${marker}\n`;
+      const saved = await daemon.request({ method: 'PUT', path: route, cookie: alice.cookie, body: { index } });
+      expect(saved.status, `${route} ${saved.text}`).toBe(200);
+      expect(saved.json).toEqual({ index });
+      expect(await read(alice)).toBe(index);
+    }
+    // Every route keeps its own body policy: the index route refuses entry fields,
+    // the entry route refuses the index field.
+    expect((await daemon.request({ method: 'PUT', path: '/api/memory/index', cookie: alice.cookie, body: { index: 'x', id: 'index' } })).status).toBe(400);
+    expect((await daemon.request({ method: 'PUT', path: '/api/memory/index', cookie: alice.cookie, body: { name: 'Index', body: 'x' } })).status).toBe(400);
+    expect((await daemon.request({ method: 'PUT', path: '/api/memory/user_fact', cookie: alice.cookie, body: { index: 'x' } })).status).toBe(400);
+    // No session, no write; B and the admin keep their own index (an actor-scoped route has no foreign target).
+    expect((await daemon.request({ method: 'PUT', path: '/api/memory/index', body: { index: 'anonymous' } })).status).toBe(401);
+    expect(await read(bob)).toBe(bobBefore);
+    expect(await read(admin)).toBe(adminBefore);
+    expect(await read(alice)).toContain('ALICE_INDEX_ALIAS');
+  });
+});
+
 describe('fail-closed classification', () => {
   it('answers 404 for unclassified routes even for a signed-in owner', async () => {
     const a = await createProject(alice, 'alice-unclassified');
@@ -504,20 +874,19 @@ describe('fail-closed classification', () => {
   it('denies blocked-in-multiuser families to signed-in users and admins alike', async () => {
     const a = await createProject(alice, 'alice-blocked');
     const blocked: Array<{ method: string; path: string; body?: unknown }> = [
-      { method: 'GET', path: '/api/app-config' },
-      { method: 'PUT', path: '/api/app-config', body: {} },
+      { method: 'GET', path: '/api/strategies/od-next/rollout' },
+      { method: 'POST', path: '/api/memory/connectors/extract', body: {} },
       { method: 'POST', path: '/api/import/folder', body: { baseDir: '/' } },
       { method: 'POST', path: '/api/dialog/open-folder', body: {} },
-      { method: 'GET', path: '/api/mcp/servers' },
-      { method: 'GET', path: '/api/connectors' },
+      { method: 'GET', path: '/api/mcp/install-info' },
+      { method: 'POST', path: '/api/mcp/install/codex', body: {} },
+      { method: 'GET', path: '/api/connectors/logos/github' },
       { method: 'POST', path: '/api/plugins/install', body: {} },
       { method: 'POST', path: '/api/chat', body: {} },
       { method: 'GET', path: '/api/daemon/status' },
       { method: 'GET', path: '/api/daemon/db' },
-      { method: 'GET', path: `/api/projects/${a.id}/events` },
       { method: 'GET', path: `/api/projects/${a.id}/workspace-scope` },
       { method: 'POST', path: `/api/projects/${a.id}/terminals`, body: {} },
-      { method: 'POST', path: `/api/projects/${a.id}/duplicate`, body: {} },
       { method: 'GET', path: '/api/workspaces/w/projects' },
       { method: 'GET', path: '/artifacts/anything.html' },
       { method: 'GET', path: '/frames/anything.html' },
@@ -538,8 +907,6 @@ describe('fail-closed classification', () => {
       { projectLocationId: 'some-location' },
       { metadata: { kind: 'template', templateId: 'tpl' } },
       { pluginId: 'some-plugin' },
-      { skillId: 'some-skill' },
-      { designSystemId: 'some-design-system' },
     ]) {
       const res = await daemon.request({
         method: 'POST',
@@ -549,12 +916,16 @@ describe('fail-closed classification', () => {
       });
       expect(res.status, JSON.stringify(body)).toBe(400);
     }
+    for (const body of [{ skillId: 'some-skill' }, { designSystemId: 'some-design-system' }]) {
+      const result = await daemon.request({ method: 'POST', path: '/api/projects', cookie: alice.cookie,
+        body: { id: randomUUID(), name: 'unavailable resource', ...body } });
+      expect(result.status, JSON.stringify(body)).toBe(404);
+    }
     expect(await listProjectIds(alice)).toEqual(before);
 
     const a = await createProject(alice, 'alice-patch-policy');
     for (const body of [
       { metadata: { kind: 'prototype', linkedDirs: ['/etc'] } },
-      { designSystemId: 'x' },
       { skillId: 'x' },
     ]) {
       const res = await daemon.request({

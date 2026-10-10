@@ -1,0 +1,8 @@
+/* The Studio account control lives in the shared rail / workspace chrome (StudioAccountMenu). */
+.workspace-shell[data-studio-pilot] .split > .studio-unavailable { grid-column: 3; padding: 16px; min-width: 0; }
+.workspace-shell[data-studio-pilot] .split-chat-collapse { display: none; }
+@media (max-width: 600px) {
+  .workspace-shell[data-studio-pilot] .split { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+  .workspace-shell[data-studio-pilot] .split-resize-handle { display: none; }
+  .workspace-shell[data-studio-pilot] .split > .studio-unavailable { grid-column: 1; grid-row: 2; margin: 0; padding: 8px 16px; font-size: 12px; }
+}

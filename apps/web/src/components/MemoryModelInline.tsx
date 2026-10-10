@@ -1,3 +1,4 @@
+import { studioSetTimeout as setTimeout, studioFetch as fetch } from '../runtime/studio-transport';
 // Inline "Memory model" picker — sits right next to the chat model
 // dropdown (both in CLI mode and BYOK mode) inside Settings →
 // Execution mode.

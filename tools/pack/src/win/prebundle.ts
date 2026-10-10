@@ -33,6 +33,7 @@ export const WIN_PREBUNDLE_RUNTIME_DEPENDENCIES = {
 } as const;
 
 export const WIN_STANDALONE_PREBUNDLE_EXCLUDED_INTERNAL_PACKAGES = [
+  "@open-design/artifact-capture",
   "@open-design/daemon",
   "@open-design/desktop",
   "@open-design/launcher-proto",

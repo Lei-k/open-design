@@ -1,3 +1,4 @@
+import { studioSetTimeout as setTimeout, studioSetInterval as setInterval, studioFetch as fetch } from './studio-transport';
 // Client-side export helpers used by the Share menu in the HTML viewer.
 // Export formats run entirely in the browser:
 //   - PDF  : open the artifact in a popup window and trigger window.print().

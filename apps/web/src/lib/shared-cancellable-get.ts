@@ -1,3 +1,5 @@
+import { studioSetTimeout as setTimeout } from '../runtime/studio-transport';
+import { registerStudioReset } from '../runtime/studio-resources';
 // Single-flight GET coalescing for readers that need per-caller cancellation.
 //
 // `coalescedGet` (see ./coalesced-get.ts) collapses identical display reads
@@ -164,3 +166,5 @@ export function resetSharedCancellableGet(): void {
   entries.clear();
   forcedAt.clear();
 }
+
+registerStudioReset(resetSharedCancellableGet);

@@ -1,3 +1,4 @@
+import { studioWindowSessionStorage } from '../runtime/studio-transport';
 // First-generation loop tracker (spec §8.3 loop: 写需求 → 生成 → 查看 → 修改
 // → 导出/分享; §11.1 onboarding_completed).
 //
@@ -33,8 +34,8 @@ const DONE_KEY = (projectId: string) => `open-design:first-loop-completed:${proj
 export function beginFirstLoop(projectId: string, entry: OnboardingEntry): void {
   if (!projectId) return;
   try {
-    if (window.sessionStorage.getItem(ENTRY_KEY(projectId))) return;
-    window.sessionStorage.setItem(ENTRY_KEY(projectId), JSON.stringify(entry));
+    if (studioWindowSessionStorage().getItem(ENTRY_KEY(projectId))) return;
+    studioWindowSessionStorage().setItem(ENTRY_KEY(projectId), JSON.stringify(entry));
   } catch {
     // Storage-denied contexts lose loop attribution — never throw.
   }
@@ -42,7 +43,7 @@ export function beginFirstLoop(projectId: string, entry: OnboardingEntry): void 
 
 function readEntry(projectId: string): OnboardingEntry | null {
   try {
-    const raw = window.sessionStorage.getItem(ENTRY_KEY(projectId));
+    const raw = studioWindowSessionStorage().getItem(ENTRY_KEY(projectId));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<OnboardingEntry>;
     if (
@@ -60,7 +61,7 @@ function readEntry(projectId: string): OnboardingEntry | null {
 
 function readSteps(projectId: string): TrackingOnboardingFirstLoopStep[] {
   try {
-    const raw = window.sessionStorage.getItem(STEPS_KEY(projectId));
+    const raw = studioWindowSessionStorage().getItem(STEPS_KEY(projectId));
     const parsed = raw ? (JSON.parse(raw) as unknown) : [];
     return Array.isArray(parsed)
       ? (parsed.filter((s) => typeof s === 'string') as TrackingOnboardingFirstLoopStep[])
@@ -90,16 +91,16 @@ export function recordFirstLoopStep(
     steps = readSteps(projectId);
     if (!steps.includes(step)) {
       steps = [...steps, step];
-      window.sessionStorage.setItem(STEPS_KEY(projectId), JSON.stringify(steps));
+      studioWindowSessionStorage().setItem(STEPS_KEY(projectId), JSON.stringify(steps));
     }
     if (step !== 'delivered') return;
-    if (window.sessionStorage.getItem(DONE_KEY(projectId)) === '1') return;
-    window.sessionStorage.setItem(DONE_KEY(projectId), '1');
+    if (studioWindowSessionStorage().getItem(DONE_KEY(projectId)) === '1') return;
+    studioWindowSessionStorage().setItem(DONE_KEY(projectId), '1');
     // Loop closed: drop the entry + steps so any later share/export in this
     // project is a silent no-op and the ledger stops growing. The DONE flag
     // stays as a tombstone against races.
-    window.sessionStorage.removeItem(ENTRY_KEY(projectId));
-    window.sessionStorage.removeItem(STEPS_KEY(projectId));
+    studioWindowSessionStorage().removeItem(ENTRY_KEY(projectId));
+    studioWindowSessionStorage().removeItem(STEPS_KEY(projectId));
   } catch {
     return;
   }

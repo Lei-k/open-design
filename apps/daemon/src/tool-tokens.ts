@@ -25,6 +25,8 @@ export const CHAT_TOOL_ENDPOINTS = [
   '/api/tools/live-artifacts/list',
   '/api/tools/live-artifacts/refresh',
   '/api/tools/live-artifacts/update',
+  '/api/tools/mcp/list',
+  '/api/tools/mcp/execute',
   '/api/tools/connectors/list',
   '/api/tools/connectors/execute',
   '/api/tools/design-systems/read',
@@ -42,6 +44,8 @@ export const CHAT_TOOL_OPERATIONS = [
   'live-artifacts:list',
   'live-artifacts:refresh',
   'live-artifacts:update',
+  'mcp:list',
+  'mcp:execute',
   'connectors:list',
   'connectors:execute',
   'design-systems:read',
@@ -63,7 +67,28 @@ export type ToolTokenErrorCode =
   | 'TOOL_ENDPOINT_DENIED'
   | 'TOOL_OPERATION_DENIED';
 
+/** Server-captured account authority. Never parsed from a tool request. */
+export interface StudioConnectorGrant {
+  ownerAccountId: string;
+  connectorIds: string[];
+  credentialRevision: number;
+  revocationVersion: number;
+  pilotRevision: number;
+  role: 'admin' | 'user';
+  actor?: import('./services/auth-service.js').AuthActor;
+  connections: Array<{ connectorId: string; providerConnectionId: string }>;
+}
+
+/** Captured account authority and immutable remote server versions; never credentials or URLs. */
+export interface StudioMcpGrant {
+  ownerAccountId: string; role: 'admin' | 'user'; pilotRevision: number; revocationVersion: number;
+  actor?: import('./services/auth-service.js').AuthActor;
+  servers: Array<{ serverId: string; instanceId: string; generation: number; revision: number; tokenVersion: string | null }>;
+}
+
 export interface ToolTokenGrant {
+  studioConnectors?: StudioConnectorGrant;
+  studioMcp?: StudioMcpGrant;
   token: string;
   runId: string;
   projectId: string;
@@ -83,6 +108,8 @@ export interface ToolTokenGrant {
 }
 
 export interface MintToolTokenOptions {
+  studioConnectors?: StudioConnectorGrant;
+  studioMcp?: StudioMcpGrant;
   runId: string;
   projectId: string;
   allowedEndpoints?: readonly ToolEndpoint[];
@@ -181,6 +208,8 @@ export class ToolTokenRegistry {
       expiresAt: new Date(expiresAtMs).toISOString(),
       expiresAtMs,
       timer,
+      ...(options.studioMcp ? { studioMcp: structuredClone(options.studioMcp) } : {}),
+      ...(options.studioConnectors ? { studioConnectors: structuredClone(options.studioConnectors) } : {}),
       ...(options.pluginSnapshotId ? { pluginSnapshotId: options.pluginSnapshotId } : {}),
       ...(options.pluginTrust ? { pluginTrust: options.pluginTrust } : {}),
       ...(options.pluginCapabilitiesGranted

@@ -51,7 +51,8 @@ import express, {
   type RequestHandler,
   type Response,
 } from 'express';
-import type { ApiErrorCode } from '@open-design/contracts';
+import type { ApiErrorCode, AuthSessionResponse } from '@open-design/contracts';
+import { multiUserStudioCapabilities, studioMessageIdPrefix } from '../http/studio-parity.js';
 import { sendApiError } from '../http/api-errors.js';
 import {
   AuthError,
@@ -85,6 +86,9 @@ export type AuthRouteService = Pick<
   | 'resolveSession'
   | 'rotateSession'
   | 'getOwnAccount'
+  | 'getOwnStudioPilot'
+  | 'getStudioPilot'
+  | 'updateStudioPilot'
   | 'changeOwnPassword'
   | 'listAccounts'
   | 'createAccount'
@@ -109,9 +113,16 @@ export interface RegisterAuthRoutesDeps {
   /** Exact browser origins allowed to make state-changing requests. */
   allowedOrigins: readonly string[];
   onAccountSessionsRevoked?: (accountId: string) => void;
+  /** Server policy: whether personal-subscription runs can start at all. */
+  personalRunsEnabled?: boolean;
+  companyPoolAvailable?: () => boolean;
+  /** Accounts may run on their own encrypted provider key (#62/#63). */
+  personalApiKeysEnabled?: boolean;
+  renderedExportsAvailable?: () => boolean;
 }
 
 const STATUS_BY_AUTH_CODE: Record<AuthErrorCode, { status: number; code: ApiErrorCode }> = {
+  CONFLICT: { status: 409, code: 'CONFLICT' },
   VALIDATION: { status: 400, code: 'BAD_REQUEST' },
   USERNAME_TAKEN: { status: 409, code: 'CONFLICT' },
   BOOTSTRAP_CLOSED: { status: 409, code: 'CONFLICT' },
@@ -380,6 +391,28 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
   app.use(p, createRequestHardening(allowedOrigins));
   app.use(p, express.json({ limit: AUTH_BODY_LIMIT_BYTES, strict: true, type: 'application/json' }));
 
+  const pilotPath = '/api/admin/users/:id/studio-pilot';
+  const hardenPilot = createRequestHardening(allowedOrigins);
+  app.get(pilotPath, hardenPilot, requireSession, handle((req, res) => {
+    res.json(auth.getStudioPilot(actorOf(res), String(req.params.id)));
+  }));
+  app.put(pilotPath, hardenPilot, requireSession,
+    express.json({ limit: AUTH_BODY_LIMIT_BYTES, strict: true, type: 'application/json',
+      verify(_req, _res, buffer, encoding) {
+        if (encoding !== 'utf-8') throw Object.assign(new Error('unsupported pilot encoding'), { status: 415 });
+        // This endpoint accepts a flat object of two primitive fields. Decode
+        // key spelling before rejecting duplicates, including escaped keys.
+        try {
+          const keys = [...buffer.toString('utf8').matchAll(/"(?:[^"\\]|\\.)*"\s*:/g)]
+            .map(([key]) => JSON.parse(key.slice(0, key.lastIndexOf(':')).trim()) as string);
+          if (new Set(keys).size !== keys.length) throw new Error('duplicate field');
+        } catch { throw Object.assign(new Error('invalid pilot body'), { status: 400 }); }
+      },
+    }),
+    handle((req, res) => {
+      res.json(auth.updateStudioPilot(actorOf(res), String(req.params.id), req.body));
+    }), authBodyErrorHandler);
+
   app.post(`${p}/bootstrap`, handle(async (req, res) => {
     if (bootstrapSecret === null) {
       sendApiError(res, 404, 'NOT_FOUND', 'not found');
@@ -426,7 +459,12 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
 
   app.get(`${p}/me`, requireSession, handle((_req, res) => {
     const actor = actorOf(res);
-    res.status(200).json({ account: auth.getOwnAccount(actor), session: { expiresAt: actor.sessionExpiresAt } });
+    const pilot = auth.getOwnStudioPilot(actor);
+    res.status(200).json({ account: auth.getOwnAccount(actor), session: { expiresAt: actor.sessionExpiresAt },
+      studio: multiUserStudioCapabilities(pilot.studioPilot, { personalEnabled: deps.personalRunsEnabled === true, companyEnabled: deps.companyPoolAvailable?.() === true,
+        personalKeysEnabled: deps.personalApiKeysEnabled === true, renderedExports: deps.renderedExportsAvailable?.() === true }),
+      studioRevision: pilot.revision,
+      ...(pilot.studioPilot ? { studioMessageIdPrefix: studioMessageIdPrefix(actor.accountId) } : {}) } satisfies AuthSessionResponse);
   }));
 
   app.post(`${p}/session/rotate`, requireSession, handle((req, res) => {

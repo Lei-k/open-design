@@ -1,3 +1,5 @@
+import { StudioLane, useStudioCapabilities } from '../runtime/studio-capabilities';
+import { studioWindowSetTimeout, studioWindowLocalStorage, studioLocalStorage } from '../runtime/studio-transport';
 // Composed Home view — the top-down layout the entry view renders
 // when the left nav rail's "Home" tab is active.
 //
@@ -152,6 +154,9 @@ import { AnimatePresence } from 'motion/react';
 import { DeepSeekV4FlashCampaign } from './DeepSeekV4FlashCampaign';
 import type { DeepSeekV4FlashCampaignAudience } from '../campaigns/deepseek-v4-flash';
 
+/** Home media kinds a Studio OpenAI turn can generate (image, narration, short video). */
+const STUDIO_MEDIA_CHIPS: ReadonlySet<string> = new Set(['image', 'video', 'audio']);
+
 export interface ActivePlugin {
   record: InstalledPluginRecord;
   // `result` is `null` during the optimistic window — set on chip
@@ -284,7 +289,7 @@ interface Props {
   // Stage B: optional callbacks the rail's migration chips need.
   // HomeView itself never imports them; EntryShell threads them
   // through so the dispatcher can stay declarative.
-  onOpenNewProject?: (tab: 'template') => void;
+  onOpenNewProject?: (tab: 'template' | 'prototype') => void;
   onStartBlankProject?: () => Promise<void> | void;
   promptHandoff?: HomePromptHandoff | null;
   /** Dock only, straight through to HomeHero: bump to fold the docked composer
@@ -388,7 +393,7 @@ const HOME_COMPOSER_SEED_EVENT = 'open-design:home-composer:seed';
 function readHomeComposerDraft(key: string): string | null {
   if (typeof window === 'undefined') return null;
   try {
-    return window.localStorage.getItem(key);
+    return studioWindowLocalStorage().getItem(key);
   } catch {
     return null;
   }
@@ -397,8 +402,8 @@ function readHomeComposerDraft(key: string): string | null {
 function writeHomeComposerDraft(key: string, value: string | null): void {
   if (typeof window === 'undefined') return;
   try {
-    if (value) window.localStorage.setItem(key, value);
-    else window.localStorage.removeItem(key);
+    if (value) studioWindowLocalStorage().setItem(key, value);
+    else studioWindowLocalStorage().removeItem(key);
   } catch {
     // Storage unavailable (private mode / quota exceeded) — degrade silently to
     // in-memory-only state; the composer still works for this session.
@@ -524,6 +529,7 @@ export function HomeView({
   deepSeekV4FlashCampaignInstallationId = null,
   variant = 'page',
 }: Props) {
+  const studio = useStudioCapabilities();
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
   // The localStorage draft is keyed per surface, not per instance, so only ONE
@@ -559,6 +565,7 @@ export function HomeView({
   // re-renders that flip parent state without remounting HomeView.
   const homePageViewFiredRef = useRef(false);
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (homePageViewFiredRef.current) return;
     homePageViewFiredRef.current = true;
     trackPageView(analytics.track, { page_name: 'home' });
@@ -609,6 +616,10 @@ export function HomeView({
     () => (ownsComposerDraft ? readHomeComposerChipDraft() : null),
   );
   const [fallbackProjectKind, setFallbackProjectKind] = useState<ProjectKind | null>(null);
+  const [studioTaskChipId, setStudioTaskChipId] = useState<string | null>(null);
+  // Studio task types: design kinds always; media kinds once an OpenAI source can generate them (#63).
+  const studioTaskChipUsable = (id: string) => ['prototype', 'deck', 'document'].includes(id)
+    || (STUDIO_MEDIA_CHIPS.has(id) && studio.available('generation'));
   const [fallbackProjectMetadata, setFallbackProjectMetadata] =
     useState<ProjectMetadata | null>(null);
   const [active, setActive] = useState<ActivePlugin | null>(null);
@@ -641,6 +652,7 @@ export function HomeView({
     ownsComposerDraft ? peekHomeComposerAttachments() : [],
   );
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (ownsComposerDraft) clearHomeComposerAttachments();
   }, [ownsComposerDraft]);
   const [workingDir, setWorkingDir] = useState<string | null>(null);
@@ -693,6 +705,7 @@ export function HomeView({
   // whenever the user picks a folder.
   const [recentDirs, setRecentDirs] = useState<string[]>([]);
   useEffect(() => {
+    if (!studio.hostServices) return;
     let cancelled = false;
     void fetchRecentLinkedDirs().then((dirs) => {
       if (!cancelled) setRecentDirs(dirs);
@@ -726,14 +739,17 @@ export function HomeView({
   // a tab switch triggers (see the module note above). Empty values clear the
   // key rather than storing "".
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (!ownsComposerDraft) return;
     writeHomeComposerDraft(HOME_COMPOSER_PROMPT_KEY, prompt);
   }, [ownsComposerDraft, prompt]);
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (!ownsComposerDraft) return;
     writeHomeComposerDraft(HOME_COMPOSER_DESIGN_SYSTEM_KEY, designSystemId);
   }, [designSystemId, ownsComposerDraft]);
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (!ownsComposerDraft) return;
     writeHomeComposerDraft(
       HOME_COMPOSER_DESIGN_SYSTEM_SCOPE_KEY,
@@ -747,6 +763,7 @@ export function HomeView({
   // Clearing on `active === null` covers the explicit-clear (×) and the
   // Ask-mode / skill-pick paths that reset `active` to null directly.
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (!ownsComposerDraft) return;
     writeHomeComposerChipDraft(
       active
@@ -769,6 +786,7 @@ export function HomeView({
   // the common case now that EntryShell keeps Home mounted across view
   // switches instead of tearing it down.
   useEffect(() => {
+    if (!studio.hostServices) return;
     function onSeed(event: Event) {
       const detail = (event as CustomEvent<{ prompt: string; target?: 'page' | 'dock' }>)
         .detail;
@@ -787,6 +805,7 @@ export function HomeView({
   // the pending frame mid-create) cannot rely on the mount initializer above,
   // so take the stash on the event instead. Page variant only, like the draft.
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (!ownsComposerDraft) return;
     function onAttachmentsHandedBack() {
       const files = peekHomeComposerAttachments();
@@ -805,6 +824,7 @@ export function HomeView({
   const [error, setError] = useState<string | null>(null);
   const [daemonRecoveryActive, setDaemonRecoveryActive] = useState(false);
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (!daemonRecoveryActive) return;
     let cancelled = false;
     let timeout: number | null = null;
@@ -816,7 +836,7 @@ export function HomeView({
         setError((current) => current === t('home.daemonRecovering') ? null : current);
         return;
       }
-      timeout = window.setTimeout(() => void probe(), 1_500);
+      timeout = studioWindowSetTimeout(() => void probe(), 1_500);
     };
     void probe();
     return () => {
@@ -827,6 +847,7 @@ export function HomeView({
   // Composer in-flight guard: disables the send button, shows Sending…, and
   // swallows repeat clicks across the whole async create tail.
   const [sending, setSending] = useState(false);
+  const submitInFlight = useRef(false);
   const [elevenLabsVoices, setElevenLabsVoices] = useState<AudioVoiceOption[]>([]);
   const [elevenLabsVoicesLoading, setElevenLabsVoicesLoading] = useState(false);
   // Live AIHubMix image catalogue merged into the home media composer's model
@@ -866,6 +887,7 @@ export function HomeView({
   // close doesn't double-fire, but a fresh pair always does.
   const lastPluginReplacementViewRef = useRef<string | null>(null);
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (!pendingReplacement) {
       lastPluginReplacementViewRef.current = null;
       return;
@@ -938,6 +960,7 @@ export function HomeView({
     });
   }, [variant]);
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (!desiredPluginCatalogKey) return;
     let cancelled = false;
     let ownedPromise: Promise<void> | null = null;
@@ -998,6 +1021,7 @@ export function HomeView({
   }, [desiredPluginCatalogKey, pluginCatalogWorkspaceContext?.workspaceType]);
 
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (!isActive || !desiredPluginCatalogKey || !pluginCatalogStaleRef.current) return;
     if (pluginCatalogWorkspaceContext?.workspaceType === 'team') return;
     pluginCatalogStaleRef.current = false;
@@ -1025,6 +1049,7 @@ export function HomeView({
   });
 
   useEffect(() => {
+    if (!studio.hostServices) return;
     let cancelled = false;
     void fetchMcpServers().then((result) => {
       if (cancelled) return;
@@ -1037,6 +1062,7 @@ export function HomeView({
   }, []);
 
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (active?.mediaSurface !== 'audio' || active.inputs.model !== 'elevenlabs-v3') return;
     if (elevenLabsVoicesLoaded) return;
     const controller = new AbortController();
@@ -1077,6 +1103,7 @@ export function HomeView({
   ]);
 
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (!active?.mediaSurface) return;
     const composer = buildHomeMediaComposer(
       active.mediaSurface,
@@ -1121,12 +1148,14 @@ export function HomeView({
   }, [promptTemplates, elevenLabsVoices, elevenLabsVoiceWarning, elevenLabsVoicesLoading, composerImageModels]);
 
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (!pendingPromptFocusEndRef.current) return;
     pendingPromptFocusEndRef.current = false;
     inputRef.current?.focusEnd();
   }, [prompt]);
 
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (!promptHandoff || consumedHandoffIdRef.current === promptHandoff.id) return;
     consumedHandoffIdRef.current = promptHandoff.id;
     setError(null);
@@ -1179,6 +1208,7 @@ export function HomeView({
   // they ride the normal upload-on-Run path into the new project. The store is
   // single-shot, so later activations with no pending seed are no-ops.
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (!isActive) return;
     const seed = takeHomeComposerAssetSeed();
     if (seed && seed.files.length > 0) stageFiles(seed.files);
@@ -1271,6 +1301,7 @@ export function HomeView({
     [defaultDesignSystemId, designSystems],
   );
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (pluginsLoading) return;
     const pluginById = new Map(plugins.map((record) => [record.id, record]));
 
@@ -1321,6 +1352,7 @@ export function HomeView({
   }, [pluginCatalogKey, plugins, pluginsLoading]);
 
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (skillsLoading) return;
     setActiveSkill((current) => {
       if (!current) return current;
@@ -1337,6 +1369,7 @@ export function HomeView({
   }, [selectableSkills, skillsLoading, workspaceContext]);
 
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (designSystemsLoading || !designSystemId) return;
     if (designSystemPickerSystems.some((system) => system.id === designSystemId)) {
       setDesignSystemCatalogScope(localCatalogScopeFromWorkspaceContext(workspaceContext));
@@ -1349,6 +1382,7 @@ export function HomeView({
   // Re-seed the default selection when the catalogue or the user's default
   // resolves after mount (async load), unless the user already picked one.
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (designSystemTouchedRef.current) return;
     const nextId = homeDefaultDesignSystemId(designSystems, defaultDesignSystemId);
     setDesignSystemId(nextId);
@@ -1377,6 +1411,7 @@ export function HomeView({
   // writes Vela/daemon account-level active-workspace state. That model cannot
   // represent two clients of one account open in different Workspaces.
   useEffect(() => {
+    if (!studio.hostServices) return;
     const nextWorkspaceName = workspaceContext?.workspaceName?.trim() || null;
     const previousWorkspaceName = previousWorkspaceNameRef.current;
     previousWorkspaceNameRef.current = nextWorkspaceName;
@@ -1861,6 +1896,7 @@ export function HomeView({
   }
 
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (!pendingPluginUseHandoff || pluginsLoading) return;
     const record = plugins.find((plugin) => plugin.id === pendingPluginUseHandoff.pluginId);
     setPendingPluginUseHandoff(null);
@@ -1901,6 +1937,7 @@ export function HomeView({
   // bound `active` before this effect got to run, drop the stale restore
   // instead of stomping it.
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (!pendingChipRestore || pluginsLoading) return;
     const restore = pendingChipRestore;
     setPendingChipRestore(null);
@@ -1948,8 +1985,9 @@ export function HomeView({
   // Seed only the page's first untouched visit. Restored drafts and host
   // handoffs own their selection; a later clear must not re-run this default.
   const [defaultTypeSettled, setDefaultTypeSettled] = useState(false);
-  const defaultTypePending = ownsComposerDraft && !defaultTypeSettled && !active;
+  const defaultTypePending = studio.hostServices && ownsComposerDraft && !defaultTypeSettled && !active;
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (!ownsComposerDraft || defaultTypeSettled) return;
     if (active || promptHandoff || pendingPluginUseHandoff || hasPendingHomeChip(variant)) {
       setDefaultTypeSettled(true);
@@ -2369,6 +2407,7 @@ export function HomeView({
   }
 
   function clearActiveChipSelection() {
+    setStudioTaskChipId(null);
     activePluginApplyRequestRef.current += 1;
     setActive(null);
     setFallbackProjectKind(null);
@@ -2474,6 +2513,7 @@ export function HomeView({
   }
 
   useEffect(() => {
+    if (!studio.hostServices) return;
     if (!pendingAuthoringChipId || pluginsLoading) return;
     const authoringRecord = plugins.find((plugin) => plugin.id === 'od-plugin-authoring');
     const record = authoringRecord ?? plugins.find((plugin) => plugin.id === 'od-new-generation');
@@ -2530,6 +2570,17 @@ export function HomeView({
       projectMetadata?: ProjectMetadata | null;
     },
   ) {
+    if (!studio.hostServices) {
+      if (studioTaskChipUsable(chip.id) && chip.action.kind === 'apply-scenario') {
+        setStudioTaskChipId(chip.id);
+        setFallbackProjectKind(chip.action.projectKind);
+        setFallbackProjectMetadata(selection?.projectMetadata ?? chip.action.projectMetadata ?? null);
+        setError(null);
+      } else if (chip.action.kind === 'open-template-picker') {
+        onOpenNewProject?.('template');
+      } else setError(studio.reason('home'));
+      return;
+    }
     setError(null);
     releaseWebCloneScaffold(chip.id);
     const activeChipId = chip.id;
@@ -2688,6 +2739,7 @@ export function HomeView({
   // `selectedDesignSystemTitle` reflects the freshly-applied brand.
   const [chipIntentTick, setChipIntentTick] = useState(0);
   useEffect(() => {
+    if (!studio.hostServices) return;
     function bumpChipIntent() {
       setChipIntentTick((tick) => tick + 1);
     }
@@ -2695,6 +2747,7 @@ export function HomeView({
     return () => window.removeEventListener(HOME_CHIP_INTENT_EVENT, bumpChipIntent);
   }, []);
   useEffect(() => {
+    if (!studio.hostServices) return;
     // Guard on the plugin catalog being loaded — chip dispatch resolves a
     // bundled plugin — and re-run when `plugins` arrives so an intent queued
     // before the catalog loaded is still honored once it does.
@@ -2789,7 +2842,7 @@ export function HomeView({
   async function submit() {
     // The send button disables itself while sending, but the Enter-to-send
     // path lands here directly — swallow re-entry during the in-flight window.
-    if (sending || defaultTypePending) return;
+    if (submitInFlight.current || sending || defaultTypePending) return;
     const trimmed = prompt.trim();
     if (!trimmed && stagedFiles.length === 0) return;
     // P0 ui_click area=chat_composer element=send_button. Fires before the
@@ -2838,6 +2891,7 @@ export function HomeView({
     // Sending covers the whole async tail — a pending plugin apply (when one
     // must resolve first) and the project-creation roundtrip are both windows
     // a second click could otherwise re-enter.
+    submitInFlight.current = true;
     setSending(true);
     try {
       const defaultInputs = { prompt: trimmed };
@@ -2976,7 +3030,7 @@ export function HomeView({
       // accepted — a rejected attempt stays retryable and must resend it.
       const examplePromptKey = 'od:example-prompt-used';
       const examplePromptToSend =
-        examplePromptInfoRef.current != null && localStorage.getItem(examplePromptKey) == null
+        examplePromptInfoRef.current != null && studioLocalStorage().getItem(examplePromptKey) == null
           ? examplePromptInfoRef.current
           : null;
       const accepted = await onSubmit({
@@ -3038,7 +3092,7 @@ export function HomeView({
       // dialog. Keep the composer draft and staged contexts for the retry.
       if (accepted === 'blocked') return;
       // Create accepted — now it is safe to spend the one-shot marker.
-      if (examplePromptToSend) localStorage.setItem(examplePromptKey, '1');
+      if (examplePromptToSend) studioLocalStorage().setItem(examplePromptKey, '1');
       // The draft has become a real run; drop it synchronously (before the
       // navigation unmounts us) so the sent prompt + pick don't reappear the
       // next time the Home tab mounts.
@@ -3087,6 +3141,7 @@ export function HomeView({
         }
       }
     } finally {
+      submitInFlight.current = false;
       setSending(false);
     }
   }
@@ -3118,7 +3173,8 @@ export function HomeView({
           installationId={deepSeekV4FlashCampaignInstallationId}
         />
       )}
-      <HomeHero
+      {!studio.hostServices && <button type="button" data-testid="home-new-project" onClick={() => onOpenNewProject?.('prototype')}>{t('multiuser.createProject')}</button>}
+      <StudioLane lane="execution"><HomeHero
         variant={variant}
         collapseSignal={collapseSignal}
         workspaceContext={workspaceContext}
@@ -3136,7 +3192,10 @@ export function HomeView({
         activeSkillId={activeSkill?.id ?? null}
         activeSkillTitle={activeSkill ? localizeSkillName(locale, activeSkill) : null}
         activeSkillRecord={activeSkill}
-        activeChipId={active?.chipId ?? null}
+        activeChipId={active?.chipId ?? studioTaskChipId}
+        taskTypeUnavailableReason={studio.hostServices ? undefined : (chip) =>
+          studioTaskChipUsable(chip.id) ? undefined
+            : STUDIO_MEDIA_CHIPS.has(chip.id) ? studio.reason('generation') : studio.reason('home')}
         activePrototypeSubtypeId={active?.prototypeSubtypeId ?? null}
         showActivePluginChip={showActivePluginChip}
         onClearActivePlugin={clearActivePlugin}
@@ -3178,11 +3237,11 @@ export function HomeView({
         onRemoveFile={removeStagedFile}
         onImportFigma={() => setFigmaModalOpen(true)}
         pluginOptions={plugins}
-        pluginsLoading={
+        pluginsLoading={studio.hostServices && (
           pluginsLoading
           || workspaceContextState.loading
           || workspaceContextState.identityChangePending === true
-        }
+        )}
         skillOptions={selectableSkills}
         skillsLoading={skillsLoading}
         mcpOptions={enabledMcpServers}
@@ -3216,8 +3275,8 @@ export function HomeView({
         error={error}
         workingDir={workingDir}
         recentDirs={recentDirs}
-        onPickWorkingDir={handlePickWorkingDir}
-        onPickLocalCodeDir={handlePickLocalCodeDir}
+        onPickWorkingDir={studio.hostServices ? handlePickWorkingDir : undefined}
+        onPickLocalCodeDir={studio.hostServices ? handlePickLocalCodeDir : undefined}
         onSelectRecentWorkingDir={(dir) => {
           setWorkingDir(dir);
           // Recents come from the browser-side picker only; they carry no
@@ -3243,7 +3302,7 @@ export function HomeView({
         // recommendation engine and `RecommendedStartRegion` are left intact;
         // only this mount point is gone.
         recommendationSlot={artifactUpgradeSlot}
-      />
+      /></StudioLane>
 
       {/* No 最近项目 grid under the hero on EITHER branch (OPEND-2683, per
           product: 最近项目统一在左侧栏展示; OPEND-3140 closed the local half):

@@ -1,3 +1,4 @@
+import { studioFetch as fetch, studioSessionStorage } from '../runtime/studio-transport';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CollabMemberRole } from '@open-design/contracts';
 import { navigate } from '../router';
@@ -28,10 +29,10 @@ function makeDemoMemberId(): string {
 const DEMO_MEMBER_ID_KEY = 'od-collab-demo-member-id';
 function demoMemberId(): string {
   try {
-    const existing = sessionStorage.getItem(DEMO_MEMBER_ID_KEY);
+    const existing = studioSessionStorage().getItem(DEMO_MEMBER_ID_KEY);
     if (existing) return existing;
     const id = makeDemoMemberId();
-    sessionStorage.setItem(DEMO_MEMBER_ID_KEY, id);
+    studioSessionStorage().setItem(DEMO_MEMBER_ID_KEY, id);
     return id;
   } catch {
     return makeDemoMemberId();

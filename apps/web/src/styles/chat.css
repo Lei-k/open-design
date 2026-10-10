@@ -3960,3 +3960,13 @@ body.od-quick-switcher-open .chat-composer-fixed-layer .composer-att .msg-att-de
 .fork-sep.is-new {
   animation: fork-in var(--duration-normal) var(--ease-out) both;
 }
+
+/* Studio (#57): the named reason under a refused send (typed admission refusal). */
+.msg.user .user-send-failed-reason {
+  margin: 4px 0 0;
+  max-width: 100%;
+  text-align: right;
+  color: var(--chat-red);
+  font-size: 12px;
+  line-height: 1.4;
+}

@@ -9,7 +9,8 @@
  */
 
 /** Where a run's provider capacity comes from. Omitted means `company_pool`. */
-export type RunExecutionSource = 'company_pool' | 'personal_subscription';
+/** `personal_api_key` runs on the actor's own encrypted provider key (#62/#63). */
+export type RunExecutionSource = 'company_pool' | 'personal_subscription' | 'personal_api_key';
 
 export type PersonalAgentProvider = 'codex';
 
@@ -71,9 +72,8 @@ export interface PersonalAgentAccountsResponse {
   /** Server-side enablement switch; off means "not enabled on this server". */
   personalSubscriptionsEnabled: boolean;
   /**
-   * Whether this server runs company-pool runs at all. The company pool has no real
-   * provider yet (#14), so a deployed server reports false. Absent on older daemons,
-   * which clients treat as available.
+   * Whether a company provider is enabled for admission. Evaluated
+   * from current server policy. Absent on older daemons.
    */
   companyPoolAvailable?: boolean;
   codex: { account: PersonalAgentAccount | null; pendingAttempt: PersonalLoginAttempt | null };

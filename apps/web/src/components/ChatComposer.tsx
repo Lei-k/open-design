@@ -1,4 +1,8 @@
 'use client';
+import { studioFetch, studioSetTimeout as setTimeout, studioUsesLocalServices, studioWindowLocalStorage } from '../runtime/studio-transport';
+import { useStudioCapabilities, useStudioRequestAvailable, StudioUnavailable } from '../runtime/studio-capabilities';
+
+
 
 import {
   forwardRef,
@@ -47,6 +51,7 @@ import { navigate } from '../router';
 import { fetchMcpServers } from "../state/mcp";
 import type { McpServerConfig, McpTemplate } from "../state/mcp";
 import { listPlugins } from "../state/projects";
+import { studioPluginOffered } from "../runtime/studio-plugins";
 import type { AppConfig, ChatAttachment, ChatCommentAttachment, Project, ProjectFile, ProjectMetadata, SkillSummary } from "../types";
 import { DEFAULT_UNSELECTED_SCENARIO_PLUGIN_ID } from '@open-design/contracts';
 import type {
@@ -96,7 +101,10 @@ import { BUILT_IN_PETS, CUSTOM_PET_ID } from "./pet/pets";
 import {
   inlineMentionToken,
   mentionTokenPresent,
+  retainMentionedSelections,
   type InlineMentionEntity,
+  type InlineMentionOccurrence,
+  type InlineMentionKind,
 } from '../utils/inlineMentions';
 import { workspaceContextLinkedDir, workspaceContextLinkedDirs } from './workspace-context';
 import { useProjectCollabContext } from '../collab/collab-context';
@@ -560,7 +568,14 @@ function dataTransferContainsDirectory(dataTransfer: DataTransfer): boolean {
  * Selecting one inserts `@<path>` into the prompt and stages it as an
  * attachment so the daemon also includes it explicitly.
  */
-export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
+export const ChatComposer = forwardRef<ChatComposerHandle, Props>(function ChatComposer(props, ref) {
+  const studio = useStudioCapabilities();
+  return studio.available('composer')
+    ? <EnabledChatComposer {...props} ref={ref} />
+    : <div className="composer" data-testid="chat-composer"><StudioUnavailable lane="execution" /></div>;
+});
+
+const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
   function ChatComposer(
     {
       projectId,
@@ -620,6 +635,11 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
   ) {
     const { locale, t } = useI18n();
     const analytics = useAnalytics();
+    const studio = useStudioCapabilities();
+    const studioRequest = useStudioRequestAvailable();
+    // Every plus-menu entry belongs to one of these lanes; with none usable the
+    // menu would only offer dead ends.
+    const plusMenuUsable = (['files', 'catalogs', 'settings', 'web-host'] as const).some((lane) => studio.available(lane));
     const { workspaceContext } = useProjectCollabContext();
     const activeFileContext =
       projectMetadata?.importedFrom === 'folder' && activeProjectFileName
@@ -633,6 +653,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
      * 这个 useRef 跟着重建,所以「按会话隔离」是挂载边界保证的,不靠这里判。
      */
     const restoredExtrasRef = useRef(loadComposerDraftExtras(draftStorageKey));
+    const draftMentionsRef = useRef<InlineMentionOccurrence[]>(restoredExtrasRef.current.mentions ?? []);
     const [placeholderScenario, setPlaceholderScenario] = useState<PlaceholderScenario | null>(null);
     const composerRootRef = useRef<HTMLDivElement | null>(null);
     const pendingSessionModeRef = useRef<ChatSessionMode | null>(null);
@@ -837,8 +858,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     // shown in the slash-command palette so `/mcp <id>` inserts a hint into
     // the prompt that nudges the model to use that server's tools.
     const [mcpServers, setMcpServers] = useState<McpServerConfig[]>([]);
+    const [mcpUnavailable, setMcpUnavailable] = useState(false);
     const [mcpTemplates, setMcpTemplates] = useState<McpTemplate[]>([]);
     const [connectors, setConnectors] = useState<ConnectorDetail[]>([]);
+    const [connectorKeyConfigured, setConnectorKeyConfigured] = useState(false);
     // Installed plugins, fetched lazily for the tools-menu Plugins tab and
     // the @-mention picker. Both surfaces share the same list so applying
     // a plugin from either path lands on the same project context.
@@ -1084,6 +1107,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
      */
     useEffect(() => {
       saveComposerDraftExtras(draftStorageKey, {
+        mentions: draftMentionsRef.current,
         attachments: staged,
         commentAttachments: stagedVisualComments,
         quotes: quotes ?? [],
@@ -1099,6 +1123,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       });
     }, [
       draftStorageKey,
+      draft,
       staged,
       stagedVisualComments,
       quotes,
@@ -1126,24 +1151,21 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
 
     // Lazy-fetch the user's external MCP servers list (once engaged) so the
     // `/mcp …` slash palette and the composer's MCP button popover have
-    // something to render. We deliberately do not reactively re-fetch when
-    // the user toggles servers from Settings — the dialog refreshes itself,
-    // and the chat composer rehydrates next time the user re-opens it. A
-    // background poll would be cheap but unnecessary for the typical
-    // edit-once-then-chat workflow.
+    // something to render. Studio Settings mutations refresh this list and
+    // discard selections that are no longer available to the current actor.
     useEffect(() => {
       if (!composerEngaged) return;
       let cancelled = false;
-      void (async () => {
+      const readMcp = async () => {
         const data = await fetchMcpServers();
         if (cancelled || !data) return;
         setMcpServers(data.servers);
-        setMcpTemplates(data.templates);
-      })();
-      return () => {
-        cancelled = true;
+        setMcpTemplates(data.templates); setMcpUnavailable(data.unavailable === true);
+        if (!studio.hostServices) setStagedMcpServers((current) => current.filter((server) => data.servers.some((item) => item.id === server.id)));
       };
-    }, [composerEngaged]);
+      void readMcp(); window.addEventListener('studio-mcp-changed', readMcp);
+      return () => { cancelled = true; window.removeEventListener('studio-mcp-changed', readMcp); };
+    }, [composerEngaged, studio.generation, studio.hostServices]);
 
     // Skills now come from the parent (App.tsx → ProjectView → ChatPane → ChatComposer)
     // pre-filtered by enabled/disabled state. We no longer fetch a fresh list
@@ -1166,29 +1188,38 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     useEffect(() => {
       if (!composerEngaged) return;
       let cancelled = false;
-      void fetchConnectorCatalogSnapshot().then((rows) => {
+      void Promise.all([fetchConnectorCatalogSnapshot(), studio.hostServices ? Promise.resolve(true)
+        : studioFetch('/api/connectors/composio/config').then(async (res) => res.ok && (await res.json()).configured === true).catch(() => false)]).then(([rows, configured]) => {
         if (cancelled) return;
-        setConnectors(rows.filter((connector) => connector.status === 'connected'));
+        setConnectorKeyConfigured(configured);
+        setConnectors(configured ? rows.filter((connector) => connector.status === 'connected') : []);
       });
       return () => {
         cancelled = true;
       };
-    }, [composerEngaged]);
+    }, [composerEngaged, studio.generation, studio.hostServices]);
 
     useEffect(() => {
       if (!composerEngaged) return;
       let cancelled = false;
       async function refreshConnectors() {
-        const rows = await fetchConnectorCatalogSnapshot({ refreshDiscovery: true });
+        const [rows, configured] = await Promise.all([fetchConnectorCatalogSnapshot({ refreshDiscovery: true }), studio.hostServices ? Promise.resolve(true)
+          : studioFetch('/api/connectors/composio/config').then(async (res) => res.ok && (await res.json()).configured === true).catch(() => false)]);
         if (cancelled) return;
-        setConnectors(rows.filter((connector) => connector.status === 'connected'));
+        setConnectorKeyConfigured(configured);
+        const connected = configured ? rows.filter((connector) => connector.status === 'connected') : [];
+        setConnectors(connected);
+        if (!studio.hostServices) setStagedConnectors((selected) => {
+          const current = selected.filter((item) => connected.some((live) => live.id === item.id));
+          return current.length === selected.length ? selected : current;
+        });
       }
       const stopListening = listenForConnectorsChanged(() => void refreshConnectors());
       return () => {
         cancelled = true;
         stopListening();
       };
-    }, [composerEngaged]);
+    }, [composerEngaged, studio.generation, studio.hostServices]);
 
     useEffect(() => {
       const inlinePlugin = inlineBackedPluginRef.current;
@@ -1202,11 +1233,13 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     // the full installed list available even when the project was created
     // from a pinned plugin, so users can switch or layer different plugin
     // context from the tools menu and @ picker.
+    // A Web account (#61) is offered only bundled plugins whose every declared
+    // step runs in its turns; the rest are listed with reasons on the Plugins page.
     const pluginsForComposer = useMemo<InstalledPluginRecord[]>(() => {
       const allowedKinds = new Set(['skill', 'scenario', 'bundle']);
       return installedPlugins.filter((p) => {
         const k = p.manifest?.od?.kind;
-        return !k || allowedKinds.has(k);
+        return (!k || allowedKinds.has(k)) && studioPluginOffered(p);
       });
     }, [installedPlugins]);
 
@@ -1360,6 +1393,10 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       if (!m) return null;
       const query = m[1]?.trim() ?? '';
       if (!query) return null;
+      // A Studio account's agent cannot run the local OD command: the server
+      // searches on the account's own key at admission and sends the findings
+      // with this turn (#63), so the visible turn is just the request.
+      if (!studioUsesLocalServices()) return { query, prompt: `Search for: ${query}` };
       return {
         query,
         prompt: [
@@ -1463,7 +1500,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
           // 队列这条路径是**一次性**解析:点「编辑」时懒加载的列表早就回来了,
           // 对不上就是真的没了。刷新那条路径首屏列表还是空的,处理方式不同 ——
           // 见 `pendingRestoredContextRef`。
-          setStagedSkills(resolveStagedById(ctx?.skillIds, skills).resolved);
+          const restoredSkills = resolveStagedById(ctx?.skillIds, skills).resolved;
+          setStagedSkills(restoredSkills);
           setStagedMcpServers(resolveStagedById(ctx?.mcpServerIds, mcpServers).resolved);
           setStagedConnectors(resolveStagedById(ctx?.connectorIds, connectors).resolved);
           pendingRestoredContextRef.current = null;
@@ -1478,7 +1516,9 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
           setUploadError(null);
           setMention(null);
           setSlash(null);
-          editorRef.current?.setText(body);
+          // A same-name token becomes the pill of the skill this turn selected.
+          editorRef.current?.setText(body, { prefer: restoredSkills.map((skill) =>
+            ({ id: skill.id, kind: 'skill' as const, label: skill.name, token: inlineMentionToken(skill.name), title: `Skill: ${skill.name}` })) });
           editorRef.current?.focus();
           seededRef.current = true;
         },
@@ -1918,6 +1958,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     }
 
     async function insertSkillMention(skill: SkillSummary) {
+      if (skill.selectable === false) return;
       const applied = await applyProjectSkill(skill);
       if (!applied) return;
       // Stage the skill so it rides this turn's skillIds, then insert an
@@ -2086,32 +2127,32 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       applyDesignToolboxDraft(prompt);
     }
 
+    function removeStagedMention(kind: InlineMentionKind, id: string, label: string) {
+      // Legacy plain tokens lack identity. Remove a label only if it names one entity.
+      const matches = composerMentionEntities.filter((entity) => entity.label === label);
+      const labels = [id, ...(matches.length === 1 ? [label] : [])];
+      editorRef.current?.removeMention(kind, id, (text) => stripInlineMentionLabels(text, labels));
+    }
+
     function removeStagedSkill(id: string) {
       trackComposerBar({ element: 'context_remove', resource_kind: 'skill', resource_id: id });
-      const skill = stagedSkills.find((s) => s.id === id) ?? null;
+      const skill = stagedSkills.find((s) => s.id === id);
       setStagedSkills((prev) => prev.filter((s) => s.id !== id));
-      const labels = [id, skill?.name ?? ''];
-      replaceEditorDraft(stripInlineMentionLabels(draft, labels));
+      removeStagedMention('skill', id, skill?.name ?? '');
     }
 
     function removeStagedMcpServer(id: string) {
       trackComposerBar({ element: 'context_remove', resource_kind: 'mcp', resource_id: id });
-      const server = stagedMcpServers.find((item) => item.id === id) ?? null;
+      const server = stagedMcpServers.find((item) => item.id === id);
       setStagedMcpServers((prev) => prev.filter((item) => item.id !== id));
-      replaceEditorDraft(stripInlineMentionLabels(draft, [
-        id,
-        server?.label ?? '',
-      ]));
+      removeStagedMention('mcp', id, server?.label ?? '');
     }
 
     function removeStagedConnector(id: string) {
       trackComposerBar({ element: 'context_remove', resource_kind: 'connector', resource_id: id });
-      const connector = stagedConnectors.find((item) => item.id === id) ?? null;
+      const connector = stagedConnectors.find((item) => item.id === id);
       setStagedConnectors((prev) => prev.filter((item) => item.id !== id));
-      replaceEditorDraft(stripInlineMentionLabels(draft, [
-        id,
-        connector?.name ?? '',
-      ]));
+      removeStagedMention('connector', id, connector?.name ?? '');
     }
 
     function workspaceContextDirStillReferenced(id: string, dir: string): boolean {
@@ -2297,6 +2338,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
 
     async function uploadFiles(files: File[]) {
       if (files.length === 0) return;
+      // Paste and drop reach here without the plus menu; the files lane decides.
+      if (!studio.available('files')) { setUploadError(studio.reason('files')); return; }
       const id = await ensureProject();
       if (!id) return;
       setUploading(true);
@@ -2770,7 +2813,16 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     // the chip remove button clears the matching metadata access. `staged`
     // (files) is intentionally NOT pruned: users attach files via the upload
     // button without leaving an `@<path>` token.
-    function handleEditorChange(text: string, present: InlineMentionEntity[]) {
+    // `ambiguous` holds plain tokens that two ids of one kind share (an account's
+    // own skill and a same-named shared one): each keeps one already-selected
+    // entry by id, never the first catalog entry with that name.
+    function handleEditorChange(
+      text: string,
+      present: InlineMentionEntity[],
+      ambiguous: Array<{ kind: InlineMentionKind; token: string }> = [],
+      mentions: InlineMentionOccurrence[] = [],
+    ) {
+      draftMentionsRef.current = mentions;
       draftRef.current = text;
       setDraft(text);
       const set = new Set(present.map((e) => `${e.kind}:${e.id}`));
@@ -2783,14 +2835,17 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
         inlineBackedPluginRef.current = null;
         pluginsSectionRef.current?.clear();
       }
-      setStagedSkills((prev) => prev.filter((s) => set.has(`skill:${s.id}`)));
-      setStagedMcpServers((prev) => prev.filter((m) => set.has(`mcp:${m.id}`)));
-      setStagedConnectors((prev) =>
-        prev.filter((c) => set.has(`connector:${c.id}`)),
-      );
-      setStagedWorkspaceContexts((prev) =>
-        prev.filter((item) => set.has(`workspace:${item.id}`) || Boolean(workspaceLinkedDirAdds[item.id])),
-      );
+      setStagedSkills((prev) => retainMentionedSelections(prev, 'skill', set, ambiguous,
+        (s) => [inlineMentionToken(s.name), inlineMentionToken(s.id)]));
+      setStagedMcpServers((prev) => retainMentionedSelections(prev, 'mcp', set, ambiguous,
+        (m) => [inlineMentionToken(m.label || m.id), inlineMentionToken(m.id)]));
+      setStagedConnectors((prev) => retainMentionedSelections(prev, 'connector', set, ambiguous,
+        (c) => [inlineMentionToken(c.name), inlineMentionToken(c.id)]));
+      setStagedWorkspaceContexts((prev) => {
+        const mentioned = new Set(retainMentionedSelections(prev, 'workspace', set, ambiguous,
+          (item) => [inlineMentionToken(item.label)]).map((item) => item.id));
+        return prev.filter((item) => mentioned.has(item.id) || Boolean(workspaceLinkedDirAdds[item.id]));
+      });
     }
 
     // Lexical reports the active @/slash trigger derived from the caret. The
@@ -3000,6 +3055,9 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
 
     async function applyProjectSkill(skill: SkillSummary): Promise<boolean> {
       if (!projectId) return false;
+      // Studio functional skills are turn context. Admission snapshots them;
+      // the project's immutable primary design selection is a separate choice.
+      if (!studio.hostServices) return skill.selectable !== false;
       const result = await patchProject(projectId, { skillId: skill.id }, workspaceContext);
       if (!result) return false;
       onProjectSkillChange?.(result.skillId ?? skill.id);
@@ -3259,6 +3317,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       });
     };
 
+
     return (
       <div
         className={[
@@ -3317,6 +3376,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
                   setDesignToolboxOpen(false);
                 }}
                 onPickSkill={(skill) => {
+                  if (skill.selectable === false) return;
                   trackDesignToolbox({
                     element: 'design_toolbox_resource',
                     resource_kind: 'skill',
@@ -3529,6 +3589,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
               }
               title={activeFileDisplayName ?? composerPlaceholder ?? t('chat.composerPlaceholder')}
               knownEntities={composerMentionEntities}
+              initialMentions={restoredExtrasRef.current.mentions}
               onChange={handleEditorChange}
               onTrigger={handleEditorTrigger}
               onEnterSend={() => void submit()}
@@ -3549,6 +3610,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
               />
             ) : null}
           </div>
+          {!studio.hostServices && mcpUnavailable ? <p className="hint" data-testid="studio-mcp-selection-unavailable">{t('studio.mcp.selectionUnavailable')}</p> : null}
           <CaretFloatingLayer
             caret={caretRect}
             open={Boolean(mention)}
@@ -3603,7 +3665,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
                 e.target.value = '';
               }}
             />
-            <ComposerPlusMenu
+            {plusMenuUsable ? <ComposerPlusMenu
               workspaceContext={workspaceContext}
               triggerTestId="chat-plus-trigger"
               placementPreference="up"
@@ -3634,7 +3696,9 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
               }}
               connectors={connectors}
-              onPickConnector={(connector) => {
+              connectorUnavailableReason={!studio.hostServices && connectors.length === 0
+                ? t(connectorKeyConfigured ? 'homeHero.noConnectors' : 'studio.connectors.unavailableMember') : undefined}
+              onPickConnector={!studioRequest('GET', '/api/connectors/discovery') ? undefined : (connector) => {
                 trackComposerBar({
                   element: 'plus_pick',
                   resource_kind: 'connector',
@@ -3642,12 +3706,12 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 insertConnectorMention(connector);
               }}
-              onAddConnector={onOpenConnectors ? () => {
+              onAddConnector={studioRequest('GET', '/api/connectors/discovery') && onOpenConnectors ? () => {
                 trackComposerBar({ element: 'plus_add', resource_kind: 'connector' });
                 onOpenConnectors();
               } : undefined}
               plugins={pluginsForComposer}
-              onPickPlugin={(record) => {
+              onPickPlugin={!studioRequest('GET', '/api/plugins') ? undefined : (record) => {
                 trackComposerBar({
                   element: 'plus_pick',
                   resource_kind: 'plugin',
@@ -3655,12 +3719,12 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 void insertPluginMention(record);
               }}
-              onAddPlugin={onBrowsePlugins ? () => {
+              onAddPlugin={studioRequest('GET', '/api/plugins') && onBrowsePlugins ? () => {
                 trackComposerBar({ element: 'plus_add', resource_kind: 'plugin' });
                 onBrowsePlugins();
               } : undefined}
               skills={skills}
-              onPickSkill={(skill) => {
+              onPickSkill={!studio.available('catalogs') ? undefined : (skill) => {
                 trackComposerBar({
                   element: 'plus_pick',
                   resource_kind: 'skill',
@@ -3669,7 +3733,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
                 void insertSkillMention(skill);
               }}
               mcpServers={enabledMcpServers}
-              onPickMcp={(server) => {
+              onPickMcp={!studioRequest('GET', '/api/mcp/servers') ? undefined : (server) => {
                 trackComposerBar({
                   element: 'plus_pick',
                   resource_kind: 'mcp',
@@ -3677,7 +3741,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 insertMcpMention(server);
               }}
-              onAddMcp={onOpenMcpSettings ? () => {
+              onAddMcp={studioRequest('GET', '/api/mcp/servers') && onOpenMcpSettings ? () => {
                 trackComposerBar({ element: 'plus_add', resource_kind: 'mcp' });
                 onOpenMcpSettings();
               } : undefined}
@@ -3689,7 +3753,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 fileInputRef.current?.click();
               }}
-              onReferenceProject={() => {
+              onReferenceProject={!studio.available('web-host') ? undefined : () => {
                 trackComposerBar({ element: 'plus_pick', resource_kind: 'workspace', resource_id: 'reference-project' });
                 trackProjectReferenceModalSurfaceView(analytics.track, {
                   page_name: 'chat_panel',
@@ -3698,12 +3762,12 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 setProjectReferenceOpen(true);
               }}
-              onLinkLocalCode={() => {
+              onLinkLocalCode={!studio.available('web-host') ? undefined : () => {
                 trackComposerBar({ element: 'plus_pick', resource_kind: 'workspace', resource_id: 'local-code' });
                 void handleLinkLocalCodeContext();
               }}
               attachLoading={uploading}
-              onSelectFromLibrary={() => {
+              onSelectFromLibrary={!studioRequest('GET', '/api/library/assets') ? undefined : () => {
                 trackChatPanelClick(analytics.track, {
                   page_name: 'chat_panel',
                   area: 'chat_panel',
@@ -3711,7 +3775,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 setLibraryPickerOpen(true);
               }}
-              onImportFigma={projectId ? () => {
+              onImportFigma={studio.available('web-host') && projectId ? () => {
                 trackChatPanelClick(analytics.track, {
                   page_name: 'chat_panel',
                   area: 'chat_panel',
@@ -3732,11 +3796,11 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
                 });
                 setFigmaHelpOpen(true);
               }}
-              onOpenDesignSystems={projectId && designSystemPicker ? () => {
+              onOpenDesignSystems={studioRequest('GET', '/api/design-systems') && projectId && designSystemPicker ? () => {
                 trackComposerBar({ element: 'design_system_open' });
                 openDesignSystemPicker();
               } : undefined}
-            />
+            /> : null}
             {/* #5517: the design-system picker sits inline in the composer's
                 icon row (palette icon) instead of the staged-context bar. */}
             {designSystemPicker}
@@ -5343,6 +5407,7 @@ function DesignToolboxPanel({
             return (
               <ToolboxItemRow
                 key={resource.key}
+                disabled={resource.kind === 'skill' && resource.skill.selectable === false}
                 detailKey={resource.key}
                 icon={resource.icon}
                 name={resource.title}
@@ -5427,7 +5492,9 @@ function ToolboxItemRow({
   onHover,
   onLeave,
   onPick,
+  disabled,
 }: {
+  disabled?: boolean;
   icon: IconName;
   name: string;
   active?: boolean;
@@ -5451,6 +5518,7 @@ function ToolboxItemRow({
       <button
         type="button"
         role="menuitem"
+        disabled={disabled}
         className={`plus-menu__item${active ? ' is-active' : ''}`}
         onMouseDown={(e) => e.preventDefault()}
         onClick={onPick}
@@ -5514,7 +5582,7 @@ function ToolsSkillsPanel({
                     setPendingId(null);
                   }
                 }}
-                disabled={pendingId !== null}
+                disabled={pendingId !== null || skill.selectable === false}
                 title={localizeSkillDescription(locale, skill)}
               >
                 <Icon name={active ? 'check' : 'file'} size={12} />
@@ -6594,6 +6662,7 @@ function MentionPopover({
                   role="option"
                   aria-selected={rowActive}
                   className={`mention-item${rowActive ? ' is-active' : ''}`}
+                  disabled={skill.selectable === false}
                   type="button"
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => onPickSkill(skill)}
@@ -6704,7 +6773,7 @@ function stripInlineMentionLabels(text: string, labels: string[]): string {
 function loadComposerDraft(key?: string): string | null {
   if (!key || typeof window === 'undefined') return null;
   try {
-    return window.localStorage.getItem(key);
+    return studioWindowLocalStorage().getItem(key);
   } catch {
     return null;
   }
@@ -6714,9 +6783,9 @@ function saveComposerDraft(key: string | undefined, draft: string) {
   if (!key || typeof window === 'undefined') return;
   try {
     if (draft) {
-      window.localStorage.setItem(key, draft);
+      studioWindowLocalStorage().setItem(key, draft);
     } else {
-      window.localStorage.removeItem(key);
+      studioWindowLocalStorage().removeItem(key);
     }
   } catch {
     // Storage can be unavailable in privacy modes; the composer should still work.

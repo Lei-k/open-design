@@ -6,6 +6,30 @@ import {
 } from '../../src/runtime/design-delivery';
 
 describe('resolveDesignDeliveryOutcome', () => {
+  it('uses terminal server status rather than startup evidence to classify reports', () => {
+    const input = { sessionMode: 'design' as const, runStatus: 'succeeded' as const, content: 'Tools could not start.',
+      events: [{ kind: 'tool_result' as const, toolUseId: 'tool', content: '', isError: true, startupFailed: true }],
+      producedFileCount: 0, traceObjectFileCount: 0 };
+    expect(resolveDesignDeliveryOutcome(input)).toBe('report_only');
+    expect(resolveDesignDeliveryOutcome({ ...input, runStatus: 'failed' })).toBe('not_required');
+    expect(resolveDesignDeliveryOutcome({ ...input, producedFileCount: 1 })).toBe('delivered');
+    expect(resolveDesignDeliveryOutcome({ ...input, artifactCount: 1 })).toBe('delivered');
+    expect(resolveDesignDeliveryOutcome({ ...input, events: [] })).toBe('report_only');
+    const question = '<question-form id="brief">{"questions":[{"id":"surface","label":"Which surface?"}]}</question-form>';
+    expect(designDeliveryVerificationPending({ ...input, content: question, events: [] })).toBe(false);
+    expect(designDeliveryVerificationPending({ ...input, content: question })).toBe(false);
+    expect(designDeliveryVerificationPending({ ...input, producedFiles: [], traceObjectFiles: [] })).toBe(false);
+  });
+  it.each([
+    ['Which palette?\n<question-form id="q">{"questions":[{"id":"a","label":"Palette","type":"radio","options":["Warm","Cool"]}]}</question-form>', 'awaiting_input'],
+    ['Here is my audit: the hero is too dense.', 'report_only'],
+  ])('preserves desktop outcome %s → %s despite historical startup evidence', (content, expected) => {
+    const input = { sessionMode: 'design' as const, runStatus: 'succeeded' as const, content,
+      producedFileCount: 0, traceObjectFileCount: 0 };
+    const event = { kind: 'tool_result' as const, toolUseId: 'mcp-startup', content: 'Workspace tool startup failed', isError: true, startupFailed: true };
+    expect(resolveDesignDeliveryOutcome({ ...input, events: [] })).toBe(expected);
+    expect(resolveDesignDeliveryOutcome({ ...input, events: [event] })).toBe(expected);
+  });
   it('treats a text answer without any file-write attempt as a report-only result', () => {
     // Image analysis / report-only audits legitimately end with prose and no
     // new project file (#5714, #5718). Only fail delivery when the agent

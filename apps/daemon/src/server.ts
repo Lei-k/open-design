@@ -1,4 +1,6 @@
 // @ts-nocheck
+import { StudioMcpRuntime } from './mcp-client/studio-runtime.js';
+import { registerStudioMcpToolRoutes } from './routes/studio-mcp-tools.js';
 import { registerMultiUserStatic } from './http/multiuser-static.js';
 import { startEvidenceDelivery } from './services/evidence-delivery.js';
 import type {
@@ -760,6 +762,7 @@ import {
   detectEntryFile,
   ensureProject,
   ensureProjectSubdir,
+  withPinnedProjectDir,
   isRunTouchedProjectFile,
   isSafeId,
   listFiles,
@@ -900,6 +903,9 @@ import {
   setLiveArtifactPreviewHeaders,
 } from './live-artifacts/http-helpers.js';
 import { registerConnectorRoutes } from './connectors/routes.js';
+import { StudioConnectorRuntime } from './connectors/studio-runtime.js';
+import { registerStudioMcpRoutes } from './routes/studio-mcp.js';
+import { registerStudioConnectorRoutes } from './routes/studio-connectors.js';
 import { registerActiveContextRoutes } from './routes/active-context.js';
 import { registerAutomationRoutes } from './routes/automation.js';
 import { registerAttributionRoutes } from './routes/attribution.js';
@@ -919,6 +925,7 @@ import { registerDeployRoutes, registerDeploymentCheckRoutes } from './routes/de
 import { registerMediaRoutes } from './routes/media.js';
 import { registerProjectRoutes, registerProjectArtifactRoutes, registerProjectFileRoutes, registerProjectUploadRoutes, createEnforceWorkspaceProjectMutation } from './routes/project/index.js';
 import { registerProjectChatArtifactRoutes } from './routes/project/chat-artifacts.js';
+import { bindMultiUserStream, multiUserStreamAllowed } from './http/multiuser-stream.js';
 import { createChatArtifactBlobStore } from './chat-artifacts/blob-store.js';
 import { resolveChatArtifactQuota } from './chat-artifacts/quota.js';
 import {
@@ -942,6 +949,26 @@ import { registerChatRoutes } from './routes/chat.js';
 import { registerRunRoutes } from './routes/runs.js';
 import { registerMultiUserRunRoutes } from './routes/multiuser-runs.js';
 import { registerMultiUserDesignRoutes } from './routes/multiuser-design.js';
+import { registerStudioSettingsRoutes } from './routes/studio-settings.js';
+import { registerStudioPublicLinkRoutes } from './routes/studio-public-links.js';
+import { registerStudioDesignCatalogRoutes } from './routes/studio-design-catalog.js';
+import { registerStudioCatalogRoutes } from './routes/studio-catalog.js';
+import { bundledScenarioRegistry } from './plugins/bundled-scenarios.js';
+import { registerStudioArchiveRoutes } from './routes/studio-archives.js';
+import { registerStudioSharingRoutes } from './routes/studio-sharing.js';
+import { registerStudioCatalogSharingRoutes } from './routes/studio-catalog-sharing.js';
+import { registerStudioPluginRoutes } from './routes/studio-plugins.js';
+import { registerStudioPluginPreviewRoutes } from './routes/studio-plugin-previews.js';
+import { registerStudioLiveArtifactRoutes } from './routes/studio-live-artifacts.js';
+import { registerStudioCommentRoutes } from './routes/studio-comments.js';
+import { registerStudioPetRoutes } from './routes/studio-pets.js';
+import { registerStudioRenderRoutes } from './routes/studio-render.js';
+import { createChromiumCaptureHost } from './render/chromium-capture-runtime.js';
+import { setArtifactCaptureRuntime } from '@open-design/artifact-capture';
+import { registerStudioRoutineRoutes } from './routes/studio-routines.js';
+import { registerStudioAutomationRoutes } from './routes/studio-automations.js';
+import { registerStudioResearchRoutes } from './routes/studio-research.js';
+import { registerStudioProjectCreationRoutes } from './routes/studio-project-creation.js';
 import { registerMultiUserAgentAccountRoutes } from './routes/multiuser-agent-accounts.js';
 import { PersonalCodexAccounts } from './services/personal-codex-accounts.js';
 import { registerStrategyRolloutRoutes } from './routes/strategy-rollout.js';
@@ -1166,6 +1193,7 @@ import {
   installRouteRegistrationGuard,
 } from './route-registration-guard.js';
 import { installMultiUserFront } from './http/multiuser-gate.js';
+import { multiUserStudioCapabilities } from './http/studio-parity.js';
 import { resolveMultiUserMode, type MultiUserModeOptions } from './services/multiuser-mode.js';
 import { assertServerContextSatisfiesRoutes } from './route-context-contract.js';
 import { configureConnectorCredentialStore, connectorService, FileConnectorCredentialStore } from './connectors/service.js';
@@ -2916,7 +2944,7 @@ const pluginShareTaskStore = createPluginShareTaskStore({
 let projectMetadataLookup: ((id: string) => Record<string, unknown> | null) | null = null;
 
 const projectUpload = multer({
-  storage: multer.diskStorage({
+  storage: exclusiveDiskStorage({
     destination: async (req, _file, cb) => {
       try {
         // Route uploads into the project's actual root: for folder-imported
@@ -2932,7 +2960,7 @@ const projectUpload = multer({
         // sanitized relative dir is stashed on the request so the route can
         // report each file's true project-relative path.
         const subdir = typeof req.body?.dir === 'string' ? req.body.dir : '';
-        const { absDir, relDir } = await ensureProjectSubdir(
+        const { absDir, relDir, rootDir } = await ensureProjectSubdir(
           PROJECTS_DIR,
           req.params.id,
           subdir,
@@ -2940,6 +2968,7 @@ const projectUpload = multer({
         );
         (req as any)._uploadRelDir = relDir;
         (req as any)._uploadAbsDir = absDir;
+        (req as any)._uploadRootDir = rootDir;
         cb(null, absDir);
       } catch (err) {
         cb(err, '');
@@ -2963,6 +2992,49 @@ const projectUpload = multer({
   limits: { fileSize: 200 * 1024 * 1024 },  // 200MB — covers the largest design assets we expect (PPTX/PDF/raw images)
 });
 
+function lstatExists(target: string): boolean {
+  try { fs.lstatSync(target); return true; } catch { return false; }
+}
+
+/**
+ * multer's disk storage with exclusive creation. Project directories are
+ * agent-writable; `wx` (O_CREAT|O_EXCL) never opens an existing path or
+ * follows a planted link, so an upload can only create a new regular file
+ * in the validated directory. Same destination/filename callbacks as
+ * multer.diskStorage.
+ */
+function exclusiveDiskStorage(options: {
+  destination: (req: any, file: any, cb: (error: any, destination: string) => void) => void;
+  filename: (req: any, file: any, cb: (error: any, filename: string) => void) => void;
+}) {
+  return {
+    _handleFile(req: any, file: any, cb: (error: any, info?: Record<string, unknown>) => void) {
+      options.destination(req, file, (destinationError, destination) => {
+        if (destinationError) return cb(destinationError);
+        options.filename(req, file, (filenameError, filename) => {
+          if (filenameError) return cb(filenameError);
+          const finalPath = path.join(destination, filename);
+          if (path.dirname(finalPath) !== path.resolve(destination)) return cb(new Error('invalid upload name'));
+          const rootDir = typeof req._uploadRootDir === 'string' ? req._uploadRootDir : destination;
+          // The destination is pinned by descriptor for the whole write.
+          withPinnedProjectDir(rootDir, destination, (pinned: string) => new Promise<void>((resolve, reject) => {
+            const out = fs.createWriteStream(path.join(pinned, filename), { flags: 'wx' });
+            file.stream.on('error', (error: unknown) => { out.destroy(); reject(error); });
+            out.on('error', reject);
+            out.on('finish', () => { cb(null, { destination, filename, path: finalPath, size: out.bytesWritten }); resolve(); });
+            file.stream.pipe(out);
+          })).catch((error: unknown) => { file.stream.resume(); cb(error); });
+        });
+      });
+    },
+    _removeFile(_req: any, file: any, cb: (error: Error | null) => void) {
+      const target = file.path;
+      delete file.destination; delete file.filename; delete file.path;
+      fs.unlink(target, () => cb(null));
+    },
+  };
+}
+
 function uniqueUploadFileName(uploadDir, safeName, reserved) {
   const parsed = path.parse(safeName);
   const base = parsed.name || parsed.base || 'file';
@@ -2970,7 +3042,8 @@ function uniqueUploadFileName(uploadDir, safeName, reserved) {
   for (let index = 0; index < 10_000; index += 1) {
     const candidate = index === 0 ? safeName : `${base}-${index}${ext}`;
     if (reserved.has(candidate)) continue;
-    if (uploadDir && fs.existsSync(path.join(uploadDir, candidate))) continue;
+    // lstat semantics: a dangling link planted under this name is taken, not free.
+    if (uploadDir && lstatExists(path.join(uploadDir, candidate))) continue;
     reserved.add(candidate);
     return candidate;
   }
@@ -3038,8 +3111,9 @@ export function createSseResponse(
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
+  bindMultiUserStream(res);
 
-  const canWrite = () => !res.destroyed && !res.writableEnded;
+  const canWrite = () => !res.destroyed && !res.writableEnded && multiUserStreamAllowed(res);
   const writeKeepAlive = () => {
     if (canWrite()) {
       res.write(': keepalive\n\n');
@@ -3452,8 +3526,10 @@ export async function startServer({
 
   // Routes that serve content to sandboxed iframes (Origin: null) for
   // read-only purposes.  All other /api routes reject Origin: null.
+  // Multi-user preview capabilities live on their own cookie-free origin;
+  // opaque Studio srcDoc frames fetch their fonts and assets from there (#59).
   const _NULL_ORIGIN_SAFE_GET_RE =
-    /^\/projects\/[^/]+\/(?:raw|preview)\/|^\/codex-pets\/[^/]+\/spritesheet$|^\/asset-cache$/;
+    /^\/projects\/[^/]+\/(?:raw|preview)\/|^\/multiuser\/projects\/[^/]+\/preview\/|^\/multiuser\/(?:live-artifact-preview|plugin-preview)\/|^\/codex-pets\/[^/]+\/spritesheet$|^\/asset-cache$/;
   const _POWERED_PREVIEW_SAFE_RE = /^\/projects\/[^/]+\/powered\/.+$/u;
 
   // Reject cross-origin requests to API endpoints.
@@ -5282,6 +5358,14 @@ export async function startServer({
     _scope: TeamMirrorPullScope,
     _version: number,
   ): Promise<void> => {};
+  // Multi-user public links (#66): the state read shares its path shape with
+  // the owner file-bytes and collab-sync routes, so forward it to the Studio
+  // alias before they see it. The gate has already authorized the owner.
+  if (multiUserMode) app.get(/^\/api\/projects\/([^/]+)\/files\/(.+)\/publish-public$/u, (req, _res, next) => {
+    const params = req.params as unknown as Record<string, string>;
+    req.url = `/api/multiuser/projects/${encodeURIComponent(params[0] ?? '')}/public-links/${encodeURIComponent(params[1] ?? '')}`;
+    next();
+  });
   const collabSyncRoutes = registerCollabSyncRoutes(app, {
     collab,
     publicFilePublicationStore: createSqlitePublicFilePublicationStore(db),
@@ -8333,7 +8417,7 @@ export async function startServer({
         ...version,
         capabilities: {
           slideRenderer: typeof desktopSlideRenderer === 'function',
-          ...(multiUserMode ? { multiUser: true as const } : {}),
+          ...(multiUserMode ? { multiUser: true as const, studio: multiUserStudioCapabilities() } : {}),
         },
       },
     });
@@ -8394,7 +8478,15 @@ export async function startServer({
     },
   });
 
+  const studioMcpRuntime = multiUserMode ? new StudioMcpRuntime({ db, dataRoot: RUNTIME_DATA_DIR, auth: multiUserFront!.authStore,
+    sessionCurrent: (actor) => multiUserFront!.sessionCurrent(actor),
+    ...(multiUserMode.testMcpOutbound ? { outbound: multiUserMode.testMcpOutbound } : {}) }) : null;
+  if (studioMcpRuntime) registerStudioMcpToolRoutes(app, studioMcpRuntime);
+  const studioConnectorRuntime = multiUserMode ? new StudioConnectorRuntime({ db, dataRoot: RUNTIME_DATA_DIR, auth: multiUserFront!.authStore,
+    sessionCurrent: (actor) => multiUserFront!.sessionCurrent(actor),
+    ...(multiUserMode.testComposioFetch ? { fetch: multiUserMode.testComposioFetch } : {}) }) : null;
   registerConnectorRoutes(app, {
+    ...(studioConnectorRuntime ? { studioRuntime: studioConnectorRuntime } : {}),
     sendApiError,
     authorizeToolRequest,
     projectsRoot: PROJECTS_DIR,
@@ -8714,6 +8806,7 @@ export async function startServer({
     db,
     http: httpDeps,
     projectStore: projectStoreDeps,
+    projectOwnership: multiUserFront?.projectOwnershipHooks ?? null,
   });
   registerHostToolsRoutes(app, {
     db,
@@ -8788,6 +8881,8 @@ export async function startServer({
   registerSocialShareRoutes(app, { http: httpDeps });
   const projectCreatePreparationTimeoutMs = projectCreatePreparationTimeoutMsFromEnv();
   registerProjectRoutes(app, {
+    ...(multiUserMode ? { readActorSkill: async (owner: string, id: string) => Boolean(await studioCatalog?.readSkills(owner, [id])) } : {}),
+    ...(multiUserMode ? { readActorDesignSystem: async (owner: string, id: string) => Boolean(await studioDesignCatalog?.readSystem(owner, id)) } : {}),
     db,
     design,
     projectOwnership: multiUserFront?.projectOwnershipHooks ?? null,
@@ -9636,34 +9731,13 @@ export async function startServer({
   // and run through their explicit pluginId path; they just don't get
   // to hijack a consumer plugin that omitted `od.pipeline`.
   function collectBundledScenarios() {
-    type ScenarioEntry = {
-      id: string;
-      taskKind: 'new-generation' | 'figma-migration' | 'code-migration' | 'tune-collab';
-      pipeline: NonNullable<NonNullable<import('@open-design/contracts').PluginManifest['od']>['pipeline']>;
-    };
-    const byTaskKind = new Map<ScenarioEntry['taskKind'], ScenarioEntry>();
     try {
-      const all = listInstalledPlugins(db);
-      for (const row of all) {
-        if (row.sourceKind !== 'bundled') continue;
-        const od = row.manifest.od;
-        if (!od || od.kind !== 'scenario') continue;
-        if (!od.pipeline || !Array.isArray(od.pipeline.stages) || od.pipeline.stages.length === 0) continue;
-        const taskKind = (od.taskKind ?? 'new-generation') as ScenarioEntry['taskKind'];
-        if (taskKind !== 'new-generation' && taskKind !== 'figma-migration' &&
-            taskKind !== 'code-migration' && taskKind !== 'tune-collab') continue;
-        const entry: ScenarioEntry = { id: row.id, taskKind, pipeline: od.pipeline };
-        const existing = byTaskKind.get(taskKind);
-        if (!existing || entry.id === `od-${taskKind}`) {
-          byTaskKind.set(taskKind, entry);
-        }
-      }
+      return bundledScenarioRegistry(listInstalledPlugins(db));
     } catch {
       // On a fresh install the table may not exist yet; surface no
       // scenarios rather than crash the apply path.
       return [];
     }
-    return Array.from(byTaskKind.values());
   }
 
   const readWorkspaceTeamPlugin = async (
@@ -11432,7 +11506,9 @@ export async function startServer({
     // values further down at .mcp.json write time — see the spawn block
     // below — instead of re-reading.
     let externalMcpConfig = { servers: [] };
-    if (!SANDBOX_RUNTIME.enabled) {
+    // The host MCP config (which may spawn stdio servers) never feeds a multi-user
+    // process (#62, S60); Studio runs use the isolated run services.
+    if (!SANDBOX_RUNTIME.enabled && !multiUserMode) {
       try {
         externalMcpConfig = await readMcpConfig(RUNTIME_DATA_DIR);
       } catch (err) {
@@ -17552,6 +17628,63 @@ export async function startServer({
     };
   });
 
+  // Account settings and automatic memory (#62); extraction calls only a turn's own OpenAI source.
+  const studioSettings = multiUserMode ? registerStudioSettingsRoutes(app, { db, dataRoot: RUNTIME_DATA_DIR,
+    ...(multiUserMode.testCompanyOpenAIFetch ? { fetch: multiUserMode.testCompanyOpenAIFetch } : {}),
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}) }) : null;
+  // Team catalogs (#61/#65): owner-managed `use` grants on private skills and design documents.
+  const studioCatalogSharing = multiUserMode ? registerStudioCatalogSharingRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
+  }) : null;
+  const studioCatalog = multiUserMode ? registerStudioCatalogRoutes(app, {
+    db, skillsRoot: SKILLS_DIR, listBuiltInSkills: async () => (await listSkills(SKILLS_DIR)).map((skill) => ({ ...skill, source: 'built-in' as const })),
+    ...(studioCatalogSharing ? { sharing: studioCatalogSharing } : {}),
+  }) : null;
+  const studioDesignCatalog = multiUserMode ? registerStudioDesignCatalogRoutes(app, {
+    ...(studioCatalogSharing ? { sharing: studioCatalogSharing } : {}),
+    db, designSystemsRoot: DESIGN_SYSTEMS_DIR, promptTemplatesRoot: PROMPT_TEMPLATES_DIR, craftRoot: CRAFT_DIR,
+    listBuiltInSystems: () => listDesignSystems(DESIGN_SYSTEMS_DIR, { source: 'built-in', isEditable: false, defaultStatus: 'published' }),
+    listBuiltInTemplates: () => listSkills(DESIGN_TEMPLATES_DIR),
+  }) : null;
+  // Bundled plugin apply captures authorized skill and brand packages with its immutable prompt/resources.
+  const studioPluginPreviews = multiUserMode ? registerStudioPluginPreviewRoutes(app, { db, dataRoot: RUNTIME_DATA_DIR, bundledRoot: BUNDLED_PLUGINS_DIR,
+    previewOrigin: multiUserMode.previewOrigin, allowedOrigins: multiUserMode.allowedOrigins,
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}) }) : null;
+  const studioPlugins = multiUserMode ? registerStudioPluginRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, hostRoots: [PROJECT_ROOT, BUNDLED_PLUGINS_DIR], craftRoot: CRAFT_DIR,
+    ...(studioDesignCatalog ? { designCatalog: studioDesignCatalog, designSystemsRoot: DESIGN_SYSTEMS_DIR } : {}),
+    ...(studioCatalog ? { skillCatalog: studioCatalog } : {}),
+    ...(studioCatalogSharing ? { designAccess: studioCatalogSharing.grants, skillAccess: studioCatalogSharing.grants } : {}),
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
+  }) : null;
+  if (multiUserMode) registerStudioArchiveRoutes(app, { db, projectsRoot: PROJECTS_DIR, accountActive: multiUserFront!.accountActive });
+  if (multiUserMode) registerStudioCommentRoutes(app, { db, accountActive: multiUserFront!.accountActive, onChanged: (projectId) => {
+    emitProjectEvent(projectId, { type: 'comment-changed', projectId, at: Date.now() });
+  } });
+  const studioLiveArtifacts = multiUserMode ? registerStudioLiveArtifactRoutes(app, { db, projectsRoot: PROJECTS_DIR, dataRoot: RUNTIME_DATA_DIR,
+    previewOrigin: multiUserMode.previewOrigin, allowedOrigins: multiUserMode.allowedOrigins, accountActive: multiUserFront!.accountActive,
+    onChanged: (projectId, action, artifact) => { emitLiveArtifactEvent({ projectId }, action, artifact); } }) : null;
+  if (multiUserMode) registerStudioPetRoutes(app, { bundledRoot: BUNDLED_PETS_DIR });
+  // Server-side PDF/PPTX/PNG exports (#66): only when the deployment configured a renderer.
+  const studioRenderHost = multiUserMode?.studioRenderer ? createChromiumCaptureHost({
+    ...(multiUserMode.studioRenderer.executablePath ? { executablePath: multiUserMode.studioRenderer.executablePath } : {}),
+    ...(multiUserMode.studioRenderer.assetHosts ? { assetHosts: multiUserMode.studioRenderer.assetHosts } : {}),
+    ...(multiUserMode.studioRenderer.sandbox !== undefined ? { sandbox: multiUserMode.studioRenderer.sandbox } : {}),
+    ...(multiUserMode.studioRenderer.domToPptxBundlePath ? { domToPptxBundlePath: multiUserMode.studioRenderer.domToPptxBundlePath } : {}),
+    // The generated launcher is daemon data (root AGENTS.md data-directory contract).
+    ...(multiUserMode.studioRenderer.bwrapPath ? { bwrap: { path: multiUserMode.studioRenderer.bwrapPath, launcherDir: path.join(RUNTIME_DATA_DIR, 'studio-renderer') } } : {}),
+  }) : null;
+  if (studioRenderHost) {
+    setArtifactCaptureRuntime(studioRenderHost.runtime);
+    multiUserFront?.setRenderedExportsAvailable(() => true);
+  }
+  if (multiUserMode) registerStudioRenderRoutes(app, { db, projectsRoot: PROJECTS_DIR, dataRoot: RUNTIME_DATA_DIR,
+    host: studioRenderHost, accountActive: multiUserFront!.accountActive });
+  if (multiUserMode) registerStudioProjectCreationRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR,
+    readSkill: async (owner, id) => Boolean(await studioCatalog?.readSkills(owner, [id])),
+    readDesignSystem: async (owner, id) => Boolean(await studioDesignCatalog?.readSystem(owner, id)),
+  });
   const multiUserDesign = multiUserMode ? registerMultiUserDesignRoutes(app, {
     db,
     dataRoot: RUNTIME_DATA_DIR,
@@ -17561,24 +17694,75 @@ export async function startServer({
     listBuiltInDesignSystems: () => listDesignSystems(DESIGN_SYSTEMS_DIR, {
       source: 'built-in', isEditable: false, defaultStatus: 'published',
     }),
-    readBuiltInDesignSystem: (id) => readDesignSystem(DESIGN_SYSTEMS_DIR, id),
-    // Multi-user prompt composition is deliberately built-in only. Do not let
-    // an installed package with the same id fill missing bundled assets.
-    readBuiltInDesignSystemAssets: (id) => readDesignSystemAssets(DESIGN_SYSTEMS_DIR, id),
     ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
   }) : null;
   const multiUserRuns = multiUserMode ? registerMultiUserRunRoutes(app, {
+    ...(studioConnectorRuntime ? { connectors: studioConnectorRuntime } : {}),
+    ...(studioMcpRuntime ? { mcp: studioMcpRuntime } : {}),
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
+    emitProjectEvent,
+    ...(studioLiveArtifacts ? { liveArtifacts: studioLiveArtifacts } : {}),
     ...(multiUserMode.testMockAgentScript ? { mockAgentScript: multiUserMode.testMockAgentScript } : {}),
+    ...(multiUserMode.testCompanyOpenAIFetch ? { companyFetch: multiUserMode.testCompanyOpenAIFetch } : {}),
+    ...(multiUserMode.testTavilyFetch ? { researchFetch: multiUserMode.testTavilyFetch } : {}),
+    personalProviderKeys: multiUserMode.personalProviderKeys,
     ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
     ...(personalCodex ? { personal: personalCodex } : {}),
+    ...(multiUserMode.personalCodex?.sandbox ? { scriptSandbox: multiUserMode.personalCodex.sandbox } : {}),
     ...(multiUserDesign ? { design: multiUserDesign } : {}),
+    ...(studioCatalog ? { catalog: studioCatalog } : {}),
+    ...(studioCatalogSharing ? { catalogGrants: studioCatalogSharing.grants } : {}),
+    ...(studioSettings ? { settings: studioSettings, memory: studioSettings.automation } : {}),
+    ...(studioDesignCatalog ? { designCatalog: studioDesignCatalog } : {}),
+    ...(studioPlugins ? { plugins: studioPlugins } : {}),
+  }) : null;
+  // Account research on each account's own Tavily key (#63); never the host research key.
+  if (multiUserRuns) registerStudioResearchRoutes(app, { research: multiUserRuns.research });
+  // Account connectors (#62, S58): the company Composio key and each account's own OAuth connections.
+  const studioConnectors = multiUserMode ? registerStudioConnectorRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, publicOrigin: multiUserMode.allowedOrigins[0]!,
+    sessionCurrent: (actor) => multiUserFront!.sessionCurrent(actor), accountActive: multiUserFront!.accountActive,
+    ...(multiUserMode.testComposioFetch ? { fetch: multiUserMode.testComposioFetch } : {}),
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
+  }) : null;
+  // Account remote MCP servers (#62, S60; owner decision 2A): remote HTTP/SSE only, sealed per account.
+  const studioMcp = multiUserMode ? registerStudioMcpRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, publicOrigin: multiUserMode.allowedOrigins[0]!,
+    sessionCurrent: (actor) => multiUserFront!.sessionCurrent(actor), accountActive: multiUserFront!.accountActive,
+    ...(multiUserMode.testMcpOutbound ? { outbound: multiUserMode.testMcpOutbound } : {}),
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
+  }) : null;
+  // Account-owned automation packets/proposals (#64); apply writes only into account stores.
+  const studioAutomations = studioSettings ? registerStudioAutomationRoutes(app, { db, settings: studioSettings }) : null;
+  // Account-owned Automations dispatch through the same run admission policy.
+  const studioRoutines = multiUserRuns ? registerStudioRoutineRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, runs: multiUserRuns,
+    ...(studioConnectorRuntime ? { connectors: studioConnectorRuntime } : {}),
+    ...(studioMcpRuntime ? { mcp: studioMcpRuntime } : {}),
+    ...(studioAutomations ? { automations: studioAutomations } : {}),
+    ...(multiUserMode?.poolClock ? { clock: multiUserMode.poolClock } : {}),
   }) : null;
   if (multiUserRuns) multiUserFront?.setCancelAccountRuns((accountId) => {
+    // Pending connector authorizations die with the session (S58); connections stay recorded.
+    studioConnectors?.invalidateAccount(accountId);
+    studioConnectorRuntime?.invalidateAccount(accountId);
+    studioMcpRuntime?.invalidateAccount(accountId);
+    studioMcp?.invalidateAccount(accountId);
     multiUserRuns.cancelAccountRuns(accountId);
     personalCodex?.cancelPendingFor(accountId).catch(() => {});
   });
+  if (multiUserRuns) multiUserFront?.setCompanyPoolAvailable(() => multiUserRuns.openaiPoolAvailable);
   if (multiUserRuns) multiUserFront?.setIsRunOwner(multiUserRuns.isRunOwner);
+  if (multiUserRuns) multiUserFront?.setCancelProjectRuns(multiUserRuns.cancelProjectRuns);
+  const studioPublicLinks = multiUserMode ? registerStudioPublicLinkRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, previewOrigin: multiUserMode.previewOrigin,
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
+  }) : null;
+  const studioSharing = multiUserMode ? registerStudioSharingRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, emitProjectEvent,
+    ...(multiUserRuns ? { cancelProjectRuns: multiUserRuns.cancelProjectRuns } : {}),
+    ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
+  }) : null;
   if (multiUserRuns && personalCodex) {
     personalCodex.setRunHooks({ cancelPersonalRuns: multiUserRuns.cancelPersonalRuns,
       forgetNativeSessions: multiUserRuns.forgetNativeSessions,
@@ -17586,7 +17770,7 @@ export async function startServer({
     multiUserFront?.setIsAgentAccountOwner((param, id, accountId) => personalCodex.isOwner(param, id, accountId));
     registerMultiUserAgentAccountRoutes(app, {
       personal: personalCodex, runs: multiUserRuns.personalLane, listAccountIds: multiUserRuns.listAccountIds,
-      companyPoolAvailable: multiUserRuns.companyPoolAvailable,
+      companyPoolAvailable: () => multiUserRuns.companyPoolAvailable,
     });
   }
   registerRunRoutes(app, {
@@ -18206,7 +18390,15 @@ export async function startServer({
       proactiveContentPull.dispose();
       collabPublishWatcher.dispose();
       collabCloud?.dispose();
+      studioRoutines?.stop();
+      void studioRenderHost?.close();
       multiUserDesign?.close();
+      studioSharing?.close();
+      studioCatalogSharing?.close();
+      studioPlugins?.close();
+      studioPluginPreviews?.close();
+      studioPublicLinks?.close();
+      studioLiveArtifacts?.close();
       multiUserFront?.close();
       void personalCodex?.shutdown();
       void multiUserRuns?.shutdown();
@@ -18216,10 +18408,19 @@ export async function startServer({
       daemonShutdownStarted = true;
       daemonShuttingDown = true;
       if (multiUserRuns) {
+        studioRoutines?.stop();
         multiUserRuns.beginShutdown();
         await personalCodex?.shutdown();
         await multiUserRuns.shutdown();
         multiUserDesign?.close();
+      studioSharing?.close();
+      studioCatalogSharing?.close();
+      studioPlugins?.close();
+      studioPluginPreviews?.close();
+      studioPublicLinks?.close();
+      studioLiveArtifacts?.close();
+      studioConnectorRuntime?.close();
+      studioMcpRuntime?.close();
       }
       amrTerminalReportDelivery.stop();
       clearTerminalTelemetryFallbackTimers();

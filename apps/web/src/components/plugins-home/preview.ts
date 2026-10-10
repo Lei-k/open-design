@@ -21,6 +21,7 @@ import type {
   WorkspaceCollabContext,
 } from '@open-design/contracts';
 import { workspaceResourceUrl } from '../../collab/workspace-identity';
+import { studioUsesLocalServices } from '../../runtime/studio-transport';
 
 export type PluginPreviewKind = 'media' | 'html' | 'design' | 'text';
 
@@ -257,7 +258,7 @@ export function inferPluginPreview(
       return {
         kind: 'html',
         src: workspaceResourceUrl(
-          `/api/plugins/${encodeURIComponent(record.id)}/preview`,
+          `/api/plugins/${encodeURIComponent(record.id)}/preview${studioUsesLocalServices() ? '' : '?variant=rendered'}`,
           opts?.workspaceContext,
         ),
         label: entry.replace(/^\.\//, '').split(/[\\/]/).pop() ?? entry,
@@ -274,7 +275,7 @@ export function inferPluginPreview(
       return {
         kind: 'html',
         src: workspaceResourceUrl(
-          `/api/plugins/${encodeURIComponent(record.id)}/example/${encodeURIComponent(stem)}`,
+          `/api/plugins/${encodeURIComponent(record.id)}/example/${encodeURIComponent(stem)}${studioUsesLocalServices() ? '' : '?variant=rendered'}`,
           opts?.workspaceContext,
         ),
         label: title,

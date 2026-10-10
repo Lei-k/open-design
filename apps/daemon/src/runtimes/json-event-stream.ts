@@ -1248,6 +1248,7 @@ function handleCodexEvent(obj: unknown, onEvent: StreamEventHandler, state: Pars
         toolUseId: item.id,
         content,
         isError: typeof item.exit_code === 'number' ? item.exit_code !== 0 : item.status === 'failed',
+        ...(item.startup_failed === true ? { startupFailed: true } : {}),
       });
       const connectorToolError = connectorToolSelectionErrorMessage(content);
       if (connectorToolError && !state.codexErrorEmitted) {
@@ -1279,7 +1280,7 @@ function handleCodexEvent(obj: unknown, onEvent: StreamEventHandler, state: Pars
       state.codexLastAgentMessageEndedWithNewline = false;
       emitCodexMcpToolUse(item, item.id, completedMcpToolName, onEvent, state);
       const { content, isError } = codexMcpToolResult(item);
-      onEvent({ type: 'tool_result', toolUseId: item.id, content, isError });
+      onEvent({ type: 'tool_result', toolUseId: item.id, content, isError, ...(item.startup_failed === true ? { startupFailed: true } : {}) });
       return true;
     }
     const completedSearchQuery = codexWebSearchQuery(item);

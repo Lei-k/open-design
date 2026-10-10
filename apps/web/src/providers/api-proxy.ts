@@ -1,3 +1,4 @@
+import { studioFetch as fetch } from '../runtime/studio-transport';
 import { effectiveMaxTokens } from '../state/maxTokens';
 import type { AppConfig, ChatMessage } from '../types';
 import type {

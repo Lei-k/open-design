@@ -35,6 +35,7 @@ import type {
 } from '@open-design/contracts';
 import { attachCodexAppServerSession, type CodexSandboxMode } from '../agent-protocol/codex-app-server/session.js';
 import { AppServerAccountClient, closeChild, spawnAppServer, type AppServerEnvironment } from '../integrations/codex-app-server-account.js';
+import { assertPersonalCodexVersion } from './personal-codex-version.js';
 import type { PersonalSandbox } from './personal-sandbox.js';
 
 type Json = Record<string, unknown>;
@@ -147,14 +148,26 @@ export interface PersonalTurnResult {
  * error of a turn (`codex-error-info.ts`), which may be an earlier `error`
  * notification, so classification keeps reading the failed turn itself.
  */
-export function runPersonalCodexTurn(input: AppServerEnvironment & {
+export async function runPersonalCodexTurn(input: AppServerEnvironment & {
   prompt: string; resumeThreadId: string | null; sandboxMode: CodexSandboxMode; onThread?: (threadId: string) => void;
+  /** This turn's admitted model/effort; absent means the account's own default. */
+  model?: string; reasoning?: string;
   /** Normalized progress tap. Callers must persist only a redacted projection. */
   onAgentEvent?: (event: Json) => void;
   /** Called synchronously from the child's close event, before `done` settles. */
   onDone?: (result: PersonalTurnResult) => void;
-}): { child: ChildProcessWithoutNullStreams; done: Promise<PersonalTurnResult> } {
+  dynamicToolsPrompt?: string;
+  reportToolStartupFailures?: boolean;
+  /** Recheck authority without yielding immediately before spawning after version discovery. */
+  beforeSpawn?: () => void;
+  onSpawn?: (child: ChildProcessWithoutNullStreams) => void;
+  dynamicTools?: import('../agent-protocol/codex-app-server/session.js').CodexAppServerSessionOptions['dynamicTools'];
+  onDynamicToolCall?: (name: string, args: Json) => unknown;
+}): Promise<{ child: ChildProcessWithoutNullStreams; done: Promise<PersonalTurnResult>; interrupt(): void }> {
+  if (input.command[1] === 'app-server') await assertPersonalCodexVersion(input.command[0], input.dataRoot);
+  input.beforeSpawn?.();
   const child = spawnAppServer(input);
+  input.onSpawn?.(child);
   let text = '';
   let textBytes = 0;
   let textTruncated = false;
@@ -175,7 +188,10 @@ export function runPersonalCodexTurn(input: AppServerEnvironment & {
   });
   const session = attachCodexAppServerSession({
     child, prompt: input.prompt, cwd: input.cwd, sandboxMode: input.sandboxMode,
+    model: input.model ?? null, reasoning: input.reasoning ?? null,
     resumeSessionId: input.resumeThreadId, resumeSessionOwned: input.resumeThreadId !== null,
+    reportToolStartupFailures: input.reportToolStartupFailures === true,
+    ...(input.dynamicTools && input.onDynamicToolCall ? { dynamicTools: input.dynamicTools, dynamicToolsPrompt: input.dynamicToolsPrompt, onDynamicToolCall: input.onDynamicToolCall } : {}),
     onAgentEvent: (event) => {
       input.onAgentEvent?.(event);
       if (event.type === 'text_delta' && typeof event.delta === 'string') {
@@ -208,7 +224,7 @@ export function runPersonalCodexTurn(input: AppServerEnvironment & {
       resolve(result);
     });
   });
-  return { child, done };
+  return { child, done, interrupt: () => session.abort() };
 }
 
 type AttemptRow = {
@@ -427,6 +443,11 @@ export class PersonalCodexAccounts {
     if (fs.existsSync(home)) lockDown(home);
   }
 
+  /** Real deployment binaries are probed once per path/mtime before login or run admission. */
+  async assertSupportedVersion(): Promise<void> {
+    if (this.command?.[1] === 'app-server') await assertPersonalCodexVersion(this.command[0], this.dataRoot);
+  }
+
   /** How personal runs start an app-server child: the command and its sandbox (if any). */
   appServerLaunch(): { command: readonly [string, ...string[]]; sandbox: PersonalSandbox | null } | null {
     return this.command ? { command: this.command, sandbox: this.sandbox } : null;
@@ -446,6 +467,7 @@ export class PersonalCodexAccounts {
   // ---- login state machine -----------------------------------------------------
 
   async startLogin(ownerId: string): Promise<PersonalLoginAttempt> {
+    await this.assertSupportedVersion();
     if (!this.enabled || !this.command) throw new PersonalAccountError(403, 'MULTIUSER_PERSONAL_DISABLED', 'personal subscriptions are not enabled on this server');
     if (this.unlinking.has(ownerId)) throw new PersonalAccountError(409, 'MULTIUSER_PERSONAL_BUSY', 'the personal account is being unlinked');
     const id = randomBytes(32).toString('base64url');
@@ -861,6 +883,7 @@ export class PersonalCodexAccounts {
   /** `account/read` (+ rate limits) from a fresh app-server on a persisted login home; null on any failure. */
   private async readPersistedIdentity(loginHome: string): Promise<{ read: Json; limits: Json | null } | null> {
     if (!this.command) return null;
+    try { await this.assertSupportedVersion(); } catch { return null; }
     const client = new AppServerAccountClient({ command: this.command, sandbox: this.sandbox, codexHome: loginHome, home: loginHome,
       temp: path.join(loginHome, 'tmp'), cwd: loginHome, dataRoot: this.dataRoot });
     try {
@@ -934,16 +957,27 @@ export class PersonalCodexAccounts {
     if (row.status !== 'connected') throw new PersonalAccountError(409, 'MULTIUSER_PERSONAL_UNAVAILABLE', 'the personal account is not usable; re-authorize or unlink it');
     if (this.verifying.has(ownerId)) throw new PersonalAccountError(409, 'MULTIUSER_PERSONAL_BUSY', 'a verification is already running');
     const work = path.join(actorRuntimeDir(this.dataRoot, ownerId), 'codex-verify');
-    privateDir(work);
-    privateDir(path.join(work, 'tmp'));
     const home = personalCodexHome(this.dataRoot, ownerId);
-    const turn = runPersonalCodexTurn({ command: this.command, sandbox: this.sandbox, codexHome: home, home: work, temp: path.join(work, 'tmp'),
-      cwd: work, dataRoot: this.dataRoot, prompt: VERIFY_PROMPT, resumeThreadId: null, sandboxMode: 'read-only' });
-    this.verifying.set(ownerId, turn.child);
+    let prepared = false;
+    let turn: Awaited<ReturnType<typeof runPersonalCodexTurn>> | undefined;
     let result: PersonalTurnResult;
-    try { result = await turn.done; } finally {
-      this.verifying.delete(ownerId);
-      fs.rmSync(work, { recursive: true, force: true });
+    try {
+      turn = await runPersonalCodexTurn({ command: this.command, sandbox: this.sandbox, codexHome: home, home: work, temp: path.join(work, 'tmp'),
+        cwd: work, dataRoot: this.dataRoot, prompt: VERIFY_PROMPT, resumeThreadId: null, sandboxMode: 'read-only',
+        beforeSpawn: () => {
+          if (this.verifying.has(ownerId)) throw new PersonalAccountError(409, 'MULTIUSER_PERSONAL_BUSY', 'a verification is already running');
+          const current = this.accountRow(ownerId);
+          if (this.stopped || this.fenced(ownerId) || current?.id !== row.id || current.credential_version !== row.credential_version || current.status !== 'connected') {
+            throw new PersonalAccountError(409, 'MULTIUSER_PERSONAL_UNAVAILABLE', 'the personal account changed during verification');
+          }
+          privateDir(work); privateDir(path.join(work, 'tmp')); prepared = true;
+        },
+        onSpawn: (child) => this.verifying.set(ownerId, child),
+      });
+      result = await turn.done;
+    } finally {
+      if (turn && this.verifying.get(ownerId) === turn.child) this.verifying.delete(ownerId);
+      if (prepared) fs.rmSync(work, { recursive: true, force: true });
     }
     this.secureHome(ownerId);
     const current = this.accountRow(ownerId);
@@ -991,9 +1025,13 @@ export class PersonalCodexAccounts {
       const home = personalCodexHome(this.dataRoot, ownerId);
       if (this.command && fs.existsSync(home)) {
         // Best effort local logout; this is not a provider-side revocation.
-        const client = new AppServerAccountClient({ command: this.command, sandbox: this.sandbox, codexHome: home, home, temp: home, cwd: home, dataRoot: this.dataRoot });
-        try { await client.initialize(); await client.request('account/logout', null, 3_000); } catch { /* deletion below is authoritative */ }
-        await client.close();
+        let client: AppServerAccountClient | undefined;
+        try {
+          await this.assertSupportedVersion();
+          client = new AppServerAccountClient({ command: this.command, sandbox: this.sandbox, codexHome: home, home, temp: home, cwd: home, dataRoot: this.dataRoot });
+          await client.initialize(); await client.request('account/logout', null, 3_000);
+        } catch { /* deletion below is authoritative */ }
+        await client?.close();
       }
       // Every copy of this owner's state goes before the row: the active home (with any
       // retained credential inside it) and a home set aside by a failed switch.

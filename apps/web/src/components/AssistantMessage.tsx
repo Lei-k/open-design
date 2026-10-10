@@ -1,3 +1,5 @@
+import { registerStudioReset } from '../runtime/studio-resources';
+import { studioSetTimeout as setTimeout, studioSetInterval as setInterval, studioWindowSessionStorage } from '../runtime/studio-transport';
 import { Fragment, memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCharReveal } from "./chat/useCharReveal";
 import { ExecutionShell } from "./chat/ExecutionShell";
@@ -514,6 +516,11 @@ function AssistantMessageImpl({
       stripEmptyThinkingBlocks(suppressDuplicateQuestionForms(buildBlocks(displayEvents))),
     );
   }, [displayEvents]);
+  // The daemon's latest stage edge, shared by live SSE and stored history.
+  // Reuse the workflow status row; terminal runs never claim an unfinished
+  // stage is still running.
+  const pipelineStage = [...displayEvents].reverse().find((event) =>
+    event.kind === 'pipeline_stage_started' || event.kind === 'pipeline_stage_completed');
   /**
    * 这一轮对执行记录来说算什么状态。
    *
@@ -1300,6 +1307,13 @@ function AssistantMessageImpl({
       data-continuation={showRole ? 'false' : 'true'}
       data-assistant-message-id={message.id}
     >
+      {pipelineStage && (pipelineStage.kind === 'pipeline_stage_started' || pipelineStage.kind === 'pipeline_stage_completed') ? (
+        <StatusPill label={pipelineStage.kind === 'pipeline_stage_completed'
+          ? t('chat.record.done') : streaming || message.runStatus === 'running' || message.runStatus === 'queued' ? t('chat.record.running')
+            : message.runStatus === 'canceled' ? t('chat.record.canceled')
+            : message.runStatus === 'failed' ? t('chat.record.failedTurn') : t('assistant.awaitingReplyLabel')}
+          detail={pipelineStage.stageId} />
+      ) : null}
       {showRole ? (
         <div className="role" data-testid="assistant-role">
           <AgentIcon id={roleIconId} size={20} className="role-agent-icon" />
@@ -3536,7 +3550,7 @@ function readInlineQuestionFormDraft(
   const key = inlineQuestionFormDraftStorageKey(formKey);
   if (!key || typeof window === "undefined") return undefined;
   try {
-    const raw = window.sessionStorage.getItem(key);
+    const raw = studioWindowSessionStorage().getItem(key);
     if (!raw) return undefined;
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -3566,7 +3580,7 @@ function writeInlineQuestionFormDraft(
   const key = inlineQuestionFormDraftStorageKey(formKey);
   if (!key || typeof window === "undefined") return;
   try {
-    window.sessionStorage.setItem(key, JSON.stringify(answers));
+    studioWindowSessionStorage().setItem(key, JSON.stringify(answers));
   } catch {
     // Form input remains usable when browser storage is unavailable.
   }
@@ -3576,7 +3590,7 @@ function clearInlineQuestionFormDraft(formKey: string | null): void {
   const key = inlineQuestionFormDraftStorageKey(formKey);
   if (!key || typeof window === "undefined") return;
   try {
-    window.sessionStorage.removeItem(key);
+    studioWindowSessionStorage().removeItem(key);
   } catch {
     // The submitted answer message remains authoritative.
   }
@@ -3621,7 +3635,7 @@ function readInlineQuestionFormSubmitted(formKey: string | null): boolean {
   if (deniedStorageInlineQuestionFormSubmissions.has(key)) return true;
   if (typeof window === "undefined") return false;
   try {
-    return window.sessionStorage.getItem(key) !== null;
+    return studioWindowSessionStorage().getItem(key) !== null;
   } catch {
     return false;
   }
@@ -3655,7 +3669,7 @@ function markInlineQuestionFormSubmitted(formKey: string | null): void {
   if (!key) return;
   if (typeof window !== "undefined") {
     try {
-      window.sessionStorage.setItem(key, "1");
+      studioWindowSessionStorage().setItem(key, "1");
     } catch {
       // Denied storage costs the lock its reload survival, not the lock.
       deniedStorageInlineQuestionFormSubmissions.add(key);
@@ -3670,7 +3684,7 @@ function clearInlineQuestionFormSubmitted(formKey: string | null): void {
   deniedStorageInlineQuestionFormSubmissions.delete(key);
   if (typeof window !== "undefined") {
     try {
-      window.sessionStorage.removeItem(key);
+      studioWindowSessionStorage().removeItem(key);
     } catch {
       // A stale stored lock only blocks re-answering one already-sent form,
       // and the denied-storage fallback has already released it.
@@ -4231,3 +4245,5 @@ export function AssistantFeedbackReasons({
     </div>
   );
 }
+
+registerStudioReset(() => { inlineQuestionFormSubmissionListeners.clear(); });

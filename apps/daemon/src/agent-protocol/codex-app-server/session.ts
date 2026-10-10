@@ -1,3 +1,4 @@
+import { API_ERROR_CODES } from '@open-design/contracts';
 /** @module agent-protocol/codex-app-server/session
  *
  * Drives one codex turn over the `codex app-server` stdio JSON-RPC transport.
@@ -37,7 +38,9 @@
  * its default legacy history can be archived while another process writes it.
  * Streaming itself does not require the experimental capability.
  */
+import { randomUUID } from 'node:crypto';
 import { createCodexAppServerNormalizer } from './normalize.js';
+import { codexDynamicToolsSupported } from './capabilities.js';
 import { codexHistoryCapabilities } from './thread-cleanup.js';
 
 type JsonObject = Record<string, unknown>;
@@ -83,6 +86,13 @@ export interface CodexAppServerSessionOptions {
   onPromptSendStart?: () => void;
   onPromptSendEnd?: () => void;
   onTurnComplete?: () => void;
+  /** Instructions appended only after the running server negotiates these tools. */
+  dynamicToolsPrompt?: string;
+  /** Studio only; desktop retains its historical event stream. */
+  reportToolStartupFailures?: boolean;
+  /** Explicit daemon-owned tools only; approvals and arbitrary server requests remain refused. */
+  dynamicTools?: readonly { name: string; description: string; inputSchema: JsonObject }[];
+  onDynamicToolCall?: (name: string, args: JsonObject) => unknown;
 }
 
 export interface CodexAppServerSession {
@@ -159,7 +169,8 @@ export function attachCodexAppServerSession(
     onTurnComplete,
   } = opts;
 
-  const normalizer = createCodexAppServerNormalizer(onAgentEvent, Date.now, cwd);
+  const normalizer = createCodexAppServerNormalizer(onAgentEvent, Date.now, cwd, opts.reportToolStartupFailures);
+  const startupScope = opts.reportToolStartupFailures ? randomUUID() : null;
   const pending = new Map<number, (frame: JsonObject) => void>();
   let nextId = 1;
   let buffer = '';
@@ -180,7 +191,10 @@ export function attachCodexAppServerSession(
   let protectsLegacyHistory = false;
   let archiveTimer: ReturnType<typeof setTimeout> | undefined;
   const ownsThread = !resumeSessionId || opts.resumeSessionOwned === true;
+  let dynamicToolsSupported = false;
   let patchStreaming = false;
+  let activeTurnId: string | null = null;
+  const toolCalls = new Set<string>();
 
   function write(frame: JsonObject, onWritten?: () => void): void {
     const stdin = child.stdin;
@@ -243,7 +257,7 @@ export function attachCodexAppServerSession(
     const params: JsonObject = {
       threadId,
       input: [
-        { type: 'text', text: prompt, text_elements: [] },
+        { type: 'text', text: prompt + (dynamicToolsSupported ? opts.dynamicToolsPrompt ?? '' : ''), text_elements: [] },
         ...(opts.imagePaths ?? []).map((path) => ({ type: 'localImage', path })),
       ],
       summary: REASONING_SUMMARY,
@@ -261,7 +275,9 @@ export function attachCodexAppServerSession(
     request(
       'turn/start',
       params,
-      () => {
+      (result) => {
+        const turn = isRecord(result.turn) ? result.turn : null;
+        if (typeof turn?.id === 'string') activeTurnId = turn.id;
         // `turn/start` resolves when the turn is accepted; completion arrives
         // as the `turn/completed` notification.
       },
@@ -274,6 +290,7 @@ export function attachCodexAppServerSession(
       cwd,
       sandbox: sandboxMode,
       approvalPolicy: APPROVAL_POLICY_NEVER,
+      ...(dynamicToolsSupported ? { dynamicTools: opts.dynamicTools } : {}),
       ...(patchStreaming ? { config: { 'features.apply_patch_streaming_events': true } } : {}),
     };
     const onThread = (result: JsonObject) => {
@@ -359,17 +376,74 @@ export function attachCodexAppServerSession(
       return;
     }
     if (typeof frame.method !== 'string') return;
-    if (id !== null) {
-      // A server-to-client REQUEST. Nothing in this build answers one — the
-      // thread runs with approvals disabled, so MCP elicitation and approval
+    const requestId = typeof frame.id === 'number' || typeof frame.id === 'string' ? frame.id : null;
+    if (requestId !== null) {
+      if (frame.method === 'item/tool/call' && opts.dynamicTools && opts.onDynamicToolCall) {
+        const params = isRecord(frame.params) ? frame.params : {};
+        const tool = opts.dynamicTools.find((item) => item.name === params.tool);
+        const callId = params.callId;
+        let success = false; let text = 'Dynamic tool refused';
+        if (dynamicToolsSupported && tool && promptSent && !terminalReceived && !aborted && !fatalReported && params.threadId === threadId && typeof params.turnId === 'string'
+          && (activeTurnId === null || params.turnId === activeTurnId) && typeof callId === 'string' && callId.length > 0 && callId.length <= 160
+          && toolCalls.size < 128 && !toolCalls.has(callId) && isRecord(params.arguments)
+          && Buffer.byteLength(JSON.stringify(params.arguments)) <= 512 * 1024) {
+          toolCalls.add(callId);
+          const connector = tool.name.startsWith('connectors_') || tool.name.startsWith('mcp_');
+          const answer = (output: unknown, failed = false) => {
+            let content = 'Dynamic tool refused'; let ok = false;
+            try {
+              if (failed || terminalReceived || aborted || fatalReported) throw new Error('tool stopped');
+              content = JSON.stringify(output) ?? 'null';
+              if (Buffer.byteLength(content) > 2 * 1024 * 1024) throw new Error('tool result too large');
+              ok = true;
+            } catch { content = connector && failed && isRecord(output) && typeof output.error === 'string'
+              && (API_ERROR_CODES as readonly string[]).includes(output.error) ? JSON.stringify({ error: output.error }) : 'Dynamic tool refused'; }
+            onAgentEvent({ type: 'tool_result', toolUseId: callId, isError: !ok,
+              content: connector ? (tool.name.startsWith('mcp_') ? (ok ? 'Account MCP call completed' : 'Account MCP call refused') : (ok ? 'Account connector call completed' : 'Account connector call refused')) : content });
+            write({ jsonrpc: '2.0', id: requestId, result: { success: ok, contentItems: [{ type: 'inputText', text: content }] } });
+          };
+          const refuse = (error: unknown) => answer({ error: isRecord(error) && typeof error.code === 'string'
+            && (API_ERROR_CODES as readonly string[]).includes(error.code) ? error.code : 'CONNECTOR_EXECUTION_FAILED' }, true);
+          try {
+            onAgentEvent({ type: 'tool_use', id: callId, name: tool.name, input: connector ? {} : params.arguments });
+            const output = opts.onDynamicToolCall(tool.name, params.arguments);
+            if (output instanceof Promise) void output.then((value) => answer(value), refuse);
+            else answer(output);
+          } catch (error) { refuse(error); }
+          return;
+        }
+        write({ jsonrpc: '2.0', id: requestId, result: { success, contentItems: [{ type: 'inputText', text }] } });
+        return;
+      }
+      // Other server-to-client requests stay refused. The thread runs with
+      // approvals disabled, so MCP elicitation and approval
       // prompts should never fire. Refusing explicitly keeps a future codex
       // that does send one from blocking the turn forever waiting on a reply.
       write({
         jsonrpc: '2.0',
-        id,
+        id: requestId,
         error: { code: -32601, message: `unsupported request: ${frame.method}` },
       });
       return;
+    }
+    if (opts.reportToolStartupFailures && frame.method === 'mcpServer/startupStatus/updated') {
+      const params = isRecord(frame.params) ? frame.params : {};
+      // MCP may initialize before thread/start, with no thread or turn id.
+      if (!terminalReceived && params.status === 'failed'
+        && typeof params.name === 'string' && (params.threadId == null || params.threadId === threadId)) {
+        // Internal evidence, consumed by the Studio privacy boundary. It is
+        // not a tool result: no tool was invoked and no chat row belongs here.
+        onAgentEvent({ type: 'workspace_tool_startup_failure', server: params.name, scope: startupScope });
+      }
+      return;
+    }
+    if (opts.reportToolStartupFailures && frame.method === 'item/completed') {
+      const params = isRecord(frame.params) ? frame.params : {};
+      const item = isRecord(params.item) ? params.item : {};
+      if (!terminalReceived && params.threadId === threadId && (!activeTurnId || params.turnId === activeTurnId)
+        && item.type === 'mcpToolCall' && item.status === 'failed' && item.result === null && typeof item.server === 'string') {
+        onAgentEvent({ type: 'workspace_tool_failed_attempt', server: item.server, scope: startupScope });
+      }
     }
     if (frame.method === 'thread/started') {
       const params = isRecord(frame.params) ? frame.params : {};
@@ -380,6 +454,11 @@ export function attachCodexAppServerSession(
       if (startedId && !threadId) threadId = startedId;
       reportSessionHandle(startedId);
       return;
+    }
+    if (frame.method === 'turn/started') {
+      const params = isRecord(frame.params) ? frame.params : {};
+      const turn = isRecord(params.turn) ? params.turn : null;
+      if (params.threadId === threadId && typeof turn?.id === 'string') activeTurnId = turn.id;
     }
     if (frame.method === 'turn/completed' && terminalReceived) return;
     normalizer.handleNotification(frame.method, frame.params);
@@ -461,7 +540,7 @@ export function attachCodexAppServerSession(
         title: 'Open Design',
         version: opts.clientVersion ?? '0.0.0',
       },
-      capabilities: { experimentalApi: opts.manageThreadVisibility === true, requestAttestation: false },
+      capabilities: { experimentalApi: opts.manageThreadVisibility === true || Boolean(opts.dynamicTools && opts.onDynamicToolCall), requestAttestation: false },
     },
     (result) => {
       // Verified with the official 0.146.0 and 0.153.4 binaries: paginated
@@ -472,6 +551,7 @@ export function attachCodexAppServerSession(
       supportsPaginatedHistory = opts.manageThreadVisibility === true && capabilities.paginated;
       protectsLegacyHistory = opts.manageThreadVisibility === true && capabilities.legacy;
       patchStreaming = supportsPatchStreaming(result.userAgent);
+      dynamicToolsSupported = Boolean(opts.dynamicTools && opts.onDynamicToolCall) && codexDynamicToolsSupported(result.userAgent);
       notify('initialized', {});
       openThread();
     },

@@ -10,6 +10,8 @@ import { getComposioToolkitMetadata } from './composio-descriptions.js';
 import { ConnectorServiceError, type ConnectorCredentialMaterial } from './service.js';
 
 const DEFAULT_COMPOSIO_BASE_URL = 'https://backend.composio.dev';
+/** The fixed Composio API origin; Studio connectors (S58) never take a client-chosen endpoint. */
+export const COMPOSIO_API_BASE_URL = DEFAULT_COMPOSIO_BASE_URL;
 const DEFAULT_COMPOSIO_TIMEOUT_MS = 30_000;
 const DEFAULT_COMPOSIO_USER_ID = 'open-design-local-user';
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
@@ -1106,18 +1108,7 @@ export class ComposioConnectorProvider {
   }
 
   private toolDefinitionFromComposioTool(connectorId: string, tool: ComposioToolResponse): ConnectorCatalogToolDefinition {
-    const providerToolId = getString(tool.slug) ?? getString(tool.name) ?? `${connectorId.toUpperCase()}_TOOL`;
-    const description = getString(tool.description) ?? getString(tool.human_description) ?? getString(tool.humanDescription) ?? '';
-    const requiredScopes = getStringArray(tool.scopes ?? tool.oauth_scopes ?? tool.oauthScopes ?? tool.auth_scopes ?? tool.authScopes ?? tool.tags);
-    return applyComposioToolCuration(defineConnectorTool({
-      name: `${connectorId}.${normalizeToolName(providerToolId)}`,
-      providerToolId,
-      title: getString(tool.name) ?? titleFromSlug(providerToolId),
-      ...(description ? { description } : {}),
-      inputSchemaJson: toBoundedJsonObject(tool.input_parameters ?? tool.inputParameters) ?? { type: 'object', additionalProperties: true },
-      outputSchemaJson: { type: 'object', additionalProperties: true },
-      requiredScopes,
-    }), connectorId, providerToolId);
+    return composioToolDefinition(connectorId, tool);
   }
 
   private connectionToCredentials(_definition: ConnectorCatalogDefinition, providerConnectionId: string, response: ComposioConnectedAccountResponse): ComposioConnectionCompletion {
@@ -1432,7 +1423,7 @@ function appendOAuthStateToCallbackUrl(callbackUrl: string, state: string): stri
   return url.toString();
 }
 
-function connectorIdForToolkitSlug(toolkitSlug: string): string {
+export function connectorIdForToolkitSlug(toolkitSlug: string): string {
   const normalized = normalizeComposioSlug(toolkitSlug);
   if (normalized === 'googledrive' || normalized === 'gdrive' || normalized === 'drive') return 'google_drive';
   return normalized;
@@ -1537,4 +1528,20 @@ function toBoundedJsonValue(value: unknown): BoundedJsonValue {
 function toBoundedJsonObject(value: unknown): BoundedJsonObject | undefined {
   const bounded = toBoundedJsonValue(value);
   return bounded && typeof bounded === 'object' && !Array.isArray(bounded) ? bounded : undefined;
+}
+
+/** Shared provider metadata conversion and safety/curation; reads no host state. */
+export function composioToolDefinition(connectorId: string, tool: ComposioToolResponse): ConnectorCatalogToolDefinition {
+  const providerToolId = getString(tool.slug) ?? getString(tool.name) ?? `${connectorId.toUpperCase()}_TOOL`;
+  const description = getString(tool.description) ?? getString(tool.human_description) ?? getString(tool.humanDescription) ?? '';
+  const requiredScopes = getStringArray(tool.scopes ?? tool.oauth_scopes ?? tool.oauthScopes ?? tool.auth_scopes ?? tool.authScopes ?? tool.tags);
+  return applyComposioToolCuration(defineConnectorTool({
+    name: `${connectorId}.${normalizeToolName(providerToolId)}`,
+    providerToolId,
+    title: getString(tool.name) ?? titleFromSlug(providerToolId),
+    ...(description ? { description } : {}),
+    inputSchemaJson: toBoundedJsonObject(tool.input_parameters ?? tool.inputParameters) ?? { type: 'object', additionalProperties: true },
+    outputSchemaJson: { type: 'object', additionalProperties: true },
+    requiredScopes,
+  }), connectorId, providerToolId);
 }

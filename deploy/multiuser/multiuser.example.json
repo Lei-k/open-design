@@ -7,5 +7,10 @@
   "personalCodex": {
     "binary": "/opt/codex/bin/codex",
     "bwrap": "/usr/bin/bwrap"
+  },
+  "renderer": {
+    "chromium": "/usr/bin/chromium",
+    "bwrap": "/usr/bin/bwrap",
+    "domToPptxBundle": "/opt/open-design/dom-to-pptx.bundle.js.gz"
   }
 }

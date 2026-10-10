@@ -1,3 +1,4 @@
+import { studioWindowSetTimeout, studioFetch as fetch } from '../../../runtime/studio-transport';
 // Sandboxed HTML preview surface — used for `examples/*` plugins
 // and any scenario plugin that ships a runnable `od.preview.entry`.
 //
@@ -25,6 +26,7 @@
 import { useEffect, useState } from 'react';
 import { isVisualStabilityMode } from '../../../utils/visualStability';
 import type { HtmlPreviewSpec } from '../preview';
+import { registerStudioReset } from '../../../runtime/studio-resources';
 
 interface Props {
   preview: HtmlPreviewSpec;
@@ -41,8 +43,11 @@ type ProbeState = 'idle' | 'probing' | 'ok' | 'unreachable';
 
 const probeCache = new Map<string, 'ok' | 'unreachable'>();
 const inflight = new Map<string, Promise<'ok' | 'unreachable'>>();
+let probeGeneration = 0;
+registerStudioReset(() => { probeGeneration++; probeCache.clear(); inflight.clear(); });
 
 async function probe(url: string): Promise<'ok' | 'unreachable'> {
+  const generation = probeGeneration;
   const cached = probeCache.get(url);
   if (cached) return cached;
   const existing = inflight.get(url);
@@ -58,6 +63,7 @@ async function probe(url: string): Promise<'ok' | 'unreachable'> {
         method: 'GET',
         headers: { Range: 'bytes=0-0' },
       });
+      void res.body?.cancel();
       return res.ok || res.status === 206 ? ('ok' as const) : ('unreachable' as const);
     } catch {
       return 'unreachable' as const;
@@ -65,8 +71,7 @@ async function probe(url: string): Promise<'ok' | 'unreachable'> {
   })();
   inflight.set(url, run);
   const result = await run;
-  probeCache.set(url, result);
-  inflight.delete(url);
+  if (generation === probeGeneration) { probeCache.set(url, result); inflight.delete(url); }
   return result;
 }
 
@@ -95,7 +100,7 @@ export function HtmlSurface({ preview, pluginId, pluginTitle, inView, eager = fa
       setShouldProbe(true);
       return;
     }
-    const id = window.setTimeout(() => setShouldProbe(true), eager ? 60 : 520);
+    const id = studioWindowSetTimeout(() => setShouldProbe(true), eager ? 60 : 520);
     return () => window.clearTimeout(id);
   }, [inView, preview.src, eager]);
 
@@ -133,7 +138,7 @@ export function HtmlSurface({ preview, pluginId, pluginTitle, inView, eager = fa
       if (inView) setArmed(true);
       return;
     }
-    const id = window.setTimeout(() => {
+    const id = studioWindowSetTimeout(() => {
       if (inView) setArmed(true);
     }, 720);
     return () => window.clearTimeout(id);

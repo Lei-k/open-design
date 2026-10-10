@@ -1,0 +1,57 @@
+.source {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 8px;
+  height: 32px;
+  border-radius: 8px;
+  color: var(--text-secondary, #555);
+  font-size: 13px;
+}
+
+.logo {
+  flex: none;
+}
+
+.label {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Compact per-turn model/effort pickers; global form controls default to full width. */
+.source .picker {
+  flex: none;
+  width: auto;
+  min-width: 0;
+  max-width: 120px;
+  height: 28px;
+  padding: 0 24px 0 6px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.source .label {
+  flex: 0 1 auto;
+}
+
+/* Phone widths: the composer footer keeps only a compact model picker. */
+@media (max-width: 600px) {
+  .source {
+    gap: 4px;
+    padding: 0 4px;
+  }
+
+  .source > .label,
+  .source .picker + .picker {
+    display: none;
+  }
+
+  .source .picker {
+    max-width: 64px;
+    padding: 0 2px;
+  }
+}

@@ -1,5 +1,7 @@
+import { registerStudioReset } from '../runtime/studio-resources';
 import { useEffect, useRef, useState } from 'react';
 import type {
+  CollabCloudMemberDirectoryEntry,
   CollabMemberRole,
   CollabPresenceMember,
   ProjectContentTransferState,
@@ -245,6 +247,17 @@ export interface ProjectCollab {
   checkStatusNow: () => void;
   /** Apply an inbound-transfer lifecycle update from the project SSE. */
   applyContentTransferState?: (state: ProjectContentTransferState) => void;
+  /**
+   * Whether the viewer may create comments. Absent means no opinion (allowed);
+   * a Studio account shared a project view-only gets false (#65).
+   */
+  canComment?: boolean;
+  /**
+   * Resolve a comment author / presence member id to a display entry from the
+   * project's own member list (Studio sharing, #65). Absent: callers use the
+   * Workspace member directory.
+   */
+  resolveMember?: (memberId: string | null | undefined) => CollabCloudMemberDirectoryEntry | null;
 }
 
 /**
@@ -656,3 +669,5 @@ export function useProjectCollab(
     applyContentTransferState: collab.applyContentTransferState,
   };
 }
+
+registerStudioReset(resetProjectsCreatedByViewerCache);

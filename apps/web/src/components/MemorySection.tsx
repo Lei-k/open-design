@@ -1,3 +1,4 @@
+import { studioEventSourceCtor, studioUsesLocalServices, studioSetTimeout as setTimeout, studioWindowSetInterval, studioSetInterval as setInterval, studioFetch as fetch, studioWindowSessionStorage } from '../runtime/studio-transport';
 import {
   useCallback,
   useEffect,
@@ -162,7 +163,7 @@ function isTrustedConnectorCallbackOrigin(origin: string): boolean {
 function readPendingConnectorAuthIds(): Set<string> {
   if (typeof window === 'undefined') return new Set();
   try {
-    const raw = window.sessionStorage.getItem(MEMORY_CONNECTOR_PENDING_AUTH_STORAGE_KEY);
+    const raw = studioWindowSessionStorage().getItem(MEMORY_CONNECTOR_PENDING_AUTH_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : null;
     if (!Array.isArray(parsed)) return new Set();
     return new Set(parsed.filter((id): id is string => typeof id === 'string' && id.trim().length > 0));
@@ -175,10 +176,10 @@ function writePendingConnectorAuthIds(ids: Set<string>): void {
   if (typeof window === 'undefined') return;
   try {
     if (ids.size === 0) {
-      window.sessionStorage.removeItem(MEMORY_CONNECTOR_PENDING_AUTH_STORAGE_KEY);
+      studioWindowSessionStorage().removeItem(MEMORY_CONNECTOR_PENDING_AUTH_STORAGE_KEY);
       return;
     }
-    window.sessionStorage.setItem(
+    studioWindowSessionStorage().setItem(
       MEMORY_CONNECTOR_PENDING_AUTH_STORAGE_KEY,
       JSON.stringify([...ids]),
     );
@@ -594,6 +595,10 @@ function describeRecord(
     if (reason === 'chat-disabled') return t('memory.skipChatDisabled');
     if (reason === 'empty-message') return t('settings.memoryExtractionSkipEmpty');
     if (reason === 'no-match') return t('settings.memoryExtractionSkipNoMatch');
+    // Studio accounts (#62): extraction follows the turn's own source.
+    if (reason === 'source-has-no-extraction') return t('memory.skipSourceHasNoExtraction');
+    if (reason === 'source-unavailable') return t('memory.skipSourceUnavailable');
+    if (reason === 'memory-full') return t('memory.skipMemoryFull');
     return null;
   })();
   // Records written before the `kind` field existed default to 'llm' —
@@ -732,6 +737,7 @@ export function MemorySection({
 }: MemorySectionProps = {}) {
   const t = useT();
   const logoTheme = useResolvedTheme();
+  const localServices = studioUsesLocalServices();
   const [enabled, setEnabled] = useState(true);
   const [chatExtractionEnabled, setChatExtractionEnabled] = useState(true);
   // False until `GET /api/memory` has actually answered. Every switch position
@@ -909,13 +915,14 @@ export function MemorySection({
 
   useEffect(() => {
     void reload();
+    // Studio accounts read their own extraction history (#62).
     void reloadExtractions();
   }, [reload, reloadExtractions]);
 
   useEffect(() => {
-    if (activeTab !== 'connected') return;
+    if (!localServices || activeTab !== 'connected') return;
     void reloadConnectors();
-  }, [activeTab, reloadConnectors]);
+  }, [activeTab, reloadConnectors, localServices]);
 
   useEffect(() => {
     writePendingConnectorAuthIds(pendingConnectorAuthIds);
@@ -931,7 +938,9 @@ export function MemorySection({
   // so we just always reload on any change. EventSource auto-reconnects
   // on temporary daemon hiccups.
   useEffect(() => {
-    const es = new EventSource('/api/memory/events');
+    const EventSourceClass = studioEventSourceCtor();
+    if (!EventSourceClass) return;
+    const es = new EventSourceClass('/api/memory/events');
     es.addEventListener('change', (raw) => {
       try {
         const ev = JSON.parse((raw as MessageEvent).data) as MemoryChangeEvent;
@@ -1181,7 +1190,7 @@ export function MemorySection({
 
   useEffect(() => {
     if (pendingConnectorAuthIds.size === 0) return;
-    const interval = window.setInterval(() => {
+    const interval = studioWindowSetInterval(() => {
       void refreshMemoryConnectorStatuses();
     }, 2_000);
     const onFocus = () => {
@@ -1843,7 +1852,7 @@ export function MemorySection({
 
       {topTab === 'how' ? (
         <div className="memory-how-panel">
-          <div className="memory-auto-flow">
+          {localServices && <div className="memory-auto-flow">
             <span>{t('memory.flowOnboarding')}</span>
             <Icon name="chevron-right" size={14} />
             <span>{t('memory.flowBrandContext')}</span>
@@ -1851,9 +1860,9 @@ export function MemorySection({
             <span>{t('memory.flowChatSignals')}</span>
             <Icon name="chevron-right" size={14} />
             <strong>{t('memory.flowSavedMemory')}</strong>
-          </div>
+          </div>}
           <p className="memory-how-copy">
-            {t('memory.howCopy')}
+            {t(localServices ? 'memory.howCopy' : 'studio.manualMemoryHint')}
           </p>
           <MemoryHooksPanel
             enabled={enabled}
@@ -1903,7 +1912,7 @@ export function MemorySection({
         role="tablist"
         aria-label={t('memory.areasAria')}
       >
-        {memoryTabs.map((tab) => (
+        {memoryTabs.filter((tab) => localServices || tab.id !== 'connected').map((tab) => (
           <button
             key={tab.id}
             type="button"

@@ -1,3 +1,4 @@
+import { studioWindowLocalStorage } from '../runtime/studio-transport';
 /**
  * Fold a project's runs down to the one status a UI should show for it.
  *
@@ -163,7 +164,7 @@ export const ACKNOWLEDGED_RUNS_STORAGE_KEY = 'od.entry.railRecentSeenDone';
 export function readStoredAcknowledgedRuns(): AcknowledgedRuns {
   if (typeof window === 'undefined') return {};
   try {
-    const raw = window.localStorage.getItem(ACKNOWLEDGED_RUNS_STORAGE_KEY);
+    const raw = studioWindowLocalStorage().getItem(ACKNOWLEDGED_RUNS_STORAGE_KEY);
     const parsed: unknown = raw ? JSON.parse(raw) : null;
     // Anything but a plain object of run ids — including a bare list of
     // project ids, which cannot say which run it meant — reads as "nothing
@@ -183,7 +184,7 @@ export function readStoredAcknowledgedRuns(): AcknowledgedRuns {
 export function writeStoredAcknowledgedRuns(acknowledged: AcknowledgedRuns): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(ACKNOWLEDGED_RUNS_STORAGE_KEY, JSON.stringify(acknowledged));
+    studioWindowLocalStorage().setItem(ACKNOWLEDGED_RUNS_STORAGE_KEY, JSON.stringify(acknowledged));
   } catch {
     // Private mode / storage disabled: the ✓ still clears for this session.
   }

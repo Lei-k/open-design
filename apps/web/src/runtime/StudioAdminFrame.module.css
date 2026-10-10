@@ -1,0 +1,30 @@
+.page {
+  min-height: 100%;
+  padding: 0 16px 24px;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary, #555);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.back:hover {
+  background: var(--bg-subtle, rgba(0, 0, 0, 0.05));
+}

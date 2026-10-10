@@ -301,7 +301,7 @@ function runtimeSafetyForTool(tool: ConnectorCatalogToolDefinition): ConnectorTo
   return tool.safety;
 }
 
-function assertJsonSchemaMatches(value: BoundedJsonValue, schema: BoundedJsonObject | undefined, path = 'input'): void {
+export function assertJsonSchemaMatches(value: BoundedJsonValue, schema: BoundedJsonObject | undefined, path = 'input'): void {
   if (schema === undefined) return;
   const type = schema.type;
   if (typeof type === 'string') {
@@ -512,7 +512,7 @@ function jsonSerializedBytes(value: BoundedJsonValue): number {
   return Buffer.byteLength(JSON.stringify(value), 'utf8');
 }
 
-function isForbiddenConnectorOutputKey(key: string): boolean {
+export function isForbiddenConnectorOutputKey(key: string): boolean {
   const normalized = key.toLowerCase();
   return CONNECTOR_FORBIDDEN_OUTPUT_KEYS.has(normalized) || /(?:token|secret|credential|password|authorization|cookie)/i.test(key);
 }

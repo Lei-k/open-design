@@ -504,6 +504,11 @@ export async function updateMemoryTreeNode(dataDir, id, patch) {
   });
 }
 
+/** `upsertMemoryEntry`'s `commit` check refused the write; nothing was written. */
+export class MemoryCommitRefused extends Error {
+  constructor() { super('memory write refused at commit'); }
+}
+
 export async function upsertMemoryEntry(dataDir, input, options) {
   const { name, description, type, body } = input || {};
   if (!name || !isValidType(type)) {
@@ -513,6 +518,11 @@ export async function upsertMemoryEntry(dataDir, input, options) {
     ? input.id
     : deriveMemoryId(type, name);
   await ensureDir(memoryDir(dataDir));
+  // `options.commit` lets a background caller re-check its authority after
+  // all preparatory I/O: it runs synchronously right before the entry file is
+  // written (the commit point); `false` writes nothing and throws
+  // `MemoryCommitRefused`.
+  if (options?.commit && !options.commit()) throw new MemoryCommitRefused();
   await fsp.writeFile(
     entryPath(dataDir, id),
     renderEntryFile(name, description, type, body, options?.source ?? 'manual'),
@@ -1079,6 +1089,46 @@ async function captureProfileFromForm(dataDir, parsed) {
   };
 }
 
+/**
+ * The explicit "remember: X" / "我是 X" regex pack as pure entry drafts (no
+ * I/O, no history, no events). The host extractor and the Studio account
+ * extractor (#62) each write them through their own store and history.
+ */
+export function heuristicMemoryDrafts(userMessage) {
+  if (typeof userMessage !== 'string' || userMessage.trim().length === 0) return [];
+  const seen = new Set();
+  const drafts = [];
+  for (const pattern of REMEMBER_PATTERNS) {
+    const m = pattern.re.exec(userMessage);
+    if (!m) continue;
+    const captured = (m[1] || '').trim();
+    if (captured.length < 3) continue;
+    // Cap captured length so a runaway sentence doesn't blow up the
+    // description / body. The regex already bounds it but we want a
+    // hard ceiling for the templated fields.
+    const trimmedCaptured = truncate(captured, 200);
+    // Dedupe within a single message: same category + same captured
+    // phrase shouldn't fire twice (two patterns matching the same
+    // chunk, or the regex matching a phrase that already passed an
+    // earlier pattern in this loop).
+    const dedupeKey = `${pattern.type}::${pattern.name}::${trimmedCaptured.toLowerCase()}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    // Each captured fact gets its own file. Deriving the id from the
+    // captured phrase (rather than the stable display name) lets two
+    // "我是" matches — e.g. "我是张三" then "我是软件工程师" — coexist
+    // instead of overwriting one another.
+    drafts.push({
+      id: deriveMemoryId(pattern.type, trimmedCaptured),
+      type: pattern.type,
+      name: pattern.name,
+      description: truncate(applyTemplate(pattern.descriptionTemplate, trimmedCaptured), 200),
+      body: applyTemplate(pattern.bodyTemplate, trimmedCaptured),
+    });
+  }
+  return drafts;
+}
+
 export async function extractFromMessage(dataDir, userMessage) {
   // Mirror the LLM extractor's skip surface so the settings panel shows
   // both extractors for the same turn — even when there's nothing to
@@ -1097,7 +1147,6 @@ export async function extractFromMessage(dataDir, userMessage) {
   if (!cfg.chatExtractionEnabled) {
     return [];
   }
-  const seen = new Set();
   const changed = [];
   // Onboarding → profile capture. When the user's message is the round-tripped
   // answer block from a discovery / task-type / profile question-form, seed (or
@@ -1116,42 +1165,11 @@ export async function extractFromMessage(dataDir, userMessage) {
       }
     }
   }
-  for (const pattern of REMEMBER_PATTERNS) {
-    const m = pattern.re.exec(userMessage);
-    if (!m) continue;
-    const captured = (m[1] || '').trim();
-    if (captured.length < 3) continue;
-    // Cap captured length so a runaway sentence doesn't blow up the
-    // description / body. The regex already bounds it but we want a
-    // hard ceiling for the templated fields.
-    const trimmedCaptured = truncate(captured, 200);
-    // Dedupe within a single message: same category + same captured
-    // phrase shouldn't fire twice (two patterns matching the same
-    // chunk, or the regex matching a phrase that already passed an
-    // earlier pattern in this loop).
-    const dedupeKey = `${pattern.type}::${pattern.name}::${trimmedCaptured.toLowerCase()}`;
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
-    const description = truncate(
-      applyTemplate(pattern.descriptionTemplate, trimmedCaptured),
-      200,
-    );
-    const body = applyTemplate(pattern.bodyTemplate, trimmedCaptured);
-    // Each captured fact gets its own file. Deriving the id from the
-    // captured phrase (rather than the stable display name) lets two
-    // "我是" matches — e.g. "我是张三" then "我是软件工程师" — coexist
-    // instead of overwriting one another.
-    const id = deriveMemoryId(pattern.type, trimmedCaptured);
+  for (const draft of heuristicMemoryDrafts(userMessage)) {
     try {
       const entry = await upsertMemoryEntry(
         dataDir,
-        {
-          id,
-          type: pattern.type,
-          name: pattern.name,
-          description,
-          body,
-        },
+        draft,
         // Silence the per-entry upsert event so the batched 'extract'
         // emit below produces exactly one frontend toast.
         { silent: true, source: 'heuristic' },

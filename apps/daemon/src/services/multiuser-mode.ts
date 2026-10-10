@@ -59,6 +59,12 @@ function isMultiUserEnvironmentSwitch(name: string): boolean {
   return normalized.includes('MULTIUSER') || normalized === 'ODAUTHMODE';
 }
 
+export interface StudioMcpOutboundTestInjection {
+  resolve?: (hostname: string) => Promise<string[]>;
+  allowAddress?: (address: string) => boolean;
+  timeoutMs?: number;
+}
+
 export interface MultiUserAuthServiceOverrides {
   /** Test-only KDF cost override; production keeps the auth-service default. */
   passwordParams?: ScryptParams;
@@ -78,6 +84,18 @@ export interface MultiUserModeOptions {
   auth?: MultiUserAuthServiceOverrides;
   /** Direct startServer test harness only; must resolve to the repository mock. */
   testMockAgentScript?: string;
+  /** Programmatic provider-fixture injection only; deployment config cannot supply it. */
+  testCompanyOpenAIFetch?: typeof fetch;
+  /** Programmatic Tavily fixture for account research (#63); deployment config cannot supply it. */
+  testTavilyFetch?: typeof fetch;
+  /** Programmatic Composio fixture for account connectors (#62, S58); deployment config cannot supply it. */
+  testComposioFetch?: typeof fetch;
+  /**
+   * Programmatic outbound-guard injection for account remote MCP servers (#62,
+   * S60): a resolver and exact extra addresses (a loopback fixture). Direct
+   * startServer test harness only; there is no environment or config path.
+   */
+  testMcpOutbound?: StudioMcpOutboundTestInjection;
   /** Test harness clock for pool accounting. */
   poolClock?: () => number;
   /**
@@ -99,6 +117,30 @@ export interface MultiUserModeOptions {
    * bwrap cannot build the sandbox on this host.
    */
   personalSandbox?: { bwrapPath: string };
+  /**
+   * Server-side PDF/PPTX/PNG rendering for Studio exports (#66). Omitted means
+   * rendered exports are unavailable. An omitted executable uses Playwright's
+   * managed Chromium (development and tests).
+   */
+  studioRenderer?: StudioRendererOptions;
+  /**
+   * Accounts may store their own OpenAI API key and run on it (#62/#63).
+   * Default on; `false` hides the source. Keys are sealed with
+   * `OD_CREDENTIAL_MASTER_KEY` when set, else a generated data-root key file.
+   */
+  personalProviderKeys?: boolean;
+}
+
+export interface StudioRendererOptions {
+  executablePath?: string;
+  /** Public hosts a render page may GET (fonts/CDNs); omitted = built-in list, [] = none. */
+  assetHosts?: readonly string[];
+  /** Chromium's OS sandbox; default on. */
+  sandbox?: boolean;
+  /** Confine Chromium with bubblewrap instead (required for Alpine/musl Chromium). */
+  bwrapPath?: string;
+  /** Vendored dom-to-pptx bundle for editable PPTX; omitted disables editable PPTX. */
+  domToPptxBundlePath?: string;
 }
 
 /** The only app-server the personal-subscription lane may spawn without the real-provider switch. */
@@ -127,9 +169,16 @@ export interface ResolvedMultiUserMode {
   bootstrapSecret: string | null;
   auth: MultiUserAuthServiceOverrides;
   testMockAgentScript?: string;
+  /** Programmatic provider-fixture injection only; deployment config cannot supply it. */
+  testCompanyOpenAIFetch?: typeof fetch;
+  testTavilyFetch?: typeof fetch;
+  testComposioFetch?: typeof fetch;
+  testMcpOutbound?: StudioMcpOutboundTestInjection;
   poolClock?: () => number;
   /** How personal app-server children start; absent means the feature is off. */
   personalCodex?: ResolvedPersonalCodex;
+  studioRenderer?: StudioRendererOptions;
+  personalProviderKeys: boolean;
 }
 
 export class MultiUserModeRefusal extends Error {
@@ -215,8 +264,26 @@ export function resolveMultiUserMode(input: {
     input.probeSandbox ?? ((bwrap) => probePersonalSandbox(bwrap, tmpdir())));
   return { allowedOrigins, previewOrigin, bootstrapSecret, auth: { ...(options.auth ?? {}) },
     ...(options.testMockAgentScript ? { testMockAgentScript: options.testMockAgentScript } : {}),
+    ...(options.testCompanyOpenAIFetch ? { testCompanyOpenAIFetch: options.testCompanyOpenAIFetch } : {}),
+    ...(options.testTavilyFetch ? { testTavilyFetch: options.testTavilyFetch } : {}),
+    ...(options.testComposioFetch ? { testComposioFetch: options.testComposioFetch } : {}),
+    ...(options.testMcpOutbound ? { testMcpOutbound: { ...options.testMcpOutbound } } : {}),
     ...(options.poolClock ? { poolClock: options.poolClock } : {}),
-    ...(personalCodex ? { personalCodex } : {}) };
+    ...(personalCodex ? { personalCodex } : {}),
+    ...(options.studioRenderer ? { studioRenderer: resolveStudioRenderer(options.studioRenderer) } : {}),
+    personalProviderKeys: options.personalProviderKeys !== false };
+}
+
+function resolveStudioRenderer(options: StudioRendererOptions): StudioRendererOptions {
+  const absolute = (value: unknown) => value === undefined || (typeof value === 'string' && path.isAbsolute(value));
+  const hostname = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+  if (!absolute(options.executablePath) || !absolute(options.domToPptxBundlePath) || !absolute(options.bwrapPath)
+    || (options.sandbox !== undefined && typeof options.sandbox !== 'boolean')
+    || (options.assetHosts !== undefined && (!Array.isArray(options.assetHosts) || options.assetHosts.length > 32
+      || options.assetHosts.some((host) => typeof host !== 'string' || !hostname.test(host))))) {
+    throw new MultiUserModeRefusal('studioRenderer needs absolute paths, a boolean sandbox and public DNS host names');
+  }
+  return { ...options, ...(options.assetHosts ? { assetHosts: [...options.assetHosts] } : {}) };
 }
 
 function resolvePersonalCodex(options: MultiUserModeOptions, repositoryRoot: string | undefined,

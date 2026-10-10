@@ -1,14 +1,18 @@
-import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react';
-import { flushSync } from 'react-dom';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Button } from '@open-design/components';
 import { Folder, LogOut, Users, ClipboardList } from 'lucide-react';
-import type { AuthAccount, AuthAccountListResponse, AuthAuditListResponse, AuthCreateAccountResponse, AuthIssueSetupCredentialResponse, AuthSetupCredential } from '@open-design/contracts';
+import type { StudioPilotState, AuthAccount, AuthAccountListResponse, AuthAuditListResponse, AuthCreateAccountResponse, AuthIssueSetupCredentialResponse, AuthSetupCredential } from '@open-design/contracts';
 import { useI18n, useT } from '../i18n';
-import { AUTH_CHANGE_KEY, CookieSession, RequestFailure, SESSION_CHECK_MS } from './session';
+import { CookieSession, RequestFailure } from './session';
+import { StudioSessionProvider, useStudioSession } from '../runtime/studio-session';
+import { CompanyOpenAISection } from './CompanyOpenAISection';
 import { AgentAccountsPage } from './AgentAccountsPage';
 import { ProjectConversations } from './ProjectConversations';
 import { ConversationRuns } from './ConversationRuns';
 import styles from './MultiUserApp.module.css';
+import { lazy, Suspense } from 'react';
+import { StudioCapabilitiesProvider } from '../runtime/studio-capabilities';
+const StudioApp = lazy(() => import('../App').then(({ App }) => ({ default: App })));
 
 function failureKey(error: unknown) {
   if (error instanceof RequestFailure) {
@@ -70,25 +74,15 @@ function Setup({ token, clear }: { token: string | null; clear: () => void }) {
 function Brand() { return <div className={styles.brand}><img src="/app-icon.png" alt="" width="32" height="32" />OpenDesign</div>; }
 
 export function MultiUserApp({ setupToken, clearSetupToken = () => {} }: { setupToken: string | null; clearSetupToken?: () => void }) {
+  const setup = window.location.pathname.replace(/\/$/, '') === '/setup';
+  return <StudioSessionProvider paused={setup}><MultiUserEntry setupToken={setupToken} clearSetupToken={clearSetupToken} /></StudioSessionProvider>;
+}
+
+function MultiUserEntry({ setupToken, clearSetupToken }: { setupToken: string | null; clearSetupToken: () => void }) {
   const t = useT();
-  const [session] = useState(() => new CookieSession());
-  const state = useSyncExternalStore(session.subscribe, session.snapshot, session.snapshot);
+  const { session, state } = useStudioSession();
   const [loginError, setLoginError] = useState(false);
   const setup = window.location.pathname.replace(/\/$/, '') === '/setup';
-  useEffect(() => {
-    if (setup) return;
-    void session.verify();
-    const verify = () => { if (document.visibilityState !== 'hidden') void session.verify(); };
-    const storage = (event: StorageEvent) => { if (event.key === AUTH_CHANGE_KEY) session.receiveAuthChange(event.newValue); };
-    window.addEventListener('focus', verify);
-    document.addEventListener('visibilitychange', verify);
-    window.addEventListener('storage', storage);
-    const hide = () => flushSync(() => session.withdraw());
-    window.addEventListener('pagehide', hide);
-    window.addEventListener('pageshow', verify);
-    const timer = window.setInterval(verify, SESSION_CHECK_MS);
-    return () => { session.dispose(); clearInterval(timer); window.removeEventListener('pagehide', hide); window.removeEventListener('pageshow', verify); window.removeEventListener('focus', verify); document.removeEventListener('visibilitychange', verify); window.removeEventListener('storage', storage); };
-  }, [session, setup]);
   const outcome = state.outcomeUnknown && <div className={styles.operationNotice} role="alert"><p>{t('multiuser.outcomeUnknown')}</p><Button onClick={session.clearOutcomeUnknown}>{t('multiuser.dismissNotice')}</Button></div>;
   if (setup) return <Setup token={setupToken} clear={clearSetupToken} />;
   if (state.status === 'checking' || state.status === 'error') return <>{outcome}<main className={styles.auth}><Brand /><p role="status">{t(state.status === 'error' ? 'multiuser.connectionError' : 'multiuser.checking')}</p>
@@ -96,6 +90,9 @@ export function MultiUserApp({ setupToken, clearSetupToken = () => {} }: { setup
   if (!state.account) return <>{outcome}<main className={styles.auth}><Brand /><h1>{t('multiuser.signIn')}</h1><p>{t('multiuser.inviteOnly')}</p>
     <Credentials busy={false} submit={(username, password) => { setLoginError(false); void session.login(username, password).catch(() => setLoginError(true)); }} />
     {loginError && <Alert>{t('multiuser.loginError')}</Alert>}<p className={styles.muted}>{t('multiuser.testOnly')}</p></main></>;
+  if (state.studio?.shell === 'studio') return <>{outcome}<StudioCapabilitiesProvider key={`${state.generation}:${state.account.id}:${state.account.role}`} session={session} actor={state.account} capabilities={state.studio} generation={state.generation} messageIdPrefix={state.studioMessageIdPrefix}>
+    <Suspense fallback={<p role="status">{t('multiuser.loading')}</p>}><StudioApp /></Suspense>
+  </StudioCapabilitiesProvider></>;
   return <>{outcome}<SignedIn key={`${state.generation}:${state.account.id}:${state.account.role}`} session={session} account={state.account} generation={state.generation} /></>;
 }
 
@@ -159,7 +156,7 @@ function SetupLink({ setup, dismiss }: { setup: AuthSetupCredential; dismiss: ()
     <p role="status">{copied ? t('multiuser.copied') : failed ? t('multiuser.copyFailed') : ''}</p></section>;
 }
 
-function AdminUsers(props: OwnedProps) {
+export function AdminUsers(props: OwnedProps) {
   const t = useT();
   const [query, setQuery] = useState(''); const [offset, setOffset] = useState(0); const [revision, setRevision] = useState(0);
   const { data, error } = useOwnedLoad<AuthAccountListResponse>(props, `/api/auth/users?limit=20&offset=${offset}${query ? `&q=${encodeURIComponent(query)}` : ''}`, revision);
@@ -188,7 +185,7 @@ function AdminUsers(props: OwnedProps) {
       setNotice(t('multiuser.saved')); setRevision((r) => r + 1);
     } catch (e) { if (!isAborted(e)) setActionError(t(failureKey(e))); } finally { setBusy(false); }
   }
-  return <><h1>{t('multiuser.users')}</h1><p>{t('multiuser.usersHelp')}</p>
+  return <><CompanyOpenAISection session={props.session} generation={props.generation} /><h1>{t('multiuser.users')}</h1><p>{t('multiuser.usersHelp')}</p>
     <form className={styles.inlineForm} onSubmit={create}><label>{t('multiuser.username')}<input name="username" required pattern="[A-Za-z0-9_.-]{3,32}" maxLength={32} autoComplete="off" /></label><label>{t('multiuser.role')}<select name="role"><option value="user">{t('multiuser.user')}</option><option value="admin">{t('multiuser.admin')}</option></select></label><Button variant="primary" type="submit" disabled={busy}>{t('multiuser.createUser')}</Button></form>
     {setup && <SetupLink setup={setup} dismiss={() => setSetup(null)} />}
     {confirm && <section className={styles.confirm} aria-label={t('multiuser.confirmAction')}><h2>{t('multiuser.confirmAction')} · {confirm.account.username}</h2><p>{t(confirm.action === 'reset' ? 'multiuser.resetWarning' : 'multiuser.revokeWarning')}</p><div className={styles.actions}><Button disabled={busy} onClick={() => void apply()}>{t('multiuser.confirm')}</Button><Button disabled={busy} onClick={() => setConfirm(null)}>{t('multiuser.cancel')}</Button></div></section>}
@@ -200,13 +197,52 @@ function AdminUsers(props: OwnedProps) {
         <Button disabled={busy || !account.active || account.id === props.account.id} onClick={() => setConfirm({ account, action: 'reset' })}>{t('multiuser.resetLink')}</Button>
         <Button disabled={busy || account.id === props.account.id} onClick={() => setConfirm({ account, action: 'active' })}>{t(account.active ? 'multiuser.disable' : 'multiuser.enable')}</Button>
         <Button disabled={busy || account.id === props.account.id} onClick={() => setConfirm({ account, action: 'role' })}>{t(account.role === 'admin' ? 'multiuser.makeUser' : 'multiuser.makeAdmin')}</Button>
+        <StudioPilotControl {...props} targetId={account.id} />
         <Button disabled={busy} onClick={() => setConfirm({ account, action: 'revoke' })}>{t('multiuser.revoke')}</Button>
       </div></li>)}</ul>
       <div className={styles.actions}><Button disabled={offset === 0} onClick={() => { setOffset(Math.max(0, offset - 20)); setSetup(null); }}>{t('multiuser.previous')}</Button><span>{t('multiuser.total', { count: data.page.total })}</span><Button disabled={offset + 20 >= data.page.total || offset >= 10000} onClick={() => { setOffset(offset + 20); setSetup(null); }}>{t('multiuser.next')}</Button></div>
     </>}
   </>;
 }
-function Audit(props: OwnedProps) {
+function StudioPilotControl(props: OwnedProps & { targetId: string }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState<StudioPilotState | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const path = `/api/admin/users/${encodeURIComponent(props.targetId)}/studio-pilot`;
+  async function read() {
+    setOpen(true); setBusy(true); setError(null); setState(null);
+    try {
+      const result = await props.session.request<StudioPilotState>(path, undefined, props.generation);
+      if (mounted.current) setState(result);
+    } catch (e) { if (mounted.current && !isAborted(e)) setError(t(failureKey(e))); }
+    finally { if (mounted.current) setBusy(false); }
+  }
+  async function toggle() {
+    if (!state || busy) return;
+    setBusy(true); setError(null);
+    try {
+      const result = await props.session.request<StudioPilotState>(path, { method: 'PUT',
+        body: JSON.stringify({ studioPilot: !state.studioPilot, revision: state.revision }) }, props.generation);
+      if (mounted.current) setState(result);
+      if (props.targetId === props.account.id) await props.session.verify();
+    } catch (e) {
+      if (mounted.current && !isAborted(e)) { setState(null); setError(t(failureKey(e))); }
+    } finally { if (mounted.current) setBusy(false); }
+  }
+  return <div>
+    {!open ? <Button onClick={() => void read()}>{t('multiuser.studioPilot')}</Button> : <>
+      {state && <Button disabled={busy} onClick={() => void toggle()}>{t(state.studioPilot ? 'multiuser.disableStudioPilot' : 'multiuser.enableStudioPilot')}</Button>}
+      {busy && <span role="status">{t('multiuser.loading')}</span>}
+      {error && <><Alert>{error}</Alert><Button onClick={() => void read()}>{t('multiuser.retry')}</Button></>}
+    </>}
+  </div>;
+}
+
+export function Audit(props: OwnedProps) {
   const { t, locale } = useI18n(); const [before, setBefore] = useState<number | null>(null); const [revision, setRevision] = useState(0);
   const { data, error } = useOwnedLoad<AuthAuditListResponse>(props, `/api/auth/audit?limit=20${before === null ? '' : `&before=${before}`}`, revision);
   return <><h1>{t('multiuser.audit')}</h1><p>{t('multiuser.auditHelp')}</p>

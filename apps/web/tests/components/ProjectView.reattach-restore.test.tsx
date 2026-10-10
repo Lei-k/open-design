@@ -14,6 +14,8 @@ import {
 } from '../../src/components/ProjectView';
 import { resolvePersistedArtifactHtml } from '../../src/artifacts/recover';
 import type { ChatMessage, ProjectFile } from '../../src/types';
+import * as studioCapabilities from '../../src/runtime/studio-capabilities';
+import type { ProjectEvent } from '../../src/providers/project-events';
 
 const listConversations = vi.fn();
 const listMessages = vi.fn();
@@ -36,6 +38,7 @@ const createConversation = vi.fn();
 const patchConversation = vi.fn();
 const patchProject = vi.fn();
 const saveTabs = vi.fn();
+const projectEventsHarness = vi.hoisted(() => ({ notify: null as null | ((event: ProjectEvent) => void) }));
 
 const chatPaneHarness = vi.hoisted(() => ({
   onSend: null as null | ((
@@ -49,6 +52,8 @@ const chatPaneHarness = vi.hoisted(() => ({
   activeTab: null as string | null,
   openRequestNames: [] as string[],
   messages: [] as ChatMessage[],
+  viewerOnly: false,
+  sendDisabled: false,
 }));
 
 vi.mock('../../src/i18n', () => ({
@@ -96,7 +101,7 @@ vi.mock('../../src/providers/registry', () => ({
 }));
 
 vi.mock('../../src/providers/project-events', () => ({
-  useProjectFileEvents: vi.fn(),
+  useProjectFileEvents: (_id: string, _enabled: boolean, notify: (event: ProjectEvent) => void) => { projectEventsHarness.notify = notify; },
 }));
 
 vi.mock('../../src/router', () => ({
@@ -131,14 +136,20 @@ vi.mock('../../src/components/ChatPane', () => ({
     messages,
     onSend,
     onStop,
+    viewerOnly,
+    sendDisabled,
   }: {
     messages: ChatMessage[];
     onSend: typeof chatPaneHarness.onSend;
     onStop: typeof chatPaneHarness.onStop;
+    viewerOnly: boolean;
+    sendDisabled: boolean;
   }) => {
     chatPaneHarness.messages = messages;
     chatPaneHarness.onSend = onSend;
     chatPaneHarness.onStop = onStop;
+    chatPaneHarness.viewerOnly = viewerOnly;
+    chatPaneHarness.sendDisabled = sendDisabled;
     return null;
   },
 }));
@@ -541,7 +552,34 @@ describe('ProjectView daemon reattach restore', () => {
     chatPaneHarness.activeTab = null;
     chatPaneHarness.openRequestNames = [];
     chatPaneHarness.messages = [];
+    projectEventsHarness.notify = null;
+    chatPaneHarness.viewerOnly = false;
+    chatPaneHarness.sendDisabled = false;
     window.sessionStorage.clear();
+  });
+
+  it.each([false, undefined])('mirrors a conversation with write permission %s through committed project signals without taking over its run', async (studioCanWrite) => {
+    vi.spyOn(studioCapabilities, 'useStudioCapabilities').mockReturnValue({ actor: { id: 'reader', username: 'reader', role: 'user', active: true,
+      passwordState: 'set', createdAt: 1, updatedAt: 1 }, generation: 1, hostServices: false, session: null, capabilities: null,
+      executionAgentId: 'codex', available: () => true, reason: () => '' });
+    listConversations.mockResolvedValue([{ id: 'shared-conversation', projectId: 'project-1', title: 'Owner conversation', studioCanWrite }]);
+    const assistant: ChatMessage = { id: 'owner-assistant', role: 'assistant', content: 'First part', runId: 'owner-run', runStatus: 'running',
+      lastRunEventId: '1', events: [{ kind: 'text', text: 'First part' }] };
+    listMessages.mockResolvedValue([assistant]); fetchPreviewComments.mockResolvedValue([]);
+    loadTabs.mockResolvedValue({ tabs: [], activeTabId: null }); fetchProjectFiles.mockResolvedValue([]);
+    fetchLiveArtifacts.mockResolvedValue([]); fetchSkill.mockResolvedValue(null); fetchDesignSystem.mockResolvedValue(null);
+    getTemplate.mockResolvedValue(null); listActiveChatRuns.mockResolvedValue([]); listProjectRuns.mockResolvedValue([]);
+    renderProjectView({ routeConversationId: 'shared-conversation' });
+    await waitFor(() => expect(chatPaneHarness.messages[0]?.content).toBe('First part'));
+    expect(chatPaneHarness.viewerOnly).toBe(true); expect(chatPaneHarness.sendDisabled).toBe(true);
+    expect(fetchChatRunStatus).not.toHaveBeenCalled(); expect(reattachDaemonRun).not.toHaveBeenCalled();
+    listMessages.mockResolvedValue([{ ...assistant, content: 'First part and finished', lastRunEventId: '3', runStatus: 'succeeded',
+      events: [{ kind: 'text', text: 'First part and finished' }] }]);
+    act(() => projectEventsHarness.notify?.({ type: 'chat-messages-changed', projectId: 'project-1', conversationId: 'shared-conversation', at: 1 }));
+    await waitFor(() => expect(chatPaneHarness.messages[0]?.content).toBe('First part and finished'));
+    expect(chatPaneHarness.messages[0]?.runStatus).toBe('succeeded');
+    act(() => chatPaneHarness.onStop?.());
+    expect(saveMessage).not.toHaveBeenCalled(); expect(reattachDaemonRun).not.toHaveBeenCalled();
   });
 
   it('settles a hard-routed fresh succeeded row with a terminal blocked strategy projection', async () => {

@@ -1,3 +1,4 @@
+import { registerStudioReset } from '../runtime/studio-resources';
 // Transient, in-memory hand-offs from the Library multi-select bar to other
 // surfaces. The router navigates by URL only, so anything that can't ride a URL
 // (File objects, pre-built composer attachments) is parked here for exactly one
@@ -79,3 +80,5 @@ export function takeHomeComposerAssetSeed(): HomeComposerAssetSeed | null {
   homeComposerSeed = null;
   return seed;
 }
+
+registerStudioReset(() => { dsSeed = null; composerSeed = null; homeComposerSeed = null; });

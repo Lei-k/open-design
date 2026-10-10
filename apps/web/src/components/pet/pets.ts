@@ -1,3 +1,4 @@
+import { studioFetch as fetch } from '../../runtime/studio-transport';
 import type { AppConfig, CodexPetSummary, PetAtlasLayout, PetAtlasRowDef, PetCustom, PetConfig } from '../../types';
 import {
   codexPetSpritesheetUrl,

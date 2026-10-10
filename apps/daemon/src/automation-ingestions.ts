@@ -11,6 +11,9 @@ import type {
   AutomationSourceIngestionResponse,
   AutomationSourceKind,
   AutomationTokenCompressionMode,
+  AutomationProposalStatus,
+  AutomationTemplate,
+  CreateAutomationEvolutionProposalRequest,
   CreateAutomationSourceIngestionRequest,
   JsonValue,
   MemoryType,
@@ -362,10 +365,22 @@ function jsonObjectFrom(value: unknown): Record<string, JsonValue> {
   return value as Record<string, JsonValue>;
 }
 
-export async function ingestAutomationSource(
-  dataDir: string,
+export interface AutomationIngestionPlan {
+  packet: AutomationContentPacket;
+  compressionReport: AutomationCompressionReport;
+  proposals: Array<CreateAutomationEvolutionProposalRequest & { status?: AutomationProposalStatus }>;
+}
+
+/**
+ * Pure ingestion planning: the packet and the reviewable proposal drafts for
+ * one source, without persisting anything. The host store and the Studio
+ * account store persist the same plan under their own authority.
+ */
+export function planAutomationIngestion(
   input: CreateAutomationSourceIngestionRequest,
-): Promise<AutomationSourceIngestionResponse> {
+  template: AutomationTemplate | null,
+  ids: { packetId: string; sourceEventId: string; capturedAt: string },
+): AutomationIngestionPlan {
   if (!input || typeof input !== 'object') {
     throw new Error('ingestion body is required');
   }
@@ -373,7 +388,6 @@ export async function ingestAutomationSource(
   const bodyMarkdown = typeof input.bodyMarkdown === 'string' ? input.bodyMarkdown.trim() : '';
   if (!bodyMarkdown) throw new Error('bodyMarkdown is required');
 
-  const template = input.templateId ? await getAnyAutomationTemplate(dataDir, input.templateId) : null;
   const templateSinks = template?.outputSinks ?? ['memory'];
   const candidateSinks = outputSinksFrom(input.candidateSinks, templateSinks);
   const reviewPolicy = reviewPolicyFrom(input.reviewPolicy, template?.reviewPolicy ?? 'always');
@@ -381,9 +395,7 @@ export async function ingestAutomationSource(
     input.tokenCompression,
     template?.tokenCompression ?? 'balanced',
   );
-  const packetId = `packet_${randomUUID()}`;
-  const sourceEventId = `source_event_${randomUUID()}`;
-  const capturedAt = new Date().toISOString();
+  const { packetId, sourceEventId, capturedAt } = ids;
   const sourceRef =
     optionalString(input.sourceRef) ??
     optionalString(input.connectorId) ??
@@ -451,12 +463,10 @@ export async function ingestAutomationSource(
   };
   if (Object.keys(metadata).length > 0) packet.metadata = metadata;
 
-  await persistPacket(dataDir, packet);
-
   const memoryType = memoryTypeFrom(input.memoryType);
-  const proposals = [];
+  const proposals: AutomationIngestionPlan['proposals'] = [];
   if (candidateSinks.includes('memory')) {
-    proposals.push(await createAutomationProposal(dataDir, {
+    proposals.push({
       title: `Memory: ${title}`,
       summary: `Create a memory-tree entry from ${sourceKind} source ${sourceRef}.`,
       targetKind: 'memory-node',
@@ -478,11 +488,11 @@ export async function ingestAutomationSource(
         memoryType,
         ...(template ? { templateId: template.id } : {}),
       },
-    }));
+    });
   }
   if (candidateSinks.includes('design-system')) {
     const slug = slugify(title);
-    proposals.push(await createAutomationProposal(dataDir, {
+    proposals.push({
       title: `Design system: ${title}`,
       summary: `Draft a DESIGN.md proposal from ${sourceKind} source ${sourceRef}.`,
       targetKind: 'design-system',
@@ -508,11 +518,11 @@ export async function ingestAutomationSource(
         slug,
         ...(template ? { templateId: template.id } : {}),
       },
-    }));
+    });
   }
   if (candidateSinks.includes('skill')) {
     const slug = slugify(title);
-    proposals.push(await createAutomationProposal(dataDir, {
+    proposals.push({
       title: `Skill: ${title}`,
       summary: `Draft a reusable SKILL.md proposal from ${sourceKind} source ${sourceRef}.`,
       targetKind: 'skill',
@@ -538,8 +548,29 @@ export async function ingestAutomationSource(
         slug,
         ...(template ? { templateId: template.id } : {}),
       },
-    }));
+    });
   }
-
   return { packet, compressionReport: report, proposals };
+}
+
+export async function ingestAutomationSource(
+  dataDir: string,
+  input: CreateAutomationSourceIngestionRequest,
+): Promise<AutomationSourceIngestionResponse> {
+  if (!input || typeof input !== 'object') {
+    throw new Error('ingestion body is required');
+  }
+  // Validate before resolving the template, exactly as before the planner split.
+  sourceKindFrom(input.sourceKind);
+  if (!(typeof input.bodyMarkdown === 'string' && input.bodyMarkdown.trim())) throw new Error('bodyMarkdown is required');
+  const template = input.templateId ? await getAnyAutomationTemplate(dataDir, input.templateId) : null;
+  const plan = planAutomationIngestion(input, template, {
+    packetId: `packet_${randomUUID()}`,
+    sourceEventId: `source_event_${randomUUID()}`,
+    capturedAt: new Date().toISOString(),
+  });
+  await persistPacket(dataDir, plan.packet);
+  const proposals = [];
+  for (const draft of plan.proposals) proposals.push(await createAutomationProposal(dataDir, draft));
+  return { packet: plan.packet, compressionReport: plan.compressionReport, proposals };
 }

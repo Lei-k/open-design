@@ -19,7 +19,7 @@ export function registerMultiUserAgentAccountRoutes(app: Express, deps: {
   personal: PersonalCodexAccounts;
   runs: PersonalRunLaneControls;
   listAccountIds: () => string[];
-  companyPoolAvailable: boolean;
+  companyPoolAvailable: boolean | (() => boolean);
 }): void {
   const { personal } = deps;
   const actor = (res: Response) => multiUserActorOf(res)?.accountId ?? '';
@@ -37,7 +37,7 @@ export function registerMultiUserAgentAccountRoutes(app: Express, deps: {
     const body: PersonalAgentAccountsResponse = {
       mode: 'multi-user',
       personalSubscriptionsEnabled: personal.enabled,
-      companyPoolAvailable: deps.companyPoolAvailable,
+      companyPoolAvailable: typeof deps.companyPoolAvailable === 'function' ? deps.companyPoolAvailable() : deps.companyPoolAvailable,
       codex: personal.summary(actor(res)),
       claude: { available: false },
     };

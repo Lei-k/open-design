@@ -4,6 +4,16 @@ export * from './api/failure-detail.js';
 export * from './settings-nav.js';
 export * from './tasks.js';
 export * from './api/app-config.js';
+export * from './api/studio-settings.js';
+export * from './api/studio-sharing.js';
+export * from './api/studio-provider-keys.js';
+export * from './api/studio-public-links.js';
+export * from './api/studio-automations.js';
+export * from './api/studio-research.js';
+export * from './api/studio-connectors.js';
+export * from './api/studio-mcp.js';
+export * from './api/studio-plugins.js';
+export * from './api/design-system-document.js';
 export * from './api/strategy-rollout.js';
 export * from './api/agent-sessions.js';
 export * from './api/agent-setup.js';
@@ -58,6 +68,7 @@ export * from './api/reasoningExecution.js';
 export * from './api/social-share.js';
 export * from './api/terminals.js';
 export * from './api/version.js';
+export * from './api/studio-parity.js';
 export * from './api/whats-new.js';
 export * from './api/workspaces.js';
 export * from './api/workspace-invites.js';
@@ -105,4 +116,9 @@ export * from './observability/index.js';
 
 export * from './api/amr-continuation.js';
 export * from './api/multiuser-runs.js';
+export * from './api/company-openai.js';
 export * from './api/multiuser-design.js';
+
+export type { StudioProjectMetadata, StudioProjectCreateRequest, StudioTemplateSaveRequest, StudioDirectoryImportFields, StudioArchiveBatchRequest, StudioArchiveDownload } from './api/studio-projects.js';
+
+export { STUDIO_ARCHIVE_SHA256_HEADER } from './api/studio-projects.js';

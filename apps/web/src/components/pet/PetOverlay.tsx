@@ -1,3 +1,4 @@
+import { studioWindowSetTimeout, studioWindowLocalStorage } from '../../runtime/studio-transport';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useT } from '../../i18n';
 import type { PetConfig } from '../../types';
@@ -114,7 +115,7 @@ function recentTaskKey(task: PetRecentTaskSummary): string {
 function loadPosition(): Position {
   if (typeof window === 'undefined') return DEFAULT_POSITION;
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = studioWindowLocalStorage().getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_POSITION;
     const parsed = JSON.parse(raw) as Partial<Position>;
     return {
@@ -128,7 +129,7 @@ function loadPosition(): Position {
 
 function savePosition(p: Position) {
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(p));
+    studioWindowLocalStorage().setItem(STORAGE_KEY, JSON.stringify(p));
   } catch {
     /* ignore */
   }
@@ -180,7 +181,7 @@ export function PetOverlay({
     if (!active) return;
     setBubbleOpen(true);
     if (persistentBubble) return;
-    const id = window.setTimeout(() => setBubbleOpen(false), 4000);
+    const id = studioWindowSetTimeout(() => setBubbleOpen(false), 4000);
     return () => window.clearTimeout(id);
   }, [active?.id, persistentBubble]);
 
@@ -274,7 +275,7 @@ export function PetOverlay({
     if (waitingTimerRef.current != null) {
       window.clearTimeout(waitingTimerRef.current);
     }
-    waitingTimerRef.current = window.setTimeout(() => {
+    waitingTimerRef.current = studioWindowSetTimeout(() => {
       // Only escalate to `waiting` from a calm `idle` baseline; an
       // active hover / drag should keep their own animation.
       setInteraction((prev) => (prev === 'idle' ? 'waiting' : prev));
@@ -319,11 +320,11 @@ export function PetOverlay({
       setAmbientRowId(def.id);
       const playMs =
         AMBIENT_PLAY_MIN_MS + Math.floor(Math.random() * AMBIENT_PLAY_VARIANCE_MS);
-      playTimer = window.setTimeout(() => {
+      playTimer = studioWindowSetTimeout(() => {
         setAmbientRowId(null);
         const restMs =
           AMBIENT_REST_MIN_MS + Math.floor(Math.random() * AMBIENT_REST_VARIANCE_MS);
-        restTimer = window.setTimeout(playBeat, restMs);
+        restTimer = studioWindowSetTimeout(playBeat, restMs);
       }, playMs);
     };
 
@@ -332,7 +333,7 @@ export function PetOverlay({
     const initialDelay =
       AMBIENT_INITIAL_DELAY_MIN_MS +
       Math.floor(Math.random() * AMBIENT_INITIAL_DELAY_VARIANCE_MS);
-    restTimer = window.setTimeout(playBeat, initialDelay);
+    restTimer = studioWindowSetTimeout(playBeat, initialDelay);
 
     return () => {
       if (playTimer != null) window.clearTimeout(playTimer);

@@ -1,3 +1,4 @@
+import { studioFetch as fetch } from '../runtime/studio-transport';
 /**
  * Root-relative project asset handling for FileViewer's srcDoc HTML preview.
  *

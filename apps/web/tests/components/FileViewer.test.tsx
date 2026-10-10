@@ -14130,6 +14130,17 @@ function baseLiveArtifactWorkspaceEntry(
 }
 
 describe('LiveArtifactViewer', () => {
+  it('disables manual refresh for a read-only project member', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      if (String(input).includes('/refreshes?')) return Response.json({ refreshes: [] });
+      return Response.json({ artifact: baseLiveArtifact() });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<LiveArtifactViewer viewerOnly projectId="proj_1" liveArtifact={baseLiveArtifactWorkspaceEntry()} />);
+    const refresh = await screen.findByRole('button', { name: /^Refresh$/ });
+    expect((refresh as HTMLButtonElement).disabled).toBe(true); fireEvent.click(refresh);
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/refresh?'))).toBe(false);
+  });
   it('hides inactive live previews even when a device viewport sets display', () => {
     const css = readExpandedIndexCss();
     const rule = css.match(/\.live-artifact-preview-layer\.preview-viewport\[data-active='false'\]\s*\{[^}]+\}/)?.[0] ?? '';
@@ -14534,6 +14545,16 @@ describe('LiveArtifactViewer', () => {
 });
 
 describe('LiveArtifactRefreshHistoryPanel', () => {
+  it('shows the daemon-stamped accepted document origin and database history hint in Studio', () => {
+    const markup = renderToStaticMarkup(<LiveArtifactRefreshHistoryPanel
+      liveArtifact={baseLiveArtifact({ studioRevision: 2, studioProvenance: { origin: 'project_file', updatedAt: '2026-10-09T12:00:00Z',
+        source: { path: 'sales.json', sha256: 'a'.repeat(64), bytes: 12 } } })}
+      fallbackRefreshStatus="never" isRunning={false} sessionEvents={[]} />);
+    expect(markup).toContain('Refreshed from sales.json');
+    expect(markup).toContain('Refresh records saved by OpenDesign');
+    expect(markup).not.toContain('Entries loaded from refreshes.jsonl');
+    expect(markup).toContain('data-testid="studio-live-artifact-provenance"');
+  });
   it('renders a human-readable status instead of raw JSON when no history exists', () => {
     const markup = renderToStaticMarkup(
       <LiveArtifactRefreshHistoryPanel

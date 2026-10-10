@@ -1,4 +1,6 @@
-import { MULTIUSER_SHELL_PATHS, MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE, publicMultiUserFile } from './multiuser-static.js';
+import type { ProjectShareRole } from '../storage/project-access.js';
+import { MULTIUSER_SHELL_PATHS, MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE, MULTIUSER_AGENT_ICON_ROUTE, MULTIUSER_EDITOR_ICON_ROUTE, publicMultiUserFile } from './multiuser-static.js';
+import { STUDIO_MCP_INSTALL_UNAVAILABLE_REASON } from '@open-design/contracts';
 
 // Multi-user route classification registry (issue #4) — declarative data.
 //
@@ -43,7 +45,12 @@ export type MultiUserRouteClass =
   | 'blocked-in-multiuser'
   | 'middleware';
 
-export type MultiUserBodyPolicy = 'project-create' | 'project-patch';
+export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'studio-memory-rules-suggest' | 'studio-memory-extract' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'catalog-share' | 'provider-key' | 'composio-config' | 'connector-prepare' | 'studio-mcp-server' | 'studio-mcp-import' | 'studio-mcp-oauth' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'studio-plugin-apply' | 'studio-live-artifact' | 'empty' | 'multipart';
+
+/** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
+export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
+export const MULTIUSER_FILE_WRITE_MAX_BYTES = 24 * 1024 * 1024;
 
 export interface MultiUserRouteClassification {
   /** `METHOD path`, identical to the registration inventory key. */
@@ -68,13 +75,49 @@ export interface MultiUserRouteClassification {
   nonStringPath?: boolean;
   /** Catch-all fallback: never used to classify a request. */
   catchAll?: boolean;
+  /**
+   * A reviewed RegExp route the gate does match: the same pattern Express
+   * routes on (case-sensitive, undecoded path), with each capture group named
+   * so the owner check reads its param exactly as for a string route.
+   */
+  pattern?: RegExp;
+  captures?: readonly string[];
+  /** Serves owner file bytes on the app origin: the gate applies the untrusted-content response policy. */
+  untrustedContent?: boolean;
+  /** Declared request-body ceiling; the gate requires a Content-Length within it. */
+  maxBodyBytes?: number;
+  /**
+   * Reviewed alias: after authorization the gate routes the request to this
+   * multi-user implementation (`:param` filled from the match, query kept), so
+   * the shared client keeps one standard endpoint while the daemon serves the
+   * owner/session-bound variant.
+   */
+  rewriteTo?: string;
+  /**
+   * owner-scoped-project only: the least project share role (#65) that also
+   * admits a non-owner grantee. Absent means the owner alone. Assigned from
+   * {@link MULTIUSER_SHARED_PROJECT_ROLES}, never per group.
+   */
+  sharedRole?: ProjectShareRole;
+  /**
+   * owner-scoped-project only: route param naming a conversation the actor
+   * must have authored (#65), whatever its project role. Assigned from
+   * {@link MULTIUSER_CONVERSATION_AUTHOR_PARAMS}.
+   */
+  conversationParam?: string;
+  /**
+   * blocked-in-multiuser only: the host capability a Web account is refused
+   * here. The gate answers `403 MULTIUSER_CAPABILITY_UNAVAILABLE` with
+   * `details: { capability, reason }` instead of the generic route refusal.
+   */
+  capabilityRefusal?: string;
 }
 
 export function routeKey(method: string, path: string): string {
   return `${method.toUpperCase()} ${path}`;
 }
 
-type EntryExtras = Pick<MultiUserRouteClassification, 'projectParam' | 'runParam' | 'agentAccountParam' | 'bodyPolicy' | 'nonStringPath' | 'catchAll'>;
+type EntryExtras = Pick<MultiUserRouteClassification, 'projectParam' | 'runParam' | 'agentAccountParam' | 'bodyPolicy' | 'nonStringPath' | 'catchAll' | 'untrustedContent' | 'maxBodyBytes' | 'rewriteTo' | 'capabilityRefusal'>;
 
 function group(
   routeClass: MultiUserRouteClass,
@@ -91,6 +134,9 @@ function group(
 }
 
 const blocked = (reason: string, keys: readonly string[]) => group('blocked-in-multiuser', reason, keys);
+/** Blocked for everyone, answered with a typed capability refusal (see `capabilityRefusal`). */
+const refused = (capability: string, reason: string, keys: readonly string[]) =>
+  group('blocked-in-multiuser', reason, keys, { capabilityRefusal: capability });
 
 function nonStringBlocked(
   reason: string,
@@ -100,6 +146,21 @@ function nonStringBlocked(
     group('blocked-in-multiuser', reason, [`${method} ${String(path)}`], { nonStringPath: true })[0]!);
 }
 
+/** Reviewed RegExp routes the gate matches with named captures (see `pattern`). */
+function regexGroup(
+  routeClass: MultiUserRouteClass,
+  reason: string,
+  routes: ReadonlyArray<readonly [string, RegExp, readonly string[]]>,
+  extras: EntryExtras = {},
+): MultiUserRouteClassification[] {
+  return routes.map(([method, pattern, captures]) => {
+    if (pattern.flags.replace('u', '') !== '' || !pattern.source.startsWith('^') || !pattern.source.endsWith('$')) {
+      throw new Error(`regex route must be anchored and case-sensitive: ${String(pattern)}`);
+    }
+    return { ...group(routeClass, reason, [`${method} ${String(pattern)}`], extras)[0]!, pattern, captures };
+  });
+}
+
 // ---- reasons ----------------------------------------------------------------
 
 const R_NOT_MINIMUM = 'outside the minimum allowed set for this slice; revisit with the multi-user Web UX (#6)';
@@ -107,6 +168,10 @@ const R_RUNS = 'real provider execution requires the shared pool/quota (#11) and
 const R_TOOL_TOKENS = 'agent tool endpoint authorized by run-scoped tool tokens, not accounts; blocked until run isolation (#5)';
 const R_HOST_FS = 'host filesystem / desktop integration; not an actor resource';
 const R_CREDENTIALS = 'connector/MCP/OAuth/provider credentials are host-level secrets; admin/pool surfaces are #10/#11';
+/** S58 (#62): the connector control plane is open; run-time use opens in S59. */
+const R_MCP_OWN = 'the actor\'s own remote MCP servers only (header values write-only); another account\'s server is the same 404; no admin bypass';
+const R_MCP_OAUTH = 'OAuth for the actor\'s own remote MCP server: single-use state bound to account, session and server; tokens sealed per account';
+const R_CONNECTORS_NOT_IN_RUNS = 'connector ingestion and memory extraction have no admitted run grant (#62/#64)';
 const R_SHARED_CATALOG = 'shared catalog whose user-created entries are global across accounts (not actor-scoped yet)';
 const R_PLUGINS = 'plugin install/registry/snapshots are host-level and shared across accounts';
 const R_WORKSPACE = 'Vela team workspace feature; workspace/member identity is not the Web login principal';
@@ -119,9 +184,9 @@ const R_GLOBAL_STATE = 'daemon-global state shared by every account';
 
 // ---- registry ---------------------------------------------------------------
 
-export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassification[] = [
+const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
   ...group('public-web', 'reviewed public app code only; canonical file and symlink checks in the static handler',
-    [...MULTIUSER_SHELL_PATHS, ...MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE].map((path) => `GET ${path}`)),
+    [...MULTIUSER_SHELL_PATHS, ...MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE, MULTIUSER_AGENT_ICON_ROUTE, MULTIUSER_EDITOR_ICON_ROUTE].map((path) => `GET ${path}`)),
   // Probes -------------------------------------------------------------------
   ...group('public-probe', 'process liveness/readiness/version only; carries no account or project data', [
     'GET /api/health',
@@ -156,10 +221,15 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
   ...group('middleware', 'global /api browser-origin guard; not an endpoint', ['USE /api']),
   ...group('middleware', 'pathless authorization gate; never authorizes on its own', ['USE <pathless:authorization-gate:1>']),
   ...group('middleware', 'pathless global JSON parser; never authorizes on its own', ['USE <pathless:json-parser:1>']),
+  ...group('middleware', 'pathless body-parser error handler: fixed typed errors, never echoes or logs the body; never authorizes on its own', ['USE <pathless:body-errors:1>']),
   ...group('middleware', 'pathless project body policy; never authorizes on its own', ['USE <pathless:body-policy:1>']),
   ...group('middleware', 'root static middleware is disabled for requests in multi-user mode', ['USE <pathless:root-static:1>']),
 
   // Projects: the minimum allowed set -------------------------------------------
+  ...group('actor-scoped', 'transient focus keyed by authenticated session; project ownership rechecked before any content lookup',
+    ['GET /api/active']),
+  ...group('actor-scoped', 'transient session focus; bounded body and project ownership checked by handler; no global MCP context',
+    ['POST /api/active'], { bodyPolicy: 'active-context' }),
   ...group('actor-scoped', 'lists only projects the actor owns (ProjectOwnershipRouteHooks.filterVisibleProjects)', [
     'GET /api/projects',
   ]),
@@ -167,22 +237,52 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'actor-scoped',
     'creates a project owned by the actor; the owner binding is written in the create transaction; body limited by the project-create policy',
     ['POST /api/projects'],
-    { bodyPolicy: 'project-create' },
+    { bodyPolicy: 'project-create', rewriteTo: '/api/multiuser/projects', maxBodyBytes: 256_000 },
   ),
+  ...group('actor-scoped', 'account project creation with captured template files and atomic ownership', ['POST /api/multiuser/projects'],
+    { bodyPolicy: 'project-create', maxBodyBytes: 256_000 }),
+  ...group('owner-scoped-project', 'owned file copy; no host or conversation credentials copied', ['POST /api/projects/:id/duplicate'],
+    { projectParam: 'id', bodyPolicy: 'project-duplicate', maxBodyBytes: 4096, rewriteTo: '/api/multiuser/projects/:id/duplicate' }),
+  ...group('owner-scoped-project', 'owned file copy alias; authority rechecked before publication', ['POST /api/multiuser/projects/:id/duplicate'],
+    { projectParam: 'id', bodyPolicy: 'project-duplicate', maxBodyBytes: 4096 }),
+  ...['GET /api/templates', 'GET /api/templates/:id', 'POST /api/templates', 'DELETE /api/templates/:id'].flatMap((key) => {
+    const alias = key.replace('/api/templates', '/api/multiuser/catalog/templates');
+    const extras = key.startsWith('POST ') ? { bodyPolicy: 'template-save' as const, maxBodyBytes: 8192 }
+      : key.startsWith('DELETE ') ? { bodyPolicy: 'empty' as const } : {};
+    return [...group('actor-scoped', 'account-owned immutable template snapshots; no host template store', [key],
+      { ...extras, rewriteTo: alias.slice(alias.indexOf(' ') + 1) }),
+      ...group('actor-scoped', 'account template alias; same ownership checks', [alias], extras)];
+  }),
+  ...group('actor-scoped', 'bounded browser archive import to an owned managed project', ['POST /api/import/claude-design'],
+    { bodyPolicy: 'multipart', maxBodyBytes: MULTIUSER_UPLOAD_MAX_BYTES + 65536, rewriteTo: '/api/multiuser/import/claude-design' }),
+  ...group('actor-scoped', 'browser archive alias; no host paths or workspace identity', ['POST /api/multiuser/import/claude-design'],
+    { bodyPolicy: 'multipart', maxBodyBytes: MULTIUSER_UPLOAD_MAX_BYTES + 65536 }),
+  ...group('actor-scoped', 'bounded browser directory upload; relative files only, no host paths', ['POST /api/import/files'],
+    { bodyPolicy: 'multipart', maxBodyBytes: MULTIUSER_UPLOAD_MAX_BYTES + 65536 }),
   ...group('owner-scoped-project', 'project id must be owned by the actor (gate check before the handler); no admin override', [
     'GET /api/projects/:id',
     'DELETE /api/projects/:id',
     'GET /api/projects/:id/conversations',
-    'POST /api/projects/:id/conversations',
     'GET /api/projects/:id/conversations/:cid/messages',
     'GET /api/projects/:id/files',
     'GET /api/projects/:id/file-content/*path',
+    'GET /api/projects/:id/tabs',
+    'GET /api/projects/:id/events',
+    'DELETE /api/projects/:id/conversations/:cid',
     'GET /api/multiuser/projects/:id/preview-url',
     'POST /api/multiuser/projects/:id/preview/:scope/renew',
     'POST /api/multiuser/projects/:id/conversations',
     'GET /api/multiuser/projects/:id/conversations/:cid/design',
     'GET /api/multiuser/projects/:id/design-selections',
   ], { projectParam: 'id' }),
+  ...group('owner-scoped-project', 'project owner checked before standard Studio mutation; bounded body cannot change resource or run ownership',
+    ['POST /api/projects/:id/conversations'], { projectParam: 'id', bodyPolicy: 'conversation-create' }),
+  ...group('owner-scoped-project', 'project owner checked before conversation title or mode update; immutable parent binding',
+    ['PATCH /api/projects/:id/conversations/:cid'], { projectParam: 'id', bodyPolicy: 'conversation-patch' }),
+  ...group('owner-scoped-project', 'project and conversation scoped message lookup; client cannot write daemon run identity or foreign message rows',
+    ['PUT /api/projects/:id/conversations/:cid/messages/:mid'], { projectParam: 'id', bodyPolicy: 'message-write' }),
+  ...group('owner-scoped-project', 'project owner checked before tabs write; remote actors cannot create host browser sessions',
+    ['PUT /api/projects/:id/tabs'], { projectParam: 'id', bodyPolicy: 'project-tabs' }),
   ...group(
     'owner-scoped-project',
     'project id must be owned by the actor (gate check before the handler); body limited by the project-patch policy',
@@ -192,9 +292,6 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
 
   // Projects: everything else stays blocked -------------------------------------
   ...blocked(R_WORKSPACE, [
-    'GET /api/projects/:id/presence',
-    'POST /api/projects/:id/presence/heartbeat',
-    'POST /api/projects/:id/presence/leave',
     'POST /api/projects/:id/collab/changed',
     'POST /api/projects/:id/collab/publish',
     'POST /api/projects/:id/collab/sync-intent',
@@ -210,23 +307,48 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
   ...blocked('imports through host Figma credentials/network', ['POST /api/projects/:id/figma/import']),
   ...blocked('copies content from plugins, templates or design systems that are not actor-scoped', [
     'POST /api/projects/:id/scenario/restore-automatic',
-    'POST /api/projects/:id/duplicate',
     'POST /api/projects/:id/design-system-copy',
   ]),
-  ...blocked(R_SSE, ['GET /api/projects/:id/events']),
-  ...blocked(R_NOT_MINIMUM, [
-    'PATCH /api/projects/:id/conversations/:cid',
-    'DELETE /api/projects/:id/conversations/:cid',
-    'PUT /api/projects/:id/conversations/:cid/messages/:mid',
-    'GET /api/projects/:id/conversations/:cid/comments',
-    'POST /api/projects/:id/conversations/:cid/comments',
-    'PATCH /api/projects/:id/conversations/:cid/comments/:commentId',
-    'PATCH /api/projects/:id/conversations/:cid/comments/:commentId/anchor',
-    'PATCH /api/projects/:id/conversations/:cid/comments/:commentId/reorder',
-    'DELETE /api/projects/:id/conversations/:cid/comments/:commentId',
-    'GET /api/projects/:id/tabs',
-    'PUT /api/projects/:id/tabs',
-  ]),
+  // Project sharing between accounts of this deployment (#65). The owner
+  // manages grants; a grantee reads its own access and may leave. Presence is
+  // stamped from the session, never from a client-asserted member.
+  ...group('owner-scoped-project', 'project owner manages account grants; grantees resolved server-side by username',
+    ['DELETE /api/multiuser/projects/:id/shares/:accountId'], { projectParam: 'id' }),
+  ...group('owner-scoped-project', 'project owner grants view/comment/edit to an active account of this deployment',
+    ['PUT /api/multiuser/projects/:id/shares'], { projectParam: 'id', bodyPolicy: 'project-share', maxBodyBytes: 4 * 1024 }),
+  ...group('owner-scoped-project', 'the actor\'s own role and the member list of a project it owns or was granted; leaving removes only that grant',
+    ['GET /api/multiuser/projects/:id/access', 'DELETE /api/multiuser/projects/:id/access'], { projectParam: 'id' }),
+  ...([
+    ['GET', '', undefined],
+    ['POST', '/heartbeat', 'presence-heartbeat'],
+    ['POST', '/leave', 'presence-leave'],
+  ] as const).flatMap(([method, suffix, bodyPolicy]) => {
+    const extras = { projectParam: 'id', ...(bodyPolicy ? { bodyPolicy, maxBodyBytes: 4 * 1024 } : {}) };
+    return [
+      ...group('owner-scoped-project', 'project presence for the owner and grantees; identity from the session, process-local, no relay',
+        [`${method} /api/projects/:id/presence${suffix}`], { ...extras, rewriteTo: `/api/multiuser/projects/:id/presence${suffix}` }),
+      ...group('owner-scoped-project', 'project presence alias', [`${method} /api/multiuser/projects/:id/presence${suffix}`], extras),
+    ];
+  }),
+  // Owner-only preview comments (#59, #65): standard paths rewrite to the
+  // actor handler; the host handler's workspace/collab identity never runs.
+  ...([
+    ['GET', '', undefined],
+    ['POST', '', 'comment-upsert'],
+    ['PATCH', '/:commentId', 'comment-status'],
+    ['PATCH', '/:commentId/anchor', 'comment-anchor'],
+    ['PATCH', '/:commentId/reorder', 'comment-reorder'],
+    ['DELETE', '/:commentId', 'empty'],
+  ] as const).flatMap(([method, suffix, bodyPolicy]) => {
+    const extras = { projectParam: 'id', ...(bodyPolicy ? { bodyPolicy, ...(bodyPolicy === 'empty' ? {} : { maxBodyBytes: 64 * 1024 }) } : {}) };
+    return [
+      ...group('owner-scoped-project', 'owner-only preview comments; conversation rechecked in the project, no member identity or relay',
+        [`${method} /api/projects/:id/conversations/:cid/comments${suffix}`],
+        { ...extras, rewriteTo: `/api/multiuser/projects/:id/conversations/:cid/comments${suffix}` }),
+      ...group('owner-scoped-project', 'owner-only preview comment alias; same ownership checks',
+        [`${method} /api/multiuser/projects/:id/conversations/:cid/comments${suffix}`], extras),
+    ];
+  }),
   ...blocked('interactive host shell; never available to Web accounts without run isolation (#5)', [
     'GET /api/projects/:id/terminals',
     'POST /api/projects/:id/terminals',
@@ -248,36 +370,142 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'POST /api/projects/:id/handoff',
     'POST /api/projects/:id/deployments/:deploymentId/check-link',
   ]),
-  ...blocked(R_PROJECT_FILES, [
-    'GET /api/projects/:id/archive',
-    'POST /api/projects/:id/archive/batch',
-    'GET /api/projects/:id/export/manifest',
-    'POST /api/projects/:id/export/pdf',
-    'POST /api/projects/:id/export/pptx',
-    'POST /api/projects/:id/export/pdf-image',
-    'POST /api/projects/:id/export/image',
-    'POST /api/projects/:id/export/html',
-    'POST /api/projects/:id/export',
-    'GET /api/projects/:id/export/*splat',
+  // S5 (#58): the owner's managed project files. Paths resolve inside the
+  // project root with symlink-aware checks in the handlers; bytes served on
+  // the app origin carry the untrusted-content policy; writes are bounded.
+  ...group('owner-scoped-project', 'owner project file reads; handlers resolve paths inside the managed project root', [
     'GET /api/projects/:id/search',
-    'GET /api/projects/:id/design-token-suggestions',
     'GET /api/projects/:id/folders',
-    'POST /api/projects/:id/folders',
-    'DELETE /api/projects/:id/folders',
-    'GET /api/projects/:id/design-system-package-audit',
-    'GET /api/projects/:id/preview-url',
-    'POST /api/projects/:id/preview/:scope/renew',
-    'GET /api/projects/:id/files/:name/preview',
-    'POST /api/projects/:id/files',
-    'POST /api/projects/:id/files/rename',
-    'DELETE /api/projects/:id/files/:name',
+  ], { projectParam: 'id' }),
+  ...group('owner-scoped-project', 'owner folder create in the managed project root', ['POST /api/projects/:id/folders'],
+    { projectParam: 'id', bodyPolicy: 'folder-create' }),
+  ...group('owner-scoped-project', 'owner folder delete in the managed project root', ['DELETE /api/projects/:id/folders'],
+    { projectParam: 'id', bodyPolicy: 'folder-delete' }),
+  ...group('owner-scoped-project', 'owner file write (JSON text/base64 or one multipart file); no artifact manifests', ['POST /api/projects/:id/files'],
+    { projectParam: 'id', bodyPolicy: 'file-write', maxBodyBytes: MULTIUSER_FILE_WRITE_MAX_BYTES }),
+  ...group('owner-scoped-project', 'owner file rename inside the managed project root', ['POST /api/projects/:id/files/rename'],
+    { projectParam: 'id', bodyPolicy: 'file-rename' }),
+  ...group('owner-scoped-project', 'owner file delete inside the managed project root', ['DELETE /api/projects/:id/files/:name'], { projectParam: 'id' }),
+  ...group('owner-scoped-project', 'owner multipart upload into the managed project root; bounded request', ['POST /api/projects/:id/upload'],
+    { projectParam: 'id', bodyPolicy: 'multipart', maxBodyBytes: MULTIUSER_UPLOAD_MAX_BYTES }),
+  // S6 (#59): the standard preview URL mints the owner/session-bound capability
+  // on the dedicated preview origin (#39), never an app-origin scope.
+  ...group('owner-scoped-project', 'mints an owner/session-bound capability on the preview origin', ['GET /api/projects/:id/preview-url'],
+    { projectParam: 'id', rewriteTo: '/api/multiuser/projects/:id/preview-url' }),
+  ...regexGroup('owner-scoped-project', 'owner file bytes on the app origin; served under the untrusted-content policy', [
+    ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)$/u, ['id', 'path']],
+    ['GET', /^\/api\/projects\/([^/]+)\/raw\/(.+)$/u, ['id', 'path']],
+    ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)\/versions\/([^/]+)$/u, ['id', 'path', 'versionId']],
+  ], { projectParam: 'id', untrustedContent: true }),
+  ...regexGroup('owner-scoped-project', 'owner file metadata, versions and text extraction', [
+    ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)\/versions$/u, ['id', 'path']],
+    ['GET', /^\/api\/projects\/([^/]+)\/text-preview\/(.+)$/u, ['id', 'path']],
+  ], { projectParam: 'id' }),
+  // Deployment-local public links (#66): the owner publishes an immutable capture; no external relay.
+  ...regexGroup('owner-scoped-project', 'owner publishes, reads or revokes a public link to a captured file; served only from the preview origin', [
+    ['POST', /^\/api\/projects\/([^/]+)\/files\/(.+)\/publish-public$/u, ['id', 'path']],
+  ], { projectParam: 'id', rewriteTo: '/api/multiuser/projects/:id/public-links/:path', bodyPolicy: 'empty' }),
+  // GET also matches the owner file-bytes pattern, so it cannot carry a gate alias; the
+  // server forwards it to the alias handler ahead of the file routes (see server.ts).
+  ...regexGroup('owner-scoped-project', 'owner reads the public link state of a file', [
+    ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)\/publish-public$/u, ['id', 'path']],
+  ], { projectParam: 'id' }),
+  ...regexGroup('owner-scoped-project', 'owner revokes a public link', [
+    ['DELETE', /^\/api\/projects\/([^/]+)\/files\/(.+)\/publish-public$/u, ['id', 'path']],
+  ], { projectParam: 'id', rewriteTo: '/api/multiuser/projects/:id/public-links/:path', bodyPolicy: 'public-link-revoke', maxBodyBytes: 1024 }),
+  ...group('owner-scoped-project', 'owner public link list and per-file publication; captured bytes only', [
+    'GET /api/multiuser/projects/:id/public-links', 'GET /api/multiuser/projects/:id/public-links/:path'], { projectParam: 'id' }),
+  ...group('owner-scoped-project', 'owner publishes an immutable capture of one file and its referenced assets', [
+    'POST /api/multiuser/projects/:id/public-links/:path'], { projectParam: 'id', bodyPolicy: 'empty' }),
+  ...group('owner-scoped-project', 'owner revokes a public link', ['DELETE /api/multiuser/projects/:id/public-links/:path'],
+    { projectParam: 'id', bodyPolicy: 'public-link-revoke', maxBodyBytes: 1024 }),
+  ...regexGroup('owner-scoped-project', 'owner file delete by path', [
+    ['DELETE', /^\/api\/projects\/([^/]+)\/raw\/(.+)$/u, ['id', 'path']],
+  ], { projectParam: 'id' }),
+  ...regexGroup('owner-scoped-project', 'owner manual version capture', [
+    ['POST', /^\/api\/projects\/([^/]+)\/files\/(.+)\/versions$/u, ['id', 'path']],
+  ], { projectParam: 'id', bodyPolicy: 'file-version' }),
+  ...regexGroup('owner-scoped-project', 'owner version restore', [
+    ['POST', /^\/api\/projects\/([^/]+)\/files\/(.+)\/versions\/([^/]+)\/restore$/u, ['id', 'path', 'versionId']],
+  ], { projectParam: 'id', bodyPolicy: 'empty' }),
+  ...group('owner-scoped-project', 'immutable artifact metadata and refs; handlers verify project, conversation and artifact lineage', [
     'GET /api/projects/:id/conversations/:cid/messages/:mid/artifacts',
     'GET /api/projects/:id/chat-artifact-snapshots/:sid',
+    'GET /api/projects/:id/workspace-artifacts/:aid',
+  ], { projectParam: 'id' }),
+  ...group('owner-scoped-project', 'immutable owner artifact bytes; untrusted content and no-store on the app origin', [
     'GET /api/projects/:id/chat-artifact-snapshots/:sid/content',
     'GET /api/projects/:id/chat-artifact-snapshots/:sid/thumbnail',
-    'GET /api/projects/:id/workspace-artifacts/:aid',
-    'POST /api/projects/:id/upload',
+  ], { projectParam: 'id', untrustedContent: true }),
+  ...['GET /api/projects/:id/archive', 'POST /api/projects/:id/archive/batch'].flatMap((key) => {
+    const method = key.startsWith('POST ') ? 'POST' : 'GET';
+    const route = key.slice(method.length + 1);
+    const alias = route.replace('/api/projects/', '/api/multiuser/projects/');
+    const extras = method === 'POST' ? { bodyPolicy: 'archive-batch' as const, maxBodyBytes: 512 * 1024 } : {};
+    return [...group('owner-scoped-project', 'bounded owned ZIP capture; no host paths or credentials', [key],
+      { projectParam: 'id', ...extras, rewriteTo: alias }),
+      ...group('owner-scoped-project', 'owned ZIP alias; fresh authority before byte release', [`${method} ${alias}`],
+        { projectParam: 'id', ...extras })];
+  }),
+  ...group('owner-scoped-project', 'one-file HTML bundle of an owned entry; same-project assets only, no renderer or host paths',
+    ['POST /api/projects/:id/export/html'],
+    { projectParam: 'id', bodyPolicy: 'export-html', maxBodyBytes: 8 * 1024, rewriteTo: '/api/multiuser/projects/:id/export/html' }),
+  ...group('owner-scoped-project', 'owned HTML export alias; fresh authority before byte release', ['POST /api/multiuser/projects/:id/export/html'],
+    { projectParam: 'id', bodyPolicy: 'export-html', maxBodyBytes: 8 * 1024 }),
+  // Server-rendered PDF/PPTX/PNG of an owned entry (#66); captured bytes in an isolated headless browser.
+  ...['pptx', 'pdf-image', 'image'].flatMap((format) => [
+    ...group('owner-scoped-project', 'owner render of captured project bytes; no daemon URL or network reachable from the renderer',
+      [`POST /api/projects/:id/export/${format}`],
+      { projectParam: 'id', bodyPolicy: 'export-render', maxBodyBytes: 8 * 1024, rewriteTo: `/api/multiuser/projects/:id/export/${format}` }),
+    ...group('owner-scoped-project', 'owner render alias; fresh authority before byte release', [`POST /api/multiuser/projects/:id/export/${format}`],
+      { projectParam: 'id', bodyPolicy: 'export-render', maxBodyBytes: 8 * 1024 }),
   ]),
+  ...blocked(R_PROJECT_FILES, [
+    'GET /api/projects/:id/export/manifest',
+    'POST /api/projects/:id/export/pdf',
+    'POST /api/projects/:id/export',
+    'GET /api/projects/:id/export/*splat',
+    'GET /api/projects/:id/design-token-suggestions',
+    'GET /api/projects/:id/design-system-package-audit',
+    'POST /api/projects/:id/preview/:scope/renew',
+    'GET /api/projects/:id/files/:name/preview',
+  ]),
+  ...['GET /api/routines', 'POST /api/routines', 'GET /api/routines/:id', 'PATCH /api/routines/:id', 'DELETE /api/routines/:id',
+    'POST /api/routines/:id/run', 'GET /api/routines/:id/runs'].flatMap((key) => {
+    const alias = key.replace('/api/routines', '/api/multiuser/routines');
+    const bodyPolicy = key.startsWith('POST /api/routines/:id/run') || key.startsWith('DELETE ') ? 'empty' as const
+      : key.startsWith('POST ') || key.startsWith('PATCH ') ? 'studio-routine' as const : undefined;
+    const extras = bodyPolicy === 'studio-routine' ? { bodyPolicy, maxBodyBytes: 64 * 1024 } : bodyPolicy ? { bodyPolicy } : {};
+    return [...group('actor-scoped', 'account-owned Automations; every dispatch revalidates the owner, pilot, project and execution source', [key],
+      { ...extras, rewriteTo: alias.slice(alias.indexOf(' ') + 1) }),
+      ...group('actor-scoped', 'account Automations alias; same cookie authority and closed fields', [alias], extras)];
+  }),
+  // Account automation self-evolution (#64): bundled templates (the same read for
+  // every account), the owner's source packets, ingestions and proposals, and
+  // crystallize of the owner's own succeeded routine run. Apply writes only into
+  // the owner's memory, private skills and design documents.
+  ...([
+    ['GET /api/automation-templates', undefined],
+    ['GET /api/automation-templates/:id', undefined],
+    ['GET /api/automation-source-packets', undefined],
+    ['GET /api/automation-source-packets/:id', undefined],
+    ['POST /api/automation-ingestions', 'automation-ingestion'],
+    ['GET /api/automation-proposals', undefined],
+    ['POST /api/automation-proposals', 'automation-proposal'],
+    ['GET /api/automation-proposals/:id', undefined],
+    ['POST /api/automation-proposals/:id/apply', 'empty'],
+    ['POST /api/automation-proposals/:id/reject', 'automation-proposal-reject'],
+    ['POST /api/routines/:id/runs/:runId/crystallize', 'empty'],
+  ] as const).flatMap(([key, bodyPolicy]) => {
+    const alias = key.replace('/api/routines', '/api/multiuser/routines').replace(/\/api\/automation-/, '/api/multiuser/automation-');
+    const extras = bodyPolicy === 'automation-ingestion' || bodyPolicy === 'automation-proposal'
+      ? { bodyPolicy, maxBodyBytes: 300 * 1024 } : bodyPolicy === 'automation-proposal-reject' ? { bodyPolicy, maxBodyBytes: 4 * 1024 }
+        : bodyPolicy ? { bodyPolicy } : {};
+    const reason = key.includes('automation-templates') ? 'bundled and account-private automation templates; no host user templates'
+      : 'account-owned automation packets and proposals; apply writes only into the owner\'s memory, private skills, design documents and automation templates';
+    return [...group('actor-scoped', reason, [key], { ...extras, rewriteTo: alias.slice(alias.indexOf(' ') + 1) }),
+      ...group('actor-scoped', 'account automation alias; same cookie authority and closed fields', [alias], extras)];
+  }),
   ...blocked(R_RUNS, [
     'POST /api/projects/:id/media/hyperframes/scaffold',
     'POST /api/projects/:id/media/generate',
@@ -300,21 +528,10 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'POST /api/projects/:id/plugins/share-tasks',
   ]),
   ...nonStringBlocked(R_PROJECT_FILES, [
-    ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)$/u],
-    ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)\/versions$/u],
-    ['POST', /^\/api\/projects\/([^/]+)\/files\/(.+)\/versions$/u],
-    ['POST', /^\/api\/projects\/([^/]+)\/files\/(.+)\/versions\/([^/]+)\/restore$/u],
-    ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)\/versions\/([^/]+)$/u],
-    ['POST', /^\/api\/projects\/([^/]+)\/files\/(.+)\/publish-public$/u],
-    ['DELETE', /^\/api\/projects\/([^/]+)\/files\/(.+)\/publish-public$/u],
-    ['GET', /^\/api\/projects\/([^/]+)\/files\/(.+)\/publish-public$/u],
-    ['GET', /^\/api\/projects\/([^/]+)\/text-preview\/(.+)$/u],
     ['GET', /^\/api\/projects\/([^/]+)\/preview\/([^/]+)\/(.+)$/u],
     ['OPTIONS', /^\/api\/projects\/([^/]+)\/raw\/(.+)$/u],
-    ['GET', /^\/api\/projects\/([^/]+)\/raw\/(.+)$/u],
     ['OPTIONS', /^\/api\/projects\/([^/]+)\/powered\/(.+)$/u],
     ['GET', /^\/api\/projects\/([^/]+)\/powered\/(.+)$/u],
-    ['DELETE', /^\/api\/projects\/([^/]+)\/raw\/(.+)$/u],
   ]),
 
   // Static mounts and the SPA shell -----------------------------------------------
@@ -333,11 +550,20 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
   ...group('preview-capability', 'cookie-free preview origin; handler validates the owner/session-bound short-lived scope', [
     'GET /api/multiuser/projects/:id/preview/:scope/*path',
   ]),
+  ...group('preview-capability', 'cookie-free public link on the preview origin; unguessable slug; captured bytes of an active owner only', [
+    'GET /api/multiuser/public/:slug/*path',
+  ]),
+  ...group('admin-only', 'per-account Studio pilot metadata; handler validates revision and closed body', [
+    'GET /api/admin/users/:id/studio-pilot',
+    'PUT /api/admin/users/:id/studio-pilot',
+  ]),
   ...group('admin-only', 'aggregate pool operations; no project or run content', [
     'GET /api/admin/pool',
     'PUT /api/admin/pool/providers/:providerId',
     'PUT /api/admin/pool/users/:id/quota',
   ]),
+  ...group('admin-only', 'company OpenAI metadata; credentials never returned', ['GET /api/admin/pool/openai']),
+  ...group('admin-only', 'write-only encrypted company credential and revision-checked provider policy', ['PUT /api/admin/pool/openai'], { bodyPolicy: 'company-openai' }),
   ...group('actor-scoped', 'test mock only; create binds the trusted actor, owned managed project and conversation in one SQLite insert', [
     'POST /api/runs',
     'GET /api/runs',
@@ -346,6 +572,8 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'GET /api/runs/:id',
     'GET /api/runs/:id/events',
     'POST /api/runs/:id/cancel',
+    'POST /api/runs/:id/steer',
+    'POST /api/runs/:id/feedback',
   ], { runParam: 'id' }),
   // Personal subscription accounts (#18): the actor's own provider link only.
   ...group('actor-scoped', 'personal subscription summary and login start; the handler keys every lookup by the actor', [
@@ -369,50 +597,34 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'GET /api/runs/by-plugin-workflow/:workflowId',
     'GET /api/runs/:id/result-package',
     'GET /api/runs/:id/agui',
-    'POST /api/runs/:id/steer',
-    'POST /api/runs/:id/feedback',
     'GET /api/runs/:runId/genui',
     'POST /api/runs/:runId/genui/:surfaceId/respond',
     'GET /api/runs/:runId/genui/:surfaceId',
     'GET /api/runs/:runId/devloop-iterations',
     'POST /api/runs/:runId/replay',
-    'GET /api/automation-source-packets',
-    'GET /api/automation-source-packets/:id',
-    'POST /api/automation-ingestions',
-    'GET /api/automation-proposals',
-    'POST /api/automation-proposals',
-    'GET /api/automation-proposals/:id',
-    'POST /api/automation-proposals/:id/apply',
-    'POST /api/automation-proposals/:id/reject',
-    'GET /api/automation-templates',
-    'GET /api/automation-templates/:id',
-    'GET /api/routines',
-    'POST /api/routines',
-    'GET /api/routines/:id',
-    'PATCH /api/routines/:id',
-    'DELETE /api/routines/:id',
-    'POST /api/routines/:id/run',
-    'GET /api/routines/:id/runs',
-    'POST /api/routines/:id/runs/:runId/crystallize',
     'GET /api/orbit/status',
     'POST /api/orbit/run',
-    'POST /api/research/search',
     'GET /api/critique/conformance',
     'POST /api/media/tasks/:id/wait',
     'POST /api/plugins/share-tasks/:id/wait',
   ]),
   ...blocked(R_SSE, [
     'GET /api/library/events',
-    'GET /api/memory/events',
     'GET /api/workspace/events',
     'GET /api/plugins/events',
     'GET /api/plugins/events/snapshot',
     'GET /api/plugins/events/stats',
     'POST /api/plugins/events/purge',
   ]),
-  ...blocked(R_TOOL_TOKENS, [
+  // S59: exact connector tool endpoints require a bearer account grant at the gate.
+  ...group('actor-scoped', 'server-minted account connector grant; bearer-only at the gate', [
     'GET /api/tools/connectors/list',
     'POST /api/tools/connectors/execute',
+  ]),
+  ...group('actor-scoped', 'server-minted account MCP grant; bearer-only at the gate', [
+    'GET /api/tools/mcp/list', 'POST /api/tools/mcp/execute',
+  ]),
+  ...blocked(R_TOOL_TOKENS, [
     'POST /api/tools/library/search',
     'POST /api/tools/library/apply',
     'POST /api/tools/live-artifacts/create',
@@ -424,16 +636,25 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'POST /api/tools/media/hyperframes/scaffold',
     'POST /api/tools/media/generate',
   ]),
-  ...blocked('live artifacts are refreshed by agents/connectors and are not actor-scoped', [
-    'GET /api/live-artifacts',
-    'OPTIONS /api/live-artifacts/:artifactId/preview',
-    'GET /api/live-artifacts/:artifactId/preview',
-    'GET /api/live-artifacts/:artifactId',
-    'GET /api/live-artifacts/:artifactId/refreshes',
-    'PATCH /api/live-artifacts/:artifactId',
-    'DELETE /api/live-artifacts/:artifactId',
-    'OPTIONS /api/live-artifacts/:artifactId/refresh',
-    'POST /api/live-artifacts/:artifactId/refresh',
+  ...group('preview-capability', 'cookie-free Live Artifact preview on the isolated hostname; short-lived session/account/project authority',
+    ['GET /api/multiuser/live-artifact-preview/:scope']),
+  // Session routes use the Studio database; host tool-token endpoints remain closed.
+  ...[
+    ['GET', ''], ['POST', ''], ['GET', '/:artifactId'], ['PATCH', '/:artifactId'], ['DELETE', '/:artifactId'],
+    ['GET', '/:artifactId/preview'], ['GET', '/:artifactId/refreshes'], ['POST', '/:artifactId/refresh'],
+  ].flatMap(([method, suffix]) => {
+    const policy = method === 'POST' && !suffix || method === 'PATCH'
+      ? { bodyPolicy: 'studio-live-artifact' as const, maxBodyBytes: 512 * 1024 }
+      : method === 'POST' ? { bodyPolicy: 'empty' as const } : {};
+    return [
+      ...group('actor-scoped', 'session-bound Live Artifact alias; handler checks current project membership and role',
+        [`${method} /api/live-artifacts${suffix}`], { ...policy, rewriteTo: `/api/multiuser/live-artifacts${suffix}` }),
+      ...group('actor-scoped', 'database-owned Live Artifact; handler requires active owner/member and edit role for mutation',
+        [`${method} /api/multiuser/live-artifacts${suffix}`], policy),
+    ];
+  }),
+  ...blocked('Live Artifact preflight is not exposed cross-origin', [
+    'OPTIONS /api/live-artifacts/:artifactId/preview', 'OPTIONS /api/live-artifacts/:artifactId/refresh',
   ]),
 
   // Host / credentials / providers -------------------------------------------------
@@ -441,28 +662,6 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'POST /api/agents/:agentId/oauth-launch',
     'POST /api/agents/:agentId/companion/install',
     'GET /api/agents',
-    'GET /api/connectors',
-    'GET /api/connectors/status',
-    'GET /api/connectors/discovery',
-    'GET /api/connectors/logos/:slug',
-    'GET /api/connectors/composio/config',
-    'PUT /api/connectors/composio/config',
-    'GET /api/connectors/:connectorId',
-    'POST /api/connectors/auth-configs/prepare',
-    'POST /api/connectors/:connectorId/connect',
-    'GET /api/connectors/oauth/callback/:connectorId',
-    'POST /api/connectors/:connectorId/authorization/cancel',
-    'DELETE /api/connectors/:connectorId/connection',
-    'GET /api/mcp/install-info',
-    'GET /api/mcp/install/codex/status',
-    'POST /api/mcp/install/codex',
-    'DELETE /api/mcp/install/codex',
-    'GET /api/mcp/servers',
-    'PUT /api/mcp/servers',
-    'POST /api/mcp/oauth/start',
-    'GET /api/mcp/oauth/callback',
-    'GET /api/mcp/oauth/status',
-    'POST /api/mcp/oauth/disconnect',
     'POST /api/xai/oauth/start',
     'POST /api/xai/oauth/complete',
     'GET /api/xai/auth/status',
@@ -515,11 +714,14 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'PUT /api/project-locations',
     'POST /api/project-locations/scan',
     'POST /api/import/folder',
-    'POST /api/import/claude-design',
-    'GET /api/codex-pets',
     'POST /api/codex-pets/sync',
-    'GET /api/codex-pets/:id/spritesheet',
   ]),
+  // In-page pet (#67): bundled pets only; host CODEX_HOME pets and the sync that writes there stay host-owned.
+  ...['GET /api/codex-pets', 'GET /api/codex-pets/:id/spritesheet'].flatMap((key) => {
+    const alias = key.replace('/api/codex-pets', '/api/multiuser/catalog/codex-pets');
+    return [...group('actor-scoped', 'bundled in-page pet catalog; no host CODEX_HOME pets', [key], { rewriteTo: alias.slice(alias.indexOf(' ') + 1) }),
+      ...group('actor-scoped', 'bundled pet catalog alias', [alias])];
+  }),
   ...blocked(R_HOST_OPS, [
     'GET /api/daemon/status',
     'GET /api/daemon/db',
@@ -534,38 +736,18 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'GET /api/preview/isolation',
   ]),
   ...blocked('daemon-global app configuration (agent CLI env, providers, labs); admin surface is #10', [
-    'GET /api/app-config',
-    'PUT /api/app-config',
     'GET /api/strategies/od-next/rollout',
   ]),
+  ...refused('connectors', R_CONNECTORS_NOT_IN_RUNS, [
+    'POST /api/memory/connectors/suggest',
+    'POST /api/memory/connectors/extract',
+  ]),
   ...blocked(R_GLOBAL_STATE, [
-    'POST /api/active',
-    'GET /api/active',
     'GET /api/analytics/config',
     'POST /api/analytics/mcp/context',
     'POST /api/analytics/mcp/event',
     'POST /api/attribution/claim',
     'POST /api/attribution/bridge-url',
-    'GET /api/memory',
-    'GET /api/memory/tree',
-    'PATCH /api/memory/tree/:id',
-    'PUT /api/memory/index',
-    'PATCH /api/memory/config',
-    'GET /api/memory/extractions',
-    'DELETE /api/memory/extractions',
-    'DELETE /api/memory/extractions/:id',
-    'GET /api/memory/verifications',
-    'DELETE /api/memory/verifications',
-    'DELETE /api/memory/verifications/:id',
-    'POST /api/memory/rules/suggest',
-    'POST /api/memory/connectors/suggest',
-    'POST /api/memory/connectors/extract',
-    'POST /api/memory/extract',
-    'GET /api/memory/system-prompt',
-    'POST /api/memory',
-    'GET /api/memory/:id',
-    'PUT /api/memory/:id',
-    'DELETE /api/memory/:id',
     'POST /api/upload',
     'POST /api/artifacts/save',
     'POST /api/artifacts/lint',
@@ -602,84 +784,220 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
     'GET /api/brands/:id/logo',
   ]),
 
+  // Account research (#63): the actor's own Tavily key only; the host research key never answers a Web account.
+  ...group('actor-scoped', 'research search on the account\'s own encrypted Tavily key at a fixed provider endpoint; usage recorded against the account',
+    ['POST /api/research/search'], { bodyPolicy: 'research-search', maxBodyBytes: 8 * 1024, rewriteTo: '/api/multiuser/research/search' }),
+  ...group('actor-scoped', 'account research alias; same cookie authority and closed fields', ['POST /api/multiuser/research/search'],
+    { bodyPolicy: 'research-search', maxBodyBytes: 8 * 1024 }),
+  // Account-private provider keys (#62/#63): write-only, encrypted per account; reads show only last4.
+  ...group('actor-scoped', 'the actor\'s own provider key summaries; never the key, never another account', ['GET /api/multiuser/settings/provider-keys']),
+  ...group('actor-scoped', 'write-only account provider key sealed with the deployment master key; revision-checked; no admin read path',
+    ['PUT /api/multiuser/settings/provider-keys/:provider'], { bodyPolicy: 'provider-key', maxBodyBytes: 8 * 1024 }),
+  // Account connectors control plane (#62, S58; owner decision 2026-10-10). The
+  // standard routes are reviewed aliases; the host connector service, its
+  // credential file and its fixed local Composio user never run for a cookie actor.
+  ...group('actor-scoped', 'redacted company Composio key state (tail for administrators only)',
+    ['GET /api/connectors/composio/config'], { rewriteTo: '/api/multiuser/connectors/company-key' }),
+  ...group('actor-scoped', 'redacted company Composio key state (tail for administrators only)', ['GET /api/multiuser/connectors/company-key']),
+  ...group('admin-only', 'write-only encrypted company Composio key; set, rotate or clear with a revision',
+    ['PUT /api/connectors/composio/config'], { bodyPolicy: 'composio-config', maxBodyBytes: 8 * 1024, rewriteTo: '/api/multiuser/connectors/company-key' }),
+  ...group('admin-only', 'write-only encrypted company Composio key; set, rotate or clear with a revision',
+    ['PUT /api/multiuser/connectors/company-key'], { bodyPolicy: 'composio-config', maxBodyBytes: 8 * 1024 }),
+  ...([
+    ['GET', '', {}], ['GET', '/status', {}], ['GET', '/discovery', {}], ['GET', '/:connectorId', {}],
+    ['POST', '/auth-configs/prepare', { bodyPolicy: 'connector-prepare' as const, maxBodyBytes: 4 * 1024 }],
+    ['POST', '/:connectorId/connect', { bodyPolicy: 'empty' as const, maxBodyBytes: 1024 }],
+    ['POST', '/:connectorId/authorization/cancel', { bodyPolicy: 'empty' as const, maxBodyBytes: 1024 }],
+    ['DELETE', '/:connectorId/connection', {}],
+  ] as const).flatMap(([method, suffix, policy]) => [
+    ...group('actor-scoped', 'the actor\'s own connections only (its server-derived Composio entity); no admin bypass',
+      [`${method} /api/connectors${suffix}`], { ...policy, rewriteTo: `/api/multiuser/connectors${suffix}` }),
+    ...group('actor-scoped', 'the actor\'s own connections only (its server-derived Composio entity); no admin bypass',
+      [`${method} /api/multiuser/connectors${suffix}`], policy),
+  ]),
+  // The OAuth return carries no session cookie (SameSite=Strict on a cross-site
+  // navigation): identity comes from the single-use server-side state, which
+  // re-checks the bound account, session, pilot revision and key revision.
+  ...group('auth', 'OAuth callback: no session at the gate; the handler binds identity from a single-use state and rechecks it',
+    ['GET /api/connectors/oauth/callback/:connectorId'], { rewriteTo: '/api/multiuser/connectors/oauth/callback/:connectorId' }),
+  ...group('auth', 'OAuth callback: no session at the gate; the handler binds identity from a single-use state and rechecks it',
+    ['GET /api/multiuser/connectors/oauth/callback/:connectorId']),
+  ...refused('connectors', 'connector logos are fetched from a third-party host; Studio shows initials instead', ['GET /api/connectors/logos/:slug']),
+  // Account remote MCP servers (#62, S60; owner decision 2A). Each account keeps its
+  // own remote (HTTP/SSE) servers; the host mcp-config.json, host token store and
+  // Codex install never run for a cookie actor. stdio is refused for everyone.
+  ...refused('mcp-stdio', STUDIO_MCP_INSTALL_UNAVAILABLE_REASON, [
+    'GET /api/mcp/install-info', 'GET /api/mcp/install/codex/status', 'POST /api/mcp/install/codex', 'DELETE /api/mcp/install/codex',
+  ]),
+  ...group('actor-scoped', R_MCP_OWN, ['GET /api/mcp/servers'], { rewriteTo: '/api/multiuser/mcp/servers' }),
+  ...group('actor-scoped', R_MCP_OWN, ['GET /api/multiuser/mcp/servers']),
+  ...group('actor-scoped', 'import of the desktop body: upserts the actor\'s remote servers; any stdio entry is refused',
+    ['PUT /api/mcp/servers'], { bodyPolicy: 'studio-mcp-import', maxBodyBytes: 256 * 1024, rewriteTo: '/api/multiuser/mcp/servers' }),
+  ...group('actor-scoped', 'import of the desktop body: upserts the actor\'s remote servers; any stdio entry is refused',
+    ['PUT /api/multiuser/mcp/servers'], { bodyPolicy: 'studio-mcp-import', maxBodyBytes: 256 * 1024 }),
+  ...group('actor-scoped', R_MCP_OWN, ['POST /api/multiuser/mcp/servers', 'PATCH /api/multiuser/mcp/servers/:serverId'],
+    { bodyPolicy: 'studio-mcp-server', maxBodyBytes: 128 * 1024 }),
+  ...group('actor-scoped', R_MCP_OWN, ['DELETE /api/multiuser/mcp/servers/:serverId']),
+  ...group('actor-scoped', 'connection test of the actor\'s own server through the SSRF-guarded outbound fetch',
+    ['POST /api/multiuser/mcp/servers/:serverId/test'], { bodyPolicy: 'empty', maxBodyBytes: 1024 }),
+  ...(['start', 'disconnect'] as const).flatMap((action) => [
+    ...group('actor-scoped', R_MCP_OAUTH, [`POST /api/mcp/oauth/${action}`], { bodyPolicy: 'studio-mcp-oauth', maxBodyBytes: 1024, rewriteTo: `/api/multiuser/mcp/oauth/${action}` }),
+    ...group('actor-scoped', R_MCP_OAUTH, [`POST /api/multiuser/mcp/oauth/${action}`], { bodyPolicy: 'studio-mcp-oauth', maxBodyBytes: 1024 }),
+  ]),
+  ...group('actor-scoped', R_MCP_OAUTH, ['POST /api/multiuser/mcp/oauth/refresh', 'POST /api/multiuser/mcp/oauth/cancel'],
+    { bodyPolicy: 'studio-mcp-oauth', maxBodyBytes: 1024 }),
+  ...group('actor-scoped', R_MCP_OAUTH, ['GET /api/mcp/oauth/status'], { rewriteTo: '/api/multiuser/mcp/oauth/status' }),
+  ...group('actor-scoped', R_MCP_OAUTH, ['GET /api/multiuser/mcp/oauth/status']),
+  // The OAuth return carries no session cookie: identity comes from the single-use server-side state.
+  ...group('auth', 'MCP OAuth callback: no session at the gate; the handler binds identity from a single-use state and rechecks it',
+    ['GET /api/mcp/oauth/callback'], { rewriteTo: '/api/multiuser/mcp/oauth/callback' }),
+  ...group('auth', 'MCP OAuth callback: no session at the gate; the handler binds identity from a single-use state and rechecks it',
+    ['GET /api/multiuser/mcp/oauth/callback']),
+  // Actor preferences and manual memory (#62); host registrars never run.
+  ...[
+    ['GET /api/app-config', undefined],
+    ['PUT /api/app-config', 'studio-settings'],
+    ['GET /api/memory', undefined],
+    ['GET /api/memory/tree', undefined],
+    ['PATCH /api/memory/tree/:id', 'studio-memory-entry'],
+    ['PUT /api/memory/index', 'studio-memory-index'],
+    ['PATCH /api/memory/config', 'studio-memory-config'],
+    ['GET /api/memory/events', undefined],
+    ['GET /api/memory/system-prompt', undefined],
+    // Automatic memory (#62): the account's own extraction/verification history,
+    // heuristic-only rule proposals and imperative extract; LLM extraction runs
+    // after a turn on that turn's own source, never from a request.
+    ['GET /api/memory/extractions', undefined],
+    ['DELETE /api/memory/extractions', 'empty'],
+    ['DELETE /api/memory/extractions/:id', 'empty'],
+    ['GET /api/memory/verifications', undefined],
+    ['DELETE /api/memory/verifications', 'empty'],
+    ['DELETE /api/memory/verifications/:id', 'empty'],
+    ['POST /api/memory/rules/suggest', 'studio-memory-rules-suggest'],
+    ['POST /api/memory/extract', 'studio-memory-extract'],
+    ['POST /api/memory', 'studio-memory-entry'],
+    ['GET /api/memory/:id', undefined],
+    ['PUT /api/memory/:id', 'studio-memory-entry'],
+    ['DELETE /api/memory/:id', 'empty'],
+  ].flatMap(([key, policy]) => {
+    const alias = key!.replace('/api/app-config', '/api/multiuser/settings/config').replace('/api/memory', '/api/multiuser/settings/memory');
+    const bodyPolicy = policy as MultiUserBodyPolicy | undefined;
+    const extras = bodyPolicy ? { bodyPolicy } : {};
+    return [...group('actor-scoped', 'account-owned preferences and memory (manual and automatic on the turn\'s own source); private stream; no host settings or provider keys', [key!],
+      { ...extras, rewriteTo: alias.slice(alias.indexOf(' ') + 1) }),
+      ...group('actor-scoped', 'actor settings alias; identical cookie authority and closed fields', [alias], extras)];
+  }),
+
   // Shared catalogs / plugins ------------------------------------------------------
+  ...['GET /api/skills', 'GET /api/skills/:id', 'GET /api/skills/:id/files',
+    'POST /api/skills/import', 'PUT /api/skills/:id', 'DELETE /api/skills/:id'].flatMap((key) => {
+    const alias = key.replace('/api/skills', '/api/multiuser/catalog/skills');
+    const rewriteTo = alias.slice(alias.indexOf(' ') + 1);
+    const bodyPolicy = key.startsWith('POST ') || key.startsWith('PUT ') ? 'skill-write' as const
+      : key.startsWith('DELETE ') ? 'empty' as const : undefined;
+    const extras = bodyPolicy ? { bodyPolicy } : {};
+    return [...group('actor-scoped', 'bundled reads and account-owned text skills; immutable revisions; no host registry access', [key], { ...extras, rewriteTo }),
+      ...group('actor-scoped', 'actor catalog alias; same cookie authority and bounded skill body', [alias], extras)];
+  }),
+  // Team catalogs (#61/#65): the owner grants `use` of a private skill or design
+  // document to another active account; grantees read members and may leave.
+  // Missing, foreign and insufficient are one 404 in the handler.
+  ...['skills', 'design-systems'].flatMap((segment) => {
+    const base = `/api/multiuser/catalog/${segment}/:id`;
+    return [
+      ...group('actor-scoped', 'members of a private catalog item for its owner and grantees; foreign and missing are one 404', [`GET ${base}/access`]),
+      ...group('actor-scoped', 'a grantee removes its own use grant; the owner cannot leave', [`DELETE ${base}/access`], { bodyPolicy: 'empty' }),
+      ...group('actor-scoped', 'the owner grants use to an active account of this deployment, resolved server-side by username',
+        [`PUT ${base}/shares`], { bodyPolicy: 'catalog-share', maxBodyBytes: 4 * 1024 }),
+      ...group('actor-scoped', 'the owner revokes a use grant; admitted runs keep their captured version', [`DELETE ${base}/shares/:accountId`], { bodyPolicy: 'empty' }),
+    ];
+  }),
+  ...group('actor-scoped', 'bounded browser skill folder upload to an account-private immutable package; relative files only', ['POST /api/skills/import-files'],
+    { bodyPolicy: 'multipart', maxBodyBytes: 8 * 1024 * 1024 + 65536 * 4 }),
+  ...group('actor-scoped', 'skill folder upload alias; no host paths or registry access', ['POST /api/multiuser/catalog/skills/import-files'],
+    { bodyPolicy: 'multipart', maxBodyBytes: 8 * 1024 * 1024 + 65536 * 4 }),
+  ...['GET /api/craft', 'GET /api/craft/:id', 'GET /api/design-templates', 'GET /api/design-templates/:id', 'GET /api/prompt-templates', 'GET /api/prompt-templates/:surface/:id', 'GET /api/design-systems', 'POST /api/design-systems', 'PATCH /api/design-systems/:id', 'DELETE /api/design-systems/:id', 'GET /api/design-systems/:id', 'GET /api/design-systems/:id/revisions', 'GET /api/design-systems/:id/files', 'GET /api/design-systems/:id/file', 'GET /api/design-systems/:id/preview', 'GET /api/design-systems/:id/showcase'].flatMap((key) => {
+    const alias = key.replace('/api/', '/api/multiuser/catalog/');
+    const bodyPolicy = key.startsWith('POST ') || key.startsWith('PATCH ') ? 'design-system-document' as const
+      : key.startsWith('DELETE ') ? 'empty' as const : undefined;
+    const extras = { ...(bodyPolicy ? { bodyPolicy, maxBodyBytes: 300_000 } : {}),
+      ...(/\/(?:preview|showcase)$/.test(key) ? { untrustedContent: true } : {}) };
+    return [...group('actor-scoped', 'bundled catalog reads and account-owned versioned design documents; no host registry access', [key],
+      { ...extras, rewriteTo: alias.slice(alias.indexOf(' ') + 1) }),
+      ...group('actor-scoped', 'actor design catalog alias; identical cookie authority and closed fields', [alias], extras)];
+  }),
   ...blocked(R_SHARED_CATALOG, [
     'GET /api/asset-cache',
     'GET /api/atoms',
     'GET /api/atoms/:id',
-    'GET /api/craft',
-    'GET /api/craft/:id',
-    'GET /api/design-templates',
-    'GET /api/design-templates/:id',
-    'GET /api/prompt-templates',
-    'GET /api/prompt-templates/:surface/:id',
-    'GET /api/skills',
-    'GET /api/skills/:id',
-    'POST /api/skills/import',
-    'PUT /api/skills/:id',
-    'GET /api/skills/:id/files',
     'GET /api/skills/:id/example',
     'GET /api/skills/:id/assets/*splat',
     'POST /api/skills/install',
-    'DELETE /api/skills/:id',
-    'GET /api/templates',
-    'GET /api/templates/:id',
-    'POST /api/templates',
-    'DELETE /api/templates/:id',
-    'GET /api/design-systems',
     'POST /api/design-systems/install',
     'POST /api/design-systems/import/local',
     'POST /api/design-systems/import/github',
     'POST /api/design-systems/import/shadcn',
-    'DELETE /api/design-systems/:id',
-    'POST /api/design-systems',
     'POST /api/design-systems/generation-jobs',
     'GET /api/design-systems/generation-jobs/:jobId',
     'POST /api/design-systems/:id/revision-jobs',
     'POST /api/design-systems/:id/token-contract/rebuild-jobs',
-    'GET /api/design-systems/:id/revisions',
     'PATCH /api/design-systems/:id/revisions/:revisionId',
-    'GET /api/design-systems/:id',
-    'GET /api/design-systems/:id/preview',
-    'GET /api/design-systems/:id/showcase',
     'GET /api/design-systems/:id/static',
     'POST /api/design-systems/:id/workspace',
-    'GET /api/design-systems/:id/files',
-    'GET /api/design-systems/:id/file',
     'GET /api/design-systems/:id/archive',
-    'PATCH /api/design-systems/:id',
     'POST /api/design-systems/:id/sync-assets',
   ]),
-  ...blocked(R_PLUGINS, [
-    'GET /api/plugins',
-    'GET /api/plugins/stats',
-    'GET /api/plugins/:id',
+  // Bundled plugin catalog and apply (#61, S41). Every account reads the same
+  // bundled catalog with computed Web availability; apply is owner-only onto
+  // the actor's own project and refuses unavailable plugins with typed reasons.
+  ...([
+    ['GET /api/plugins', 'the bundled catalog with Web availability; host installs and paths are never listed'],
+    ['GET /api/plugins/:id', 'one bundled plugin with Web availability; non-bundled ids are missing'],
+    // The gallery's availability probe is a HEAD; `collectCandidates` reads
+    // HEAD as GET, so these two entries classify it. A separate HEAD entry
+    // would be a classification with no registration (Express answers HEAD
+    // from the GET handler), which startup refuses.
+    ['GET /api/plugins/:id/preview', 'captured bundled HTML source or a session-bound isolated preview; no host asset proxy'],
+    ['GET /api/plugins/:id/example/:name', 'one captured bundled HTML example or a session-bound isolated preview'],
+    ['POST /api/plugins/:id/apply', 'owner-only apply onto the actor\'s own project; unavailable plugins refused with typed reasons'],
+    ['GET /api/applied-plugins/:snapshotId', 'a Studio apply snapshot for a member of its project; foreign and missing are one 404'],
+    ['GET /api/marketplaces', 'read-only marketplace listings without host paths; fetch and changes stay refused'],
+    ['GET /api/marketplaces/:id', 'one read-only marketplace listing without host paths'],
+    ['GET /api/marketplaces/:id/plugins', 'read-only marketplace entries without host paths'],
+  ] as const).flatMap(([key, reason]) => {
+    const alias = key.replace('/api/', '/api/multiuser/catalog/');
+    const extras = key.startsWith('POST ') ? { bodyPolicy: 'studio-plugin-apply' as const, maxBodyBytes: 192 * 1024 } : {};
+    return [...group('actor-scoped', reason, [key], { ...extras, rewriteTo: alias.slice(alias.indexOf(' ') + 1) }),
+      ...group('actor-scoped', `${reason} (Studio alias)`, [alias], extras)];
+  }),
+  ...refused('plugin-install', 'installing, upgrading or removing host plugins changes the catalog every account shares; Web accounts apply bundled plugins only', [
     'POST /api/plugins/upload-zip',
     'POST /api/plugins/upload-folder',
     'POST /api/plugins/install',
     'POST /api/plugins/:id/uninstall',
     'POST /api/plugins/:id/upgrade',
     'POST /api/plugins/:id/apply-local',
-    'POST /api/plugins/:id/apply',
+  ]),
+  ...refused('plugin-doctor', 'plugin doctor inspects host plugin folders and connectors', ['POST /api/plugins/:id/doctor']),
+  ...refused('plugin-trust', 'plugin trust grants host capabilities for every account', ['POST /api/plugins/:id/trust']),
+  ...refused('plugin-scripts', 'publishing runs untrusted plugin scripts and host GitHub credentials', ['POST /api/plugins/:id/share-project']),
+  ...refused('plugin-marketplace', 'adding, refreshing, trusting or removing marketplaces fetches third-party sources for every account', [
+    'POST /api/marketplaces',
+    'DELETE /api/marketplaces/:id',
+    'POST /api/marketplaces/:id/refresh',
+    'POST /api/marketplaces/:id/trust',
+  ]),
+  ...blocked(R_PLUGINS, [
+    'GET /api/plugins/stats',
     'POST /api/plugins/:id/duplicate-project',
-    'POST /api/plugins/:id/share-project',
-    'POST /api/plugins/:id/doctor',
-    'POST /api/plugins/:id/trust',
-    'GET /api/plugins/:id/preview',
-    'GET /api/plugins/:id/example/:name',
     'GET /api/plugins/:id/asset/*splat',
-    'GET /api/applied-plugins/:snapshotId',
     'GET /api/applied-plugins/:snapshotId/canon',
     'GET /api/applied-plugins',
     'POST /api/applied-plugins/export',
     'POST /api/applied-plugins/prune',
-    'GET /api/marketplaces',
-    'POST /api/marketplaces',
-    'GET /api/marketplaces/:id',
-    'DELETE /api/marketplaces/:id',
-    'POST /api/marketplaces/:id/refresh',
-    'POST /api/marketplaces/:id/trust',
-    'GET /api/marketplaces/:id/plugins',
+  ]),
+  ...group('preview-capability', 'cookie-free captured bundled plugin assets; issuing session/account and catalog revision rechecked on every read', [
+    'GET /api/multiuser/plugin-preview/:scope/*path',
   ]),
   ...blocked('external/marketing fetches; not needed by the minimum set', [
     'GET /api/community/discord',
@@ -722,6 +1040,99 @@ export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassificati
   ]),
 ];
 
+
+const PROJECT_FILE_RE = String.raw`/^\/api\/projects\/([^/]+)`;
+/**
+ * The least share role (#65) that reaches each owner-scoped project route.
+ * Everything not listed stays owner-only: deleting the project or a
+ * conversation, project settings and instructions (PATCH), duplicating, tab
+ * layout, routines and grant management.
+ */
+export const MULTIUSER_SHARED_PROJECT_ROLES: Readonly<Record<string, ProjectShareRole>> = {
+  ...Object.fromEntries([
+    'GET /api/projects/:id',
+    'GET /api/projects/:id/conversations',
+    'GET /api/projects/:id/conversations/:cid/messages',
+    'GET /api/projects/:id/conversations/:cid/messages/:mid/artifacts',
+    'GET /api/projects/:id/files',
+    'GET /api/projects/:id/file-content/*path',
+    'GET /api/projects/:id/tabs',
+    'GET /api/projects/:id/events',
+    'GET /api/projects/:id/search',
+    'GET /api/projects/:id/folders',
+    'GET /api/projects/:id/preview-url',
+    'GET /api/multiuser/projects/:id/preview-url',
+    'POST /api/multiuser/projects/:id/preview/:scope/renew',
+    'GET /api/multiuser/projects/:id/conversations/:cid/design',
+    'GET /api/multiuser/projects/:id/design-selections',
+    'GET /api/projects/:id/chat-artifact-snapshots/:sid',
+    'GET /api/projects/:id/chat-artifact-snapshots/:sid/content',
+    'GET /api/projects/:id/chat-artifact-snapshots/:sid/thumbnail',
+    'GET /api/projects/:id/workspace-artifacts/:aid',
+    'GET /api/projects/:id/archive',
+    'GET /api/multiuser/projects/:id/archive',
+    'POST /api/projects/:id/archive/batch',
+    'POST /api/multiuser/projects/:id/archive/batch',
+    ...['html', 'pptx', 'pdf-image', 'image'].flatMap((format) => [
+      `POST /api/projects/:id/export/${format}`, `POST /api/multiuser/projects/:id/export/${format}`]),
+    'GET /api/projects/:id/conversations/:cid/comments',
+    'GET /api/multiuser/projects/:id/conversations/:cid/comments',
+    ...['', '/heartbeat', '/leave'].flatMap((suffix) => [
+      `${suffix ? 'POST' : 'GET'} /api/projects/:id/presence${suffix}`, `${suffix ? 'POST' : 'GET'} /api/multiuser/projects/:id/presence${suffix}`]),
+    'GET /api/multiuser/projects/:id/access',
+    'DELETE /api/multiuser/projects/:id/access',
+    String.raw`GET ${PROJECT_FILE_RE}\/files\/(.+)$/u`,
+    String.raw`GET ${PROJECT_FILE_RE}\/raw\/(.+)$/u`,
+    String.raw`GET ${PROJECT_FILE_RE}\/files\/(.+)\/versions\/([^/]+)$/u`,
+    String.raw`GET ${PROJECT_FILE_RE}\/files\/(.+)\/versions$/u`,
+    String.raw`GET ${PROJECT_FILE_RE}\/text-preview\/(.+)$/u`,
+  ].map((key) => [key, 'view' as const])),
+  ...Object.fromEntries([
+    ...['', '/:commentId', '/:commentId/anchor', '/:commentId/reorder'].flatMap((suffix) => [
+      ...(suffix ? ['PATCH'] : ['POST']).flatMap((method) => [
+        `${method} /api/projects/:id/conversations/:cid/comments${suffix}`,
+        `${method} /api/multiuser/projects/:id/conversations/:cid/comments${suffix}`]),
+    ]),
+    'DELETE /api/projects/:id/conversations/:cid/comments/:commentId',
+    'DELETE /api/multiuser/projects/:id/conversations/:cid/comments/:commentId',
+  ].map((key) => [key, 'comment' as const])),
+  ...Object.fromEntries([
+    'POST /api/projects/:id/conversations',
+    'POST /api/multiuser/projects/:id/conversations',
+    'PATCH /api/projects/:id/conversations/:cid',
+    'PUT /api/projects/:id/conversations/:cid/messages/:mid',
+    'POST /api/projects/:id/folders',
+    'DELETE /api/projects/:id/folders',
+    'POST /api/projects/:id/files',
+    'POST /api/projects/:id/files/rename',
+    'DELETE /api/projects/:id/files/:name',
+    'POST /api/projects/:id/upload',
+    String.raw`DELETE ${PROJECT_FILE_RE}\/raw\/(.+)$/u`,
+    String.raw`POST ${PROJECT_FILE_RE}\/files\/(.+)\/versions$/u`,
+    String.raw`POST ${PROJECT_FILE_RE}\/files\/(.+)\/versions\/([^/]+)\/restore$/u`,
+  ].map((key) => [key, 'edit' as const])),
+};
+
+/**
+ * Transcript writes (#65): only the conversation's author appends messages or
+ * renames it, so one account's agent history never carries another's turns.
+ * Run admission applies the same rule in the run service.
+ */
+export const MULTIUSER_CONVERSATION_AUTHOR_PARAMS: Readonly<Record<string, string>> = {
+  'PATCH /api/projects/:id/conversations/:cid': 'cid',
+  'PUT /api/projects/:id/conversations/:cid/messages/:mid': 'cid',
+};
+
+export const MULTIUSER_ROUTE_CLASSIFICATION: readonly MultiUserRouteClassification[] = (() => {
+  const keys = new Set(CLASSIFICATION_ENTRIES.filter((entry) => entry.routeClass === 'owner-scoped-project').map((entry) => entry.key));
+  const unknown = [...Object.keys(MULTIUSER_SHARED_PROJECT_ROLES), ...Object.keys(MULTIUSER_CONVERSATION_AUTHOR_PARAMS)].filter((key) => !keys.has(key));
+  if (unknown.length) throw new Error(`share roles name routes that are not owner-scoped projects: ${unknown.join(', ')}`);
+  return CLASSIFICATION_ENTRIES.map((entry) => {
+    const sharedRole = MULTIUSER_SHARED_PROJECT_ROLES[entry.key];
+    const conversationParam = MULTIUSER_CONVERSATION_AUTHOR_PARAMS[entry.key];
+    return sharedRole || conversationParam ? { ...entry, ...(sharedRole ? { sharedRole } : {}), ...(conversationParam ? { conversationParam } : {}) } : entry;
+  });
+})();
 const CLASSIFICATION_BY_KEY: ReadonlyMap<string, MultiUserRouteClassification> = new Map(
   MULTIUSER_ROUTE_CLASSIFICATION.map((entry) => [entry.key, entry]),
 );
@@ -750,7 +1161,14 @@ export function findUnclassifiedRegistrations(registrations: readonly RouteRegis
 /** Classified keys that the live inventory does not register (sorted). */
 export function findStaleClassifications(registrations: readonly RouteRegistrationLike[]): string[] {
   const registered = new Set(registrations.map((r) => routeKey(r.method, r.path)));
-  return MULTIUSER_ROUTE_CLASSIFICATION.filter((entry) => !registered.has(entry.key)).map((entry) => entry.key).sort();
+  // A reviewed alias never reaches a handler at the path the client called:
+  // the gate rewrites `req.url` to `rewriteTo` before Express routes it. What
+  // has to exist is therefore the destination, which is also the only handler
+  // a stale alias could expose.
+  return MULTIUSER_ROUTE_CLASSIFICATION
+    .filter((entry) => !registered.has(entry.rewriteTo ? routeKey(entry.method, entry.rewriteTo) : entry.key))
+    .map((entry) => entry.key)
+    .sort();
 }
 
 /**
@@ -769,10 +1187,11 @@ export function findStaleNonBlockedClassifications(registrations: readonly Route
 
 // ---- matcher ----------------------------------------------------------------
 
-type Segment =
+export type RouteSegment =
   | { kind: 'literal'; value: string }
   | { kind: 'param'; name: string }
   | { kind: 'splat'; name: string };
+type Segment = RouteSegment;
 
 const PARAM_NAME_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const UNSUPPORTED_PATTERN_CHARS = /[{}()?+!\\[\]\s^$|]/;
@@ -862,37 +1281,171 @@ const COMPILED: readonly CompiledEntry[] = MULTIUSER_ROUTE_CLASSIFICATION
   .filter((entry) => !entry.nonStringPath && !entry.catchAll && entry.routeClass !== 'middleware')
   .map((entry) => (entry.method === 'USE'
     ? { entry, segments: null, mountPrefix: entry.path.toLowerCase() }
-    : { entry, segments: compileRoutePattern(entry.path), mountPrefix: null }));
+    : { entry, segments: entry.pattern ? null : compileRoutePattern(entry.path), mountPrefix: null }));
+
+/** Express decodes each capture; an undecodable one never matches. */
+function matchPattern(entry: MultiUserRouteClassification, rawPath: string): Record<string, string> | null {
+  const found = entry.pattern!.exec(rawPath);
+  if (!found) return null;
+  const params: Record<string, string> = {};
+  for (const [index, name] of (entry.captures ?? []).entries()) {
+    const decoded = decodeSegment(found[index + 1] ?? '');
+    if (decoded === null || decoded.length === 0) return null;
+    params[name] = decoded;
+  }
+  return params;
+}
 
 export interface MultiUserRouteMatch {
   entry: MultiUserRouteClassification;
   params: Record<string, string>;
 }
 
+interface CandidateMatch extends MultiUserRouteMatch {
+  /** Segment pattern of a string route; null for reviewed regex routes and static mounts. */
+  segments: Segment[] | null;
+}
+
+const SEGMENT_RANK = { literal: 2, param: 1, splat: 0 } as const;
+
+/** Kind of the pattern segment that consumes request part `index` (a final splat consumes the rest). */
+function segmentRankAt(segments: readonly Segment[], index: number): number {
+  const segment = segments[Math.min(index, segments.length - 1)];
+  if (!segment || (index >= segments.length && segment.kind !== 'splat')) return -1;
+  return SEGMENT_RANK[segment.kind];
+}
+
 /**
- * Every classified route that could answer `method rawPath`. `rawPath` is the
- * undecoded request pathname (Express `req.path` at the app root). Regex
- * routes, the SPA catch-all and middleware never match, so requests only they
- * would answer are unclassified and fail closed.
+ * Orders two string patterns that both match a request of `length` parts:
+ * positive when `a` is more specific. Compared left to right, the first part
+ * consumed by different segment kinds decides: a literal outranks a parameter,
+ * which outranks a splat.
  */
-export function matchMultiUserRoute(method: string, rawPath: string): MultiUserRouteMatch[] {
+export function compareRouteSpecificity(a: readonly Segment[], b: readonly Segment[], length: number): number {
+  for (let index = 0; index < length; index++) {
+    const difference = segmentRankAt(a, index) - segmentRankAt(b, index);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+/**
+ * Route precedence (#81): the gate authorizes, polices the body of, and
+ * rewrites to the route that actually answers. When several string routes
+ * match one request, only the most specific survive, whatever their
+ * registration order: `PUT /api/memory/index` is answered by its static route
+ * with its own body policy, never by `PUT /api/memory/:id`. Reviewed regex
+ * routes and static mounts have no segment structure and are never pruned;
+ * every survivor must still agree on class and alias, or the gate fails closed.
+ * Startup ({@link findPrecedenceOrderViolations}) refuses an inventory whose
+ * Express order would let a less specific handler answer an allowed route first.
+ */
+function resolveRoutePrecedence(candidates: readonly CandidateMatch[], length: number): MultiUserRouteMatch[] {
+  const ranked = candidates.filter((candidate) => candidate.segments !== null);
+  const best = ranked.reduce<Segment[] | null>((top, candidate) =>
+    top === null || compareRouteSpecificity(candidate.segments!, top, length) > 0 ? candidate.segments : top, null);
+  return candidates
+    .filter((candidate) => candidate.segments === null || compareRouteSpecificity(candidate.segments, best!, length) === 0)
+    .map(({ entry, params }) => ({ entry, params }));
+}
+
+function collectCandidates(method: string, rawPath: string): { candidates: CandidateMatch[]; length: number } | null {
   const verb = String(method || '').toUpperCase() === 'HEAD' ? 'GET' : String(method || '').toUpperCase();
   const parts = splitRequestPath(rawPath);
-  if (parts === null) return [];
+  if (parts === null) return null;
   const lowerPath = `/${parts.join('/')}`.toLowerCase();
-  const matches: MultiUserRouteMatch[] = [];
+  const candidates: CandidateMatch[] = [];
   for (const compiled of COMPILED) {
     if (compiled.mountPrefix !== null) {
       if (lowerPath === compiled.mountPrefix || lowerPath.startsWith(`${compiled.mountPrefix}/`)) {
-        matches.push({ entry: compiled.entry, params: {} });
+        candidates.push({ entry: compiled.entry, params: {}, segments: null });
       }
+      continue;
+    }
+    if (compiled.entry.pattern) {
+      if (compiled.entry.method !== 'ALL' && compiled.entry.method !== verb) continue;
+      const params = matchPattern(compiled.entry, rawPath);
+      if (params) candidates.push({ entry: compiled.entry, params, segments: null });
       continue;
     }
     if (compiled.segments === null) continue;
     if (compiled.entry.routeClass === 'public-web' && publicMultiUserFile(rawPath) === null) continue;
     if (compiled.entry.method !== 'ALL' && compiled.entry.method !== verb) continue;
     const params = matchSegments(compiled.segments, parts);
-    if (params) matches.push({ entry: compiled.entry, params });
+    if (params) candidates.push({ entry: compiled.entry, params, segments: compiled.segments });
   }
-  return matches;
+  return { candidates, length: parts.length };
+}
+
+/**
+ * Every classified route that could answer `method rawPath`, before
+ * precedence. For audits; authorization uses {@link matchMultiUserRoute}.
+ */
+export function matchMultiUserRouteCandidates(method: string, rawPath: string): MultiUserRouteMatch[] {
+  return (collectCandidates(method, rawPath)?.candidates ?? []).map(({ entry, params }) => ({ entry, params }));
+}
+
+/**
+ * The classified routes that answer `method rawPath`, after route precedence.
+ * `rawPath` is the undecoded request pathname (Express `req.path` at the app
+ * root). Only reviewed regex entries (`pattern`) match; other regex routes,
+ * the SPA catch-all and middleware never do, so requests only they would
+ * answer are unclassified and fail closed.
+ */
+export function matchMultiUserRoute(method: string, rawPath: string): MultiUserRouteMatch[] {
+  const found = collectCandidates(method, rawPath);
+  return found ? resolveRoutePrecedence(found.candidates, found.length) : [];
+}
+
+/** A request path both string patterns match, if any (literals kept, parameters and splats filled). */
+export function overlappingRoutePath(a: string, b: string): string | null {
+  const left = compileRoutePattern(a);
+  const right = compileRoutePattern(b);
+  if (!left || !right) return null;
+  const splat = (segments: Segment[]) => segments.at(-1)?.kind === 'splat';
+  const length = Math.max(left.length, right.length);
+  if ((left.length < length && !splat(left)) || (right.length < length && !splat(right))) return null;
+  const parts: string[] = [];
+  for (let index = 0; index < length; index++) {
+    const x = left[Math.min(index, left.length - 1)]!;
+    const y = right[Math.min(index, right.length - 1)]!;
+    if (x.kind === 'literal' && y.kind === 'literal' && x.value !== y.value) return null;
+    parts.push(x.kind === 'literal' ? x.value : y.kind === 'literal' ? y.value : 'p1');
+  }
+  return `/${parts.join('/')}`;
+}
+
+/**
+ * Registration-order check for route precedence (#81). Express answers with
+ * the first registered route, the gate with the most specific one. For every
+ * pair of overlapping string routes where the more specific one is allowed and
+ * served in place (no `rewriteTo`; a rewritten request is routed by its alias,
+ * whose own pairs are checked here too), it must be registered first. Returns
+ * `winner <= loser` descriptions for violations; empty means Express and the
+ * gate agree on every overlap.
+ */
+export function findPrecedenceOrderViolations(registrations: readonly RouteRegistrationLike[]): string[] {
+  const order = new Map<string, number>();
+  registrations.forEach((registration, index) => {
+    const key = routeKey(registration.method, registration.path);
+    if (!order.has(key)) order.set(key, index);
+  });
+  const routes = COMPILED.filter((compiled) => compiled.segments !== null && !compiled.entry.pattern && order.has(compiled.entry.key));
+  const violations: string[] = [];
+  for (const [i, first] of routes.entries()) {
+    for (const second of routes.slice(i + 1)) {
+      const { entry: a } = first;
+      const { entry: b } = second;
+      if (a.method !== b.method && a.method !== 'ALL' && b.method !== 'ALL') continue;
+      const witness = overlappingRoutePath(a.path, b.path);
+      if (witness === null) continue;
+      const length = witness.split('/').length - 1;
+      const comparison = compareRouteSpecificity(first.segments!, second.segments!, length);
+      if (comparison === 0) continue;
+      const [winner, loser] = comparison > 0 ? [a, b] : [b, a];
+      if (winner.routeClass === 'blocked-in-multiuser' || winner.rewriteTo) continue;
+      if (order.get(winner.key)! > order.get(loser.key)!) violations.push(`${winner.key} <= ${loser.key}`);
+    }
+  }
+  return violations.sort();
 }

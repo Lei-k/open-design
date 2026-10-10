@@ -1,3 +1,5 @@
+import type { StudioRuntimeCapabilities } from './studio-parity.js';
+
 /**
  * What the daemon this client is talking to can actually do, as opposed to what
  * the client-side runtime looks like. Served per request and never persisted:
@@ -23,6 +25,8 @@ export interface AppRuntimeCapabilities {
    * single-user daemon, so single-user clients never probe multi-user routes.
    */
   multiUser?: true;
+  /** Reviewed Studio readiness. Absence is unknown, never full parity. */
+  studio?: StudioRuntimeCapabilities;
 }
 
 export interface AppVersionInfo {

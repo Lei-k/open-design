@@ -6,11 +6,15 @@ import { describe, expect, it } from 'vitest';
 import type { AuthActor } from '../../src/services/auth-service.js';
 import {
   MULTIUSER_ROUTE_CLASSIFICATION,
+  compareRouteSpecificity,
   compileRoutePattern,
+  findPrecedenceOrderViolations,
   matchMultiUserRoute,
+  matchMultiUserRouteCandidates,
+  overlappingRoutePath,
   type MultiUserRouteClassification,
 } from '../../src/http/multiuser-route-classes.js';
-import { decideMultiUserAccess } from '../../src/http/multiuser-gate.js';
+import { decideMultiUserAccess, multiUserBodyAllowed } from '../../src/http/multiuser-gate.js';
 
 const actor = (role: 'admin' | 'user', accountId = `${role}-1`): AuthActor => ({
   accountId,
@@ -30,6 +34,10 @@ describe('classification registry is well formed', () => {
       expect(entry.reason.trim().length, entry.key).toBeGreaterThan(10);
       if (entry.nonStringPath) {
         expect(entry.routeClass, entry.key).toBe('blocked-in-multiuser');
+      } else if (entry.pattern) {
+        // A reviewed regex: exact registered pattern, one named capture per group.
+        expect(String(entry.pattern), entry.key).toBe(entry.path);
+        expect(entry.captures?.length, entry.key).toBe(new RegExp(`${entry.pattern.source}|`).exec('')!.length - 1);
       } else if (entry.routeClass !== 'middleware') {
         expect(compileRoutePattern(entry.path), entry.key).not.toBeNull();
       }
@@ -41,20 +49,22 @@ describe('classification registry is well formed', () => {
     expect(owned.length).toBeGreaterThan(0);
     for (const entry of owned) {
       expect(entry.projectParam, entry.key).toBeTruthy();
-      expect(entry.path.split('/')).toContain(`:${entry.projectParam}`);
+      if (entry.pattern) expect(entry.captures?.[0], entry.key).toBe(entry.projectParam);
+      else expect(entry.path.split('/')).toContain(`:${entry.projectParam}`);
     }
   });
 
   it('declares a run param for every run-owner route', () => {
     const owned = MULTIUSER_ROUTE_CLASSIFICATION.filter((e) => e.routeClass === 'owner-scoped-run');
-    expect(owned.length).toBe(3);
+    expect(owned.length).toBe(5);
     for (const entry of owned) expect(entry.path.split('/')).toContain(`:${entry.runParam}`);
   });
 
   it('never marks a parameterless project route owner-scoped or a project-param route actor-scoped', () => {
     for (const entry of MULTIUSER_ROUTE_CLASSIFICATION) {
       if (entry.routeClass === 'actor-scoped') {
-        expect(entry.path.includes(':'), entry.key).toBe(false);
+        expect(entry.projectParam, entry.key).toBeUndefined();
+        expect(/^\/api\/projects\/:[^/]+/.test(entry.path), entry.key).toBe(false);
       }
     }
   });
@@ -96,14 +106,106 @@ describe('matcher mirrors Express routing permissively enough to fail closed', (
     expect(keysFor('GET', '/artifactsX/y')).toEqual([]);
   });
 
-  it('does not match regex-registered preview routes (they stay unclassified => denied)', () => {
-    expect(keysFor('GET', '/api/projects/p1/raw/index.html')).toEqual([]);
+  it('matches only reviewed regex routes; preview and powered regex routes stay unclassified => denied', () => {
+    expect(keysFor('GET', '/api/projects/p1/preview/scope/index.html')).toEqual([]);
+    expect(keysFor('GET', '/api/projects/p1/powered/a.js')).toEqual([]);
+    expect(keysFor('OPTIONS', '/api/projects/p1/raw/index.html')).toEqual([]);
+    expect(keysFor('GET', '/api/projects/p1/raw/index.html')).toEqual(['GET /^\\/api\\/projects\\/([^/]+)\\/raw\\/(.+)$/u']);
+    // Regex routes are case-sensitive in Express, so the reviewed match is too.
+    expect(keysFor('GET', '/API/projects/p1/raw/index.html')).toEqual([]);
+    const [match] = matchMultiUserRoute('GET', '/api/projects/p%2D1/raw/a%20b/c.txt');
+    expect(match?.params).toEqual({ id: 'p-1', path: 'a b/c.txt' });
+    expect(matchMultiUserRoute('GET', '/api/projects/p1/raw/%E0%A4%A')).toEqual([]);
   });
 
   it('rejects unsupported pattern syntax at compile time', () => {
     expect(compileRoutePattern('/api/{optional}')).toBeNull();
     expect(compileRoutePattern('/api/x(y)')).toBeNull();
     expect(compileRoutePattern('relative')).toBeNull();
+  });
+});
+
+describe('route precedence (#81): static segments outrank parameters, independent of registration order', () => {
+  const stringRoutes = MULTIUSER_ROUTE_CLASSIFICATION.filter((entry) => !entry.nonStringPath && !entry.catchAll && !entry.pattern
+    && entry.method !== 'USE' && entry.routeClass !== 'middleware');
+  const overlaps = stringRoutes.flatMap((a, i) => stringRoutes.slice(i + 1).flatMap((b) => {
+    if (a.method !== b.method && a.method !== 'ALL' && b.method !== 'ALL') return [];
+    const witness = overlappingRoutePath(a.path, b.path);
+    return witness === null ? [] : [{ a, b, witness }];
+  }));
+
+  it('resolves every overlapping pair in the inventory to the more specific route with its own policy', () => {
+    expect(overlaps.length).toBeGreaterThan(30);
+    for (const { a, b, witness } of overlaps) {
+      const method = a.method === 'ALL' ? b.method : a.method;
+      // Public shell paths only classify real files, so they are compared by key alone.
+      if (a.routeClass === 'public-web') continue;
+      const candidates = matchMultiUserRouteCandidates(method, witness).map((match) => match.entry.key);
+      expect(candidates, `${a.key} <> ${b.key} @ ${witness}`).toEqual(expect.arrayContaining([a.key, b.key]));
+      const resolved = matchMultiUserRoute(method, witness);
+      const keys = resolved.map((match) => match.entry.key);
+      const comparison = compareRouteSpecificity(compileRoutePattern(a.path)!, compileRoutePattern(b.path)!, witness.split('/').length - 1);
+      expect(comparison, `${a.key} <> ${b.key}`).not.toBe(0);
+      const [winner, loser] = comparison > 0 ? [a, b] : [b, a];
+      expect(keys, `${witness}`).toContain(winner.key);
+      expect(keys, `${witness}`).not.toContain(loser.key);
+      const chosen = resolved.find((match) => match.entry.key === winner.key)!;
+      expect(chosen.entry.bodyPolicy, winner.key).toBe(winner.bodyPolicy);
+      expect(chosen.entry.rewriteTo, winner.key).toBe(winner.rewriteTo);
+    }
+  });
+
+  it('pins the reviewed static/param overlaps and which side answers', () => {
+    const table: Array<[string, string, string, string | undefined]> = [
+      // [method, path, winning key, winning body policy]
+      ['PUT', '/api/memory/index', 'PUT /api/memory/index', 'studio-memory-index'],
+      ['PUT', '/api/multiuser/settings/memory/index', 'PUT /api/multiuser/settings/memory/index', 'studio-memory-index'],
+      ['PUT', '/api/memory/user_fact', 'PUT /api/memory/:id', 'studio-memory-entry'],
+      ['GET', '/api/memory/tree', 'GET /api/memory/tree', undefined],
+      ['GET', '/api/memory/events', 'GET /api/memory/events', undefined],
+      ['GET', '/api/memory/system-prompt', 'GET /api/memory/system-prompt', undefined],
+      ['GET', '/api/memory/extractions', 'GET /api/memory/extractions', undefined],
+      ['GET', '/api/memory/verifications', 'GET /api/memory/verifications', undefined],
+      ['DELETE', '/api/memory/extractions', 'DELETE /api/memory/extractions', 'empty'],
+      ['DELETE', '/api/multiuser/settings/memory/verifications', 'DELETE /api/multiuser/settings/memory/verifications', 'empty'],
+      ['GET', '/api/memory/user_fact', 'GET /api/memory/:id', undefined],
+      // Blocked neighbors keep winning where they are more specific.
+      ['GET', '/api/runs/by-plugin-workflow/events', 'GET /api/runs/by-plugin-workflow/:workflowId', undefined],
+      ['GET', '/api/design-systems/generation-jobs/files', 'GET /api/design-systems/generation-jobs/:jobId', undefined],
+      ['GET', '/api/connectors/status', 'GET /api/connectors/status', undefined],
+      ['POST', '/api/proxy/openai/stream', 'POST /api/proxy/openai/stream', undefined],
+      ['GET', '/api/projects/p1/export/manifest', 'GET /api/projects/:id/export/manifest', undefined],
+    ];
+    for (const [method, path, key, policy] of table) {
+      const resolved = matchMultiUserRoute(method, path);
+      expect(resolved.map((match) => match.entry.key), `${method} ${path}`).toEqual([key]);
+      expect(resolved[0]!.entry.bodyPolicy, `${method} ${path}`).toBe(policy);
+    }
+    // The index route's own policy accepts the index field, the entry route's does not.
+    expect(multiUserBodyAllowed('studio-memory-index', { index: '# Memory' })).toBe(true);
+    expect(multiUserBodyAllowed('studio-memory-entry', { index: '# Memory' })).toBe(false);
+  });
+
+  it('keeps unranked regex overlaps together, so they still have to agree', () => {
+    // Reviewed regex routes have no segment structure: both owner file-byte
+    // patterns stay matched and must share class and (absent) alias.
+    const keys = matchMultiUserRoute('GET', '/api/projects/p1/files/a.html/versions').map((match) => match.entry.key);
+    expect(keys).toHaveLength(2);
+    // A blocked string route next to an allowed regex is still a mixed-class refusal.
+    const preview = matchMultiUserRoute('GET', '/api/projects/p1/files/a.html/preview');
+    expect(new Set(preview.map((match) => match.entry.routeClass))).toEqual(new Set(['owner-scoped-project', 'blocked-in-multiuser']));
+  });
+
+  it('refuses an Express order in which a less specific route would answer an allowed static route first', () => {
+    const route = (key: string) => ({ method: key.slice(0, key.indexOf(' ')), path: key.slice(key.indexOf(' ') + 1) });
+    const staticFirst = ['PUT /api/multiuser/settings/memory/index', 'PUT /api/multiuser/settings/memory/:id'].map(route);
+    expect(findPrecedenceOrderViolations(staticFirst)).toEqual([]);
+    expect(findPrecedenceOrderViolations([...staticFirst].reverse()))
+      .toEqual(['PUT /api/multiuser/settings/memory/index <= PUT /api/multiuser/settings/memory/:id']);
+    // Standard paths rewrite to their alias, which is routed (and checked) on its own.
+    expect(findPrecedenceOrderViolations(['PUT /api/memory/:id', 'PUT /api/memory/index'].map(route))).toEqual([]);
+    // A blocked static route never answers, whatever the order.
+    expect(findPrecedenceOrderViolations(['GET /api/connectors/:connectorId', 'GET /api/connectors/status'].map(route))).toEqual([]);
   });
 });
 
@@ -170,5 +272,78 @@ describe('decideMultiUserAccess', () => {
     expect(decideMultiUserAccess({ matches: scoped('p-missing'), actor: actor('user', 'user-1'), isProjectOwner: owns }).kind).toBe('project-not-found');
     const noParam = [{ entry: entry({ routeClass: 'owner-scoped-project', projectParam: 'id' }), params: {} }];
     expect(decideMultiUserAccess({ matches: noParam, actor: actor('user', 'user-1'), isProjectOwner: owns }).kind).toBe('project-not-found');
+  });
+
+  it('admits a grantee only at or above the entry\'s share role, and never an admin by role (#65)', () => {
+    const roles: Record<string, 'view' | 'comment' | 'edit'> = { 'user-2': 'view', 'user-3': 'comment', 'user-4': 'edit', 'admin-1': 'view' };
+    const shareRole = (projectId: string, accountId: string) => projectId === 'p-owned' ? roles[accountId] ?? null : null;
+    const at = (sharedRole?: 'view' | 'comment' | 'edit') => [{
+      entry: entry({ routeClass: 'owner-scoped-project', projectParam: 'id', path: '/p/:id', key: 'GET /p/:id', ...(sharedRole ? { sharedRole } : {}) }),
+      params: { id: 'p-owned' },
+    }];
+    const decide = (sharedRole: 'view' | 'comment' | 'edit' | undefined, accountId: string, role: 'user' | 'admin' = 'user') =>
+      decideMultiUserAccess({ matches: at(sharedRole), actor: actor(role, accountId), isProjectOwner: owns, projectShareRole: shareRole }).kind;
+    expect(decide(undefined, 'user-4')).toBe('project-not-found');
+    expect(['user-2', 'user-3', 'user-4'].map((id) => decide('view', id))).toEqual(['allow', 'allow', 'allow']);
+    expect(['user-2', 'user-3', 'user-4'].map((id) => decide('comment', id))).toEqual(['project-not-found', 'allow', 'allow']);
+    expect(['user-2', 'user-3', 'user-4'].map((id) => decide('edit', id))).toEqual(['project-not-found', 'project-not-found', 'allow']);
+    expect(decide('view', 'user-9')).toBe('project-not-found');
+    // An admin holds exactly its own grant, nothing more.
+    expect(decide('view', 'admin-1', 'admin')).toBe('allow');
+    expect(decide('comment', 'admin-1', 'admin')).toBe('project-not-found');
+  });
+
+  it('requires conversation authorship for transcript writes, the owner included (#65)', () => {
+    const matches = matchMultiUserRoute('PUT', '/api/projects/p-owned/conversations/c-1/messages/m-1');
+    expect(matches.map((match) => match.entry.conversationParam)).toEqual(['cid']);
+    const decide = (accountId: string, authored: boolean) => decideMultiUserAccess({ matches, actor: actor('user', accountId), isProjectOwner: owns,
+      projectShareRole: () => 'edit', canWriteConversation: (projectId, conversationId, who) => authored && projectId === 'p-owned' && conversationId === 'c-1' && who === accountId }).kind;
+    expect(decide('user-1', true)).toBe('allow');
+    expect(decide('user-1', false)).toBe('project-not-found');
+    expect(decide('user-4', true)).toBe('allow');
+    expect(decide('user-4', false)).toBe('project-not-found');
+    expect(decideMultiUserAccess({ matches, actor: actor('user', 'user-1'), isProjectOwner: owns }).kind).toBe('project-not-found');
+  });
+});
+
+describe('S41 bundled plugin routes (#61)', () => {
+  it('opens the catalog, owner-only apply and read-only marketplaces; host operations are typed refusals', () => {
+    const resolved = (method: string, path: string) => matchMultiUserRoute(method, path).map((match) => match.entry);
+    for (const [method, path, alias] of [
+      ['GET', '/api/plugins', '/api/multiuser/catalog/plugins'],
+      ['GET', '/api/plugins/od-share-to-community', '/api/multiuser/catalog/plugins/:id'],
+      ['POST', '/api/plugins/od-share-to-community/apply', '/api/multiuser/catalog/plugins/:id/apply'],
+      ['GET', '/api/applied-plugins/snap-1', '/api/multiuser/catalog/applied-plugins/:snapshotId'],
+      ['GET', '/api/marketplaces', '/api/multiuser/catalog/marketplaces'],
+      ['GET', '/api/marketplaces/official/plugins', '/api/multiuser/catalog/marketplaces/:id/plugins'],
+    ] as const) {
+      const [entry, ...rest] = resolved(method, path);
+      expect(rest, path).toEqual([]);
+      expect(entry, path).toMatchObject({ routeClass: 'actor-scoped', rewriteTo: alias });
+    }
+    // Static siblings keep their own (blocked) class by precedence.
+    expect(resolved('GET', '/api/plugins/stats').map((entry) => entry.routeClass)).toEqual(['blocked-in-multiuser']);
+    expect(resolved('GET', '/api/plugins/events').map((entry) => entry.routeClass)).toEqual(['blocked-in-multiuser']);
+    for (const [method, path, capability] of [
+      ['POST', '/api/plugins/install', 'plugin-install'], ['POST', '/api/plugins/x/upgrade', 'plugin-install'],
+      ['POST', '/api/plugins/x/uninstall', 'plugin-install'], ['POST', '/api/plugins/upload-zip', 'plugin-install'],
+      ['POST', '/api/plugins/x/apply-local', 'plugin-install'], ['POST', '/api/plugins/x/doctor', 'plugin-doctor'],
+      ['POST', '/api/plugins/x/trust', 'plugin-trust'], ['POST', '/api/plugins/x/share-project', 'plugin-scripts'],
+      ['POST', '/api/marketplaces', 'plugin-marketplace'], ['POST', '/api/marketplaces/x/refresh', 'plugin-marketplace'],
+    ] as const) {
+      expect(resolved(method, path), path).toEqual([expect.objectContaining({ routeClass: 'blocked-in-multiuser', capabilityRefusal: capability })]);
+    }
+    expect(MULTIUSER_ROUTE_CLASSIFICATION.every((entry) => !entry.capabilityRefusal || entry.routeClass === 'blocked-in-multiuser')).toBe(true);
+  });
+
+  it('accepts only a project, scalar inputs, an empty grant and a locale on apply', () => {
+    const ok = (body: unknown) => multiUserBodyAllowed('studio-plugin-apply', body);
+    expect(ok({ projectId: 'p1' })).toBe(true);
+    expect(ok({ projectId: 'p1', inputs: { brand: 'Acme', count: 3, dark: true }, grantCaps: [], locale: 'en' })).toBe(true);
+    for (const body of [{}, { projectId: '' }, { projectId: 'p1', source: '/host' }, { projectId: 'p1', grantCaps: ['subprocess'] },
+      { projectId: 'p1', inputs: { nested: {} } }, { projectId: 'p1', inputs: { long: 'x'.repeat(4001) } },
+      { projectId: 'p1', inputs: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`k${i}`, i])) }, null, [], 'p1']) {
+      expect(ok(body), JSON.stringify(body)).toBe(false);
+    }
   });
 });

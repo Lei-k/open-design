@@ -1,0 +1,48 @@
+.section {
+  margin-top: 16px;
+}
+
+.state {
+  margin: 4px 0 10px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.form {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 360px);
+  gap: 8px 12px;
+  align-items: center;
+}
+
+.field {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.actions {
+  display: flex;
+  grid-column: 2;
+  gap: 8px;
+}
+
+.status {
+  min-height: 18px;
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.error {
+  color: var(--red);
+}
+
+@media (max-width: 560px) {
+  .form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .actions {
+    grid-column: 1;
+  }
+}

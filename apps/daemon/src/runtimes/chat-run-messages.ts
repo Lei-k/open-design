@@ -1,7 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import type Database from 'better-sqlite3';
 import type { PersistedAgentEvent } from '@open-design/contracts';
-import { MAX_ARTIFACT_FOCUS_SHOW, MAX_NEXT_STEP_SUGGESTIONS } from '@open-design/contracts';
+import { MAX_ARTIFACT_FOCUS_SHOW, MAX_NEXT_STEP_SUGGESTIONS, PluginPipelineStageEventSchema } from '@open-design/contracts';
 import type { RunFinishedProps } from '@open-design/contracts/analytics';
 import {
   appendMessageAgentEvents,
@@ -448,7 +448,11 @@ export function runSseEventToPersistedAgentEvent(
   data: unknown,
 ): PersistedAgentEvent | null {
   const persisted = unboundedPersistedAgentEvent(event, data);
-  return persisted ? boundPersistedAgentEvent(persisted) : null;
+  if (!persisted) return null;
+  const redaction = isRecord(data) && isRecord(data.redacted) && data.redacted.policy === 'personal-subscription'
+    && Array.isArray(data.redacted.fields) && data.redacted.fields.every((field) => typeof field === 'string')
+    ? { policy: 'personal-subscription' as const, fields: data.redacted.fields as string[] } : undefined;
+  return boundPersistedAgentEvent({ ...persisted, ...(redaction ? { redacted: redaction } : {}) });
 }
 
 function unboundedPersistedAgentEvent(
@@ -485,6 +489,7 @@ function unboundedPersistedAgentEvent(
       ...(stderrTail ? { stderrTail } : {}),
     };
   }
+  if (event === 'diagnostic' && typeof record.type === 'string' && record.type.startsWith('personal_')) return { kind: 'diagnostic', name: record.type };
   if (event !== 'agent') return null;
   return unboundedAgentPayloadToPersistedAgentEvent(record);
 }
@@ -523,12 +528,20 @@ const TRANSIENT_ACP_PERSISTED_STATUS_LABELS = new Set([
 /** The persisted form of one `agent` SSE payload, within the storage budget. */
 export function daemonAgentPayloadToPersistedAgentEvent(data: unknown): PersistedAgentEvent | null {
   const persisted = unboundedAgentPayloadToPersistedAgentEvent(data);
-  return persisted ? boundPersistedAgentEvent(persisted) : null;
+  if (!persisted) return null;
+  const redaction = isRecord(data) && isRecord(data.redacted) && data.redacted.policy === 'personal-subscription'
+    && Array.isArray(data.redacted.fields) && data.redacted.fields.every((field) => typeof field === 'string')
+    ? { policy: 'personal-subscription' as const, fields: data.redacted.fields as string[] } : undefined;
+  return boundPersistedAgentEvent({ ...persisted, ...(redaction ? { redacted: redaction } : {}) });
 }
 
 function unboundedAgentPayloadToPersistedAgentEvent(data: unknown): PersistedAgentEvent | null {
   if (!isRecord(data)) return null;
   const type = data.type;
+  if (type === 'pipeline_stage') {
+    const stage = PluginPipelineStageEventSchema.safeParse(data.stage);
+    return stage.success ? stage.data : null;
+  }
   if (type === 'status' && typeof data.label === 'string') {
     // Filter out transient ACP status events that carry no user-visible content.
     // The web-side translateAgentEvent already normalizes these for live display,
@@ -635,6 +648,16 @@ function unboundedAgentPayloadToPersistedAgentEvent(data: unknown): PersistedAge
         : {}),
     };
   }
+  // Personal streams are a durable replay contract, including interrupted tools.
+  // Keep their safe in-flight row in the same form the web translator uses;
+  // the existing turn derivation replaces it when the settled tool arrives.
+  if (type === 'tool_in_flight' && isRecord(data.redacted)
+    && data.redacted.policy === 'personal-subscription'
+    && typeof data.id === 'string' && typeof data.name === 'string'
+    && typeof data.startedAt === 'number' && Number.isFinite(data.startedAt)) {
+    return { kind: 'tool_use', id: data.id, name: data.name,
+      input: { ...(isRecord(data.input) ? data.input : {}), od_input_streaming: true }, startedAt: data.startedAt };
+  }
   if (type === 'tool_input_delta') return null;
   /*
    * Live-only, like the delta it is derived from. Once the run is over the same
@@ -658,6 +681,7 @@ function unboundedAgentPayloadToPersistedAgentEvent(data: unknown): PersistedAge
       toolUseId: data.toolUseId,
       content: String(data.content ?? ''),
       isError: Boolean(data.isError),
+      ...(data.startupFailed === true ? { startupFailed: true } : {}),
       ...(typeof data.completedAt === 'number' && Number.isFinite(data.completedAt)
         ? { completedAt: data.completedAt }
         : {}),

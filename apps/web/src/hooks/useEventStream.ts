@@ -1,3 +1,5 @@
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
+import { studioRequestAvailable, studioEventSourceCtor } from '../runtime/studio-transport';
 import { useEffect, useRef, useState } from 'react';
 import { BackoffController } from '../lib/backoff';
 
@@ -318,7 +320,8 @@ export function useEventStream(
   url: string | null | undefined,
   options: UseEventStreamOptions,
 ): UseEventStreamResult {
-  const { enabled = true } = options;
+  const studio = useStudioCapabilities();
+  const enabled = (options.enabled ?? true) && (studio.hostServices || !!url && studioRequestAvailable('GET', url.split('?')[0]!));
   const [connected, setConnected] = useState(false);
 
   const eventsRef = useRef(options.events);
@@ -330,7 +333,7 @@ export function useEventStream(
 
   useEffect(() => {
     const Ctor =
-      options.EventSourceCtor ?? (typeof EventSource === 'undefined' ? null : EventSource);
+      options.EventSourceCtor ?? studioEventSourceCtor();
     if (!enabled || !url || !Ctor) {
       setConnected(false);
       return;
@@ -344,8 +347,9 @@ export function useEventStream(
       onConnectedChange: setConnected,
     };
     const unsubscribe = manager.subscribe(sub);
+    const release = studio.session?.bindResource(unsubscribe, studio.generation) ?? unsubscribe;
     return () => {
-      unsubscribe();
+      release();
       setConnected(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

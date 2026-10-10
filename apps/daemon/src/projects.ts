@@ -8,7 +8,8 @@
 // directory to prevent path traversal — see resolveSafe().
 
 import { constants as fsConstants, createReadStream } from 'node:fs';
-import { link, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import JSZip from 'jszip';
@@ -233,11 +234,11 @@ export async function createProjectFolder(projectsRoot, projectId, name, metadat
 export async function ensureProjectSubdir(projectsRoot, projectId, subdir, metadata?) {
   const dir = await ensureProject(projectsRoot, projectId, metadata);
   const raw = typeof subdir === 'string' ? subdir.trim() : '';
-  if (!raw) return { absDir: dir, relDir: '' };
+  if (!raw) return { absDir: dir, relDir: '', rootDir: dir };
   const relDir = sanitizePath(raw);
   const target = await resolveSafeReal(dir, relDir);
   await mkdir(target, { recursive: true });
-  return { absDir: target, relDir };
+  return { absDir: target, relDir, rootDir: dir };
 }
 
 // Recursively delete a folder (and everything under it) within the project
@@ -254,13 +255,18 @@ export async function deleteProjectFolder(projectsRoot, projectId, name, metadat
     err.code = 'EINVAL';
     throw err;
   }
-  const st = await stat(target);
-  if (!st.isDirectory()) {
-    const err = new Error('target is not a folder');
-    err.code = 'ENOTDIR';
-    throw err;
-  }
-  await rm(target, { recursive: true, force: true });
+  // Delete through the pinned parent: a swapped ancestor cannot redirect the
+  // recursive delete, and a link at the target itself is only unlinked.
+  await withPinnedProjectDir(dir, path.dirname(target), async (parent) => {
+    const entry = path.join(parent, path.basename(target));
+    const st = await lstat(entry);
+    if (!st.isDirectory()) {
+      const err = new Error('target is not a folder');
+      err.code = 'ENOTDIR';
+      throw err;
+    }
+    await rm(entry, { recursive: true, force: true });
+  });
 }
 
 // Best-effort entry-file detector — looks for index.html at the root,
@@ -577,6 +583,13 @@ async function collectArchiveEntries(dir, relDir, out) {
   }
 }
 
+/** Shared handoff metadata for archives whose file bytes have already been captured. */
+export function addDesignArchiveMetadata(zip: JSZip, fileNames: string[], projectLabel: string): void {
+  const entries = fileNames.map((relPath) => ({ relPath }));
+  addDesignHandoff(zip, entries, projectLabel);
+  addDesignManifest(zip, entries, projectLabel);
+}
+
 function addDesignHandoff(zip, entries, projectLabel) {
   if (entries.some((entry) => entry.relPath === DESIGN_HANDOFF_FILENAME)) return;
   zip.file(DESIGN_HANDOFF_FILENAME, buildDesignHandoff(entries, projectLabel), {
@@ -808,8 +821,7 @@ export async function readProjectFile(projectsRoot, projectId, name, metadata?) 
   assertVisibleForImportedProject(name, metadata);
   const dir = resolveProjectDir(projectsRoot, projectId, metadata);
   const file = await resolveSafeReal(dir, name);
-  const buf = await readFile(file);
-  const st = await stat(file);
+  const { content: buf, stat: st } = await readProjectFileNoFollow(dir, file);
   const rootReal = await realpath(dir).catch(() => dir);
   const rel = toProjectPath(path.relative(rootReal, file));
   const manifest = await readManifestForPath(dir, rel);
@@ -923,12 +935,12 @@ export async function writeProjectFile(
       }
     }
   }
-  await writeFile(target, body);
+  await writeProjectFileNoFollow(dir, target, body);
   await projectFileWriteTestHooks.afterCommit?.({ safeName, target, body });
   if (validatedManifest) {
     const manifestFileName = artifactManifestNameFor(safeName);
     const manifestTarget = await resolveSafeReal(dir, manifestFileName);
-    await writeFile(manifestTarget, JSON.stringify(validatedManifest, null, 2));
+    await writeProjectFileNoFollow(dir, manifestTarget, JSON.stringify(validatedManifest, null, 2));
   }
   const st = await stat(target);
   const persistedManifest = await readManifestForPath(dir, safeName);
@@ -978,7 +990,7 @@ export async function reconcileHtmlArtifactManifest(projectsRoot, projectId, nam
   const manifestFileName = artifactManifestNameFor(safeName);
   const manifestTarget = await resolveSafeReal(dir, manifestFileName);
   try {
-    const raw = await readFile(manifestTarget, 'utf8');
+    const raw = (await readProjectFileNoFollow(dir, manifestTarget, 'utf8')).content;
     return parseManifest(raw);
   } catch (err) {
     if (!err || err.code !== 'ENOENT') throw err;
@@ -1005,7 +1017,7 @@ export async function reconcileHtmlArtifactManifest(projectsRoot, projectId, nam
     { preserveUpdatedAt: true },
   );
   if (!validated.ok || !validated.value) return null;
-  await writeFile(manifestTarget, JSON.stringify(validated.value, null, 2));
+  await writeProjectFileNoFollow(dir, manifestTarget, JSON.stringify(validated.value, null, 2));
   return validated.value;
 }
 
@@ -1013,9 +1025,9 @@ async function readManifestForPath(projectDirPath, relPath) {
   if (containsIgnoredProjectDirSegment(relPath)) return null;
   const fullPath = path.join(projectDirPath, relPath);
   if (await isViteDevHtmlEntry(projectDirPath, relPath, fullPath)) return null;
-  const manifestPath = path.join(projectDirPath, artifactManifestNameFor(relPath));
   try {
-    const raw = await readFile(manifestPath, 'utf8');
+    const manifestPath = await resolveSafeReal(projectDirPath, artifactManifestNameFor(relPath));
+    const raw = (await readProjectFileNoFollow(projectDirPath, manifestPath, 'utf8')).content;
     const parsed = parseManifest(raw);
     if (parsed) return parsed;
   } catch (err) {
@@ -1494,12 +1506,106 @@ async function resolveExistingPrefix(p) {
     try {
       const real = await realpath(prefix);
       const rest = parts.slice(i).join(path.sep);
+      // The first missing component may be a dangling link (realpath reports
+      // ENOENT for those too); writing through it would create its target.
+      if (rest) {
+        const next = path.join(prefix, parts[i]);
+        const entry = await lstat(next).catch((error) => (error?.code === 'ENOENT' ? null : Promise.reject(error)));
+        if (entry) {
+          const e = new Error('path escapes project dir via symlink');
+          e.code = 'EPATHESCAPE';
+          throw e;
+        }
+      }
       return rest ? path.join(real, rest) : real;
     } catch (err) {
+      if (err?.code === 'EPATHESCAPE') throw err;
       if (!err || err.code !== 'ENOENT') throw err;
     }
   }
   return p;
+}
+
+function escapeError(message = 'path escapes project dir via symlink') {
+  const e = new Error(message);
+  e.code = 'EPATHESCAPE';
+  return e;
+}
+
+/**
+ * Run `operation` against a directory pinned by descriptor. On Linux the
+ * operation receives `/proc/self/fd/<n>`, which keeps naming the directory we
+ * opened and verified even if an ancestor is swapped for a link afterwards.
+ * Project trees are agent-writable, so path checks alone race with the agent.
+ */
+export async function withPinnedProjectDir(rootDir, dirPath, operation) {
+  if (process.platform !== 'linux') return operation(dirPath);
+  const handle = await open(dirPath, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY);
+  try {
+    const [actual, root] = await Promise.all([realpath(`/proc/self/fd/${handle.fd}`), realpath(rootDir).catch(() => rootDir)]);
+    if (actual !== root && !actual.startsWith(root + path.sep)) throw escapeError();
+    return await operation(`/proc/self/fd/${handle.fd}`);
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Replace `target` without ever writing through it: the bytes go to a fresh
+ * exclusive sibling in the pinned parent and `rename` swaps it into place,
+ * which replaces a link at `target` instead of following it.
+ */
+export async function writeProjectFileNoFollow(rootDir, target, body) {
+  const name = path.basename(target);
+  await withPinnedProjectDir(rootDir, path.dirname(target), async (parent) => {
+    const temp = path.join(parent, `.od-write-${randomUUID()}.tmp`);
+    const destination = path.join(parent, name);
+    const previous = await lstat(destination).catch(() => null);
+    await writeFile(temp, body, { flag: 'wx', ...(previous?.isFile() ? { mode: previous.mode & 0o777 } : {}) });
+    try { await rename(temp, destination); }
+    catch (err) { await unlink(temp).catch(() => {}); throw err; }
+  });
+}
+
+async function openProjectFileNoFollow(rootDir, target) {
+  const handle = await open(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  try {
+    const info = await handle.stat();
+    if (info.isDirectory()) {
+      const e = new Error(`EISDIR: illegal operation on a directory, read`);
+      e.code = 'EISDIR';
+      throw e;
+    }
+    if (!info.isFile()) throw escapeError('project file refused');
+    if (process.platform === 'linux') {
+      const [actual, root] = await Promise.all([realpath(`/proc/self/fd/${handle.fd}`), realpath(rootDir).catch(() => rootDir)]);
+      if (!actual.startsWith(root + path.sep)) throw escapeError();
+    }
+    return { handle, info };
+  } catch (err) {
+    await handle.close();
+    throw err;
+  }
+}
+
+/**
+ * Read a project file through a descriptor that refuses a final link, must be
+ * a regular file and (on Linux) must resolve inside `rootDir`.
+ * Closes the realpath-check-then-reopen window for agent-writable trees.
+ */
+export async function readProjectFileNoFollow(rootDir, target, encoding?) {
+  const { handle, info } = await openProjectFileNoFollow(rootDir, target);
+  try {
+    return { content: encoding ? await handle.readFile(encoding) : await handle.readFile(), stat: info };
+  } finally {
+    await handle.close();
+  }
+}
+
+/** A read stream over the verified descriptor (see readProjectFileNoFollow). */
+export async function openProjectReadStreamNoFollow(rootDir, target, range?) {
+  const { handle } = await openProjectFileNoFollow(rootDir, target);
+  return handle.createReadStream({ ...(range ? { start: range.start, end: range.end } : {}), autoClose: true });
 }
 
 export function sanitizePath(raw) {
@@ -1683,7 +1789,7 @@ export async function searchProjectFiles(projectsRoot, projectId, query, opts = 
     if (pattern && !globMatch(f.name, pattern)) continue;
     let content;
     try {
-      content = await readFile(path.join(dir, f.name), 'utf8');
+      content = (await readProjectFileNoFollow(dir, await resolveSafeReal(dir, f.name), 'utf8')).content;
     } catch {
       continue;
     }

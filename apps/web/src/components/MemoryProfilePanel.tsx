@@ -1,3 +1,4 @@
+import { studioSetTimeout as setTimeout, studioFetch as fetch } from '../runtime/studio-transport';
 // Structured editor for the singleton user profile (id `user_profile`, type
 // `profile`). The profile is the PRE-loop foundation: the daemon injects it
 // into every task brief, so a few labelled fields here become the default

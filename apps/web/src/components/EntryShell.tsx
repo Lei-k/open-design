@@ -1,3 +1,5 @@
+import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioFetch as fetch, studioWindowLocalStorage } from '../runtime/studio-transport';
+import { StudioLane, useStudioCapabilities } from '../runtime/studio-capabilities';
 // EntryShell — the centered-hero entry layout.
 //
 // This component owns the entire JSX render and local UI state for
@@ -259,7 +261,7 @@ export { ENTRY_RAIL_STATE_EVENT, ENTRY_RAIL_TOGGLE_EVENT };
 function writeStoredRailOpen(open: boolean): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(RAIL_OPEN_STORAGE_KEY, open ? 'true' : 'false');
+    studioWindowLocalStorage().setItem(RAIL_OPEN_STORAGE_KEY, open ? 'true' : 'false');
   } catch {
     /* ignore quota / disabled storage */
   }
@@ -545,6 +547,7 @@ interface Props {
     file: File,
   ) => Promise<ImportClaudeDesignOutcome | void> | ImportClaudeDesignOutcome | void;
   onImportFolder?: (baseDir: string) => Promise<void> | void;
+  onImportBrowserDirectory?: (files: File[]) => Promise<ImportClaudeDesignOutcome>;
   onImportFolderResponse?: (response: OpenDesignHostProjectImportSuccess) => Promise<void> | void;
   onOpenProject: (
     id: string,
@@ -663,6 +666,7 @@ export function EntryShell({
   onBeginProjectCreation,
   onAmrBalanceGateBlockChange,
   onImportClaudeDesign,
+  onImportBrowserDirectory,
   onImportFolder,
   onImportFolderResponse,
   onOpenProject,
@@ -683,6 +687,7 @@ export function EntryShell({
   onAmrLoginStatusChange,
   artifactUpgradeSlot,
 }: Props) {
+  const studio = useStudioCapabilities();
   const { t } = useI18n();
   // Each entry sub-view (home / projects / design-systems) is its own
   // URL now, so the browser back/forward buttons work and a deep link
@@ -729,7 +734,7 @@ export function EntryShell({
   } else if (accountFooterState === 'recovering') {
     accountFooterNotice = <RailAccountRecoveryTip />;
   } else if (accountFooterState === 'sign-in') {
-    accountFooterNotice = <CloudSignInTip />;
+    accountFooterNotice = <StudioLane lane="collaboration"><CloudSignInTip /></StudioLane>;
   }
   const workspaceContextRef = useRef(workspaceContext);
   workspaceContextRef.current = workspaceContext;
@@ -1390,6 +1395,7 @@ export function EntryShell({
     const pluginId = defaultPluginIdForMetadata(input.metadata);
     const pluginInputs = defaultPluginInputsForCreate(input, pluginId);
     const { skillSelectionProvenance, ...projectInput } = input;
+    if (!studio.hostServices) return onCreateProject(projectInput);
     const automaticStrategyRoute = skillSelectionProvenance === 'explicit-user'
       ? null
       : automaticStrategyTaskProfileForProjectMetadata(input.metadata);
@@ -1708,7 +1714,7 @@ export function EntryShell({
     return (
       <div className="entry-shell entry-shell--no-header entry-shell--onboarding">
         <main className="entry-onboarding-modal" aria-label={t('settings.welcomeTitle')}>
-          <OnboardingView
+          <StudioLane lane="settings"><OnboardingView
             config={config}
             agents={agents}
             agentsLoading={agentsLoading}
@@ -1724,7 +1730,7 @@ export function EntryShell({
             onRefreshAgents={onRefreshAgents}
             onAmrLoginStatusChange={onAmrLoginStatusChange}
             onFinish={finishOnboarding}
-          />
+          /></StudioLane>
         </main>
       </div>
     );
@@ -1764,7 +1770,7 @@ export function EntryShell({
     onBrowseRegistry: () => changeView('plugins'),
     onOpenIntegrations: () => openIntegrationTab('connectors'),
     onOpenMcp: () => openIntegrationTab('mcp'),
-    onOpenNewProject: (tab: 'template') => {
+    onOpenNewProject: (tab: 'template' | 'prototype') => {
       openNewProject(tab);
     },
     onStartBlankProject: startBlankProjectFromRail,
@@ -1875,7 +1881,7 @@ export function EntryShell({
               the workspace tabs bar (entryRailBridge), the updater popup host
               lives in the rail footer, and everything below is fixed-position
               or portalled so it occupies no layout space here. */}
-          <WhatsNewPopup active={view === 'home' && !goPlanSunsetMessagePending} />
+          <StudioLane lane="catalogs"><WhatsNewPopup active={view === 'home' && !goPlanSunsetMessagePending} /></StudioLane>
           {/* The campaign badge lives in EntryNavRail's top-right cluster so it
               stays beside the account module across every entry tab. */}
           <div
@@ -1924,26 +1930,28 @@ export function EntryShell({
               )}
             </div>
             <div data-testid="entry-view-tasks" data-active={view === 'tasks' ? 'true' : 'false'} {...inactiveViewProps(view === 'tasks')}>
-              <TasksView
+              <StudioLane lane="automations"><TasksView
                 skills={skills}
                 designTemplates={designTemplates}
                 connectors={connectors}
                 connectorsLoading={connectorsLoading}
                 isActive={view === 'tasks'}
-              />
+              /></StudioLane>
             </div>
             <div data-testid="entry-view-plugins" data-active={view === 'plugins' ? 'true' : 'false'} {...inactiveViewProps(view === 'plugins')}>
-              <ExtensionsMarketplace
+              <StudioLane lane="catalogs"><ExtensionsMarketplace
                 isActive={view === 'plugins'}
-                onCreatePlugin={startPluginAuthoring}
-                onUsePlugin={usePluginFromLibrary}
+                // Authoring and the Home plugin hand-off are host flows; Web accounts
+                // read the bundled catalog here and apply from a project composer (#61).
+                onCreatePlugin={studio.hostServices ? startPluginAuthoring : undefined}
+                onUsePlugin={studio.hostServices ? usePluginFromLibrary : undefined}
                 onUseSkill={useSkillFromLibrary}
-              />
+              /></StudioLane>
             </div>
             <div data-testid="entry-view-design-systems" data-active={view === 'design-systems' ? 'true' : 'false'} {...inactiveViewProps(view === 'design-systems')}>
               {designSystemsLoading ? (
                 <div className="entry-section">
-                  <DesignSystemsTab
+                  <StudioLane lane="catalogs"><DesignSystemsTab
                     isActive={view === 'design-systems'}
                     loading
                     systems={[]}
@@ -1953,11 +1961,11 @@ export function EntryShell({
                     onCreate={onCreateDesignSystem}
                     onOpenSystem={onOpenDesignSystem}
                     onSystemsRefresh={onDesignSystemsRefresh}
-                  />
+                  /></StudioLane>
                 </div>
               ) : (
                 <div className="entry-section">
-                  <DesignSystemsTab
+                  <StudioLane lane="catalogs"><DesignSystemsTab
                     isActive={view === 'design-systems'}
                     systems={designSystems}
                     templates={templates}
@@ -1966,29 +1974,29 @@ export function EntryShell({
                     onCreate={onCreateDesignSystem}
                     onOpenSystem={onOpenDesignSystem}
                     onSystemsRefresh={onDesignSystemsRefresh}
-                  />
+                  /></StudioLane>
                 </div>
               )}
             </div>
             {LIBRARY_UI_VISIBLE ? (
               <div data-testid="entry-view-library" data-active={view === 'library' ? 'true' : 'false'} {...inactiveViewProps(view === 'library')}>
-                <LibrarySection
+                <StudioLane lane="settings"><LibrarySection
                   active={view === 'library'}
                   onOpenProject={(projectId, fileName) =>
                     navigate({ kind: 'project', projectId, conversationId: null, fileName: fileName ?? null })
                   }
-                />
+                /></StudioLane>
               </div>
             ) : null}
             <div data-testid="entry-view-brands" data-active={view === 'brands' ? 'true' : 'false'} {...inactiveViewProps(view === 'brands')}>
-              <BrandsTab
+              <StudioLane lane="catalogs"><BrandsTab
                 onApplyDesignSystem={onChangeDefaultDesignSystem}
                 onOpenProject={onOpenProject}
                 onDesignSystemsRefresh={onDesignSystemsRefresh}
-              />
+              /></StudioLane>
             </div>
             {view === 'integrations' ? (
-              <IntegrationsView
+              <StudioLane lane="settings"><IntegrationsView
                 config={config}
                 initialTab={integrationTab}
                 composioConfigLoading={composioConfigLoading}
@@ -1996,10 +2004,10 @@ export function EntryShell({
                 onPersistComposioKey={onPersistComposioKey}
                 onSkillsRefresh={onSkillsRefresh}
                 onSkillsChanged={onSkillsChanged}
-              />
+              /></StudioLane>
             ) : null}
             {view === 'community' ? (
-              <CommunityView
+              <StudioLane lane="catalogs">{studio.hostServices ? <CommunityView
                 onRemixTemplate={({ templateId, prompt }) => {
                   // Remix carries the template's PROJECT along, not just its
                   // prompt: duplicate the plugin's example artifact into a
@@ -2078,7 +2086,11 @@ export function EntryShell({
                     projectKind: target.projectKind,
                   });
                 }}
-              />
+              /> : (
+                // Remix, Use and the plugin hand-off are host flows. Web accounts
+                // browse the gallery read-only; details carry Web availability (#61).
+                <CommunityView readOnly />
+              )}</StudioLane>
             ) : null}
             {/* Team destinations — the entry shell owns the nav frame only; each
                 view is provided by another lane (B = members/board, D = team
@@ -2162,6 +2174,7 @@ export function EntryShell({
         onCreate={handleCreate}
         onImportClaudeDesign={onImportClaudeDesign}
         {...(onImportFolder ? { onImportFolder } : {})}
+        {...(onImportBrowserDirectory ? { onImportBrowserDirectory } : {})}
         {...(onImportFolderResponse ? { onImportFolderResponse } : {})}
         onOpenConnectorsTab={() => {
           setNewProjectOpen(false);
@@ -3236,7 +3249,7 @@ function OnboardingView({
     const startedAt = Date.now();
     while (!amrLoginPollCancelledRef.current) {
       await new Promise((resolve) =>
-        window.setTimeout(resolve, AMR_LOGIN_POLL_INTERVAL_MS),
+        studioWindowSetTimeout(resolve, AMR_LOGIN_POLL_INTERVAL_MS),
       );
       if (amrLoginPollCancelledRef.current) return false;
       const nextStatus = await fetchVelaLoginStatus();
@@ -3555,7 +3568,7 @@ function OnboardingView({
     if (!canFetchProviderModels) return;
     if (providerModelsState.status === 'running') return;
     if (providerModelsAutoFetchKeyRef.current === providerModelsInputKey) return;
-    const timer = window.setTimeout(() => {
+    const timer = studioWindowSetTimeout(() => {
       void fetchProviderModelsInline();
     }, ONBOARDING_BYOK_AUTO_FETCH_DELAY_MS);
     return () => window.clearTimeout(timer);
@@ -3576,7 +3589,7 @@ function OnboardingView({
     if (runtime !== 'byok' || !runtimeSetupStep) return;
     if (!canTestProvider) return;
     if (providerAutoTestKeyRef.current === providerTestInputKey) return;
-    const timer = window.setTimeout(() => {
+    const timer = studioWindowSetTimeout(() => {
       // Re-read at fire time: a manual Test press does not disturb this
       // effect's inputs, so an armed debounce would otherwise spend a second
       // request on inputs that were just validated by hand.
@@ -3597,7 +3610,7 @@ function OnboardingView({
     if (runtime !== 'local' || !runtimeSetupStep) return;
     if (!agentValidationWorthStarting) return;
     if (agentAutoTestKeyRef.current === agentTestInputKey) return;
-    const timer = window.setTimeout(() => {
+    const timer = studioWindowSetTimeout(() => {
       // Re-read at fire time: a manual Test press does not disturb this
       // effect's inputs, so an armed debounce would otherwise spend a second
       // agent spawn on inputs that were just validated by hand.

@@ -1,3 +1,4 @@
+import { registerStudioReset } from '../runtime/studio-resources';
 type HtmlSourceSnapshot = Readonly<{
   authorizationScopeKey: string;
   projectId: string;
@@ -175,3 +176,5 @@ export function invalidateHtmlSourceSnapshotProject(projectId: string): void {
 export function resetHtmlSourceSnapshotCache(): void {
   htmlSourceSnapshotCache.clear();
 }
+
+registerStudioReset(() => { resetHtmlSourceSnapshotCache(); });

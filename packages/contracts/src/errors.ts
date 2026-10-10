@@ -194,9 +194,28 @@ export const API_ERROR_CODES = [
   'MULTIUSER_QUEUE_LIMIT',
   'MULTIUSER_QUOTA_EXHAUSTED',
   'MULTIUSER_PROVIDER_DISABLED',
+  // The account's own provider key (#62/#63): none stored, the provider
+  // refused it (401/403), or the provider rate-limited the account (429).
+  // Never answered by falling back to the company pool.
+  'MULTIUSER_PROVIDER_KEY_MISSING',
+  'MULTIUSER_PROVIDER_KEY_REJECTED',
+  'MULTIUSER_PROVIDER_RATE_LIMITED',
+  // Multi-user terminal run errors that are not personal-lane specific (#79):
+  // a company/test-mock run that failed without a public reason, its launcher
+  // failing before a child owned the run, a worker that outlived the shutdown
+  // TERM/KILL bounds, and a queued row whose ledger admission was replayed.
+  'MULTIUSER_RUN_FAILED',
+  'MULTIUSER_RUN_START_FAILED',
+  'MULTIUSER_RUN_SHUTDOWN_TIMEOUT',
+  'MULTIUSER_RUN_ADMISSION_REPLAYED',
   // Personal subscription lane (#18). DISABLED: the server-side enablement
   // switch is off. UNAVAILABLE: no usable linked account (not linked,
   // requires_reauth or disabled); never falls back to the company pool.
+  'DAEMON_RESTARTED',
+  'MULTIUSER_PERSONAL_RUN_FAILED',
+  'MULTIUSER_CODEX_UNSUPPORTED_VERSION',
+  'MULTIUSER_RUN_TOOLS_UNAVAILABLE',
+  'MULTIUSER_RUN_REQUEST_INVALID',
   'MULTIUSER_PERSONAL_DISABLED',
   'MULTIUSER_PERSONAL_UNAVAILABLE',
   'MULTIUSER_PERSONAL_CONSENT_REQUIRED',
@@ -206,6 +225,35 @@ export const API_ERROR_CODES = [
   'MULTIUSER_PERSONAL_USAGE_LIMIT',
   'MULTIUSER_PERSONAL_WORKSPACE_NOT_ALLOWED',
   'MULTIUSER_EXECUTION_SOURCE_MISMATCH',
+  'MULTIUSER_CAPABILITY_UNAVAILABLE',
+  // Account connectors (#62, S58). NOT_CONFIGURED: no company Composio key;
+  // AUTHORIZATION_INVALID: an OAuth callback whose server-side state is
+  // unknown, expired, replayed, or whose bound session/account/key/provider
+  // account no longer matches (details.reason); PROVIDER_FAILED: Composio
+  // refused or failed (its body is never echoed); RECHECK_REQUIRED: the
+  // company key changed since the account connected; AUTHORITY_CHANGED: the
+  // account, session, company key or connection changed while the request
+  // ran, so nothing was sent to the provider or changed (details.reason).
+  'MULTIUSER_CONNECTORS_NOT_CONFIGURED',
+  'MULTIUSER_CONNECTOR_AUTHORIZATION_INVALID',
+  'MULTIUSER_CONNECTOR_PROVIDER_FAILED',
+  'MULTIUSER_CONNECTOR_RECHECK_REQUIRED',
+  'MULTIUSER_CONNECTOR_AUTHORITY_CHANGED',
+  'CONNECTOR_NOT_GRANTED',
+  // Account remote MCP servers (#62, S60). AUTHORITY_CHANGED: the account,
+  // session or server changed while the request ran, so nothing further was
+  // sent or changed (details.reason); AUTHORIZATION_INVALID: an OAuth callback
+  // whose single-use state is unknown, expired, replayed or whose bound
+  // account/session/server no longer matches (details.reason);
+  // OUTBOUND_REFUSED: the SSRF guard refused the destination (details.reason);
+  // PROVIDER_FAILED: the remote server or its authorization server failed or
+  // answered unusably (its body is never echoed); LIMIT_REACHED: the account
+  // already has the maximum number of servers.
+  'MULTIUSER_MCP_AUTHORITY_CHANGED',
+  'MULTIUSER_MCP_AUTHORIZATION_INVALID',
+  'MULTIUSER_MCP_OUTBOUND_REFUSED',
+  'MULTIUSER_MCP_PROVIDER_FAILED',
+  'MULTIUSER_MCP_LIMIT_REACHED',
   'INTERNAL_ERROR',
 ] as const;
 
@@ -248,6 +296,8 @@ export type LegacyErrorResponse =
 export type CompatibleErrorResponse = ApiErrorResponse | LegacyErrorResponse;
 
 export interface SseErrorPayload {
+  /** Safe normalized provider classification; never provider free text. */
+  codexErrorInfo?: { reason: string; httpStatusCode?: number };
   message: string;
   error?: ApiError;
   /**

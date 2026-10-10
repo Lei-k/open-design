@@ -1,3 +1,5 @@
+import { registerStudioReset } from '../runtime/studio-resources';
+import { studioFetch as fetch } from '../runtime/studio-transport';
 import { useEffect, useState, type ReactNode } from 'react';
 import type { WorkspaceCollabContext } from '@open-design/contracts';
 import { projectFileUrl } from '../providers/registry';
@@ -351,3 +353,5 @@ export function HtmlProjectCoverFrame({
     </>
   );
 }
+
+registerStudioReset(() => { inFlightCoverProbes.clear(); });

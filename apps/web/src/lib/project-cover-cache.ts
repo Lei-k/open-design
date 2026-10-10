@@ -1,3 +1,4 @@
+import { registerStudioReset } from '../runtime/studio-resources';
 // Bounded LRU snapshot of resolved project-card cover decisions.
 //
 // Resolving one card's cover costs a `/files` read plus a HEAD probe (or a
@@ -76,3 +77,5 @@ export function invalidateProjectCoverSnapshots(projectId: string): void {
 export function resetProjectCoverSnapshots(): void {
   snapshots.clear();
 }
+
+registerStudioReset(resetProjectCoverSnapshots);

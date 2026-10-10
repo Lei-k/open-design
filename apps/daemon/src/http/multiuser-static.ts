@@ -3,18 +3,48 @@ import path from 'node:path';
 import type { Express } from 'express';
 
 /** Public code only. No generic static root or SPA catch-all is authorized. */
-export const MULTIUSER_SHELL_PATHS = ['/', '/login', '/setup', '/projects', '/admin/users', '/admin/audit', '/account/agents', '/projects/:projectId', '/projects/:projectId/conversations/:conversationId'] as const;
+// Canonical App routes from router.buildPath, plus the public auth/legacy entry.
+// e2e/tests/studio-shell-routes.test.ts exercises the cross-runtime contract.
+export const MULTIUSER_SHELL_PATHS = [
+  '/', '/login', '/setup', '/projects', '/admin/users', '/admin/audit', '/account/agents',
+  '/onboarding', '/automations', '/plugins', '/design-systems', '/library', '/brands',
+  '/integrations', '/community', '/drafts', '/all-projects', '/members', '/board',
+  '/workspace-settings', '/settings', '/marketplace', '/collab-demo',
+  '/design-systems/create', '/design-systems/:designSystemId', '/brands/:brandId',
+  '/marketplace/:pluginId', '/collab-demo/:projectId',
+  '/projects/:projectId', '/projects/:projectId/conversations/:conversationId',
+  '/projects/:projectId/files/*file', '/projects/:projectId/conversations/:conversationId/files/*file',
+] as const;
 export const MULTIUSER_ASSET_PATHS = ['/app-icon.png', '/fonts/AlbertSans-VariableFont_wght.ttf', '/fonts/AlbertSans-Italic-VariableFont_wght.ttf', '/fonts/JiduMonoPro-Regular.otf'] as const;
 export const MULTIUSER_BUILD_ASSET_ROUTE = '/_next/static/*asset';
+/** Public agent brand marks the shared chat renders beside assistant turns. */
+export const MULTIUSER_AGENT_ICON_ROUTE = '/agent-icons/:icon';
+/** Public editor marks the shared viewer's open-in menus render. */
+export const MULTIUSER_EDITOR_ICON_ROUTE = '/editor-icons/:icon';
+
+/** encodeURIComponent is the router's sole spelling for a dynamic segment. */
+function canonicalSegment(value: string): boolean {
+  try {
+    const decoded = decodeURIComponent(value);
+    return decoded.length > 0 && decoded !== '.' && decoded !== '..'
+      && !/[\\/\x00-\x1f\x7f%]/.test(decoded) && encodeURIComponent(decoded) === value;
+  } catch { return false; }
+}
 
 export function publicMultiUserFile(rawPath: string): string | null {
-  // Require one canonical spelling; never decode path separators or dot segments.
-  if (rawPath.includes('%') || rawPath.includes('\\') || rawPath.includes('//')) return null;
-  if (MULTIUSER_SHELL_PATHS.some((route) => !route.includes(':') && route === rawPath)
-      || /^\/projects\/[A-Za-z0-9_-]+(?:\/conversations\/[A-Za-z0-9_-]+)?$/.test(rawPath)) return 'index.html';
+  if (rawPath.includes('\\') || rawPath.includes('//') || rawPath.includes('?') || rawPath.includes('#')) return null;
+  const segments = rawPath.slice(1).split('/');
+  for (const route of MULTIUSER_SHELL_PATHS) {
+    const pattern = route.slice(1).split('/');
+    if (pattern.some((part) => part.startsWith('*')) ? segments.length < pattern.length : segments.length !== pattern.length) continue;
+    if (pattern.every((part, index) => part.startsWith('*')
+      ? segments.slice(index).every(canonicalSegment)
+      : part.startsWith(':') ? canonicalSegment(segments[index]!) : segments[index] === part)) return 'index.html';
+  }
   if ((MULTIUSER_ASSET_PATHS as readonly string[]).includes(rawPath)) return rawPath.slice(1);
+  if (/^\/(?:agent|editor)-icons\/[a-z0-9-]{1,64}\.(?:svg|png)$/.test(rawPath)) return rawPath.slice(1);
   if (!/^\/_next\/static\/(?:chunks|media)\/[A-Za-z0-9_.~-]+\.(?:js|css|woff2?|ttf|otf|png|svg)$/.test(rawPath)) return null;
-  if (rawPath.split('/').some((part) => part === '.' || part === '..')) return null;
+  if (segments.some((part) => part === '.' || part === '..')) return null;
   return rawPath.slice(1);
 }
 
@@ -34,7 +64,7 @@ function regularPublicFile(root: string, relative: string): boolean {
 }
 
 export function registerMultiUserStatic(app: Express, staticDir: string): void {
-  for (const route of [...MULTIUSER_SHELL_PATHS, ...MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE]) {
+  for (const route of [...MULTIUSER_SHELL_PATHS, ...MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE, MULTIUSER_AGENT_ICON_ROUTE, MULTIUSER_EDITOR_ICON_ROUTE]) {
     app.get(route, (req, res) => {
       const file = publicMultiUserFile(req.path);
       res.setHeader('Cache-Control', 'no-store');

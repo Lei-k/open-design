@@ -1,6 +1,7 @@
+import { useStudioCapabilities, StudioUnavailable } from '../runtime/studio-capabilities';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Dialog, DialogDescription, DialogFooter, DialogTitle } from '@open-design/components';
+import { Button, Dialog, DialogDescription, DialogFooter, DialogTitle } from '@open-design/components';
 import { createTabToTracking } from '@open-design/contracts/analytics';
 import { isOpenDesignHostAvailable, pickHostWorkingDir } from '@open-design/host';
 import type { OpenDesignHostProjectImportSuccess } from '@open-design/host';
@@ -158,6 +159,7 @@ interface Props {
   // Local-server flow: the daemon-owned native folder picker returns the
   // selected baseDir, then the renderer POSTs `/api/import/folder`.
   onImportFolder?: (baseDir: string) => Promise<void> | void;
+  onImportBrowserDirectory?: (files: File[]) => Promise<ImportClaudeDesignOutcome>;
   // Host flow: the desktop main process owns the picker dialog and
   // the import call atomically (`pickAndImport` IPC). The renderer
   // never sees the path or the HMAC token; it only receives the
@@ -283,6 +285,7 @@ export function NewProjectPanel({
   promptTemplates,
   onCreate,
   onImportClaudeDesign,
+  onImportBrowserDirectory,
   onImportFolder,
   onImportFolderResponse,
   mediaProviders,
@@ -292,10 +295,12 @@ export function NewProjectPanel({
   loading = false,
   initialTab = 'prototype',
 }: Props) {
+  const studio = useStudioCapabilities();
   const t = useT();
   const { locale } = useI18n();
   const analytics = useAnalytics();
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const browserDirectoryInputRef = useRef<HTMLInputElement | null>(null);
   const [importing, setImporting] = useState(false);
   const [importZipError, setImportZipError] = useState<
     { message: string; details?: string } | null
@@ -306,7 +311,9 @@ export function NewProjectPanel({
   const [workingDirError, setWorkingDirError] = useState<
     { message: string; details?: string } | null
   >(null);
-  const [tab, setTab] = useState<CreateTab>(initialTab);
+  const [tab, setTab] = useState<CreateTab>(() => studio.hostServices || ['prototype', 'deck', 'template', 'other'].includes(initialTab) ? initialTab : 'prototype');
+  const [studioSkillId, setStudioSkillId] = useState<string | null>(null);
+  const tabAvailable = (value: CreateTab) => studio.hostServices || ['prototype', 'deck', 'template', 'other'].includes(value);
   // P0 analytics — fire surface_view once per (panel mount, tab) pair so the
   // funnel sees both initial open and tab switches without double-counting on
   // unrelated re-renders. Ref keys on a tab string because the panel is a
@@ -333,8 +340,8 @@ export function NewProjectPanel({
   // component can drive both single-select and multi-select modes without
   // duplicating state. Single-select coerces to length 0/1.
   const selectableDesignSystems = useMemo(
-    () => designSystems.filter(isSelectableProjectDesignSystem),
-    [designSystems],
+    () => designSystems.filter((system) => isSelectableProjectDesignSystem(system) || !studio.hostServices && system.source === 'user'),
+    [designSystems, studio.hostServices],
   );
   const initialDefaultDsSelection = useMemo(
     () => defaultDesignSystemSelection(defaultDesignSystemId, selectableDesignSystems),
@@ -495,6 +502,7 @@ export function NewProjectPanel({
   // pick a default-rendered skill (so the agent gets the right SKILL.md
   // body) without requiring the user to choose one explicitly.
   const skillIdForTab = useMemo(() => {
+    if (!studio.hostServices) return studioSkillId;
     if (tab === 'other') return null;
     if (tab === 'prototype') {
       const list = skills.filter((s) => s.mode === 'prototype');
@@ -537,7 +545,7 @@ export function NewProjectPanel({
         ?? null;
     }
     return null;
-  }, [tab, mediaSurface, skills, videoModel]);
+  }, [tab, mediaSurface, skills, videoModel, studio.hostServices, studioSkillId]);
 
   // Renderable scenario templates for the active tab's "Start from" rail.
   // Blank (no template) is always the first card; these fill the rest.
@@ -546,13 +554,14 @@ export function NewProjectPanel({
       tab === 'prototype' ? 'prototype' : tab === 'deck' ? 'deck' : null;
     if (!mode) return [];
     return designTemplates
+      .filter((s) => studio.hostServices || s.selectable !== false)
       .filter((s) => s.mode === mode && !s.aggregatesExamples)
       .sort(
         (a, b) =>
           (b.featured ?? 0) - (a.featured ?? 0) ||
           localizeSkillName(locale, a).localeCompare(localizeSkillName(locale, b)),
       );
-  }, [designTemplates, tab, locale]);
+  }, [designTemplates, tab, locale, studio.hostServices]);
 
   // Each tab has its own notion of Blank (a different default skill), so a
   // pick made on one tab must not silently carry over to another.
@@ -625,7 +634,7 @@ export function NewProjectPanel({
   }, [tab, mediaSurface, skillIdForTab, videoModelTouched]);
 
   const canCreate =
-    !loading && (tab !== 'template' || templateId != null);
+    !loading && tabAvailable(tab) && (tab !== 'template' || templateId != null);
 
   function updateTabScrollState() {
     const el = tabsRef.current;
@@ -777,7 +786,7 @@ export function NewProjectPanel({
     onCreate({
       name: trimmedName || autoName(tab, mediaSurface, t),
       skillId: startTemplateId ?? skillIdForTab,
-      skillSelectionProvenance: startTemplateId ? 'explicit-user' : 'automatic-default',
+      skillSelectionProvenance: startTemplateId || !studio.hostServices && studioSkillId ? 'explicit-user' : 'automatic-default',
       designSystemId: primaryDs,
       metadata: {
         ...metadata,
@@ -853,6 +862,7 @@ export function NewProjectPanel({
     onImportFolderResponse,
   });
 
+
   return (
     <div className="newproj" data-testid="new-project-panel">
       <div className={`newproj-tabs-shell${tabScroll.left ? ' can-left' : ''}${tabScroll.right ? ' can-right' : ''}`}>
@@ -871,6 +881,8 @@ export function NewProjectPanel({
               key={entry}
               role="tab"
               data-testid={`new-project-tab-${entry}`}
+              disabled={!tabAvailable(entry)}
+              title={!tabAvailable(entry) ? studio.reason('home') : undefined}
               aria-selected={tab === entry}
               className={`newproj-tab ${tab === entry ? 'active' : ''}`}
               onClick={() => {
@@ -928,7 +940,7 @@ export function NewProjectPanel({
           />
         </div>
 
-        <div className="newproj-working-dir-row">
+        {studio.hostServices ? <div className="newproj-working-dir-row">
           <button
             type="button"
             className={`ghost newproj-working-dir od-tooltip${workingDir ? ' picked' : ''}`}
@@ -959,15 +971,27 @@ export function NewProjectPanel({
               <Icon name="close" size={14} />
             </button>
           ) : null}
-        </div>
+        </div> : null}
 
+        {!studio.hostServices ? (
+          <div className="newproj-section">
+            <label className="newproj-label" htmlFor="studio-project-skill">{t('settings.skills')}</label>
+            <select id="studio-project-skill" data-testid="new-project-skill" value={studioSkillId ?? ''}
+              onChange={(event) => setStudioSkillId(event.target.value || null)}>
+              <option value="">{t('newproj.startBlank')}</option>
+              {skills.filter((skill) => skill.selectable !== false).map((skill) =>
+                <option key={skill.id} value={skill.id}>{localizeSkillName(locale, skill)}</option>)}
+            </select>
+          </div>
+        ) : null}
         {showDesignSystemPicker ? (
           <DesignSystemPicker
             designSystems={selectableDesignSystems}
             defaultDesignSystemId={defaultDesignSystemId}
             selectedIds={selectedDsIds}
-            multi={dsMulti}
+            multi={studio.hostServices && dsMulti}
             onChangeMulti={setDsMulti}
+            allowMulti={studio.hostServices}
             onChange={handleDesignSystemChange}
             loading={loading}
           />
@@ -1131,7 +1155,7 @@ export function NewProjectPanel({
               : t('newproj.create')}
           </span>
         </button>
-        {onImportClaudeDesign ? (
+        {onImportClaudeDesign && (studio.hostServices || studio.available('home')) ? (
           <>
             <input
               ref={importInputRef}
@@ -1156,7 +1180,7 @@ export function NewProjectPanel({
             </button>
           </>
         ) : null}
-        {folderImport.available ? (
+        {studio.hostServices && folderImport.available ? (
           <div className="newproj-open-folder">
             <button
               type="button"
@@ -1174,6 +1198,28 @@ export function NewProjectPanel({
           </div>
         ) : null}
       </div>
+      {!studio.hostServices ? <StudioUnavailable lane="home" /> : null}
+      {!studio.hostServices && onImportBrowserDirectory && studio.available('home') ? (
+        <>
+          <input type="file" multiple hidden data-testid="browser-directory-input"
+            ref={(element) => { browserDirectoryInputRef.current = element; element?.setAttribute('webkitdirectory', ''); }}
+            onChange={async (event) => {
+              const files = Array.from(event.target.files ?? []); event.target.value = '';
+              if (!files.length) return;
+              setImporting(true); setImportZipError(null);
+              try {
+                const result = await onImportBrowserDirectory(files);
+                if (!result.ok) setImportZipError({ message: result.message ?? 'Folder import failed', details: result.details });
+              }
+              catch (error) { setImportZipError({ message: error instanceof Error ? error.message : 'Folder import failed' }); }
+              finally { setImporting(false); }
+            }} />
+          <Button variant="ghost" data-testid="import-browser-directory" disabled={loading || importing}
+            onClick={() => browserDirectoryInputRef.current?.click()}>
+            <Icon name="folder" size={14} /> {importing ? t('newproj.openingFolder') : t('newproj.openFolder')}
+          </Button>
+        </>
+      ) : null}
       <div className="newproj-footer">{t('newproj.privacyFooter')}</div>
       {importZipError ? (
         <Toast
@@ -1735,8 +1781,9 @@ function TemplatePicker({
       ) : (
         <div className="template-list">
           {templates.map((tpl) => {
-            const fallbackDesc = `${t('newproj.savedTemplate')} · ${tpl.files.length} ${
-              tpl.files.length === 1
+            const fileCount = tpl.fileCount ?? tpl.files.length;
+            const fallbackDesc = `${t('newproj.savedTemplate')} · ${fileCount} ${
+              fileCount === 1
                 ? t('newproj.fileSingular')
                 : t('newproj.filePlural')
             }`;
@@ -2140,6 +2187,7 @@ function DesignSystemPicker({
   multi,
   onChange,
   onChangeMulti,
+  allowMulti = true,
   loading,
 }: {
   designSystems: DesignSystemSummary[];
@@ -2148,6 +2196,7 @@ function DesignSystemPicker({
   multi: boolean;
   onChange: (ids: string[]) => void;
   onChangeMulti: (v: boolean) => void;
+  allowMulti?: boolean;
   loading: boolean;
 }) {
   const t = useT();
@@ -2190,7 +2239,7 @@ function DesignSystemPicker({
       .filter((d): d is DesignSystemSummary => Boolean(d));
     const pickedSet = new Set(picked.map((d) => d.id));
     const rest = designSystems
-      .filter((d) => (d.status ?? 'published') !== 'draft' && !pickedSet.has(d.id))
+      .filter((d) => !pickedSet.has(d.id))
       .sort((a, b) => {
         if (a.id === defaultDesignSystemId) return -1;
         if (b.id === defaultDesignSystemId) return 1;
@@ -2420,7 +2469,7 @@ function DesignSystemPicker({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
-            <div
+            {allowMulti ? <div
               className="ds-picker-mode"
               role="tablist"
               aria-label={t('newproj.dsModeAria')}
@@ -2446,7 +2495,7 @@ function DesignSystemPicker({
               >
                 {t('newproj.dsModeMulti')}
               </button>
-            </div>
+            </div> : null}
           </div>
           <div className="ds-picker-list ds-picker-list-design-systems">
             <DsPickerItem

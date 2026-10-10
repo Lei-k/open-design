@@ -1,3 +1,4 @@
+import { studioWindowSetTimeout, studioFetch as fetch } from '../runtime/studio-transport';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type {
   OdNextRolloutControlResponse,
@@ -141,7 +142,7 @@ function OptOutPanel({ onAnswer }: OptOutPanelProps) {
     // panel away mid-sentence would be hostile, so the clock stops there —
     // a discrete state change, not hover-tracking.
     if (expanded) return undefined;
-    const timer = window.setTimeout(() => {
+    const timer = studioWindowSetTimeout(() => {
       answerRef.current({ reason: ['skipped'] });
     }, OPT_OUT_PROMPT_TTL_MS);
     return () => window.clearTimeout(timer);
@@ -270,7 +271,7 @@ export function LabsSection({ autosave }: LabsSectionProps) {
   const reportSaved = useCallback((claim: number | null) => {
     settleAutosave(claim, 'saved');
     if (savedPillTimerRef.current != null) window.clearTimeout(savedPillTimerRef.current);
-    savedPillTimerRef.current = window.setTimeout(() => {
+    savedPillTimerRef.current = studioWindowSetTimeout(() => {
       savedPillTimerRef.current = null;
       settleAutosave(claim, 'idle');
     }, SAVED_PILL_TTL_MS);

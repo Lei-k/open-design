@@ -47,6 +47,17 @@ describe('projectEventsUrl', () => {
 });
 
 describe('createProjectEventsConnection', () => {
+  it('receives typed committed chat invalidations, refusing another project or malformed routing fields', () => {
+    const seen: ProjectEvent[] = [];
+    const conn = createProjectEventsConnection('p1', (event) => seen.push(event), { EventSourceCtor: MockEventSource as unknown as typeof EventSource });
+    const es = MockEventSource.instances[0]!;
+    const event = { type: 'chat-messages-changed', projectId: 'p1', conversationId: 'conversation', at: 123 };
+    for (const data of [event, { ...event, projectId: 'other' }, { ...event, conversationId: null }, { ...event, type: 'file-changed' }]) {
+      es.dispatch('chat-messages-changed', { data: JSON.stringify(data) });
+    }
+    es.dispatch('chat-messages-changed', { data: '{broken' });
+    expect(seen).toEqual([event]); conn.close();
+  });
   it('opens an EventSource against the events URL on creation', () => {
     const conn = createProjectEventsConnection(
       'p1',

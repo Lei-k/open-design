@@ -28,7 +28,7 @@ export function watchRunEvents(
   async function connect() {
     if (controller.signal.aborted || terminal) return;
     try {
-      const response = await owner.session.stream(`/api/runs/${encodeURIComponent(runId)}/events`, controller.signal, owner.generation);
+      const response = await owner.session.stream(`/api/runs/${encodeURIComponent(runId)}/events`, controller.signal, owner.generation, lastSeq ? String(lastSeq) : undefined);
       if (controller.signal.aborted) { await response.body?.cancel(); return; }
       if (!response.body) throw new Error('Missing event stream');
       reader = response.body.getReader();

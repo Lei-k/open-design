@@ -316,6 +316,16 @@ export type RunFailureMessageKey =
   | 'chat.runError.membershipConcurrencyLimitMessageNoTime'
   | 'chat.runError.upstreamUnavailableMessage'
   | 'chat.runError.toolLoopMessage'
+  | 'chat.runError.personalUsageLimitMessage'
+  | 'chat.runError.personalAccountMessage'
+  | 'chat.runError.personalSourceMismatchMessage'
+  | 'chat.runError.personalQueueLimitMessage'
+  | 'chat.runError.personalUnavailableMessage'
+  | 'chat.runError.personalRunFailedMessage'
+  | 'chat.runError.codexVersionMessage'
+  | 'chat.runError.toolsUnavailableMessage'
+  | 'chat.runError.personalKeyMessage'
+  | 'chat.runError.personalKeyLimitedMessage'
   | 'chat.runError.outputInvalidMessage'
   | 'chat.runError.runtimeConfigMessage'
   | 'chat.runError.apiKeyInvalidMessage'
@@ -494,6 +504,16 @@ export type RunFailureTitleKey =
   | 'chat.runError.title.modelCapabilityUnsupported'
   | 'chat.runError.title.upstreamUnavailable'
   | 'chat.runError.title.toolLoop'
+  | 'chat.runError.title.personalUsageLimit'
+  | 'chat.runError.title.personalAccount'
+  | 'chat.runError.title.personalSourceMismatch'
+  | 'chat.runError.title.personalQueueLimit'
+  | 'chat.runError.title.personalUnavailable'
+  | 'chat.runError.title.personalRunFailed'
+  | 'chat.runError.title.codexVersion'
+  | 'chat.runError.title.toolsUnavailable'
+  | 'chat.runError.title.personalKey'
+  | 'chat.runError.title.personalKeyLimited'
   | 'chat.runError.title.outputInvalid'
   | 'chat.runError.title.runtimeConfig'
   | 'chat.runError.title.apiKeyInvalid'
@@ -1008,7 +1028,43 @@ function contactSupportOnly(
 // (apps/daemon/src/run-failure-classification.ts); this is the user-facing half
 // of that taxonomy — a human-readable type name plus a one-line instruction,
 // with the raw upstream string preserved in the card's collapsible source area.
+// Personal-subscription runs (multi-user Studio, #55/#57). The daemon sends a
+// typed code and never falls back to another payer, so the fix is always the
+// actor's own account, queue or conversation: retry when that can succeed,
+// otherwise say why (rung 4), never "switch source".
+const personalAccountFailure = retryWithGuidance('chat.runError.title.personalAccount', 'chat.runError.personalAccountMessage');
+const personalQueueFailure = retryWithGuidance('chat.runError.title.personalQueueLimit', 'chat.runError.personalQueueLimitMessage');
+const personalUnavailableFailure = failureCard({}, 'chat.runError.title.personalUnavailable', 'chat.runError.personalUnavailableMessage');
+const personalRunFailure = retryWithGuidance('chat.runError.title.personalRunFailed', 'chat.runError.personalRunFailedMessage');
+const PERSONAL_SUBSCRIPTION_FAILURE_UI: Record<string, RunFailureUi> = {
+  MULTIUSER_PERSONAL_USAGE_LIMIT: retryWithGuidance('chat.runError.title.personalUsageLimit', 'chat.runError.personalUsageLimitMessage'),
+  MULTIUSER_PERSONAL_REAUTH_REQUIRED: personalAccountFailure,
+  MULTIUSER_PERSONAL_UNAVAILABLE: personalAccountFailure,
+  MULTIUSER_PERSONAL_CONSENT_REQUIRED: personalAccountFailure,
+  MULTIUSER_PERSONAL_WORKSPACE_NOT_ALLOWED: personalAccountFailure,
+  MULTIUSER_PERSONAL_QUEUE_LIMIT: personalQueueFailure,
+  MULTIUSER_PERSONAL_BUSY: personalQueueFailure,
+  MULTIUSER_EXECUTION_SOURCE_MISMATCH: failureCard({}, 'chat.runError.title.personalSourceMismatch', 'chat.runError.personalSourceMismatchMessage'),
+  MULTIUSER_PERSONAL_DISABLED: personalUnavailableFailure,
+  MULTIUSER_CAPABILITY_UNAVAILABLE: personalUnavailableFailure,
+  MULTIUSER_AGENT_FORBIDDEN: personalUnavailableFailure,
+  MULTIUSER_RUN_REQUEST_INVALID: personalUnavailableFailure,
+  MULTIUSER_PERSONAL_RUN_FAILED: personalRunFailure,
+  MULTIUSER_CODEX_UNSUPPORTED_VERSION: failureCard({}, 'chat.runError.title.codexVersion', 'chat.runError.codexVersionMessage'),
+  MULTIUSER_RUN_TOOLS_UNAVAILABLE: failureCard({}, 'chat.runError.title.toolsUnavailable', 'chat.runError.toolsUnavailableMessage'),
+  // The account's own provider key (#62/#63): fixed in Settings, never by switching payer.
+  MULTIUSER_PROVIDER_KEY_MISSING: failureCard({}, 'chat.runError.title.personalKey', 'chat.runError.personalKeyMessage'),
+  MULTIUSER_PROVIDER_KEY_REJECTED: failureCard({}, 'chat.runError.title.personalKey', 'chat.runError.personalKeyMessage'),
+  MULTIUSER_PROVIDER_RATE_LIMITED: retryWithGuidance('chat.runError.title.personalKeyLimited', 'chat.runError.personalKeyLimitedMessage'),
+  // Source-neutral terminal codes (#79): the run stopped on the server side.
+  MULTIUSER_RUN_FAILED: personalRunFailure,
+  MULTIUSER_RUN_START_FAILED: personalRunFailure,
+  MULTIUSER_RUN_SHUTDOWN_TIMEOUT: personalRunFailure,
+  MULTIUSER_RUN_ADMISSION_REPLAYED: personalRunFailure,
+};
+
 const AGENT_AGNOSTIC_FAILURE_UI: Record<string, RunFailureUi> = {
+  ...PERSONAL_SUBSCRIPTION_FAILURE_UI,
   // S23 · 跑完了但没生成文件。正文以前是 `null`,于是卡面落到兜底那一句
   // (「这次没能顺利完成。反复出现的话,把日志发给我们。」)—— 用户面对的是一次
   // **正常结束**的任务,兜底句却在说它失败了,而且什么都没解释。文档 S23 有终稿,
@@ -1614,6 +1670,10 @@ export function resolveRunFailureUi(
       messageKey: 'chat.runError.regionNotSupportedMessage',
     }
     : ui;
+  // Studio's typed failures retain the admitted source; changing payer is never recovery.
+  if (typeof code === 'string' && Object.hasOwn(PERSONAL_SUBSCRIPTION_FAILURE_UI, code)) {
+    return withoutCloudSelfPromotion(localizedUi);
+  }
   return runsOnALocalAgent(agentId)
     ? withCloudSwitchCta(localizedUi)
     : withoutCloudSelfPromotion(localizedUi);

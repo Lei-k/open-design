@@ -1,3 +1,4 @@
+import type { StudioProjectAccessRole } from './studio-sharing.js';
 import type { ChatMessage, ChatRunStatus, ChatSessionMode } from './chat.js';
 import type { OrchestratorWorkspace } from './workspaces.js';
 import type {
@@ -375,13 +376,28 @@ export interface Project {
    * missing value.
    */
   workspaceId?: string | null;
+  /**
+   * Multi-user Studio (#65): the reader's access to a project that is shared
+   * between accounts — granted to the reader, or owned by the reader and
+   * granted to others. A read projection; absent for an unshared project.
+   */
+  studioShare?: StudioProjectShareSummary;
+}
+
+export interface StudioProjectShareSummary {
+  role: StudioProjectAccessRole;
+  ownerUsername: string;
+  /** Accounts with access, owner included. */
+  memberCount: number;
 }
 
 export interface ProjectTemplate {
+  /** Directory summary count when file contents are omitted from a catalog response. */
+  fileCount?: number;
   id: string;
   name: string;
   sourceProjectId?: string;
-  files: Array<{ name: string; content: string }>;
+  files: Array<{ name: string; content: string; encoding?: 'utf8' | 'base64' }>;
   description?: string;
   createdAt: number;
 }
@@ -411,6 +427,8 @@ export interface Conversation {
   messageCount?: number;
   createdAt: number;
   updatedAt: number;
+  /** Studio only: server-computed transcript/run write access for the current actor. */
+  studioCanWrite?: boolean;
   totalDurationMs?: number;
   latestRun?: {
     status: ChatRunStatus;

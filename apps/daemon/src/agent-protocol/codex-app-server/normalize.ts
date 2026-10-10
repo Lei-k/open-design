@@ -112,7 +112,7 @@ const BOUNDARY_CLEARING_ITEM_TYPES = new Set([
  * `agentMessage` and `reasoning` deliberately return null: their text is
  * delta-driven and owned by the normalizer directly.
  */
-function toExecItem(item: JsonObject): JsonObject | null {
+function toExecItem(item: JsonObject, reportToolStartupFailures = false): JsonObject | null {
   const id = str(item.id);
   switch (item.type) {
     case 'commandExecution':
@@ -123,6 +123,7 @@ function toExecItem(item: JsonObject): JsonObject | null {
         command: str(item.command),
         aggregated_output: str(item.aggregatedOutput),
         exit_code: num(item.exitCode) ?? null,
+        ...(reportToolStartupFailures && item.status === 'failed' && item.exitCode === null ? { startup_failed: true } : {}),
         status: str(item.status),
       };
     case 'fileChange': {
@@ -194,6 +195,7 @@ export function createCodexAppServerNormalizer(
    */
   now: () => number = Date.now,
   cwd?: string,
+  reportToolStartupFailures = false,
 ): CodexAppServerNormalizer {
   const evaluationUsage = createCodexTurnUsage();
   let emittedCount = 0;
@@ -520,7 +522,7 @@ export function createCodexAppServerNormalizer(
       if (lifecycle === 'item.completed') completedPatches.add(id);
     }
 
-    const execItem = toExecItem(item);
+    const execItem = toExecItem(item, reportToolStartupFailures);
     if (!execItem) {
       unknownItems += 1;
       return;

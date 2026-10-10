@@ -168,6 +168,7 @@ export interface ComposerPlusMenuProps {
    * renders only when `onPickConnector` is provided.
    */
   connectors?: ConnectorDetail[];
+  connectorUnavailableReason?: string | undefined;
   onPickConnector?: (connector: ConnectorDetail) => void;
   /** Opens the connector integration surface; omit to hide the add row. */
   onAddConnector?: () => void;
@@ -322,6 +323,7 @@ function mcpMatches(server: McpServerConfig, needle: string): boolean {
 export function ComposerPlusMenu({
   workspaceContext = null,
   connectors = [],
+  connectorUnavailableReason,
   onPickConnector,
   onAddConnector,
   plugins = [],
@@ -787,6 +789,7 @@ export function ComposerPlusMenu({
             icon="link"
             open={submenu === 'connectors'}
             testId="composer-plus-connectors"
+            disabledReason={connectorUnavailableReason}
             onOpen={(row) => openSubmenu('connectors', row)}
             onClose={scheduleCloseSubmenu}
           >
@@ -970,6 +973,7 @@ function PlusSubmenuRow({
   onOpen,
   onClose,
   flyoutClassName,
+  disabledReason,
   testId,
   children,
 }: {
@@ -980,6 +984,7 @@ function PlusSubmenuRow({
   onClose: () => void;
   /** Extra class on the flyout for width/layout variants. */
   flyoutClassName?: string;
+  disabledReason?: string | undefined;
   testId?: string;
   children: ReactNode;
 }) {
@@ -988,7 +993,7 @@ function PlusSubmenuRow({
     <div
       ref={rowRef}
       className={`plus-menu__submenu-row${open ? ' is-open' : ''}`}
-      onMouseEnter={() => onOpen(rowRef.current)}
+      onMouseEnter={() => { if (!disabledReason) onOpen(rowRef.current); }}
       onMouseLeave={onClose}
     >
       <button
@@ -996,6 +1001,9 @@ function PlusSubmenuRow({
         role="menuitem"
         className="plus-menu__item plus-menu__parent"
         data-testid={testId}
+        disabled={Boolean(disabledReason)}
+        title={disabledReason}
+        aria-description={disabledReason}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => (open ? onClose() : onOpen(rowRef.current))}

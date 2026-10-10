@@ -1,3 +1,4 @@
+import { studioWindowSetTimeout, studioFetch as fetch } from '../runtime/studio-transport';
 // DesignKitView — the shared brand.html-style kit layout.
 //
 // Renders a normalized DesignKit (see runtime/design-kit.ts) as the full module
@@ -456,7 +457,7 @@ function DesignKitViewInner({
         target.focus({ preventScroll: true });
       }
     }
-    const timer = window.setTimeout(() => setEditFocusModule(null), 8000);
+    const timer = studioWindowSetTimeout(() => setEditFocusModule(null), 8000);
     return () => window.clearTimeout(timer);
   }, [compact, editFocusRequest?.module, editFocusRequest?.nonce]);
 

@@ -1,28 +1,70 @@
+import { StudioMcpRuntimeError, type StudioMcpRuntime } from '../mcp-client/studio-runtime.js';
+import { STUDIO_MCP_TOOL_DESCRIPTORS } from '../mcp-client/studio-tool-descriptors.js';
+import type { StudioMcpGrant } from '../tool-tokens.js';
+import { STUDIO_CONNECTOR_TOOL_DESCRIPTORS } from '../connectors/tool-descriptors.js';
+import { STUDIO_RUN_CONNECTOR_GRANT_MAX_MS, StudioConnectorRuntimeError, type StudioConnectorRuntime } from '../connectors/studio-runtime.js';
+import { toolTokenRegistry, type StudioConnectorGrant, type ToolTokenGrant } from '../tool-tokens.js';
+import { createStudioLiveArtifactTools, STUDIO_LIVE_ARTIFACT_TOOLS } from '../live-artifacts/studio-tools.js';
+import type { StudioLiveArtifacts } from '../storage/studio-live-artifacts.js';
+import { STUDIO_LIVE_ARTIFACT_PROMPT } from '../prompts/studio-live-artifacts.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
-import type { MultiUserRun, MultiUserRunEvent, MultiUserRunStatus, MultiUserRunsResponse } from '@open-design/contracts';
-import { getConversation, getProject } from '../db.js';
+import { workspaceToolsUnavailable, API_ERROR_CODES, STUDIO_RESEARCH_MAX_SOURCES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
+import { PersonalRunEvents } from '../runtimes/personal-run-events.js';
+import { formatProjectAttachmentHint, normalizeCommentAttachments, renderCommentAttachmentHint, resolveSafeProjectAttachments } from '../runtimes/chat-prompt-inputs.js';
+import { renderRunContextPrompt } from '../runtimes/chat-run-context.js';
+import { classifyRunSteering } from '../runtimes/run-steering.js';
+import { RESTART_ERROR_CODE } from '../runtimes/run-restart-recovery.js';
+import type { MultiUserRun, MultiUserRunEvent, MultiUserRunStatus, MultiUserRunsResponse, StudioCatalogAccessRole, StudioCatalogShareKind, StudioProviderKeyResponse, StudioProviderKeysResponse, UpdateStudioProviderKeyRequest } from '@open-design/contracts';
+import { getConversation, getMessage, getProject, updateProject } from '../db.js';
 import { sendApiError } from '../http/api-errors.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
-import { PROJECT_OWNERS_TABLE, ProjectOwnershipStore } from '../storage/project-ownership.js';
+import { bindMultiUserStream, multiUserStreamAllowed } from '../http/multiuser-stream.js';
+import { PROJECT_OWNERS_TABLE } from '../storage/project-ownership.js';
+import { ProjectAccessStore } from '../storage/project-access.js';
+import { MultiUserStudioMessages } from '../storage/multiuser-studio-messages.js';
+import { studioMessageIdPrefix } from '../http/studio-parity.js';
 import { WorkerQuotaLedger } from '../storage/worker-quota-ledger.js';
 import { AuthStore } from '../storage/auth-store.js';
-import { isSafeId } from '../projects.js';
+import { isSafeId, kindFor, mimeFor } from '../projects.js';
 import { diffRunArtifacts, snapshotProjectArtifacts, snapshotProjectArtifactsAsync, type ArtifactSnapshot } from '../run-artifact-fs.js';
+import { createChatArtifactBlobStore } from '../chat-artifacts/blob-store.js';
+import { captureRunChatArtifactSnapshots } from '../chat-artifacts/run-capture.js';
 import { codexResolvedSandboxMode } from '../runtimes/defs/codex.js';
-import { PROBLEM_ERRORS, runPersonalCodexTurn, type PersonalCodexAccounts } from '../services/personal-codex-accounts.js';
+import { PROBLEM_ERRORS, PersonalAccountError, runPersonalCodexTurn, type PersonalCodexAccounts } from '../services/personal-codex-accounts.js';
 import type { PersonalRunLaneControls } from './multiuser-agent-accounts.js';
 import type { MultiUserDesignRoutes } from './multiuser-design.js';
+import { CompanyOpenAIConfigError, CompanyOpenAIStore } from '../storage/company-openai.js';
+import { CompanyOpenAIWorker, runCompanyOpenAITurn } from '../runtimes/company-openai.js';
+import { runStudioPipeline } from '../services/studio-pipeline.js';
+import { createStudioChatInvalidation } from '../services/studio-chat-invalidation.js';
+import { observeStudioProjectDefaults, studioProjectDefaultsUnchanged, type StudioProjectDefaultsObservation } from '../services/studio-project-defaults.js';
+import { STUDIO_MEDIA_PROMPT } from '../runtimes/studio-media.js';
+import { PersonalProviderKeyError, PersonalProviderKeyStore } from '../storage/personal-provider-keys.js';
+import { createStudioResearch, StudioResearchError, type StudioResearch } from '../research/studio-research.js';
+import { renderStudioResearchFindings } from '../prompts/research-contract.js';
+import type { StudioMemoryAutomation, StudioMemoryTurnKey } from '../services/studio-memory-automation.js';
+import type { StudioDesignCatalog } from './studio-design-catalog.js';
+import type { StudioSettings } from '../storage/studio-settings.js';
+import type { StudioCatalog } from './studio-catalog.js';
+import { composeSystemPrompt } from '../prompts/system.js';
+import { readStudioSkillPackages, stageStudioSkillPackages, type StudioSkillPackage } from '../services/studio-skill-packages.js';
+import { studioRunResourcePackages } from '../plugins/studio-resources.js';
+import { createStudioSkillScriptRunner } from '../services/studio-skill-scripts.js';
+import type { PersonalSandbox } from '../services/personal-sandbox.js';
+import { internalMultiUserResponse, type InternalMultiUserResult } from '../http/multiuser-internal.js';
+import type { AuthActor } from '../services/auth-service.js';
+import type { StudioPluginCapture, StudioPlugins } from './studio-plugins.js';
 
 type RunRow = {
   id: string; owner_account_id: string; project_id: string; conversation_id: string;
   status: 'queued' | 'active' | 'succeeded' | 'failed' | 'canceled'; created_at: number; updated_at: number; output: string | null;
   request_json: string | null; queue_seq: number | null;
-  execution_source: 'company_pool' | 'personal_subscription'; personal_account_id: string | null;
+  execution_source: 'company_pool' | 'personal_subscription' | 'personal_api_key'; personal_account_id: string | null;
   credential_version: number | null; started_at: number | null; ended_at: number | null;
 };
 type RunEventData<E extends MultiUserRunEvent['event']> = Extract<MultiUserRunEvent, { event: E }>['data'];
@@ -48,6 +90,11 @@ function storedJson(text: string | null): unknown {
  * (missing, not JSON, or not an object with a string message). Both lanes'
  * dispatch refuses a null before it changes any state, never running an empty prompt.
  */
+/** A daemon-authored turn instruction (routines) precedes the user's text for the agent only. */
+function withInstruction<T extends string | null>(requestJson: string | null, text: T): T {
+  const instruction = storedRequest(requestJson)?.instruction;
+  return (typeof instruction === 'string' && instruction && text !== null ? `${instruction}\n\n${text}` : text) as T;
+}
 function storedMessage(requestJson: string | null): string | null {
   const request = storedJson(requestJson);
   const message = request && typeof request === 'object' ? (request as { message?: unknown }).message : null;
@@ -59,9 +106,182 @@ function storedRequest(requestJson: string | null): Record<string, unknown> | nu
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+type PersonalRunFields = {
+  /** The turn text the native thread receives. */
+  text: string;
+  turnIds: { userMessageId: string; assistantMessageId: string } | null;
+  clientRequestId: string | null;
+  skillId: string | null;
+  skillIds: string[];
+  designSystemId: string | null;
+  /** Set only for `entryFrom: 'question_answer'`. */
+  questionSourceRunId: string | null;
+  /** Project-relative paths; resolved against the real project root at dispatch. */
+  attachments: string[];
+  /** The focused project files/folders (`context.workspaceItems`), already narrowed. */
+  workspaceItems: Array<{ id: string; kind: 'design-files' | 'file' | 'folder'; label: string; path?: string }>;
+  /** Preview comment targets (#59), normalized; every path is project-relative. */
+  commentAttachments: ReturnType<typeof normalizeCommentAttachments>;
+  /** This turn's Codex model/effort; null leaves the choice to the user's Codex account. */
+  model: string | null;
+  reasoning: string | null;
+  /** `research.enabled` (#63): one search on the account's own key at admission; null when not asked. */
+  research: { query: string | null; maxSources: number | undefined } | null;
+  /** #61: may only confirm the turn's applied plugin (project or conversation pin); never selects another. */
+  appliedPluginSnapshotId: string | null;
+  pluginIds: string[];
+  connectorIds: string[];
+  mcpServerIds: string[];
+};
+type FieldRefusal = { status: number; code: ApiErrorCode; message: string; details?: { capability: string; reason: string } };
+/** A project-relative path: no root, drive, backslash, NUL, empty, `.` or `..` segment. */
+const safeProjectRelative = (value: string) => value.length > 0 && value.length <= 512 && !value.includes('\0') && !value.startsWith('/')
+  && !value.includes('\\') && !/^[A-Za-z]:/.test(value) && value.split('/').every((part) => part !== '..' && part !== '.' && part !== '');
+const REQUEST_KEY = /^[A-Za-z0-9._:-]{1,128}$/;
+const POLICY_FIELDS = new Set<string>([...MULTIUSER_PERSONAL_RUN_FIELD_POLICY.honored,
+  ...MULTIUSER_PERSONAL_RUN_FIELD_POLICY.defaultOnly, ...MULTIUSER_PERSONAL_RUN_FIELD_POLICY.notApplied]);
+const isDefault = (key: string, value: unknown): boolean => value === undefined || (
+  ['skillIds', 'attachments', 'commentAttachments'].includes(key) ? Array.isArray(value) && value.length === 0
+    : key === 'sessionMode' ? value === 'design' : value === null);
+
+/**
+ * `MULTIUSER_PERSONAL_RUN_FIELD_POLICY` applied to one admission body. Pure:
+ * the caller has already resolved the owned target and any source run, so a
+ * refusal here never distinguishes a foreign resource from a missing one.
+ */
+export function parsePersonalRunFields(body: Record<string, unknown>, messageIdPrefix: string): PersonalRunFields | FieldRefusal {
+  const refuse = (status: number, code: ApiErrorCode, message: string): FieldRefusal => ({ status, code, message });
+  if (body.agentId !== 'codex' || body.provider !== undefined) {
+    return refuse(403, 'MULTIUSER_AGENT_FORBIDDEN', 'personal subscription runs use the linked Codex account only');
+  }
+  const unsupported = Object.keys(body).filter((key) => !POLICY_FIELDS.has(key)
+    || ((MULTIUSER_PERSONAL_RUN_FIELD_POLICY.defaultOnly as readonly string[]).includes(key) && !isDefault(key, body[key])));
+  if (unsupported.length) {
+    return refuse(403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', `not available for personal Studio runs: ${unsupported.sort().join(', ')}`);
+  }
+  const text = typeof body.currentPrompt === 'string' ? body.currentPrompt : body.message;
+  if (typeof text !== 'string' || text.length > 64_000 || (body.message !== undefined && typeof body.message !== 'string')
+    || (body.priorTranscript !== undefined && typeof body.priorTranscript !== 'string')
+    || (body.locale !== undefined && (typeof body.locale !== 'string' || body.locale.length > 64))
+    || (body.titleGeneration !== undefined && (!body.titleGeneration || typeof body.titleGeneration !== 'object' || Array.isArray(body.titleGeneration)))) {
+    return refuse(400, 'BAD_REQUEST', 'invalid run request');
+  }
+  if (Buffer.byteLength(JSON.stringify({ message: text }), 'utf8') > 64 * 1024) return refuse(400, 'BAD_REQUEST', 'run request is too large');
+  const optionalKey = (value: unknown) => value === undefined || value === null || (typeof value === 'string' && REQUEST_KEY.test(value));
+  const userMessageId = body.userMessageId ?? null;
+  const assistantMessageId = body.assistantMessageId ?? null;
+  if ((userMessageId === null) !== (assistantMessageId === null) || userMessageId === assistantMessageId && userMessageId !== null
+    || (userMessageId !== null && (!isStudioMessageIdInNamespace(userMessageId, messageIdPrefix) || !isStudioMessageIdInNamespace(assistantMessageId, messageIdPrefix)))) {
+    return refuse(400, 'BAD_REQUEST', 'message ids must be a distinct pair in this account\'s namespace');
+  }
+  if (!optionalKey(body.clientRequestId) || !optionalKey(body.appliedPluginSnapshotId) || !['skillId', 'designSystemId'].every((key) => body[key] === undefined || body[key] === null || typeof body[key] === 'string')) {
+    return refuse(400, 'BAD_REQUEST', 'invalid run request');
+  }
+  const attachments = body.attachments ?? [];
+  const skillIds = body.skillIds ?? [];
+  const validSkillIds = (value: unknown): value is string[] => Array.isArray(value) && value.length <= 12
+    && value.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 256);
+  if (!validSkillIds(skillIds)) return refuse(400, 'BAD_REQUEST', 'invalid skill selections');
+  if (!Array.isArray(attachments) || attachments.length > 20 || attachments.some((value) => typeof value !== 'string' || !safeProjectRelative(value))) {
+    return refuse(400, 'BAD_REQUEST', 'attachments must be project-relative paths');
+  }
+  const rawComments = body.commentAttachments ?? [];
+  if (!Array.isArray(rawComments) || rawComments.length > 20 || JSON.stringify(rawComments).length > 128 * 1024
+    || rawComments.some((item) => !item || typeof item !== 'object' || Array.isArray(item))) {
+    return refuse(400, 'BAD_REQUEST', 'invalid comment attachments');
+  }
+  // The normalizer bounds text and drops unusable targets; every path it keeps
+  // must still be project-relative, since the agent reads them from the project.
+  const commentAttachments = normalizeCommentAttachments(rawComments as Parameters<typeof normalizeCommentAttachments>[0]);
+  if (commentAttachments.some((item) => !safeProjectRelative(item.filePath)
+    || (item.screenshotPath !== undefined && !safeProjectRelative(item.screenshotPath))
+    || (item.imageAttachments ?? []).some((image) => !safeProjectRelative(image.path)))) {
+    return refuse(400, 'BAD_REQUEST', 'comment attachments must use project-relative paths');
+  }
+  const workspaceItems: PersonalRunFields['workspaceItems'] = [];
+  const context = body.context;
+  if (context !== undefined && context !== null) {
+    if (typeof context !== 'object' || Array.isArray(context)) return refuse(400, 'BAD_REQUEST', 'invalid run context');
+    const record = context as Record<string, unknown>;
+    const selections = ['mcpServerIds', 'connectorIds'];
+    if (record.skillIds !== undefined && !validSkillIds(record.skillIds)) return refuse(400, 'BAD_REQUEST', 'invalid skill selections');
+    if (record.pluginIds !== undefined && !(Array.isArray(record.pluginIds) && record.pluginIds.length <= 1
+      && record.pluginIds.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 256))) return refuse(400, 'BAD_REQUEST', 'invalid plugin selection');
+    if (record.connectorIds !== undefined && !(Array.isArray(record.connectorIds) && record.connectorIds.length <= 12
+      && record.connectorIds.every((id) => typeof id === 'string' && /^[a-z0-9_]{1,64}$/.test(id)))) return refuse(400, 'BAD_REQUEST', 'invalid connector selections');
+    if (Object.keys(record).some((key) => ![...selections, 'skillIds', 'pluginIds', 'workspaceItems'].includes(key))) {
+      return refuse(403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'not available for personal Studio runs: context selections');
+    }
+    if (record.mcpServerIds !== undefined && !(Array.isArray(record.mcpServerIds) && record.mcpServerIds.length <= 12
+      && record.mcpServerIds.every((id) => typeof id === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(id)))) return refuse(400, 'BAD_REQUEST', 'invalid MCP selections');
+    const items = record.workspaceItems ?? [];
+    if (!Array.isArray(items) || items.length > 20) return refuse(400, 'BAD_REQUEST', 'invalid run context');
+    for (const item of items) {
+      const value = item as Record<string, unknown> | null;
+      if (!value || typeof value !== 'object' || typeof value.id !== 'string' || typeof value.label !== 'string'
+        || value.id.length > 256 || value.label.length > 256) return refuse(400, 'BAD_REQUEST', 'invalid run context');
+      // Host-side contexts (local code, browser, terminal, …) and absolute paths have no Web owner yet.
+      if (!['design-files', 'file', 'folder'].includes(String(value.kind)) || value.absolutePath !== undefined || value.url !== undefined) {
+        return refuse(403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', `not available for personal Studio runs: ${String(value.kind)} context`);
+      }
+      if (value.path !== undefined && (typeof value.path !== 'string' || !safeProjectRelative(value.path))) return refuse(400, 'BAD_REQUEST', 'invalid run context');
+      workspaceItems.push({ id: value.id, kind: value.kind as 'design-files' | 'file' | 'folder', label: value.label,
+        ...(typeof value.path === 'string' ? { path: value.path } : {}) });
+    }
+  }
+  const selectedSkillIds = [...new Set([...skillIds, ...((context as { skillIds?: string[] } | null)?.skillIds ?? [])])];
+  if (selectedSkillIds.length > 12) return refuse(400, 'BAD_REQUEST', 'too many skill selections');
+  const choice = (key: 'model' | 'reasoning', valid: (value: unknown) => boolean): string | null | false => {
+    const value = body[key];
+    if (value === undefined || value === null || value === 'default') return null;
+    return valid(value) ? value as string : false;
+  };
+  const model = choice('model', isStudioCodexModel);
+  const reasoning = choice('reasoning', isStudioCodexReasoning);
+  if (model === false || reasoning === false) return refuse(400, 'BAD_REQUEST', 'unsupported model or reasoning choice');
+  const hints = body.analyticsHints;
+  if (hints !== undefined && (!hints || typeof hints !== 'object' || Array.isArray(hints) || JSON.stringify(hints).length > 4096)) {
+    return refuse(400, 'BAD_REQUEST', 'invalid question answer');
+  }
+  const rawResearch = body.research;
+  let research: PersonalRunFields['research'] = null;
+  if (rawResearch !== undefined && rawResearch !== null) {
+    if (typeof rawResearch !== 'object' || Array.isArray(rawResearch)) return refuse(400, 'BAD_REQUEST', 'invalid research options');
+    const options = rawResearch as Record<string, unknown>;
+    if (Object.keys(options).some((key) => !['enabled', 'query', 'maxSources', 'depth', 'providers'].includes(key))
+      || typeof options.enabled !== 'boolean' || options.query !== undefined && typeof options.query !== 'string'
+      || options.maxSources !== undefined && !(Number.isInteger(options.maxSources) && Number(options.maxSources) >= 1 && Number(options.maxSources) <= STUDIO_RESEARCH_MAX_SOURCES)) {
+      return refuse(400, 'BAD_REQUEST', 'invalid research options');
+    }
+    // Shallow Tavily search is the only research Studio runs.
+    if (options.depth !== undefined && options.depth !== 'shallow' || options.providers !== undefined
+      && !(Array.isArray(options.providers) && options.providers.every((provider) => provider === 'tavily'))) {
+      return refuse(403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'not available for Studio runs: research provider or depth');
+    }
+    if (options.enabled) research = { query: typeof options.query === 'string' && options.query.trim() ? options.query.trim().slice(0, 1000) : null,
+      maxSources: options.maxSources as number | undefined };
+  }
+  const answer = (hints as Record<string, unknown> | undefined)?.entryFrom === 'question_answer';
+  const sourceRunId = (hints as Record<string, unknown> | undefined)?.sourceRunId;
+  if (answer && typeof sourceRunId !== 'string') return refuse(400, 'BAD_REQUEST', 'invalid question answer');
+  return {
+    text, clientRequestId: (body.clientRequestId as string | null | undefined) ?? null,
+    turnIds: userMessageId === null ? null : { userMessageId: userMessageId as string, assistantMessageId: assistantMessageId as string },
+    skillId: (body.skillId as string | null | undefined) ?? null, designSystemId: (body.designSystemId as string | null | undefined) ?? null,
+    skillIds: selectedSkillIds,
+    questionSourceRunId: answer ? sourceRunId as string : null,
+    attachments: [...new Set(attachments as string[])],
+    workspaceItems, commentAttachments, model, reasoning, research,
+    appliedPluginSnapshotId: (body.appliedPluginSnapshotId as string | null | undefined) ?? null,
+    mcpServerIds: [...new Set(((context as { mcpServerIds?: string[] } | null)?.mcpServerIds ?? []))],
+    connectorIds: [...new Set(((context as { connectorIds?: string[] } | null)?.connectorIds ?? []))],
+    pluginIds: ((context as { pluginIds?: string[] } | null)?.pluginIds ?? []),
+  };
+}
+
 type RunListQuery = {
   limit: number; cursor: { createdAt: number; id: string } | null;
-  projectId?: string; conversationId?: string; status?: RunRow['status'];
+  projectId?: string; conversationId?: string; status?: RunRow['status'] | 'nonterminal';
 };
 /**
  * Strict `GET /api/runs` query. Repeated or non-string parameters, a malformed
@@ -88,17 +308,39 @@ function parseRunListQuery(query: Request['query']): RunListQuery | null {
     parsed.cursor = { createdAt: Number(match[1]), id: match[2]! };
   }
   if (status !== undefined) {
-    if (!Object.hasOwn(STORED_STATUS, status!)) return null;
-    parsed.status = STORED_STATUS[status as MultiUserRunStatus];
+    // `active` is the single-user filter for every non-terminal run.
+    if (status === 'active') parsed.status = 'nonterminal';
+    else if (!Object.hasOwn(STORED_STATUS, status!)) return null;
+    else parsed.status = STORED_STATUS[status as MultiUserRunStatus];
   }
   if (projectId !== undefined) parsed.projectId = projectId!;
   if (conversationId !== undefined) parsed.conversationId = conversationId!;
   return parsed;
 }
 
+/** Stored reasons that name a run-engine condition, not a contract code. */
+const ENGINE_REASON_CODES: Record<string, ApiErrorCode> = {
+  shutdown_timeout: 'MULTIUSER_RUN_SHUTDOWN_TIMEOUT',
+  ledger_admission_replayed: 'MULTIUSER_RUN_ADMISSION_REPLAYED',
+};
 /**
- * Separate test-only execution plane. The normal run/agent stack is never reached.
- * Company-pool rows run the repository test mock; personal-subscription rows
+ * #79: the public code of a failed run's terminal error. A stored contract
+ * code passes through unless it is personal-lane specific on a company run;
+ * an engine reason maps to its own code; anything else (no reason, free text)
+ * becomes the generic failure of the run's own execution source. Stored
+ * reasons are never echoed otherwise, so no provider prose or secret leaks.
+ */
+export function multiUserTerminalErrorCode(source: 'company_pool' | 'personal_subscription' | 'personal_api_key', reason: unknown): ApiErrorCode {
+  const personal = source === 'personal_subscription';
+  if (typeof reason === 'string' && Object.hasOwn(ENGINE_REASON_CODES, reason)) return ENGINE_REASON_CODES[reason]!;
+  if (typeof reason === 'string' && (API_ERROR_CODES as readonly string[]).includes(reason)
+    && (personal || !reason.startsWith('MULTIUSER_PERSONAL_'))) return reason as ApiErrorCode;
+  return personal ? 'MULTIUSER_PERSONAL_RUN_FAILED' : 'MULTIUSER_RUN_FAILED';
+}
+
+/**
+ * Actor-scoped execution plane. Company OpenAI runs use bounded project file
+ * tools and a server-owned key; fixture rows use the repository test mock. Personal rows
  * run through the owner's own CODEX_HOME on a separate queue and ceiling, never
  * the company slots or the company worker-time ledger.
  */
@@ -107,25 +349,362 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   dataRoot: string;
   projectsRoot: string;
   mockAgentScript?: string;
+  companyFetch?: typeof fetch;
+  liveArtifacts?: StudioLiveArtifacts;
+  connectors?: StudioConnectorRuntime;
+  mcp?: StudioMcpRuntime;
+  /** The verified personal bubblewrap boundary; company skill scripts run only inside it, offline. */
+  scriptSandbox?: PersonalSandbox;
   repositoryRoot: string;
   clock?: () => number;
   personal?: PersonalCodexAccounts;
   design?: MultiUserDesignRoutes;
+  catalog?: StudioCatalog;
+  settings?: StudioSettings;
+  designCatalog?: StudioDesignCatalog;
+  /**
+   * Team catalog grants (#61/#65): the live, synchronous `use` decision that
+   * admission repeats right before it commits a freshly captured shared item.
+   * Absent, a fresh shared capture is refused (fail closed).
+   */
+  catalogGrants?: { roleOf(kind: StudioCatalogShareKind, resourceId: string, accountId: string): StudioCatalogAccessRole | null };
+  /** Account-private provider keys (#62/#63); `false` turns the source off for this deployment. */
+  personalProviderKeys?: boolean;
+  /** Programmatic Tavily fixture for tests; production calls the fixed provider endpoint. */
+  researchFetch?: typeof fetch;
+  /** Account automatic memory (#62): heuristics at admission, extraction/verification after a turn. */
+  memory?: StudioMemoryAutomation;
+  /** Bundled plugins applied to projects (#61): the project's immutable apply snapshot. */
+  plugins?: Pick<StudioPlugins, 'projectPin'>;
+  emitProjectEvent?: (projectId: string, event: import('@open-design/contracts').StudioChatMessagesChangedSsePayload | import('@open-design/contracts').LiveArtifactSsePayload) => void;
 }): { cancelAccountRuns(accountId: string): void; isRunOwner(runId: string, accountId: string): boolean;
+  /** `accountId: null` stops every account's runs in the project. */
+  cancelProjectRuns(accountId: string | null, projectId: string, conversationId?: string): Promise<() => void>;
   cancelPersonalRuns(accountId: string): Promise<void>; forgetNativeSessions(accountId: string): void; personalLane: PersonalRunLaneControls; listAccountIds(): string[];
-  beginShutdown(): void; shutdown(): Promise<void>; companyPoolAvailable: boolean } {
+  /** Admit a run for a background actor through the same policy as POST /api/runs. */
+  admitInternal(actor: AuthActor, request: Record<string, unknown>, allowed: () => boolean, instruction?: string): Promise<InternalMultiUserResult>;
+  runState(runId: string, accountId: string): { status: string; text: string | null; reason: string | null } | null;
+  beginShutdown(): void; shutdown(): Promise<void>; companyPoolAvailable: boolean; openaiPoolAvailable: boolean;
+  /** Account research on the account's own Tavily key (#63); shared with the research route. */
+  research: StudioResearch } {
   const { db, dataRoot, projectsRoot } = input;
-  // The company pool has no real provider yet (#14): it runs only the repository test mock,
-  // and without one it is unavailable. A deployed image ships no mocks, so the mock is
-  // resolved only when one is injected.
+  type DesignSnapshot = { id: string; hash: string; prompt: Pick<Parameters<typeof composeSystemPrompt>[0],
+    'designSystemBody' | 'designSystemTitle' | 'designSystemUsageMd' | 'designSystemTokensCss' |
+    'designSystemComponentsManifest' | 'designSystemFixtureHtml' | 'designSystemPullIndex' | 'designSystemImportMode'> };
+  /**
+   * Shared projects (#65): a member's turn may inherit the project's pinned
+   * private skill or design system without any catalog access, but only as
+   * the immutable version the project owner already admitted in that project.
+   * The member's own conversation pins it from then on. No live read of the
+   * owner's catalog happens for the member.
+   */
+  type ProjectPin = { projectId: string; id: string };
+  const ownerPinnedCapture = (actor: string, pin: ProjectPin | undefined, requestedId: string, kind: 'design' | 'skill'): Record<string, unknown> | null => {
+    if (!pin || pin.id !== requestedId) return null;
+    const projectOwner = projects.ownership.ownerOf(pin.projectId);
+    if (!projectOwner || projectOwner === actor) return null;
+    const row = (kind === 'design'
+      ? db.prepare(`SELECT request_json FROM multiuser_runs WHERE project_id = ? AND owner_account_id = ? AND json_valid(request_json)
+          AND json_extract(request_json, '$.designSnapshot.id') = ? ORDER BY queue_seq DESC LIMIT 1`)
+      : db.prepare(`SELECT request_json FROM multiuser_runs WHERE project_id = ? AND owner_account_id = ? AND json_valid(request_json)
+          AND EXISTS (SELECT 1 FROM json_each(request_json, '$.skillSnapshots') item WHERE json_extract(item.value, '$.id') = ?)
+          ORDER BY queue_seq DESC LIMIT 1`)).get(pin.projectId, projectOwner, requestedId) as { request_json: string } | undefined;
+    return row ? storedRequest(row.request_json) : null;
+  };
+  /**
+   * Team catalogs (#61/#65): a shared item this admission read live from
+   * another account's catalog. Capture authorized it, but the admission then
+   * yields (memory, settings, research) before it commits; each such item is
+   * re-decided synchronously right before the commit (`lostSharedCapture`).
+   * Reusing a conversation's admitted pin or inheriting a shared project's
+   * admitted pin reads no catalog and is never listed here.
+   */
+  type FreshSharedCapture = { kind: StudioCatalogShareKind; id: string };
+  /**
+   * The first fresh shared capture the actor no longer holds `use` on (revoked,
+   * owner or grantee deactivated, item deleted), or null when all still hold.
+   * Synchronous by contract: call it with no await between it and the commit.
+   */
+  const lostSharedCapture = (owner: string, fresh: readonly FreshSharedCapture[]): FreshSharedCapture | null =>
+    fresh.find(({ kind, id }) => input.catalogGrants?.roleOf(kind, id, owner) !== 'use') ?? null;
+  const refuseLostSharedCapture = (res: Response, lost: FreshSharedCapture) => sendApiError(res, 404, 'NOT_FOUND',
+    lost.kind === 'skill' ? 'selected skills not found or unavailable' : 'selected design system not found or unavailable');
+  const captureDesign = async (owner: string, conversationId: string, requestedId: string | null, question?: RunRow, pin?: ProjectPin,
+    fresh?: FreshSharedCapture[]): Promise<DesignSnapshot | null | false> => {
+    const previous = question ?? (requestedId === null ? undefined : db.prepare(`SELECT * FROM multiuser_runs
+      WHERE owner_account_id = ? AND conversation_id = ? AND json_valid(request_json)
+        AND json_extract(request_json, '$.designSnapshot.id') = ? ORDER BY queue_seq DESC LIMIT 1`)
+      .get(owner, conversationId, requestedId) as RunRow | undefined);
+    const request = previous ? storedRequest(previous.request_json) : null;
+    const captured = request?.designSnapshot as DesignSnapshot | undefined;
+    if (question && requestedId !== null && requestedId !== captured?.id) return false;
+    if (captured && typeof captured.id === 'string' && typeof captured.prompt?.designSystemBody === 'string'
+      && (question && requestedId === null || requestedId === captured.id)) return captured;
+    if (requestedId === null) return null;
+    const system = await input.designCatalog?.readSystem(owner, requestedId);
+    if (!system?.body.trim()) {
+      const pinned = ownerPinnedCapture(owner, pin, requestedId, 'design')?.designSnapshot as DesignSnapshot | undefined;
+      return pinned && pinned.id === requestedId && typeof pinned.prompt?.designSystemBody === 'string' ? pinned : false;
+    }
+    if (system.studioShare?.role === 'use') fresh?.push({ kind: 'design-system', id: system.id });
+    const assets = await input.designCatalog!.readSystemAssets(system.id);
+    const prompt: DesignSnapshot['prompt'] = { designSystemBody: system.body, designSystemTitle: system.title,
+      designSystemUsageMd: assets.usageMd, designSystemTokensCss: assets.tokensCss,
+      designSystemComponentsManifest: assets.componentsManifest, designSystemFixtureHtml: assets.fixtureHtml,
+      designSystemPullIndex: assets.pullIndex, designSystemImportMode: assets.importMode };
+    return { id: system.id, hash: createHash('sha256').update(JSON.stringify(prompt)).digest('hex'), prompt };
+  };
+
+  type SkillSnapshot = { id: string; name: string; body: string; mode?: Parameters<typeof composeSystemPrompt>[0]['skillMode']; hash: string; package?: StudioSkillPackage };
+  const captureSkills = async (owner: string, conversationId: string, ids: readonly string[], pin?: ProjectPin,
+    fresh?: FreshSharedCapture[]): Promise<SkillSnapshot[] | null> => {
+    if (ids.length > 12) return null;
+    const snapshots: SkillSnapshot[] = [];
+    for (const id of ids) {
+      const previous = db.prepare(`SELECT request_json FROM multiuser_runs
+        WHERE owner_account_id = ? AND conversation_id = ? AND json_valid(request_json)
+          AND EXISTS (SELECT 1 FROM json_each(request_json, '$.skillSnapshots') item
+            WHERE json_extract(item.value, '$.id') = ?) ORDER BY queue_seq DESC LIMIT 1`)
+        .get(owner, conversationId, id) as { request_json: string } | undefined;
+      const captured = previous ? storedRequest(previous.request_json)?.skillSnapshots : undefined;
+      const snapshot = Array.isArray(captured) ? captured.find((item: SkillSnapshot) => item?.id === id) as SkillSnapshot | undefined : undefined;
+      if (snapshot && typeof snapshot.body === 'string' && typeof snapshot.name === 'string' && typeof snapshot.hash === 'string') {
+        snapshots.push(snapshot); continue;
+      }
+      const skills = await input.catalog?.readSkills(owner, [id]);
+      if (!skills?.[0]) {
+        const pinned = ownerPinnedCapture(owner, pin, id, 'skill')?.skillSnapshots;
+        const inherited = Array.isArray(pinned) ? pinned.find((item: SkillSnapshot) => item?.id === id) as SkillSnapshot | undefined : undefined;
+        if (!inherited || typeof inherited.body !== 'string' || typeof inherited.name !== 'string' || typeof inherited.hash !== 'string') return null;
+        snapshots.push(inherited); continue;
+      }
+      const skill = skills[0];
+      if (skill.studioShare?.role === 'use') fresh?.push({ kind: 'skill', id: skill.id });
+      const text = { id: skill.id, name: skill.name, body: skill.body, mode: skill.mode, ...(skill.package ? { package: skill.package } : {}) };
+      snapshots.push({ ...text, hash: createHash('sha256').update(JSON.stringify(text)).digest('hex') });
+    }
+    try { readStudioSkillPackages(snapshots); } catch { return null; }
+    return snapshots;
+  };
+  /** A fixed-design conversation pins its primary skill package and bundled
+   * design system on first admission, exactly like standard selections. Later
+   * turns reuse those bytes; catalog upgrades never reach this conversation. */
+  const captureFixedDesign = async (owner: string, conversationId: string, fixed: { skillId: string; designSystemId: string }):
+    Promise<{ skill: SkillSnapshot; design: DesignSnapshot } | null> => {
+    if (fixed.skillId.startsWith('studio-skill:') || fixed.designSystemId.startsWith('user:')) return null;
+    const [skill] = await captureSkills(owner, conversationId, [fixed.skillId]) ?? [];
+    const design = await captureDesign(owner, conversationId, fixed.designSystemId);
+    return skill && design ? { skill, design } : null;
+  };
+  /** The primary package rides with the selected ones so workers stage it; its
+   * body is already in the fixed stable prompt and is not composed twice. */
+  const withFixedSkill = (fixed: SkillSnapshot | undefined, selected: SkillSnapshot[]): SkillSnapshot[] =>
+    fixed ? [fixed, ...selected.filter((skill) => skill.id !== fixed.id)] : selected;
+  /** The project's own skill/design defaults a turn inherits (not explicit selections, fixed designs or answers). */
+  const projectPins = (fields: PersonalRunFields, projectId: string, fixed: boolean, question: boolean): {
+    design?: ProjectPin; skill?: ProjectPin; observed: StudioProjectDefaultsObservation;
+  } => {
+    const observed = observeStudioProjectDefaults(getProject(db, projectId), fields, fixed || question);
+    return {
+      observed,
+      ...(observed.design ? { design: { projectId, id: observed.design } } : {}),
+      ...(observed.skill ? { skill: { projectId, id: observed.skill } } : {}),
+    };
+  };
+  /**
+   * The turn's applied plugin (#61), captured, never re-read: a question
+   * answer inherits its source turn's; otherwise the conversation keeps the
+   * plugin its turns already captured, and a conversation without one takes
+   * the project's current apply snapshot. A request may confirm that choice,
+   * or switch the conversation to the project's current snapshot by naming
+   * it; any other snapshot or plugin id is a conflict, never a substitution.
+   *
+   * `projectPin` is set whenever the choice depended on the live project pin,
+   * including when that pin was empty and the turn carries no plugin: it holds
+   * the snapshot id observed (or null). `pluginStillPinned` re-decides it right
+   * before the commit, so a plugin applied, replaced or withdrawn while the
+   * admission yielded is a 409 rather than a turn that silently runs without
+   * (or with a stale) plugin. A conversation's own captured plugin and a
+   * question's inherited one do not depend on the project pin.
+   */
+  type PluginSnapshot = Omit<StudioPluginCapture, 'projectId'>;
+  const pluginSnapshotOf = (request: Record<string, unknown> | null): PluginSnapshot | null => {
+    const value = request?.pluginSnapshot as PluginSnapshot | undefined;
+    return value && typeof value.snapshotId === 'string' && typeof value.prompt === 'string' && typeof value.pluginId === 'string' ? value : null;
+  };
+  type PluginSelection = { plugin: PluginSnapshot | null; projectPin?: { snapshotId: string | null } };
+  const selectPlugin = (owner: string, target: { projectId: string; conversationId: string }, fields: PersonalRunFields, question?: RunRow):
+    PluginSelection | false => {
+    const matches = (plugin: PluginSnapshot | null) => (fields.appliedPluginSnapshotId === null || plugin?.snapshotId === fields.appliedPluginSnapshotId)
+      && (fields.pluginIds.length === 0 || plugin?.pluginId === fields.pluginIds[0]);
+    if (question) {
+      const inherited = pluginSnapshotOf(storedRequest(question.request_json));
+      return matches(inherited) ? { plugin: inherited } : false;
+    }
+    const previous = db.prepare(`SELECT request_json FROM ${table} WHERE owner_account_id = ? AND conversation_id = ? AND json_valid(request_json)
+      AND json_extract(request_json, '$.pluginSnapshot.snapshotId') IS NOT NULL ORDER BY queue_seq DESC LIMIT 1`)
+      .get(owner, target.conversationId) as { request_json: string } | undefined;
+    const pinned = previous ? pluginSnapshotOf(storedRequest(previous.request_json)) : null;
+    const project = input.plugins?.projectPin(target.projectId, owner) ?? null;
+    const current = project ? { snapshotId: project.snapshotId, pluginId: project.pluginId, pluginVersion: project.pluginVersion,
+      manifestSourceDigest: project.manifestSourceDigest, prompt: project.prompt, promptSha256: project.promptSha256,
+      ...(project.pipeline ? { pipeline: project.pipeline } : {}), ...(project.resourcePackage ? { resourcePackage: project.resourcePackage } : {}) } : null;
+    const chosen = fields.appliedPluginSnapshotId !== null && current?.snapshotId === fields.appliedPluginSnapshotId ? current : pinned ?? current;
+    if (!matches(chosen)) return false;
+    // `chosen === current` also holds when both are null: no conversation pin, no project pin.
+    return chosen === current ? { plugin: chosen, projectPin: { snapshotId: current?.snapshotId ?? null } } : { plugin: chosen };
+  };
+  /**
+   * Synchronous with the commit (no await between it and the insert): a
+   * selection that read the live project pin, empty or not, still sees the
+   * same snapshot there, usable by the actor.
+   */
+  const pluginStillPinned = (owner: string, projectId: string, selection: PluginSelection) =>
+    !selection.projectPin || (input.plugins?.projectPin(projectId, owner)?.snapshotId ?? null) === selection.projectPin.snapshotId;
+  const refusePlugin = (res: Response) => sendApiError(res, 409, 'CONFLICT', 'the plugin does not match this project\'s applied plugin');
+  const pipelineContinuation = (question: RunRow | undefined, plugin: PluginSnapshot | null): { pipelineResumeStage?: number } | false => {
+    if (!question || !plugin?.pipeline?.stages.length) return {};
+    const progress = (storedJson(question.output) as { pipeline?: import('@open-design/contracts').StudioPipelineProgress } | null)?.pipeline;
+    return progress?.snapshotId === plugin.snapshotId && progress.awaitingInput === true
+      && progress.stageCount === plugin.pipeline.stages.length && Number.isInteger(progress.stageIndex)
+      && progress.stageIndex >= 0 && progress.stageIndex < progress.stageCount
+      ? { pipelineResumeStage: progress.stageIndex } : false;
+  };
+  const withPlugin = (prompt: string, plugin: PluginSnapshot | null) => plugin ? `${prompt}\n\n---\n\n${plugin.prompt}` : prompt;
+  const selectSkills = (fields: PersonalRunFields, fixed: boolean, question: boolean, defaults: StudioProjectDefaultsObservation): string[] => {
+    if (question) return fields.skillIds;
+    const primary = fixed ? null : fields.skillId ?? defaults.skill ?? null;
+    return [...new Set([...(primary ? [primary] : []), ...fields.skillIds])];
+  };
+
+  const artifactBlobs = createChatArtifactBlobStore({ dataDir: dataRoot });
+  const artifactToolsFor = (run: RunRow, authorized: () => boolean, onAgentEvent: (event: Record<string, unknown>) => void) => input.liveArtifacts
+    ? createStudioLiveArtifactTools({ store: input.liveArtifacts, projectId: run.project_id, conversationId: run.conversation_id, runId: run.id,
+      authorized, onChanged(action, artifact) {
+        const event = { type: 'live_artifact' as const, action, projectId: run.project_id, artifactId: artifact.id, title: artifact.title, refreshStatus: artifact.refreshStatus };
+        updateProject(db, run.project_id, {}); onAgentEvent(event); input.emitProjectEvent?.(run.project_id, event);
+      } }) : undefined;
+  const mcpGrants = new Map<string, ToolTokenGrant>();
+  const captureMcp = (fields: PersonalRunFields, res: Response): StudioMcpGrant | undefined | false => {
+    if (!fields.mcpServerIds.length) return undefined;
+    try { if (!input.mcp) throw new StudioMcpRuntimeError('NOT_FOUND', 404);
+      return input.mcp.capture(multiUserActorOf(res)!, fields.mcpServerIds);
+    } catch (error) { const safe = error instanceof StudioMcpRuntimeError ? error : new StudioMcpRuntimeError('NOT_FOUND', 404);
+      sendApiError(res, safe.status, safe.code, 'selected account MCP servers are unavailable'); return false; }
+  };
+  const mcpToolsFor = (run: RunRow, authorized: () => boolean) => {
+    const bound = storedRequest(run.request_json)?.mcpGrant as StudioMcpGrant | undefined;
+    if (!bound || !input.mcp) return undefined;
+    input.mcp.assert(bound);
+    let grant = mcpGrants.get(run.id);
+    if (!grant) {
+      grant = toolTokenRegistry.mint({ runId: run.id, projectId: run.project_id, studioMcp: bound, ttlMs: STUDIO_RUN_CONNECTOR_GRANT_MAX_MS,
+        allowedEndpoints: ['/api/tools/mcp/list', '/api/tools/mcp/execute'], allowedOperations: ['mcp:list', 'mcp:execute'] });
+      mcpGrants.set(run.id, grant);
+    }
+    return input.mcp.tools(grant, () => { if (!authorized()) throw new StudioMcpRuntimeError('MULTIUSER_MCP_AUTHORITY_CHANGED', 409); });
+  };
+  const connectorGrants = new Map<string, ToolTokenGrant>();
+  const captureConnectors = (fields: PersonalRunFields, res: Response): StudioConnectorGrant | undefined | false => {
+    if (!fields.connectorIds.length) return undefined;
+    try {
+      if (!input.connectors) throw new StudioConnectorRuntimeError('MULTIUSER_CAPABILITY_UNAVAILABLE');
+      return input.connectors.capture(multiUserActorOf(res)!, fields.connectorIds);
+    } catch (error) {
+      const safe = (error instanceof StudioConnectorRuntimeError || error instanceof StudioMcpRuntimeError) ? error : new StudioConnectorRuntimeError('CONNECTOR_NOT_GRANTED');
+      sendApiError(res, safe.status, safe.code, 'selected account connectors are unavailable'); return false;
+    }
+  };
+  const connectorToolsFor = (run: RunRow, authorized: () => boolean) => {
+    const bound = storedRequest(run.request_json)?.connectorGrant as StudioConnectorGrant | undefined;
+    if (!bound || !input.connectors) return undefined;
+    input.connectors.assert(bound);
+    let grant = connectorGrants.get(run.id);
+    if (!grant) {
+      // Lives with the run (S60 A2): `finish` and every cancel request revoke it; the
+      // ceiling only bounds a run that never settles.
+      grant = toolTokenRegistry.mint({ runId: run.id, projectId: run.project_id, studioConnectors: bound, ttlMs: STUDIO_RUN_CONNECTOR_GRANT_MAX_MS,
+        allowedEndpoints: ['/api/tools/connectors/list', '/api/tools/connectors/execute'], allowedOperations: ['connectors:list', 'connectors:execute'] });
+      connectorGrants.set(run.id, grant);
+    }
+    // The worker's own authority joins the token, run and account checks the
+    // runtime makes before every provider request and after every await (S60 A1).
+    return input.connectors.tools(grant, () => {
+      if (!authorized()) throw new StudioConnectorRuntimeError('MULTIUSER_CONNECTOR_AUTHORITY_CHANGED', 409);
+    });
+  };
+  /** A cancel request or terminal state: the run's grant dies and its in-flight provider work is aborted. */
+  const revokeConnectorGrant = (id: string) => {
+    const grant = connectorGrants.get(id);
+    if (grant) { toolTokenRegistry.revokeToken(grant.token); connectorGrants.delete(id); }
+    input.connectors?.abortRun(id);
+    const mcpGrant = mcpGrants.get(id);
+    if (mcpGrant) { toolTokenRegistry.revokeToken(mcpGrant.token); mcpGrants.delete(id); }
+    input.mcp?.abortRun(id);
+  };
+  /** Mark a run as being cancelled; from this instant it can make no further connector call. */
+  const markCancelPending = (id: string) => { cancelPending.add(id); revokeConnectorGrant(id); };
+  const companyOpenAI = new CompanyOpenAIStore(db, dataRoot);
+  db.exec(`CREATE TABLE IF NOT EXISTS multiuser_company_sessions (
+    conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+    owner_account_id TEXT NOT NULL, provider_id TEXT NOT NULL, model TEXT NOT NULL,
+    credential_revision INTEGER NOT NULL, history_json TEXT NOT NULL DEFAULT '[]'
+  );
+  CREATE TABLE IF NOT EXISTS multiuser_byok_sessions (
+    conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+    owner_account_id TEXT NOT NULL, provider_id TEXT NOT NULL, history_json TEXT NOT NULL DEFAULT '[]'
+  );
+  CREATE TRIGGER IF NOT EXISTS multiuser_byok_sessions_binding_immutable BEFORE UPDATE OF owner_account_id, provider_id ON multiuser_byok_sessions
+    BEGIN SELECT RAISE(ABORT, 'personal key session binding is immutable'); END;`);
+  const providerKeys = input.personalProviderKeys === false ? null : new PersonalProviderKeyStore(db, dataRoot);
+  // A deployed image ships no mocks. Only explicit programmatic fixtures
+  // resolve this test worker; it is never a fallback for OpenAI.
   const mockAgentScript = input.mockAgentScript ? fs.realpathSync(input.mockAgentScript) : null;
   if (mockAgentScript && mockAgentScript !== fs.realpathSync(path.join(input.repositoryRoot, 'mocks/run-isolation-agent.ts'))) {
     throw new Error('multi-user mode refused: only the repository test mock may run');
   }
-  const owners = new ProjectOwnershipStore(db);
+  // Owner or editor (#65): who may change the project and run turns in it.
   const ledger = new WorkerQuotaLedger({ dataRoot, ...(input.clock ? { clock: input.clock } : {}) });
   const accounts = AuthStore.open({ dataRoot });
+  const projects = new ProjectAccessStore(db, { accountActive: (id) => accounts.getAccountById(id)?.active === true });
   const now = input.clock ?? Date.now;
+  const research = createStudioResearch({ db, keys: providerKeys, clock: now, ...(input.researchFetch ? { fetch: input.researchFetch } : {}) });
+  /**
+   * Findings already paid for, per logical turn (owner, conversation,
+   * clientRequestId) and query: a retry whose earlier admission failed after
+   * the search reuses them instead of billing the account again. Bounded and
+   * short-lived; a turn that queued a run is replayed before research anyway.
+   */
+  const paidFindings = new Map<string, { at: number; findings: string }>();
+  const PAID_FINDINGS_TTL_MS = 10 * 60_000;
+  /**
+   * The turn's research (#63): one search on the account's own key, rendered
+   * as daemon-authored evidence that precedes the turn for the agent only.
+   * A refusal answers the admission with its typed code; nothing is queued.
+   */
+  const researchInstruction = async (owner: string, conversationId: string, fields: PersonalRunFields, res: Response): Promise<string | null | false> => {
+    if (!fields.research) return null;
+    const query = fields.research.query ?? fields.text;
+    const paidKey = fields.clientRequestId === null ? null
+      : JSON.stringify([owner, conversationId, fields.clientRequestId, query, fields.research.maxSources ?? null]);
+    const paid = paidKey === null ? undefined : paidFindings.get(paidKey);
+    if (paid && now() - paid.at < PAID_FINDINGS_TTL_MS) return paid.findings;
+    // Admission yielded for prompt, catalog and memory I/O: the session and the
+    // daemon must still be live immediately before the account is billed.
+    if (!admissionStillAllowed(res)) return false;
+    try {
+      const findings = renderStudioResearchFindings(await research.search(owner, query, fields.research.maxSources));
+      if (paidKey !== null) {
+        for (const [key, entry] of paidFindings) if (paidFindings.size >= 256 || now() - entry.at >= PAID_FINDINGS_TTL_MS) paidFindings.delete(key);
+        paidFindings.set(paidKey, { at: now(), findings });
+      }
+      return findings;
+    } catch (error) {
+      if (error instanceof StudioResearchError) sendApiError(res, error.status, error.code, error.message);
+      else sendApiError(res, 502, 'UPSTREAM_UNAVAILABLE', 'research failed');
+      return false;
+    }
+  };
   const legacy = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { sql: string } | undefined;
   if (legacy && !legacy.sql.includes("'queued'")) {
     db.pragma('foreign_keys = OFF');
@@ -188,10 +767,31 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   `);
   const runColumns = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name));
   for (const [name, ddl] of [
-    ['execution_source', "TEXT NOT NULL DEFAULT 'company_pool' CHECK (execution_source IN ('company_pool','personal_subscription'))"],
+    ['execution_source', "TEXT NOT NULL DEFAULT 'company_pool' CHECK (execution_source IN ('company_pool','personal_subscription','personal_api_key'))"],
     ['personal_account_id', 'TEXT'], ['credential_version', 'INTEGER'], ['started_at', 'INTEGER'], ['ended_at', 'INTEGER'],
   ] as const) {
     if (!runColumns.has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${ddl}`);
+  }
+  // #62/#63: widen the source CHECK for the account's own provider key. SQLite
+  // cannot alter a CHECK, so the table is rebuilt once with every row intact.
+  const runSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { sql: string }).sql;
+  if (!runSql.includes("'personal_api_key'")) {
+    const widened = runSql.replace("('company_pool','personal_subscription')", "('company_pool','personal_subscription','personal_api_key')");
+    if (widened === runSql) throw new Error('multiuser_runs: unexpected execution_source constraint');
+    const columns = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => `"${column.name}"`).join(', ');
+    db.pragma('foreign_keys = OFF');
+    try {
+      db.transaction(() => {
+        db.exec(widened.replace(/^CREATE TABLE\s+(?:"?multiuser_runs"?)/, 'CREATE TABLE multiuser_runs_next'));
+        db.exec(`INSERT INTO multiuser_runs_next (${columns}) SELECT ${columns} FROM ${table};
+          DROP TABLE ${table};
+          ALTER TABLE multiuser_runs_next RENAME TO ${table};
+          CREATE INDEX IF NOT EXISTS idx_${table}_owner ON ${table}(owner_account_id, created_at DESC);
+          CREATE INDEX IF NOT EXISTS idx_${table}_queue ON ${table}(status, queue_seq);
+          CREATE TRIGGER IF NOT EXISTS ${table}_binding_immutable BEFORE UPDATE OF owner_account_id, project_id, conversation_id ON ${table}
+            BEGIN SELECT RAISE(ABORT, 'run binding is immutable'); END;`);
+      }).immediate();
+    } finally { db.pragma('foreign_keys = ON'); }
   }
   db.exec(`
     CREATE TRIGGER IF NOT EXISTS ${table}_source_immutable BEFORE UPDATE OF execution_source, personal_account_id, credential_version ON ${table}
@@ -212,6 +812,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   const personal = input.personal ?? null;
   const company = "execution_source = 'company_pool'";
   const personalRows = "execution_source = 'personal_subscription'";
+  const byokRows = "execution_source = 'personal_api_key'";
+  /** Rows the in-process worker dispatcher drains: company turns and turns on an account's own key. */
+  const workerRows = "execution_source IN ('company_pool','personal_api_key')";
   const recovery = db.prepare(`SELECT * FROM ${table} WHERE status = 'active'`).all() as RunRow[];
   const ledgerActive = ledger.activeRuns();
   const reconciled = new Set<string>();
@@ -221,9 +824,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       ledger.finish(entry.actorId, run.id);
       reconciled.add(run.id);
     }
-    db.prepare(`UPDATE ${table} SET status = 'failed', updated_at = ? WHERE id = ?`).run(now(), run.id);
   }
   const queuedRecovery = db.prepare(`SELECT * FROM ${table} WHERE status = 'queued'`).all() as RunRow[];
+  // #79: settled through `finish` below, so a replay gets its error/end and transcript like any terminal.
+  const replayed: RunRow[] = [];
   for (const run of queuedRecovery) {
     const entry = ledger.entry(run.id);
     if (!entry) continue;
@@ -231,28 +835,51 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       ledger.finish(entry.actorId, run.id);
       reconciled.add(run.id);
     }
-    db.prepare(`UPDATE ${table} SET status = 'failed', output = ?, updated_at = ? WHERE id = ?`)
-      .run(JSON.stringify({ reason: 'ledger_admission_replayed' }), now(), run.id);
+    replayed.push(run);
   }
   for (const entry of ledgerActive) {
     if (!reconciled.has(entry.runId)) {
       ledger.finish(entry.actorId, entry.runId);
     }
   }
-  const children = new Map<string, ChildProcessWithoutNullStreams>();
+  interface RunWorker { exitCode: number | null; signalCode: NodeJS.Signals | null;
+    kill(signal?: NodeJS.Signals | number): boolean; once(event: 'close', listener: () => void): unknown }
+  const children = new Map<string, RunWorker>();
+  /**
+   * #78: a child is only waited on while its process is alive. Once it has
+   * exited, its run is settling (e.g. the personal artifact snapshot) and a
+   * new 'close' listener may never fire, so cancellers settle the run directly.
+   */
+  const running = (child: RunWorker) => child.exitCode === null && child.signalCode === null;
+  const studioMessages = new MultiUserStudioMessages(db);
   const cancelPending = new Set<string>();
+  const sourceInvalidated = new Set<string>();
   const failurePending = new Set<string>();
   let shuttingDown = false;
   let storesClosed = false;
   const listeners = new Map<string, Set<Response>>();
   const artifactBaselines = new Map<string, { cwd: string; before: ArtifactSnapshot }>();
-  const progressCounts = new Map<string, number>();
+  const projections = new Map<string, PersonalRunEvents>();
+  const interrupts = new Map<string, () => void>();
+  db.exec(`CREATE TABLE IF NOT EXISTS multiuser_run_questions (
+    run_id TEXT PRIMARY KEY REFERENCES multiuser_runs(id) ON DELETE CASCADE,
+    answered_by TEXT REFERENCES multiuser_runs(id) ON DELETE SET NULL
+  )`);
   const row = (id: string) => db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id) as RunRow | undefined;
+  // Run liveness at the connector provider boundary (S60 A1): a cancelled or settled run
+  // makes no further provider call, even through a token that has not been revoked yet.
+  input.connectors?.setRunLiveness((id) => {
+    if (storesClosed || cancelPending.has(id)) return false;
+    const current = row(id);
+    return !current || current.status === 'active' || current.status === 'queued';
+  });
+  input.mcp?.setRunLiveness((id) => !storesClosed && !cancelPending.has(id) && row(id)?.status === 'active');
   const actor = (res: Response) => multiUserActorOf(res)?.accountId ?? '';
   const owned = (req: Request, res: Response): RunRow | null => {
     const id = String(req.params.id ?? '');
     const found = row(id);
-    if (!found || found.owner_account_id !== actor(res) || !owners.isOwnedBy(found.project_id, actor(res))) {
+    // An account keeps reading (and may cancel) its own runs while it can still read the project (#65).
+    if (!found || found.owner_account_id !== actor(res) || !projects.canView(found.project_id, actor(res))) {
       sendApiError(res, 404, 'NOT_FOUND', 'run not found');
       return null;
     }
@@ -262,36 +889,46 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     WHERE status = 'queued' AND owner_account_id = ? AND queue_seq <= ? AND execution_source = ?`)
     .get(run.owner_account_id, run.queue_seq, run.execution_source) as { n: number }).n : null;
   const isPersonal = (run: RunRow) => run.execution_source === 'personal_subscription';
+  /** The account's own provider key (#62/#63): no company quota, no company credential. */
+  const isByok = (run: RunRow) => run.execution_source === 'personal_api_key';
+  const isCompany = (run: RunRow) => run.execution_source === 'company_pool';
+  /** Runs the OpenAI worker, on the company key or the account's own. */
+  const isOpenAI = (run: RunRow) => isByok(run) || isCompany(run) && storedRequest(run.request_json)?.companyProvider === 'openai';
+  const agentOf = (run: RunRow): MultiUserRun['agentId'] => isPersonal(run) ? 'codex' : isByok(run) ? 'openai-byok' : isOpenAI(run) ? 'openai' : 'test-mock';
   const body = (run: RunRow): MultiUserRun => ({
     id: run.id, projectId: run.project_id, conversationId: run.conversation_id,
-    agentId: isPersonal(run) ? 'codex' : 'test-mock', status: run.status === 'active' ? 'running' : run.status,
+    agentId: agentOf(run), status: run.status === 'active' ? 'running' : run.status,
     queuePosition: queuePosition(run), createdAt: run.created_at,
     updatedAt: run.updated_at, output: (() => {
       const value = storedJson(run.output);
       return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
     })(),
     message: storedMessage(run.request_json),
-    ...(isPersonal(run) ? { executionSource: 'personal_subscription' as const } : {}),
+    ...(Array.isArray(storedRequest(run.request_json)?.mcpServerIds) ? { mcpServerIds: storedRequest(run.request_json)!.mcpServerIds as string[] } : {}),
+    ...(Array.isArray(storedRequest(run.request_json)?.connectorIds) ? { connectorIds: storedRequest(run.request_json)!.connectorIds as string[] } : {}),
+    ...studioMessages.ids(run.id),
+    ...(isPersonal(run) || isByok(run) ? { executionSource: run.execution_source } : isOpenAI(run) ? { executionSource: 'company_pool' as const } : {}),
   });
-  /** Persist before publishing; start events participate in the row/turn transaction. */
+  /**
+   * Persist before publishing; start events participate in the row/turn transaction.
+   * The transcript follows incrementally (#76); lifecycle edges call `reconcile`.
+   */
   const persistEvent = <E extends MultiUserRunEvent['event']>(id: string, event: E, data: RunEventData<E>) => {
     const seq = (db.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM multiuser_run_events WHERE run_id = ?').get(id) as { seq: number }).seq;
     const payload = JSON.stringify(data);
     db.prepare('INSERT INTO multiuser_run_events (run_id, seq, event, data) VALUES (?, ?, ?, ?)').run(id, seq, event, payload);
+    studioMessages.append(id, row(id)!.conversation_id, seq, event, data);
     return `id: ${seq}\nevent: ${event}\ndata: ${payload}\n\n`;
   };
+  const chatInvalidation = createStudioChatInvalidation((projectId, event) => input.emitProjectEvent?.(projectId, event));
   const publishEvent = (id: string, frame: string) => {
-    for (const res of listeners.get(id) ?? []) res.write(frame);
+    for (const res of listeners.get(id) ?? []) if (multiUserStreamAllowed(res)) res.write(frame);
+    const committed = row(id);
+    if (committed) chatInvalidation.changed(committed.project_id, committed.conversation_id,
+      committed.status !== 'active' && committed.status !== 'queued');
   };
   const emit = <E extends MultiUserRunEvent['event']>(id: string, event: E, data: RunEventData<E>) => {
-    publishEvent(id, persistEvent<E>(id, event, data));
-  };
-  const emitProgress = (id: string, data: RunEventData<'progress'>) => {
-    const count = progressCounts.get(id) ?? 0;
-    const payload = JSON.stringify(data);
-    if (count >= 256 || Buffer.byteLength(payload, 'utf8') > 8 * 1024) return;
-    progressCounts.set(id, count + 1);
-    emit(id, 'progress', data);
+    publishEvent(id, db.transaction(() => persistEvent<E>(id, event, data))());
   };
   /** A run starts, consumes its lane's turn, and records its event together, before live publication. */
   const startRun = (run: RunRow) => {
@@ -306,49 +943,144 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       db.prepare(`INSERT INTO ${turnsTable} (account_id, last_seq)
         VALUES (?, (SELECT COALESCE(MAX(last_seq), 0) + 1 FROM ${turnsTable}))
         ON CONFLICT(account_id) DO UPDATE SET last_seq = excluded.last_seq`).run(run.owner_account_id);
-      return persistEvent(run.id, 'start', { runId: run.id });
+      studioMessages.reconcile(row(run.id)!);
+      return persistEvent(run.id, 'start', { runId: run.id, bin: agentOf(run), agentId: agentOf(run), protocolVersion: 1 });
     })();
     publishEvent(run.id, frame);
   };
   let dispatching = false;
   let suspendDispatch = false;
+  // Held through parent deletion, not just subprocess termination. Refcounts
+  // allow overlapping project/conversation deletes without reopening admission.
+  const deletingTargets = new Map<string, number>();
+  // A null owner fences every account's admissions (the owner deleting a shared project).
+  const targetKey = (owner: string | null, projectId: string, conversationId?: string) => JSON.stringify([owner, projectId, conversationId ?? null]);
+  const targetDeleting = (owner: string, projectId: string, conversationId: string) => [owner, null].some((who) =>
+    deletingTargets.has(targetKey(who, projectId)) || deletingTargets.has(targetKey(who, projectId, conversationId)));
   let retryTimer: NodeJS.Timeout | null = null;
   let dispatch = () => {};
   let dispatchPersonal = () => {};
+  /**
+   * #72: a company worker span closes at most once, and only when the ledger
+   * still holds it. A restored app DB without its ledger row is recorded with a
+   * fixed code instead of aborting recovery; nothing is charged for it.
+   */
+  const closeLedgerSpan = (run: RunRow, status: 'succeeded' | 'failed' | 'canceled') => {
+    const entry = ledger.entry(run.id);
+    if (!entry || entry.actorId !== run.owner_account_id) return studioMessages.recordIssue(run.id, 'MULTIUSER_LEDGER_ENTRY_MISSING');
+    if (entry.status !== 'active') return;
+    if (status === 'canceled') ledger.cancel(run.owner_account_id, run.id);
+    else ledger.finish(run.owner_account_id, run.id);
+  };
+  /**
+   * After a succeeded turn (#62): verification and extraction run in the
+   * background for the turn's owner only. Extraction re-resolves the turn's
+   * own source when it starts — the company credential the turn pinned (and
+   * the owner's remaining quota) or the account's own key at the same
+   * revision — and never another source. Personal Codex has no extraction.
+   */
+  const scheduleMemory = (run: RunRow, result: Record<string, unknown>) => {
+    if (!input.memory || storesClosed) return;
+    const request = storedRequest(run.request_json);
+    const text = String(result.text ?? '');
+    const files = Array.isArray(result.files) ? result.files : [];
+    const resolveKey = (): StudioMemoryTurnKey | null => {
+      if (isByok(run)) {
+        const own = providerKeys?.execution(run.owner_account_id) ?? null;
+        return own && own.credentialRevision === request?.personalCredentialRevision
+          ? { apiKey: own.apiKey, model: own.model, credentialSource: 'account-key' } : null;
+      }
+      if (!isOpenAI(run)) return null;
+      let execution: ReturnType<CompanyOpenAIStore['execution']>;
+      try { execution = companyOpenAI.execution(); } catch { return null; }
+      if (!execution || execution.config.credentialRevision !== request?.companyCredentialRevision
+        || ledger.balance(run.owner_account_id).remainingMs === 0) return null;
+      return { apiKey: execution.apiKey, model: execution.config.model, credentialSource: 'company-pool' };
+    };
+    void input.memory.afterTurn({ owner: run.owner_account_id, runId: run.id, projectId: run.project_id,
+      source: run.execution_source as 'personal_subscription' | 'company_pool' | 'personal_api_key',
+      userText: storedMessage(run.request_json) ?? '', assistantText: text, hadArtifact: files.length > 0 || /<artifact[\s>]/i.test(text),
+      resolveKey,
+      allowed: () => !storesClosed && !shuttingDown && accounts.getAccountById(run.owner_account_id)?.active === true
+        && accounts.getStudioPilot(run.owner_account_id).studioPilot && projects.canView(run.project_id, run.owner_account_id) });
+  };
+  /**
+   * Answered when a run reaches a terminal row. A worker settles its run one
+   * or more microtasks after its child closes (the stage runner awaits the
+   * turn, then the artifact snapshot decides), so a caller that must report
+   * the settled run waits for this rather than for the child's `close`.
+   */
+  const settleWaiters = new Map<string, (() => void)[]>();
+  const whenSettled = (id: string, done: () => void) => {
+    if (!['active', 'queued'].includes(row(id)?.status ?? '')) { done(); return; }
+    settleWaiters.set(id, [...(settleWaiters.get(id) ?? []), done]);
+  };
   const finish = (id: string, status: 'succeeded' | 'failed' | 'canceled', output?: unknown) => {
+    revokeConnectorGrant(id);
     if (storesClosed) return;
     const existing = row(id);
     if (!existing || (existing.status !== 'active' && existing.status !== 'queued')) return;
-    if (existing.status === 'active' && !isPersonal(existing)) {
-      if (status === 'canceled') ledger.cancel(existing.owner_account_id, id);
-      else ledger.finish(existing.owner_account_id, id);
-    }
-    // Personal worker time is recorded for visibility only; it has no budget.
-    if (existing.status === 'active' && isPersonal(existing)) db.prepare(`UPDATE ${table} SET ended_at = ? WHERE id = ?`).run(now(), id);
-    db.prepare(`UPDATE ${table} SET status = ?, output = ?, updated_at = ? WHERE id = ?`)
-      .run(status, output === undefined ? null : JSON.stringify(output), now(), id);
-    emit(id, 'end', { status, ...(output === undefined ? {} : { output }) });
+    if (existing.status === 'active' && isCompany(existing)) closeLedgerSpan(existing, status);
+    const projection = projections.get(id);
+    projection?.flush();
+    const result = { ...(projection ? { text: projection.text, textTruncated: projection.truncated } : {}),
+      ...(output && typeof output === 'object' ? output : {}) } as Record<string, unknown>;
+    const frames = db.transaction(() => {
+      const time = now();
+      db.prepare(`UPDATE ${table} SET status = ?, output = ?, updated_at = ?, ended_at = CASE WHEN started_at IS NOT NULL THEN ? ELSE ended_at END WHERE id = ?`)
+        .run(status, Object.keys(result).length ? JSON.stringify(result) : null, time, time, id);
+      const frames: string[] = [];
+      if (status === 'failed' || result.reason === 'MULTIUSER_PERSONAL_UNAVAILABLE') {
+        const reason = multiUserTerminalErrorCode(existing.execution_source, result.reason);
+        frames.push(persistEvent(id, 'error', { message: reason, error: { code: reason, message: reason }, ...(projection?.errorDetail ? { codexErrorInfo: projection.errorDetail } : {}) }));
+      }
+      const files = Array.isArray(result.files) ? result.files as string[] : [];
+      frames.push(persistEvent(id, 'end', { status, code: status === 'succeeded' ? 0 : status === 'failed' ? 1 : null,
+        terminalAt: time, artifactPaths: files, artifactCount: files.length }));
+      if (status === 'succeeded' && (isPersonal(existing) || isOpenAI(existing)) && emittedRenderableQuestionForm(String(result.text ?? ''))) {
+        db.prepare('INSERT OR IGNORE INTO multiuser_run_questions (run_id) VALUES (?)').run(id);
+      }
+      studioMessages.reconcile(row(id)!);
+      return frames;
+    })();
+    for (const frame of frames) publishEvent(id, frame);
+    if (status === 'succeeded' && (isPersonal(existing) || isOpenAI(existing))) scheduleMemory(existing, result);
     for (const res of listeners.get(id) ?? []) res.end();
     listeners.delete(id);
     children.delete(id);
     cancelPending.delete(id);
+    sourceInvalidated.delete(id);
     failurePending.delete(id);
     artifactBaselines.delete(id);
-    progressCounts.delete(id);
+    projections.delete(id);
+    interrupts.delete(id);
+    for (const waiter of settleWaiters.get(id) ?? []) waiter();
+    settleWaiters.delete(id);
     if (!shuttingDown && !suspendDispatch) { dispatch(); dispatchPersonal(); }
   };
-  const capacity = () => Number((db.prepare("SELECT value FROM multiuser_pool_config WHERE key = 'test-mock-capacity'").get() as { value: string } | undefined)?.value ?? '2');
+  for (const run of recovery) finish(run.id, 'failed', { reason: RESTART_ERROR_CODE });
+  for (const run of replayed) finish(run.id, 'failed', { reason: 'ledger_admission_replayed' });
+  const capacity = () => mockAgentScript ? Number((db.prepare("SELECT value FROM multiuser_pool_config WHERE key = 'test-mock-capacity'").get() as { value: string } | undefined)?.value ?? '2') : 0;
+  /** Host worker slots for turns on accounts' own keys; the provider bill is the account's. */
+  const byokCapacity = () => providerKeys ? Number((db.prepare("SELECT value FROM multiuser_pool_config WHERE key = 'personal-api-key-capacity'")
+    .get() as { value: string } | undefined)?.value ?? '4') : 0;
+  const providerCapacity = (run: RunRow) => isByok(run) ? byokCapacity()
+    : isOpenAI(run) ? companyOpenAI.available() ? companyOpenAI.read().capacity : 0 : capacity();
+  const lane = (run: RunRow) => isByok(run) ? 'byok' : isOpenAI(run) ? 'openai' : 'mock';
   dispatch = () => {
-    if (dispatching || shuttingDown || !mockAgentScript) return;
+    if (dispatching || shuttingDown || !(mockAgentScript || companyOpenAI.available() || providerKeys)) return;
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     dispatching = true;
     try {
-      while ((db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE status = 'active' AND ${company}`).get() as { n: number }).n < capacity()) {
-        const queued = db.prepare(`SELECT * FROM ${table} WHERE status = 'queued' AND ${company} ORDER BY queue_seq`).all() as RunRow[];
+      for (;;) {
+        const active = db.prepare(`SELECT * FROM ${table} WHERE status = 'active' AND ${workerRows}`).all() as RunRow[];
+        const queued = db.prepare(`SELECT * FROM ${table} WHERE status = 'queued' AND ${workerRows} ORDER BY queue_seq`).all() as RunRow[];
         const turns = new Map((db.prepare('SELECT account_id, last_seq FROM multiuser_pool_turns').all() as Array<{ account_id: string; last_seq: number }>)
           .map((turn) => [turn.account_id, turn.last_seq]));
-        const eligible = queued.filter((run) => ledger.balance(run.owner_account_id).remainingMs > 0 &&
-          !(db.prepare(`SELECT 1 FROM ${table} WHERE owner_account_id = ? AND status = 'active' AND ${company}`).get(run.owner_account_id)));
+        // One active turn per account and lane; company quota binds company turns only.
+        const eligible = queued.filter((run) => active.filter((other) => lane(other) === lane(run)).length < providerCapacity(run)
+          && (isByok(run) || ledger.balance(run.owner_account_id).remainingMs > 0)
+          && !active.some((other) => other.owner_account_id === run.owner_account_id && isByok(other) === isByok(run)));
         const next = eligible.sort((a, b) => (turns.get(a.owner_account_id) ?? 0) - (turns.get(b.owner_account_id) ?? 0)
           || Number(a.queue_seq) - Number(b.queue_seq))[0];
         if (!next) break;
@@ -362,7 +1094,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           finish(next.id, 'canceled');
           continue;
         }
-        if (!owners.isOwnedBy(next.project_id, next.owner_account_id) ||
+        if (!projects.canWrite(next.project_id, next.owner_account_id) ||
             conversation?.projectId !== next.project_id || metadata?.baseDir || metadata?.linkedDirs || metadata?.imported ||
             !realCwd || path.dirname(realCwd) !== fs.realpathSync(projectsRoot)) {
           finish(next.id, 'failed');
@@ -379,13 +1111,142 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         fs.chmodSync(path.dirname(runHome), 0o700);
         fs.chmodSync(runHome, 0o700);
         fs.chmodSync(temp, 0o700);
-        const admission = ledger.start({ actorId: next.owner_account_id, runId: next.id, projectId: next.project_id, providerId: 'test-mock' });
-        if (admission.status === 'replayed') {
-          if (admission.run.status === 'active') ledger.finish(next.owner_account_id, next.id);
-          finish(next.id, 'failed', { reason: 'ledger_admission_replayed' });
+        if (!isByok(next)) {
+          const admission = ledger.start({ actorId: next.owner_account_id, runId: next.id, projectId: next.project_id, providerId: agentOf(next) });
+          if (admission.status === 'replayed') {
+            if (admission.run.status === 'active') ledger.finish(next.owner_account_id, next.id);
+            finish(next.id, 'failed', { reason: 'ledger_admission_replayed' });
+            continue;
+          }
+          if (admission.status !== 'started') break;
+        }
+        if (isOpenAI(next)) {
+          const request = storedRequest(next.request_json)!;
+          // The key a turn runs on: the company credential, or the account's own (#62/#63). Each
+          // stays authorized only while its revision is unchanged; neither falls back to the other.
+          let key: { apiKey: string; model: string; current: () => boolean; saveHistory: (json: string) => void; history: string };
+          if (isByok(next)) {
+            const own = providerKeys?.execution(next.owner_account_id) ?? null;
+            const session = db.prepare('SELECT * FROM multiuser_byok_sessions WHERE conversation_id = ? AND owner_account_id = ?')
+              .get(next.conversation_id, next.owner_account_id) as { history_json: string } | undefined;
+            if (!own || !session || own.credentialRevision !== request.personalCredentialRevision) {
+              finish(next.id, 'failed', { reason: 'MULTIUSER_PROVIDER_KEY_MISSING' }); continue;
+            }
+            key = { apiKey: own.apiKey, model: own.model, history: session.history_json,
+              current: () => providerKeys?.read(next.owner_account_id).credentialRevision === own.credentialRevision,
+              saveHistory: (json) => db.prepare('UPDATE multiuser_byok_sessions SET history_json = ? WHERE conversation_id = ? AND owner_account_id = ?')
+                .run(json, next.conversation_id, next.owner_account_id) };
+          } else {
+            let execution: ReturnType<CompanyOpenAIStore['execution']>;
+            try { execution = companyOpenAI.execution(); }
+            catch { closeLedgerSpan(next, 'failed'); finish(next.id, 'failed', { reason: 'MULTIUSER_PROVIDER_DISABLED' }); continue; }
+            const session = db.prepare('SELECT * FROM multiuser_company_sessions WHERE conversation_id = ? AND owner_account_id = ?')
+              .get(next.conversation_id, next.owner_account_id) as { model: string; credential_revision: number; history_json: string } | undefined;
+            if (!execution || !session || execution.config.credentialRevision !== request.companyCredentialRevision
+              || execution.config.model !== request.companyModel || session.model !== execution.config.model
+              || session.credential_revision !== execution.config.credentialRevision) {
+              closeLedgerSpan(next, 'failed'); finish(next.id, 'failed', { reason: 'MULTIUSER_PROVIDER_DISABLED' }); continue;
+            }
+            const pinned = execution.config;
+            key = { apiKey: execution.apiKey, model: pinned.model, history: session.history_json,
+              current: () => { const config = companyOpenAI.read();
+                return config.enabled && config.configured && config.model === pinned.model && config.credentialRevision === pinned.credentialRevision; },
+              saveHistory: (json) => db.prepare('UPDATE multiuser_company_sessions SET history_json = ? WHERE conversation_id = ? AND owner_account_id = ? AND credential_revision = ?')
+                .run(json, next.conversation_id, next.owner_account_id, pinned.credentialRevision) };
+          }
+          const worker = new CompanyOpenAIWorker();
+          const projection = new PersonalRunEvents(realCwd, [dataRoot, realCwd, runHome],
+            (event) => emit(next.id, event.event, event.data), undefined, 'company-pool');
+          startRun(next); children.set(next.id, worker); projections.set(next.id, projection);
+          const quotaWatch = setInterval(() => {
+            if (!storesClosed && isCompany(next) && row(next.id)?.status === 'active' && ledger.balance(next.owner_account_id).remainingMs === 0) {
+              failurePending.add(next.id); worker.kill('SIGTERM');
+            }
+          }, 1000);
+          quotaWatch.unref();
+          worker.once('close', () => clearInterval(quotaWatch));
+          try {
+            const history = JSON.parse(key.history) as Record<string, unknown>[];
+            if (!Array.isArray(history)) throw new Error('invalid company history');
+            const userPrompt = withInstruction(next.request_json, storedMessage(next.request_json)!);
+            const stablePrompt = typeof request.stablePrompt === 'string' ? request.stablePrompt : '';
+            const attached = formatProjectAttachmentHint(resolveSafeProjectAttachments(realCwd,
+              Array.isArray(request.attachments) ? request.attachments.filter((item): item is string => typeof item === 'string') : []));
+            const focused = Array.isArray(request.workspaceItems) && request.workspaceItems.length
+              ? `\n\n${renderRunContextPrompt({ workspaceItems: request.workspaceItems }, null)}` : '';
+            const skillPackages = studioRunResourcePackages(request);
+            const skillRoot = input.scriptSandbox ? stageStudioSkillPackages(runHome, skillPackages) : undefined;
+            artifactBaselines.set(next.id, { cwd: realCwd, before: snapshotProjectArtifacts(realCwd) });
+            const authorized = () => {
+              if (storesClosed) return false;
+              return !storesClosed && !shuttingDown && !cancelPending.has(next.id) && row(next.id)?.status === 'active'
+                && accounts.getAccountById(next.owner_account_id)?.active === true && projects.canWrite(next.project_id, next.owner_account_id)
+                && key.current();
+            };
+            const usage = { inputTokens: 0, outputTokens: 0 };
+            const mediaUsage = { images: 0, speechCharacters: 0, videoSeconds: 0 };
+            const connectorTools = connectorToolsFor(next, authorized);
+            const mcpTools = mcpToolsFor(next, authorized);
+            let stageHistory = history;
+            let stageCount = 0;
+            void runStudioPipeline({ db, runId: next.id, snapshot: pluginSnapshotOf(request), resumeStage: request.pipelineResumeStage,
+              check: () => { worker.abort.signal.throwIfAborted(); if (!authorized()) throw new Error('company_authority_changed'); },
+              emit: (stage) => { projection.flush(); emit(next.id, 'agent', { type: 'pipeline_stage', stage }); },
+              runStage: async (directive) => {
+                if (stageCount++) { projection.accept({ type: 'text_delta', delta: '\n\n' }); projection.flush(); }
+                let text = '';
+                const result = await runCompanyOpenAITurn({ apiKey: key.apiKey, model: key.model,
+                  // Every stage stays on the turn's own source and bill (#63).
+                  ...(connectorTools ? { connectors: connectorTools } : {}),
+                  ...(mcpTools ? { mcp: mcpTools } : {}),
+                  systemPrompt: `${stablePrompt}${STUDIO_MEDIA_PROMPT}${input.liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : ''}`, media: true,
+                  ...(input.liveArtifacts ? { liveArtifacts: artifactToolsFor(next, authorized, (event) => projection.accept(event))! } : {}),
+                  prompt: `${userPrompt}${attached}${renderCommentAttachmentHint(normalizeCommentAttachments(Array.isArray(request.commentAttachments) ? request.commentAttachments : []))}${focused}${directive}`,
+                  history: stageHistory, skillPackages, projectsRoot, projectId: next.project_id, worker, authorized,
+                  ...(skillRoot && input.scriptSandbox ? { runSkillScript: createStudioSkillScriptRunner({ sandbox: input.scriptSandbox,
+                    packages: skillPackages, skillRoot, runHome, cwd: realCwd }) } : {}),
+                  onAgentEvent: (event) => {
+                    if (event.type === 'text_delta' && typeof event.delta === 'string') text += event.delta;
+                    projection.accept(event);
+                  }, ...(input.companyFetch ? { fetch: input.companyFetch } : {}),
+                });
+                stageHistory = result.input;
+                usage.inputTokens += result.usage.inputTokens; usage.outputTokens += result.usage.outputTokens;
+                mediaUsage.images += result.media.images; mediaUsage.speechCharacters += result.media.speechCharacters;
+                mediaUsage.videoSeconds += result.media.videoSeconds;
+                return { value: result, ok: result.ok, text, tokensUsed: result.usage.inputTokens + result.usage.outputTokens };
+              },
+            }).then(async ({ value: result, progress }) => {
+              if (!authorized()) { finish(next.id, 'canceled'); return; }
+              const after = await snapshotProjectArtifactsAsync(realCwd);
+              if (!authorized()) { finish(next.id, 'canceled'); return; }
+              const files = diffRunArtifacts(artifactBaselines.get(next.id)!.before, after).touchedPaths
+                .map((file) => path.relative(realCwd, file).replaceAll('\\', '/')).filter((file) => file && !file.startsWith('../')).slice(0, 128);
+              const producedFiles = files.flatMap((name) => {
+                const fingerprint = after.get(path.join(realCwd, name));
+                return fingerprint ? [{ name, path: name, type: 'file' as const, size: fingerprint.size, mtime: fingerprint.mtimeMs, kind: kindFor(name), mime: mimeFor(name) }] : [];
+              });
+              const messageId = studioMessages.ids(next.id).assistantMessageId;
+              if (getMessage(db, messageId)?.runId === next.id) await captureRunChatArtifactSnapshots({ db, blobs: artifactBlobs },
+                { projectId: next.project_id, messageId, runId: next.id, projectRoot: realCwd, touchedPaths: files.map((file) => path.join(realCwd, file)) });
+              if (!authorized()) { finish(next.id, 'canceled'); return; }
+              key.saveHistory(JSON.stringify(result.input));
+              if (workspaceToolsUnavailable(projection.toolStartupFailed, files.length, projection.artifactCount)) {
+                finish(next.id, 'failed', { reason: 'MULTIUSER_RUN_TOOLS_UNAVAILABLE', files, producedFiles, usage }); return;
+              }
+              finish(next.id, 'succeeded', { files, producedFiles, usage, ...(progress ? { pipeline: progress } : {}),
+                ...(mediaUsage.images || mediaUsage.speechCharacters || mediaUsage.videoSeconds ? { media: mediaUsage } : {}) });
+            }).catch((error: unknown) => {
+              const cause = error instanceof Error ? error.message : '';
+              finish(next.id, cancelPending.has(next.id) || shuttingDown ? 'canceled' : 'failed', { reason: failurePending.has(next.id) ? 'MULTIUSER_QUOTA_EXHAUSTED'
+                : isByok(next) && cause === 'provider_auth_rejected' ? 'MULTIUSER_PROVIDER_KEY_REJECTED'
+                : isByok(next) && cause === 'provider_rate_limited' ? 'MULTIUSER_PROVIDER_RATE_LIMITED' : 'MULTIUSER_RUN_FAILED' });
+            })
+              .finally(() => worker.close(!storesClosed && row(next.id)?.status === 'succeeded'));
+          } catch (error) { finish(next.id, cancelPending.has(next.id) ? 'canceled' : 'failed', { reason: (error instanceof StudioConnectorRuntimeError || error instanceof StudioMcpRuntimeError) ? error.code : 'MULTIUSER_RUN_START_FAILED' }); worker.close(false); }
           continue;
         }
-        if (admission.status !== 'started') break;
+        if (!mockAgentScript) { closeLedgerSpan(next, 'failed'); finish(next.id, 'failed', { reason: 'MULTIUSER_PROVIDER_DISABLED' }); continue; }
         let child: ChildProcessWithoutNullStreams;
         try {
           startRun(next);
@@ -414,7 +1275,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           try {
             const output = JSON.parse(stdout.trim()) as unknown;
             if (row(next.id)?.status !== 'active') return;
-            emit(next.id, 'agent', output);
+            emit(next.id, 'agent', { type: 'text_delta', delta: typeof (output as { message?: unknown })?.message === 'string' ? (output as { message: string }).message : '' });
             finish(next.id, 'succeeded', output);
           } catch { finish(next.id, 'failed'); }
         });
@@ -422,9 +1283,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       }
     } finally {
       dispatching = false;
-      const waiting = db.prepare(`SELECT 1 FROM ${table} WHERE status = 'queued' AND ${company} LIMIT 1`).get();
-      const active = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE status = 'active' AND ${company}`).get() as { n: number }).n;
-      if (waiting && active < capacity() && capacity() > 0) {
+      const waiting = db.prepare(`SELECT 1 FROM ${table} WHERE status = 'queued' AND ${workerRows} LIMIT 1`).get();
+      const active = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE status = 'active' AND ${workerRows}`).get() as { n: number }).n;
+      if (waiting && active < capacity() + byokCapacity() + (companyOpenAI.available() ? companyOpenAI.read().capacity : 0)) {
         retryTimer = setTimeout(() => { retryTimer = null; dispatch(); }, 60_000);
         retryTimer.unref();
       }
@@ -441,7 +1302,36 @@ export function registerMultiUserRunRoutes(app: Express, input: {
    * user and round-robin across users by their last personal dispatch turn.
    * The company ledger and company slots are never touched.
    */
+  /**
+   * S58 A1: dispatch is asynchronous (it awaits the Codex version floor), and
+   * every caller fires it without awaiting. No rejection may escape: a
+   * synchronous DB/fs/dependency throw after that await fails the run it was
+   * dispatching with a typed code, is logged without its message (it can carry
+   * private paths), and the lane keeps dispatching. A failure outside any run
+   * (the queue read itself) is logged the same way.
+   */
+  const logPersonalDispatchFailure = (error: unknown) => {
+    const name = error instanceof Error ? error.name : typeof error;
+    console.error(`[Studio] MULTIUSER_PERSONAL_RUN_FAILED: personal dispatch failed (${name})`);
+  };
+  const failPersonalDispatch = (runId: string, error: unknown): boolean => {
+    logPersonalDispatchFailure(error);
+    try {
+      if (storesClosed || shuttingDown) return true;
+      const status = row(runId)?.status;
+      if (status === 'queued' || (status === 'active' && !children.has(runId))) {
+        finish(runId, 'failed', { reason: error instanceof PersonalAccountError || (error instanceof StudioConnectorRuntimeError || error instanceof StudioMcpRuntimeError) ? error.code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
+      }
+      return row(runId)?.status !== 'queued';
+    } catch (secondary) {
+      logPersonalDispatchFailure(secondary);
+      return false;
+    }
+  };
   dispatchPersonal = () => {
+    void dispatchPersonalQueue().catch(logPersonalDispatchFailure);
+  };
+  const dispatchPersonalQueue = async () => {
     const launch = personal?.appServerLaunch();
     if (personalDispatching || shuttingDown || !personal || !launch) return;
     personalDispatching = true;
@@ -454,135 +1344,189 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           .get(run.owner_account_id))
           .sort((a, b) => (turns.get(a.owner_account_id) ?? 0) - (turns.get(b.owner_account_id) ?? 0) || Number(a.queue_seq) - Number(b.queue_seq))[0];
         if (!next) break;
-        if (!accounts.getAccountById(next.owner_account_id)?.active) { finish(next.id, 'canceled'); continue; }
-        const project = getProject(db, next.project_id);
-        const conversation = getConversation(db, next.conversation_id);
-        const metadata = project?.metadata as Record<string, unknown> | null | undefined;
-        let realCwd: string | null = null;
-        try { realCwd = fs.realpathSync(path.join(projectsRoot, next.project_id)); } catch { /* failed below */ }
-        if (!owners.isOwnedBy(next.project_id, next.owner_account_id) || conversation?.projectId !== next.project_id ||
-            metadata?.baseDir || metadata?.linkedDirs || metadata?.imported || !realCwd || path.dirname(realCwd) !== fs.realpathSync(projectsRoot)) {
-          finish(next.id, 'failed');
-          continue;
-        }
-        // Re-validate the binding at dispatch: same account, same credential version, still usable.
-        const account = personal.usableAccount(next.owner_account_id);
-        const session = personalSession(next.conversation_id);
-        if (!account || account.id !== next.personal_account_id || account.credentialVersion !== next.credential_version ||
-            !session || session.personal_account_id !== next.personal_account_id) {
-          personal.audit(next.owner_account_id, next.owner_account_id, 'run_rejected', 'MULTIUSER_PERSONAL_UNAVAILABLE', next.id);
-          finish(next.id, 'failed', { reason: 'MULTIUSER_PERSONAL_UNAVAILABLE' });
-          continue;
-        }
-        // A damaged request never starts: no runtime home, active mark, personal turn or start event.
-        const request = storedRequest(next.request_json);
-        const userPrompt = storedMessage(next.request_json);
-        const stablePrompt = typeof request?.stablePrompt === 'string' ? request.stablePrompt : '';
-        const stablePromptHash = typeof request?.stablePromptHash === 'string' ? request.stablePromptHash : '';
-        if (userPrompt === null) {
-          finish(next.id, 'failed', { reason: 'MULTIUSER_RUN_REQUEST_INVALID' });
-          continue;
-        }
-        const runHome = path.join(dataRoot, 'multiuser-runtime', createHash('sha256').update(next.owner_account_id).digest('hex'), next.id);
-        const temp = path.join(runHome, 'tmp');
-        fs.mkdirSync(temp, { recursive: true, mode: 0o700 });
-        for (const dir of [path.dirname(runHome), runHome, temp]) fs.chmodSync(dir, 0o700);
-        const runId = next.id;
         try {
-          artifactBaselines.set(runId, { cwd: realCwd, before: snapshotProjectArtifacts(realCwd) });
-          startRun(next);
-          const owner = next.owner_account_id;
-          const accountId = account.id;
-          const includeStable = Boolean(stablePrompt) && (!session.thread_id || session.stable_prompt_hash !== stablePromptHash);
-          const prompt = includeStable ? `${stablePrompt}\n\n---\n\n# User request\n\n${userPrompt}` : userPrompt;
-          const progressTools = new Map<string, { kind: 'file'; path: string } | { kind: 'command'; name: string }>();
-          const turn = runPersonalCodexTurn({
-            command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
-            prompt, resumeThreadId: session.thread_id,
-            // A real personal provider always runs inside the per-run bubblewrap
-            // boundary. Its filesystem already contains only this account's
-            // CODEX_HOME, run HOME/TMPDIR and project cwd, with system paths
-            // read-only. Do not ask Codex to create a second Linux sandbox
-            // inside it: unprivileged container hosts commonly reject that
-            // nested sandbox and every file/command tool then fails to start.
-            // `danger-full-access` is scoped to the outer boundary, not the
-            // daemon container or host. Mock-only unsandboxed test lanes keep
-            // the normal platform/operator-resolved Codex policy.
-            sandboxMode: launch.sandbox ? 'danger-full-access' : codexResolvedSandboxMode(),
-            onThread: (threadId) => db.prepare(`UPDATE multiuser_personal_sessions SET thread_id = ?, updated_at = ?
-              WHERE conversation_id = ? AND personal_account_id = ?`).run(threadId, now(), next.conversation_id, accountId),
-            onAgentEvent: (event) => {
-              const toolId = typeof event.id === 'string' ? event.id
-                : typeof event.toolUseId === 'string' ? event.toolUseId : '';
-              const name = typeof event.name === 'string' ? event.name : '';
-              const eventInput = event.input && typeof event.input === 'object' ? event.input as Record<string, unknown> : {};
-              const rawPath = typeof eventInput.file_path === 'string' ? eventInput.file_path
-                : typeof eventInput.path === 'string' ? eventInput.path : '';
-              if (event.type === 'tool_use' && /^(?:Write|Edit|MultiEdit|apply_patch|write_file|replace)$/iu.test(name) && rawPath) {
-                const absolute = path.resolve(realCwd, rawPath);
-                const relative = path.relative(realCwd, absolute).replaceAll('\\', '/');
-                if (toolId && relative && relative !== '..' && !relative.startsWith('../') && !path.isAbsolute(relative)) {
-                  progressTools.set(toolId, { kind: 'file', path: relative });
-                }
-              } else if (event.type === 'tool_use' && /todo|update_plan/iu.test(name)) {
-                const items = Array.isArray(eventInput.todos) ? eventInput.todos : Array.isArray(eventInput.plan) ? eventInput.plan : [];
-                const safeItems = items.slice(0, 64).flatMap((item) => {
-                  if (!item || typeof item !== 'object') return [];
-                  const value = item as Record<string, unknown>;
-                  return typeof value.content === 'string' || typeof value.step === 'string'
-                    ? [{ content: String(value.content ?? value.step).slice(0, 500), status: String(value.status ?? 'pending').slice(0, 32) }]
-                    : [];
+          try { await personal.assertSupportedVersion(); } catch {
+            if (storesClosed || shuttingDown) return;
+            if (row(next.id)?.status === 'queued') finish(next.id, 'failed', { reason: 'MULTIUSER_CODEX_UNSUPPORTED_VERSION' });
+            continue;
+          }
+          if (storesClosed || shuttingDown) return;
+          if (row(next.id)?.status !== 'queued') continue;
+          if (!accounts.getAccountById(next.owner_account_id)?.active) { finish(next.id, 'canceled'); continue; }
+          const project = getProject(db, next.project_id);
+          const conversation = getConversation(db, next.conversation_id);
+          const metadata = project?.metadata as Record<string, unknown> | null | undefined;
+          let realCwd: string | null = null;
+          try { realCwd = fs.realpathSync(path.join(projectsRoot, next.project_id)); } catch { /* failed below */ }
+          if (!projects.canWrite(next.project_id, next.owner_account_id) || conversation?.projectId !== next.project_id ||
+              metadata?.baseDir || metadata?.linkedDirs || metadata?.imported || !realCwd || path.dirname(realCwd) !== fs.realpathSync(projectsRoot)) {
+            finish(next.id, 'failed');
+            continue;
+          }
+          // Re-validate the binding at dispatch: same account, same credential version, still usable.
+          const account = personal.usableAccount(next.owner_account_id);
+          const session = personalSession(next.conversation_id);
+          if (!account || account.id !== next.personal_account_id || account.credentialVersion !== next.credential_version ||
+              !session || session.personal_account_id !== next.personal_account_id) {
+            personal.audit(next.owner_account_id, next.owner_account_id, 'run_rejected', 'MULTIUSER_PERSONAL_UNAVAILABLE', next.id);
+            finish(next.id, 'failed', { reason: 'MULTIUSER_PERSONAL_UNAVAILABLE' });
+            continue;
+          }
+          // A damaged request never starts: no runtime home, active mark, personal turn or start event.
+          const request = storedRequest(next.request_json);
+          const userPrompt = withInstruction(next.request_json, storedMessage(next.request_json));
+          const stablePrompt = typeof request?.stablePrompt === 'string' ? request.stablePrompt : '';
+          const stablePromptHash = typeof request?.stablePromptHash === 'string' ? request.stablePromptHash : '';
+          if (userPrompt === null) {
+            finish(next.id, 'failed', { reason: 'MULTIUSER_RUN_REQUEST_INVALID' });
+            continue;
+          }
+          const runHome = path.join(dataRoot, 'multiuser-runtime', createHash('sha256').update(next.owner_account_id).digest('hex'), next.id);
+          const temp = path.join(runHome, 'tmp');
+          fs.mkdirSync(temp, { recursive: true, mode: 0o700 });
+          for (const dir of [path.dirname(runHome), runHome, temp]) fs.chmodSync(dir, 0o700);
+          const runId = next.id;
+          try {
+            const skillPackages = studioRunResourcePackages(request);
+            const skillRoot = stageStudioSkillPackages(runHome, skillPackages);
+            artifactBaselines.set(runId, { cwd: realCwd, before: snapshotProjectArtifacts(realCwd) });
+            startRun(next);
+            const owner = next.owner_account_id;
+            const accountId = account.id;
+            const includeStable = Boolean(stablePrompt) && (!session.thread_id || session.stable_prompt_hash !== stablePromptHash);
+            // Attachments were owner-checked at admission; re-resolve against the
+            // real project root now, since files may have moved since.
+            const attached = formatProjectAttachmentHint(resolveSafeProjectAttachments(realCwd,
+              Array.isArray(request?.attachments) ? request.attachments.filter((value): value is string => typeof value === 'string') : []));
+            // Narrowed at admission to project files/folders; rendered exactly like a standard run's context.
+            const focused = Array.isArray(request?.workspaceItems) && request.workspaceItems.length
+              ? `\n\n${renderRunContextPrompt({ workspaceItems: request.workspaceItems }, null)}` : '';
+            const commented = renderCommentAttachmentHint(normalizeCommentAttachments(Array.isArray(request?.commentAttachments) ? request.commentAttachments : []));
+            const resources = skillRoot ? '\n\n# Captured skill resources\n\nThese directories are read-only, fixed to this conversation’s selected revision. Resolve each skill’s relative references and scripts from its own directory:\n'
+              + skillPackages.map((resource) => `- ${resource.id}: ${path.join(skillRoot, resource.key)}`).join('\n') : '';
+            const prompt = `${includeStable ? `${stablePrompt}\n\n---\n\n# User request\n\n${userPrompt}` : userPrompt}${attached}${commented}${focused}${resources}`;
+            const projection = new PersonalRunEvents(realCwd, [dataRoot, account.codexHome, runHome, realCwd], (event) => emit(runId, event.event, event.data));
+            projections.set(runId, projection);
+            const allowed = () => !storesClosed && !shuttingDown && !cancelPending.has(runId)
+              && row(runId)?.status === 'active' && accounts.getAccountById(owner)?.active === true
+              && projects.canWrite(next.project_id, owner) && personal.usableAccount(owner)?.id === accountId
+              && personal.usableAccount(owner)?.credentialVersion === next.credential_version;
+            const liveArtifacts = artifactToolsFor(next, allowed, (event) => projection.accept(event));
+            const connectorTools = connectorToolsFor(next, allowed);
+            const mcpTools = mcpToolsFor(next, allowed);
+            let resumeThreadId = session.thread_id;
+            let stageCount = 0;
+            void runStudioPipeline({ db, runId, snapshot: pluginSnapshotOf(request), resumeStage: request?.pipelineResumeStage,
+              check: () => { if (!allowed()) throw new Error('personal_authority_changed'); },
+              emit: (stage) => { projection.flush(); emit(runId, 'agent', { type: 'pipeline_stage', stage }); },
+              runStage: async (directive) => {
+                if (stageCount++) { projection.accept({ type: 'text_delta', delta: '\n\n' }); projection.flush(); }
+                const turn = await runPersonalCodexTurn({
+                  reportToolStartupFailures: true,
+                  beforeSpawn: () => { if (!allowed()) throw new Error('personal_authority_changed'); },
+                  command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
+                  ...(skillRoot ? { skillPackages: skillRoot } : {}),
+                  prompt: `${stageCount === 1 ? prompt : userPrompt}${directive}`, resumeThreadId,
+                  ...(liveArtifacts || connectorTools || mcpTools ? { dynamicToolsPrompt: liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : '',
+                    dynamicTools: [
+                      ...(liveArtifacts ? STUDIO_LIVE_ARTIFACT_TOOLS.map(({ properties, required, ...tool }) => ({ ...tool,
+                        inputSchema: { type: 'object', properties, required: [...required], additionalProperties: false } })) : []),
+                      ...(connectorTools ? STUDIO_CONNECTOR_TOOL_DESCRIPTORS : []),
+                      ...(mcpTools ? STUDIO_MCP_TOOL_DESCRIPTORS : [])],
+                    onDynamicToolCall: (name: string, args: Record<string, unknown>) => name.startsWith('mcp_') ? mcpTools!.execute(name, args) : name.startsWith('connectors_')
+                      ? connectorTools!.execute(name, args) : liveArtifacts!.execute(name, args) } : {}),
+                  ...(isStudioCodexModel(request?.model) ? { model: request.model } : {}),
+                  ...(isStudioCodexReasoning(request?.reasoning) ? { reasoning: request.reasoning } : {}),
+                  // A real personal provider always runs inside the per-run bubblewrap
+                  // boundary. Its filesystem already contains only this account's
+                  // CODEX_HOME, run HOME/TMPDIR and project cwd, with system paths
+                  // read-only. Do not ask Codex to create a second Linux sandbox
+                  // inside it: unprivileged container hosts commonly reject that
+                  // nested sandbox and every file/command tool then fails to start.
+                  // `danger-full-access` is scoped to the outer boundary, not the
+                  // daemon container or host. Mock-only unsandboxed test lanes keep
+                  // the normal platform/operator-resolved Codex policy.
+                  sandboxMode: launch.sandbox ? 'danger-full-access' : codexResolvedSandboxMode(),
+                  onThread: (threadId) => { if (allowed()) db.prepare(`UPDATE multiuser_personal_sessions SET thread_id = ?, updated_at = ?
+                    WHERE conversation_id = ? AND personal_account_id = ?`).run(threadId, now(), next.conversation_id, accountId); },
+                  onAgentEvent: (event) => { if (allowed()) projection.accept(event); },
                 });
-                if (safeItems.length) emitProgress(runId, { kind: 'todo', items: safeItems });
-              } else if (event.type === 'tool_use' && /^(?:Bash|Shell|command_execution|exec_command|shell_command)$/iu.test(name)) {
-                const safeName = name.slice(0, 80);
-                if (toolId) progressTools.set(toolId, { kind: 'command', name: safeName });
-                emitProgress(runId, { kind: 'command', name: safeName, status: 'started' });
-              } else if (event.type === 'tool_result' && toolId) {
-                const pending = progressTools.get(toolId);
-                progressTools.delete(toolId);
-                if (pending?.kind === 'file' && event.isError !== true) {
-                  emitProgress(runId, { kind: 'file', path: pending.path, status: 'changed' });
-                } else if (pending?.kind === 'command') {
-                  emitProgress(runId, { kind: 'command', name: pending.name, status: event.isError === true ? 'failed' : 'completed' });
-                }
-              }
-            },
-            onDone: (result) => { void (async () => {
+                children.set(runId, turn.child);
+                interrupts.set(runId, turn.interrupt);
+                const result = await turn.done;
+                personal.secureHome(owner);
+                resumeThreadId = result.threadId;
+                return { value: result, ok: result.ok, text: result.text };
+              },
+            }).then(async ({ value: result, progress }) => {
               personal.secureHome(owner);
-              if (row(runId)?.status !== 'active') return;
-              if (shuttingDown) return finish(runId, 'canceled', { reason: 'daemon_shutdown' });
-              if (cancelPending.has(runId)) return finish(runId, 'canceled');
+              /** #78: checked on both sides of the artifact snapshot; a terminal reached while it runs wins. */
+              const settled = (): boolean => {
+                if (row(runId)?.status !== 'active') return true;
+                if (shuttingDown) { finish(runId, 'canceled', { reason: 'daemon_shutdown' }); return true; }
+                if (!cancelPending.has(runId)) return false;
+                finish(runId, 'canceled', sourceInvalidated.has(runId) ? { reason: 'MULTIUSER_PERSONAL_UNAVAILABLE' } : undefined);
+                return true;
+              };
+              if (settled()) return;
               const baseline = artifactBaselines.get(runId);
               let files: string[] = [];
+              let producedFiles: import('@open-design/contracts').ProjectFile[] = [];
               if (baseline) {
                 try {
                   const after = await snapshotProjectArtifactsAsync(baseline.cwd);
                   files = diffRunArtifacts(baseline.before, after).touchedPaths.map((filePath) => path.relative(baseline.cwd, filePath).replaceAll('\\', '/'))
                     .filter((filePath) => filePath && filePath !== '..' && !filePath.startsWith('../') && !path.isAbsolute(filePath)).slice(0, 128);
+                  producedFiles = files.flatMap((name) => {
+                    const fingerprint = after.get(path.join(baseline.cwd, name));
+                    return fingerprint ? [{ name, path: name, type: 'file' as const, size: fingerprint.size,
+                      mtime: fingerprint.mtimeMs, kind: kindFor(name), mime: mimeFor(name) }] : [];
+                  });
+                  if (settled()) return;
+                  const messageId = studioMessages.ids(runId).assistantMessageId;
+                  // A damaged/quarantined transcript binding must never let a
+                  // capture write refs onto another conversation's message.
+                  if (getMessage(db, messageId, next.conversation_id)?.runId === runId) {
+                    await captureRunChatArtifactSnapshots({ db, blobs: artifactBlobs }, {
+                      projectId: next.project_id, projectRoot: baseline.cwd, messageId, runId,
+                      touchedPaths: files.map((file) => path.join(baseline.cwd, file)),
+                    });
+                  }
                 } catch {
                   // Artifact discovery is best-effort. A filesystem race must
                   // not leave a completed provider turn stuck as active.
                 }
               }
+              if (settled()) return;
               if (result.ok) {
-                emit(runId, 'agent', { text: result.text });
+                if (workspaceToolsUnavailable(projection.toolStartupFailed, files.length, projection.artifactCount)) {
+                  return finish(runId, 'failed', { reason: 'MULTIUSER_RUN_TOOLS_UNAVAILABLE', files, producedFiles });
+                }
+                projection.flush();
                 if (includeStable && stablePromptHash) {
                   db.prepare(`UPDATE multiuser_personal_sessions SET stable_prompt_hash = ?, updated_at = ?
                     WHERE conversation_id = ? AND personal_account_id = ?`).run(stablePromptHash, now(), next.conversation_id, accountId);
                 }
-                return finish(runId, 'succeeded', { text: result.text, textTruncated: result.textTruncated, files, threadId: result.threadId });
+                return finish(runId, 'succeeded', { text: projection.text, textTruncated: projection.truncated, files, producedFiles, threadId: result.threadId, ...(progress ? { pipeline: progress } : {}) });
               }
               if (result.problem) personal.recordProblem(owner, accountId, result.problem);
-              finish(runId, 'failed', { reason: result.problem ? PROBLEM_ERRORS[result.problem].code : 'MULTIUSER_PERSONAL_RUN_FAILED', files });
-            })().catch(() => {
-              if (row(runId)?.status === 'active') finish(runId, 'failed', { reason: 'MULTIUSER_PERSONAL_RUN_FAILED' });
-            }); },
-          });
-          children.set(runId, turn.child);
-        } catch {
-          // A rolled-back start stays queued; a committed start keeps its turn and worker timestamps.
-          if (!children.has(runId)) finish(runId, 'failed', { reason: 'MULTIUSER_PERSONAL_RUN_FAILED' });
+              finish(runId, 'failed', { reason: result.problem ? PROBLEM_ERRORS[result.problem].code : 'MULTIUSER_PERSONAL_RUN_FAILED', files, producedFiles });
+            }).catch((error: unknown) => {
+              if (storesClosed || row(runId)?.status !== 'active') return;
+              // Same reason ladder as `settled()` above: a turn that REJECTS
+              // because the daemon is stopping is still a shutdown cancel, not
+              // a provider failure.
+              if (shuttingDown) { finish(runId, 'canceled', { reason: 'daemon_shutdown' }); return; }
+              finish(runId, !allowed() ? 'canceled' : 'failed', { reason: sourceInvalidated.has(runId)
+                ? 'MULTIUSER_PERSONAL_UNAVAILABLE' : error instanceof PersonalAccountError ? error.code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
+            }).catch(logPersonalDispatchFailure);
+          } catch (error) {
+            // A rolled-back start stays queued; a committed start keeps its turn and worker timestamps.
+            if (!children.has(runId)) finish(runId, 'failed', { reason: error instanceof PersonalAccountError || (error instanceof StudioConnectorRuntimeError || error instanceof StudioMcpRuntimeError) ? error.code : 'MULTIUSER_PERSONAL_RUN_FAILED' });
+          }
+        } catch (error) {
+          // A run that cannot be failed (its store is gone) stops this pass rather than spinning on it.
+          if (!failPersonalDispatch(next.id, error)) break;
         }
       }
     } finally {
@@ -596,12 +1540,13 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     suspendDispatch = true;
     try {
       for (const run of rows) {
+        sourceInvalidated.add(run.id);
         const child = children.get(run.id);
-        if (child) {
-          cancelPending.add(run.id);
+        if (child && running(child)) {
+          markCancelPending(run.id);
           exits.push(new Promise<void>((resolve) => child.once('close', () => resolve())));
           child.kill('SIGTERM');
-        } else finish(run.id, 'canceled');
+        } else finish(run.id, 'canceled', { reason: 'MULTIUSER_PERSONAL_UNAVAILABLE' });
       }
     } finally { suspendDispatch = false; }
     await Promise.all(exits);
@@ -628,16 +1573,69 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     },
   };
   app.get('/api/admin/pool', (_req, res) => {
-    const active = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE status = 'active' AND ${company}`).get() as { n: number }).n;
-    const queued = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE status = 'queued' AND ${company}`).get() as { n: number }).n;
+    const rows = db.prepare(`SELECT * FROM ${table} WHERE status IN ('active', 'queued') AND ${company}`).all() as RunRow[];
+    const counts = (openai: boolean, status: string) => rows.filter((run) => isOpenAI(run) === openai && run.status === status).length;
     const users: Record<string, { usedMs: number; budgetMs: number; remainingMs: number }> = {};
     for (const account of accounts.listAccounts()) {
       const balance = ledger.balance(account.id);
       users[account.id] = { usedMs: balance.usedMs, budgetMs: balance.budgetMs,
         remainingMs: balance.remainingMs };
     }
-    res.json({ providers: { 'test-mock': { capacity: capacity(), active, queued },
-      claude: { capacity: 0, active: 0, queued: 0 }, codex: { capacity: 0, active: 0, queued: 0 } }, users });
+    res.json({ providers: { 'test-mock': { capacity: capacity(), active: counts(false, 'active'), queued: counts(false, 'queued') },
+      openai: { ...companyOpenAI.read(), active: counts(true, 'active'), queued: counts(true, 'queued') }, claude: { capacity: 0, active: 0, queued: 0 }, codex: { capacity: 0, active: 0, queued: 0 } }, users });
+  });
+  // Account-private provider keys (#62/#63). Write-only: no response carries the key.
+  app.get('/api/multiuser/settings/provider-keys', (_req, res) => {
+    if (!providerKeys) return sendApiError(res, 403, 'MULTIUSER_PROVIDER_DISABLED', 'personal API keys are not enabled on this server');
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ keys: providerKeys.list(actor(res)) } satisfies StudioProviderKeysResponse);
+  });
+  app.put('/api/multiuser/settings/provider-keys/:provider', (req, res) => {
+    if (!providerKeys) return sendApiError(res, 403, 'MULTIUSER_PROVIDER_DISABLED', 'personal API keys are not enabled on this server');
+    const provider = req.params.provider;
+    if (provider !== 'openai' && provider !== 'tavily') return sendApiError(res, 404, 'NOT_FOUND', 'unknown provider');
+    const owner = actor(res);
+    try {
+      const { summary, credentialChanged } = providerKeys.update(owner, provider, req.body as UpdateStudioProviderKeyRequest, now());
+      // A replaced or removed OpenAI key stops the turns that ran on the old one; nothing moves to the company pool.
+      // Research keys are read per search, so a change applies to the next search.
+      if (credentialChanged && provider === 'openai') {
+        const pending = db.prepare(`SELECT id FROM ${table} WHERE owner_account_id = ? AND status IN ('active','queued') AND ${byokRows}`).all(owner) as Array<{ id: string }>;
+        suspendDispatch = true;
+        try { for (const run of pending) {
+          const child = children.get(run.id);
+          if (child && running(child)) { markCancelPending(run.id); child.kill('SIGTERM'); }
+          else finish(run.id, 'canceled', { reason: 'MULTIUSER_PROVIDER_KEY_MISSING' });
+        } } finally { suspendDispatch = false; }
+        dispatch();
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ key: summary } satisfies StudioProviderKeyResponse);
+    } catch (error) {
+      if (error instanceof PersonalProviderKeyError) sendApiError(res, error.status, error.status === 409 ? 'CONFLICT' : 'BAD_REQUEST',
+        error.status === 409 ? 'the key changed; reload before saving' : 'invalid API key or model');
+      else sendApiError(res, 500, 'INTERNAL_ERROR', 'provider key update failed');
+    }
+  });
+  app.get('/api/admin/pool/openai', (_req, res) => res.json({ provider: companyOpenAI.read() }));
+  app.put('/api/admin/pool/openai', (req, res) => {
+    try {
+      const previous = companyOpenAI.read();
+      const provider = companyOpenAI.update(actor(res), req.body);
+      if (!provider.enabled || provider.credentialRevision !== previous.credentialRevision || provider.model !== previous.model) {
+        const pending = db.prepare(`SELECT * FROM ${table} WHERE status IN ('active', 'queued') AND ${company}`).all() as RunRow[];
+        suspendDispatch = true;
+        try { for (const run of pending) if (isOpenAI(run)) {
+          const child = children.get(run.id);
+          if (child && running(child)) { markCancelPending(run.id); child.kill('SIGTERM'); }
+          else finish(run.id, 'failed', { reason: 'MULTIUSER_PROVIDER_DISABLED' });
+        } } finally { suspendDispatch = false; }
+      }
+      void dispatch(); res.json({ provider });
+    } catch (error) {
+      if (error instanceof CompanyOpenAIConfigError) sendApiError(res, error.status, error.status === 409 ? 'CONFLICT' : 'BAD_REQUEST', error.message);
+      else sendApiError(res, 500, 'INTERNAL_ERROR', 'company provider update failed');
+    }
   });
   app.put('/api/admin/pool/providers/:providerId', (req, res) => {
     const providerId = String(req.params.providerId);
@@ -678,11 +1676,13 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     };
     const projectId = inputBody.projectId;
     const conversationId = inputBody.conversationId;
+    // #65: project write access and the actor's own conversation; collaborators
+    // read each other's conversations but start their own to run turns.
     if (typeof projectId !== 'string' || typeof conversationId !== 'string' ||
-        !owners.isOwnedBy(projectId, actor(res))) return fail(404, 'NOT_FOUND', 'not found');
+        !projects.canWriteConversation(projectId, conversationId, actor(res))) return fail(404, 'NOT_FOUND', 'not found');
     const project = getProject(db, projectId);
     const conversation = getConversation(db, conversationId);
-    if (!project || !conversation || conversation.projectId !== projectId) return fail(404, 'NOT_FOUND', 'not found');
+    if (!project || !conversation || conversation.projectId !== projectId || targetDeleting(actor(res), projectId, conversationId)) return fail(404, 'NOT_FOUND', 'not found');
     const metadata = project.metadata as Record<string, unknown> | null | undefined;
     if (metadata?.baseDir || metadata?.linkedDirs || metadata?.imported) return fail(403, 'MULTIUSER_IMPORTED_PROJECT_FORBIDDEN', 'managed projects only');
     if (!isSafeId(projectId)) return fail(404, 'NOT_FOUND', 'not found');
@@ -696,29 +1696,196 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     fs.chmodSync(realCwd, 0o700);
     return { projectId, conversationId };
   };
-  const createPersonalRun = async (inputBody: Record<string, unknown>, res: Response) => {
-    if (inputBody.agentId !== 'codex' || inputBody.model !== undefined || inputBody.provider !== undefined ||
-        Object.keys(inputBody).some((key) => !['projectId', 'conversationId', 'agentId', 'executionSource', 'message', 'skillId', 'designSystemId'].includes(key))) {
-      return sendApiError(res, 403, 'MULTIUSER_AGENT_FORBIDDEN', 'personal subscription runs use the linked Codex account only');
-    }
-    if (!personal?.enabled) return sendApiError(res, 403, 'MULTIUSER_PERSONAL_DISABLED', 'personal subscriptions are not enabled on this server');
+  db.exec(`CREATE TABLE IF NOT EXISTS multiuser_run_requests (
+    owner_account_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    client_request_id TEXT NOT NULL,
+    run_id TEXT NOT NULL REFERENCES ${table}(id) ON DELETE CASCADE,
+    PRIMARY KEY (owner_account_id, conversation_id, client_request_id)
+  )`);
+  /** Idempotent admission: one logical send (same owner, conversation and key) is one run. */
+  const requestedRun = (owner: string, conversationId: string, key: string | null): RunRow | undefined => {
+    if (key === null) return undefined;
+    const found = db.prepare('SELECT run_id AS id FROM multiuser_run_requests WHERE owner_account_id = ? AND conversation_id = ? AND client_request_id = ?')
+      .get(owner, conversationId, key) as { id: string } | undefined;
+    return found ? row(found.id) : undefined;
+  };
+  /**
+   * Proposed turn ids are in the actor's namespace, so existence never reveals
+   * another tenant's data. A new assistant id is required. The user id is new,
+   * or it is the user turn of this conversation's newest run that failed or
+   * was canceled: a retry answers the same turn again.
+   */
+  const turnIdsUsable = (conversationId: string, ids: { userMessageId: string; assistantMessageId: string }): boolean => {
+    if (getMessage(db, ids.assistantMessageId)) return false;
+    if (!getMessage(db, ids.userMessageId)) return true;
+    const retried = studioMessages.runForUserMessage(conversationId, ids.userMessageId);
+    const newest = db.prepare(`SELECT id, status FROM ${table} WHERE conversation_id = ? ORDER BY queue_seq DESC LIMIT 1`)
+      .get(conversationId) as { id: string; status: RunRow['status'] } | undefined;
+    return retried !== null && newest?.id === retried && (newest.status === 'failed' || newest.status === 'canceled');
+  };
+  /**
+   * One logical turn is admitted once (#63). Admissions that name the same
+   * owner, conversation and clientRequestId run one at a time, from before any
+   * paid work (research) until the run is queued or refused. A concurrent retry
+   * therefore waits, then meets the replay check and answers with the run the
+   * first admission created instead of paying for a second search. The key
+   * only orders work; each admission still validates its own body and authority.
+   *
+   * Waiting is a yield: the session (or, for routines, the owner's authority)
+   * may have been revoked and the daemon may be shutting down by the time an
+   * admission leaves the lane, so both are rechecked first, before any replay
+   * can return another admission's run.
+   */
+  const admissionLanes = new Map<string, Promise<unknown>>();
+  const admissionStillAllowed = (res: Response): boolean => {
+    if (shuttingDown) { if (!res.headersSent) sendApiError(res, 503, 'UPSTREAM_UNAVAILABLE', 'the server is shutting down'); return false; }
+    return multiUserStreamAllowed(res);
+  };
+  const admitOnce = async (inputBody: Record<string, unknown>, res: Response, admit: () => Promise<unknown>): Promise<void> => {
+    const { conversationId, clientRequestId } = inputBody;
+    if (typeof conversationId !== 'string' || typeof clientRequestId !== 'string') { await admit(); return; }
+    const key = JSON.stringify([actor(res), conversationId, clientRequestId]);
+    const current = (admissionLanes.get(key) ?? Promise.resolve()).catch(() => {})
+      .then(() => admissionStillAllowed(res) ? admit() : undefined);
+    admissionLanes.set(key, current);
+    try { await current; } finally { if (admissionLanes.get(key) === current) admissionLanes.delete(key); }
+  };
+  /** `instruction` is daemon-authored (routines): sent to the agent with the turn, never shown as the user's message. */
+  const createPersonalRun = (inputBody: Record<string, unknown>, res: Response, instruction?: string) =>
+    admitOnce(inputBody, res, () => admitPersonalRun(inputBody, res, instruction));
+  const admitPersonalRun = async (inputBody: Record<string, unknown>, res: Response, instruction?: string) => {
     const target = managedTarget(inputBody, res);
     if (!target) return;
-    if (typeof inputBody.message !== 'string' || inputBody.message.length > 64_000) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid run request');
-    const encodedMessage = JSON.stringify({ message: inputBody.message });
-    if (Buffer.byteLength(encodedMessage, 'utf8') > 64 * 1024) return sendApiError(res, 400, 'BAD_REQUEST', 'run request is too large');
     const owner = actor(res);
+    const hints = inputBody.analyticsHints;
+    const sourceId = hints && typeof hints === 'object' && !Array.isArray(hints) ? (hints as Record<string, unknown>).sourceRunId : undefined;
+    const source = typeof sourceId === 'string' ? row(sourceId) : undefined;
+    // Owner first: a foreign or missing source run is the same 404 before any field is judged.
+    if (sourceId !== undefined && (!source || source.owner_account_id !== owner || source.project_id !== target.projectId || source.conversation_id !== target.conversationId)) {
+      return sendApiError(res, 404, 'NOT_FOUND', 'not found');
+    }
+    const fields = parsePersonalRunFields(inputBody, studioMessageIdPrefix(owner));
+    if ('code' in fields) return sendApiError(res, fields.status, fields.code, fields.message, fields.details ? { details: fields.details } : {});
+    if (!personal?.enabled) return sendApiError(res, 403, 'MULTIUSER_PERSONAL_DISABLED', 'personal subscriptions are not enabled on this server');
+    // Media projects generate through OpenAI functions; the sandboxed personal Codex lane has none (#63).
+    const projectKind = (getProject(db, target.projectId)?.metadata as { kind?: unknown } | null | undefined)?.kind;
+    if (projectKind === 'image' || projectKind === 'video' || projectKind === 'audio') {
+      return sendApiError(res, 409, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'media projects run on an OpenAI source');
+    }
+    const replay = requestedRun(owner, target.conversationId, fields.clientRequestId);
+    if (replay) { res.status(200).json({ runId: replay.id, run: body(replay) }); return; }
+    const question = fields.questionSourceRunId === null ? undefined : source;
+    const answerReady = () => !question || Boolean(db.prepare(`SELECT 1 FROM multiuser_run_questions q
+      WHERE q.run_id = ? AND q.answered_by IS NULL AND NOT EXISTS (
+        SELECT 1 FROM multiuser_runs newer WHERE newer.conversation_id = ? AND newer.queue_seq > ?)`)
+      .get(question.id, target.conversationId, question.queue_seq));
+    if (!answerReady()) return sendApiError(res, 409, 'CONFLICT', 'question is stale or already answered');
     const fixedDesign = input.design?.selection(target.conversationId, owner) ?? null;
-    const composed = fixedDesign
-      ? await input.design?.composeStablePrompt({ conversationId: target.conversationId, ownerId: owner, projectId: target.projectId })
-      : null;
-    if ((fixedDesign && (!composed || inputBody.skillId !== fixedDesign.skillId || inputBody.designSystemId !== fixedDesign.designSystemId))
-        || (!fixedDesign && (inputBody.skillId !== undefined || inputBody.designSystemId !== undefined))) {
+    // null means "the conversation's pinned selection"; a named one must match it.
+    if (fixedDesign && ((fields.skillId !== null && fields.skillId !== fixedDesign.skillId)
+          || (fields.designSystemId !== null && fields.designSystemId !== fixedDesign.designSystemId))) {
       return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
     }
-    const request = JSON.stringify({ message: inputBody.message,
-      ...(composed ? { skillId: composed.selection.skillId, designSystemId: composed.selection.designSystemId,
+    try { await personal?.assertSupportedVersion(); } catch (error) {
+      if (error instanceof PersonalAccountError) return sendApiError(res, error.status, error.code, error.message);
+      throw error;
+    }
+    const pins = projectPins(fields, target.projectId, Boolean(fixedDesign), Boolean(question));
+    const fixedCapture = fixedDesign ? await captureFixedDesign(owner, target.conversationId, fixedDesign) : null;
+    if (fixedDesign && !fixedCapture) return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
+    const pluginSelection = selectPlugin(owner, target, fields, question);
+    if (!pluginSelection) return refusePlugin(res);
+    const plugin = pluginSelection.plugin;
+    const continuation = pipelineContinuation(question, plugin);
+    if (!continuation) return sendApiError(res, 409, 'CONFLICT', 'question pipeline continuation is stale');
+    const freshShared: FreshSharedCapture[] = [];
+    const designSnapshot = fixedCapture ? fixedCapture.design : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? pins.observed.design ?? null, question, pins.design, freshShared);
+    if (designSnapshot === false) return sendApiError(res, 404, 'NOT_FOUND', 'selected design system not found or unavailable');
+    // Opt-in "remember: …" heuristics land before capture, so this turn already sees them (#62).
+    await input.memory?.beforeTurn(owner, fields.text);
+    const actorContext = await input.settings?.capture(owner) ?? { userInstructions: '', memoryBody: '' };
+    let composed = fixedCapture
+      ? await input.design?.composeStablePrompt({ conversationId: target.conversationId, ownerId: owner, projectId: target.projectId, ...actorContext,
+        captured: { skill: fixedCapture.skill, design: { id: fixedCapture.design.id, ...fixedCapture.design.prompt } } })
+      : null;
+    if (fixedDesign && !composed) return sendApiError(res, 400, 'BAD_REQUEST', 'skillId and designSystemId must match the conversation design selection');
+    const questionRequest = question ? storedRequest(question.request_json) : null;
+    const inheritedSkillIds = Array.isArray(questionRequest?.skillIds) && questionRequest.skillIds.every((id) => typeof id === 'string')
+      ? questionRequest.skillIds as string[] : [];
+    fields.skillIds = selectSkills(fields, Boolean(fixedDesign), Boolean(question), pins.observed);
+    if (question && ((!fixedDesign && fields.skillId !== null && !inheritedSkillIds.includes(fields.skillId))
+      || fields.skillIds.length && JSON.stringify(fields.skillIds) !== JSON.stringify(inheritedSkillIds))) {
+      return sendApiError(res, 409, 'CONFLICT', 'question skills changed');
+    }
+    const inheritsSkills = Boolean(question && (fields.skillIds.length === 0
+      || JSON.stringify(fields.skillIds) === JSON.stringify(inheritedSkillIds)));
+    if (inheritsSkills && typeof questionRequest?.stablePrompt === 'string' && typeof questionRequest.stablePromptHash === 'string') {
+      composed = { prompt: questionRequest.stablePrompt, hash: questionRequest.stablePromptHash,
+        selection: fixedDesign ?? { conversationId: target.conversationId, skillId: '', designSystemId: '', locale: 'en' } };
+    }
+    if (inheritsSkills && typeof questionRequest?.stablePrompt !== 'string') composed = null;
+    const lastDesign = db.prepare('SELECT request_json FROM multiuser_runs WHERE owner_account_id = ? AND conversation_id = ? ORDER BY queue_seq DESC LIMIT 1')
+      .get(owner, target.conversationId) as { request_json: string | null } | undefined;
+    if (!inheritsSkills && !composed && (actorContext.userInstructions || actorContext.memoryBody || designSnapshot || plugin
+      || lastDesign && storedRequest(lastDesign.request_json)?.designSnapshot)) {
+      const prompt = composeSystemPrompt({ agentId: 'codex', streamFormat: 'json-event-stream',
+        executionProfile: 'filesystem', promptCoreVariant: 'slim', sessionMode: 'design', locale: 'en',
+        metadata: getProject(db, target.projectId)?.metadata, ...actorContext, ...designSnapshot?.prompt });
+      composed = { prompt, hash: createHash('sha256').update(prompt).digest('hex'),
+        selection: { conversationId: target.conversationId, skillId: '', designSystemId: '', locale: 'en' } };
+    }
+    const selectedSkills = fields.skillIds.length && !inheritsSkills ? await captureSkills(owner, target.conversationId, fields.skillIds, pins.skill, freshShared) : [];
+    if (!selectedSkills || fields.skillIds.length > 12) return sendApiError(res, 404, 'NOT_FOUND', 'selected skills not found or unavailable');
+    if (selectedSkills.length) {
+      // Resolve before queueing. Later edits/deletes cannot change this turn's
+      // prompt; the run owns the immutable text, not a live catalog lookup.
+      const skillPrompt = composed ? selectedSkills.map((skill) => `\n\n---\n\n## Composed skill — ${skill.name}\n\n${skill.body.trim()}`).join('') : composeSystemPrompt({ agentId: 'codex', streamFormat: 'json-event-stream',
+        executionProfile: 'filesystem', promptCoreVariant: 'slim', sessionMode: 'design', locale: 'en',
+        metadata: getProject(db, target.projectId)?.metadata,
+        skillBody: selectedSkills.map((skill) => skill.body).join('\n\n---\n\n'),
+        skillName: selectedSkills.map((skill) => skill.name).join(', '),
+        skillMode: selectedSkills[0]?.mode, ...actorContext });
+      const prompt = [composed?.prompt, skillPrompt].filter(Boolean).join('\n\n');
+      composed = { prompt, hash: createHash('sha256').update(prompt).digest('hex'),
+        selection: composed?.selection ?? { conversationId: target.conversationId, skillId: '', designSystemId: '', locale: 'en' } };
+    }
+    // The applied plugin's captured prompt follows skills; an answer already carries it in its inherited prompt.
+    if (plugin && !question && composed) {
+      const prompt = withPlugin(composed.prompt, plugin);
+      composed = { ...composed, prompt, hash: createHash('sha256').update(prompt).digest('hex') };
+    }
+    const skillSnapshots = inheritsSkills ? questionRequest?.skillSnapshots ?? [] : withFixedSkill(fixedCapture?.skill, selectedSkills);
+    try { studioRunResourcePackages({ skillSnapshots, ...(plugin ? { pluginSnapshot: plugin } : {}) }); }
+    catch { return sendApiError(res, 409, 'CONFLICT', 'captured resources are unavailable or exceed the turn limit'); }
+    // No research is billed for a turn this account cannot run on its Codex link.
+    if (fields.research && !personal.usableAccount(owner)) {
+      return sendApiError(res, 409, 'MULTIUSER_PERSONAL_UNAVAILABLE', 'no usable personal Codex account; link or re-authorize it');
+    }
+    const findings = await researchInstruction(owner, target.conversationId, fields, res);
+    if (findings === false) return;
+    if (findings) instruction = [instruction, findings].filter(Boolean).join('\n\n');
+    const mcpGrant = captureMcp(fields, res);
+    if (mcpGrant === false) return;
+    const connectorGrant = captureConnectors(fields, res);
+    if (connectorGrant === false) return;
+    const request = JSON.stringify({ ...(mcpGrant ? { mcpGrant, mcpServerIds: fields.mcpServerIds } : {}), ...(connectorGrant ? { connectorGrant, connectorIds: fields.connectorIds } : {}), message: fields.text, ...(instruction ? { instruction } : {}), ...(fields.attachments.length ? { attachments: fields.attachments } : {}),
+      ...(inheritsSkills || withFixedSkill(fixedCapture?.skill, selectedSkills).length ? { skillIds: inheritsSkills ? inheritedSkillIds : fields.skillIds, skillSnapshots } : {}),
+      ...(fields.workspaceItems.length ? { workspaceItems: fields.workspaceItems } : {}),
+      ...(fields.commentAttachments.length ? { commentAttachments: fields.commentAttachments } : {}),
+      ...(fields.model ? { model: fields.model } : {}), ...(fields.reasoning ? { reasoning: fields.reasoning } : {}),
+      ...(findings ? { research: { provider: 'tavily' } } : {}),
+      ...(question ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId: question.id } } : {}),
+      ...(designSnapshot ? { designSnapshot } : {}),
+      ...(plugin ? { pluginSnapshot: plugin } : {}),
+      ...continuation,
+      ...(composed ? { skillId: composed.selection.skillId, designSystemId: designSnapshot?.id ?? composed.selection.designSystemId,
         stablePrompt: composed.prompt, stablePromptHash: composed.hash } : {}) });
+    // Prompt/catalog I/O yields: deletion or session revocation may have won
+    // while it was in flight. Recheck before persisting or spawning anything.
+    if (!multiUserStreamAllowed(res) || !managedTarget(inputBody, res)) return;
+    const raced = requestedRun(owner, target.conversationId, fields.clientRequestId);
+    if (raced) { res.status(200).json({ runId: raced.id, run: body(raced) }); return; }
     // Never fall back: an unusable personal account is an error, not a company run.
     const account = personal.usableAccount(owner);
     if (!account) {
@@ -726,38 +1893,222 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       return sendApiError(res, 409, 'MULTIUSER_PERSONAL_UNAVAILABLE', 'no usable personal Codex account; link or re-authorize it');
     }
     const session = personalSession(target.conversationId);
-    const companyHistory = db.prepare(`SELECT 1 FROM ${table} WHERE conversation_id = ? AND ${company} LIMIT 1`).get(target.conversationId);
+    const companyHistory = db.prepare(`SELECT 1 FROM ${table} WHERE conversation_id = ? AND ${workerRows} LIMIT 1`).get(target.conversationId);
     if ((session && session.personal_account_id !== account.id) || companyHistory) {
       personal.audit(owner, owner, 'run_rejected', 'MULTIUSER_EXECUTION_SOURCE_MISMATCH');
       return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation continues on another execution source or account');
     }
+    if (question && (!answerReady() || question.personal_account_id !== account.id || question.credential_version !== account.credentialVersion
+      || storedRequest(question.request_json)?.stablePromptHash !== composed?.hash
+      || (storedJson(question.output) as { threadId?: string } | null)?.threadId !== session?.thread_id)) {
+      return sendApiError(res, 409, 'CONFLICT', 'question continuation is stale');
+    }
+    if (fields.turnIds && !turnIdsUsable(target.conversationId, fields.turnIds)) {
+      return sendApiError(res, 409, 'CONFLICT', 'message ids are already used by another turn');
+    }
     const queuedCount = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE owner_account_id = ? AND status = 'queued' AND ${personalRows}`)
       .get(owner) as { n: number }).n;
     if (queuedCount >= PERSONAL_QUEUE_LIMIT) return sendApiError(res, 409, 'MULTIUSER_PERSONAL_QUEUE_LIMIT', 'personal queue limit reached');
+    // Shared items captured live above lost nothing while the admission yielded:
+    // decided here, with no await before the commit below.
+    const lostPersonal = lostSharedCapture(owner, freshShared);
+    if (lostPersonal) return refuseLostSharedCapture(res, lostPersonal);
+    if (!pluginStillPinned(owner, target.projectId, pluginSelection)) return refusePlugin(res);
+    if (!studioProjectDefaultsUnchanged(pins.observed, getProject(db, target.projectId))) {
+      return sendApiError(res, 409, 'CONFLICT', 'project defaults changed during admission');
+    }
     const id = randomUUID();
     const createdAt = now();
-    db.transaction(() => {
+    const queuedFrame = db.transaction(() => {
       db.prepare(`INSERT INTO ${table} (id, owner_account_id, project_id, conversation_id, status, created_at, updated_at, request_json,
         queue_seq, execution_source, personal_account_id, credential_version)
         VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM ${table}), 'personal_subscription', ?, ?)`)
         .run(id, owner, target.projectId, target.conversationId, createdAt, createdAt, request, account.id, account.credentialVersion);
+      if (fields.clientRequestId !== null) {
+        db.prepare('INSERT INTO multiuser_run_requests (owner_account_id, conversation_id, client_request_id, run_id) VALUES (?, ?, ?, ?)')
+          .run(owner, target.conversationId, fields.clientRequestId, id);
+      }
+      if (question) db.prepare('UPDATE multiuser_run_questions SET answered_by = ? WHERE run_id = ? AND answered_by IS NULL').run(id, question.id);
       // The first personal run pins the conversation to this account and its native session.
       db.prepare(`INSERT OR IGNORE INTO multiuser_personal_sessions (conversation_id, owner_account_id, personal_account_id, updated_at)
         VALUES (?, ?, ?, ?)`).run(target.conversationId, owner, account.id, createdAt);
+      studioMessages.reconcile(row(id)!, fields.turnIds ?? undefined);
+      // The project list orders by activity; admission is that activity.
+      updateProject(db, target.projectId, {});
+      return persistEvent(id, 'queued', { runId: id });
     })();
     personal.audit(owner, owner, 'run_routed', 'personal_subscription', id);
-    emit(id, 'queued', { runId: id });
+    publishEvent(id, queuedFrame);
     dispatchPersonal();
-    res.status(202).json({ run: body(row(id)!) });
+    res.status(202).json({ runId: id, run: body(row(id)!) });
+  };
+  /**
+   * OpenAI turns on the company key, or on the account's own key (`personal_api_key`,
+   * #62/#63). A conversation is pinned to the first source it ran on; the
+   * other source is a mismatch, never a fallback.
+   */
+  const createOpenAIRun = (inputBody: Record<string, unknown>, res: Response, instruction?: string,
+    executionSource: 'company_pool' | 'personal_api_key' = 'company_pool') =>
+    admitOnce(inputBody, res, () => admitOpenAIRun(inputBody, res, instruction, executionSource));
+  const admitOpenAIRun = async (inputBody: Record<string, unknown>, res: Response, instruction: string | undefined,
+    executionSource: 'company_pool' | 'personal_api_key') => {
+    const own = executionSource === 'personal_api_key';
+    const target = managedTarget(inputBody, res); if (!target) return;
+    const owner = actor(res);
+    const hints = inputBody.analyticsHints;
+    const sourceId = hints && typeof hints === 'object' && !Array.isArray(hints) ? (hints as Record<string, unknown>).sourceRunId : undefined;
+    const source = typeof sourceId === 'string' ? row(sourceId) : undefined;
+    if (sourceId !== undefined && (!source || source.owner_account_id !== owner || source.project_id !== target.projectId || source.conversation_id !== target.conversationId)) {
+      return sendApiError(res, 404, 'NOT_FOUND', 'not found');
+    }
+    const fields = parsePersonalRunFields({ ...inputBody, agentId: 'codex', executionSource: 'personal_subscription' }, studioMessageIdPrefix(owner));
+    if ('code' in fields) return sendApiError(res, fields.status, fields.code, fields.message, fields.details ? { details: fields.details } : {});
+    // The company model is admin-owned; a per-turn choice applies only to personal Codex.
+    if (fields.model || fields.reasoning) return sendApiError(res, 403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'not available for OpenAI runs: model, reasoning');
+    const replay = requestedRun(owner, target.conversationId, fields.clientRequestId);
+    if (replay) { res.status(200).json({ runId: replay.id, run: body(replay) }); return; }
+    if (personalSession(target.conversationId)) return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation uses a personal subscription');
+    const otherSource = () => db.prepare(`SELECT 1 FROM ${table} WHERE conversation_id = ? AND execution_source = ? LIMIT 1`)
+      .get(target.conversationId, own ? 'company_pool' : 'personal_api_key');
+    if (otherSource()) return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation continues on another execution source');
+    if (own && !providerKeys) return sendApiError(res, 403, 'MULTIUSER_PROVIDER_DISABLED', 'personal API keys are not enabled on this server');
+    const ownKey = own ? providerKeys!.read(owner) : null;
+    if (ownKey && !ownKey.configured) return sendApiError(res, 403, 'MULTIUSER_PROVIDER_KEY_MISSING', 'add your OpenAI API key in Settings first');
+    const config = companyOpenAI.read();
+    if (!own && (!config.enabled || !config.configured)) return sendApiError(res, 403, 'MULTIUSER_PROVIDER_DISABLED', 'company OpenAI provider is not configured');
+    const ownSession = () => db.prepare('SELECT owner_account_id FROM multiuser_byok_sessions WHERE conversation_id = ?').get(target.conversationId) as { owner_account_id: string } | undefined;
+    if (own && ownSession() && ownSession()!.owner_account_id !== owner) return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation belongs to another account');
+    const session = own ? undefined : db.prepare('SELECT * FROM multiuser_company_sessions WHERE conversation_id = ?').get(target.conversationId) as { owner_account_id: string; model: string; credential_revision: number } | undefined;
+    if (session && (session.owner_account_id !== owner || session.model !== config.model || session.credential_revision !== config.credentialRevision)) {
+      return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'company provider binding changed; create a new conversation');
+    }
+    const question = fields.questionSourceRunId === null ? undefined : source;
+    const answerReady = () => !question || Boolean(isOpenAI(question) && question.status === 'succeeded'
+      && db.prepare(`SELECT 1 FROM multiuser_run_questions q WHERE q.run_id = ? AND q.answered_by IS NULL
+        AND NOT EXISTS (SELECT 1 FROM multiuser_runs newer WHERE newer.conversation_id = ? AND newer.queue_seq > ?)`)
+        .get(question.id, target.conversationId, question.queue_seq));
+    if (!answerReady()) return sendApiError(res, 409, 'CONFLICT', 'question is stale or already answered');
+    const previousRequest = question ? storedRequest(question.request_json) : null;
+    const capturedSkillIds = Array.isArray(previousRequest?.skillIds) ? previousRequest.skillIds : [];
+    const fixed = input.design?.selection(target.conversationId, owner) ?? null;
+    const pins = projectPins(fields, target.projectId, Boolean(fixed), Boolean(question));
+    fields.skillIds = selectSkills(fields, Boolean(fixed), Boolean(question), pins.observed);
+    if (question && ((!fixed && fields.skillId !== null && !capturedSkillIds.includes(fields.skillId))
+      || fields.skillIds.length && JSON.stringify(fields.skillIds) !== JSON.stringify(capturedSkillIds))) {
+      return sendApiError(res, 409, 'CONFLICT', 'question skills changed');
+    }
+    if (fixed &&
+      (fields.skillId !== null && fields.skillId !== fixed.skillId || fields.designSystemId !== null && fields.designSystemId !== fixed.designSystemId)) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'design selection mismatch');
+    }
+    const fixedCapture = fixed && !question ? await captureFixedDesign(owner, target.conversationId, fixed) : null;
+    if (fixed && !question && !fixedCapture) return sendApiError(res, 400, 'BAD_REQUEST', 'design selection unavailable');
+    const pluginSelection = selectPlugin(owner, target, fields, question);
+    if (!pluginSelection) return refusePlugin(res);
+    const plugin = pluginSelection.plugin;
+    const continuation = pipelineContinuation(question, plugin);
+    if (!continuation) return sendApiError(res, 409, 'CONFLICT', 'question pipeline continuation is stale');
+    const freshShared: FreshSharedCapture[] = [];
+    const designSnapshot = fixedCapture ? fixedCapture.design : fixed ? null : await captureDesign(owner, target.conversationId, question ? fields.designSystemId : fields.designSystemId ?? pins.observed.design ?? null, question, pins.design, freshShared);
+    if (designSnapshot === false) return sendApiError(res, 404, 'NOT_FOUND', 'selected design system not found or unavailable');
+    const selected = !question && fields.skillIds.length ? await captureSkills(owner, target.conversationId, fields.skillIds, pins.skill, freshShared) : [];
+    if (!selected) return sendApiError(res, 404, 'NOT_FOUND', 'selected skills not found or unavailable');
+    try { studioRunResourcePackages({ skillSnapshots: question ? previousRequest?.skillSnapshots ?? [] : withFixedSkill(fixedCapture?.skill, selected),
+      ...(plugin ? { pluginSnapshot: plugin } : {}) }); }
+    catch { return sendApiError(res, 409, 'CONFLICT', 'captured resources are unavailable or exceed the turn limit'); }
+    // Opt-in "remember: …" heuristics land before capture, so this turn already sees them (#62).
+    await input.memory?.beforeTurn(owner, fields.text);
+    const actorContext = await input.settings?.capture(owner) ?? { userInstructions: '', memoryBody: '' };
+    const design = fixedCapture ? await input.design?.composeStablePrompt({ ...target, ownerId: owner, ...actorContext,
+      captured: { skill: fixedCapture.skill, design: { id: fixedCapture.design.id, ...fixedCapture.design.prompt } } }) : null;
+    if (fixed && question && typeof previousRequest?.stablePrompt !== 'string') return sendApiError(res, 400, 'BAD_REQUEST', 'design selection unavailable');
+    if (fixedCapture && !design) return sendApiError(res, 400, 'BAD_REQUEST', 'design selection unavailable');
+    const stablePrompt = design?.prompt ?? composeSystemPrompt({ agentId: 'codex', streamFormat: 'json-event-stream',
+      executionProfile: 'filesystem', promptCoreVariant: 'slim', sessionMode: 'design', locale: 'en', metadata: getProject(db, target.projectId)?.metadata, ...actorContext, ...designSnapshot?.prompt });
+    const prompt = question && typeof previousRequest?.stablePrompt === 'string' ? previousRequest.stablePrompt
+      : withPlugin(stablePrompt + selected.map((skill) => `\n\n---\n\n## Composed skill — ${skill.name}\n\n${skill.body.trim()}`).join(''), plugin);
+    // Research bills the account's own Tavily key whatever the turn's source; the recheck below covers this I/O.
+    if (fields.research && !own && ledger.balance(owner).remainingMs === 0) return sendApiError(res, 429, 'MULTIUSER_QUOTA_EXHAUSTED', 'worker quota exhausted');
+    const findings = await researchInstruction(owner, target.conversationId, fields, res);
+    if (findings === false) return;
+    if (findings) instruction = [instruction, findings].filter(Boolean).join('\n\n');
+    if (!multiUserStreamAllowed(res) || !managedTarget(inputBody, res)) return;
+    if (personalSession(target.conversationId)) return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation uses a personal subscription');
+    if (!answerReady()) return sendApiError(res, 409, 'CONFLICT', 'question is stale or already answered');
+    if (otherSource()) return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation continues on another execution source');
+    const currentSession = own ? undefined : db.prepare('SELECT * FROM multiuser_company_sessions WHERE conversation_id = ?').get(target.conversationId) as typeof session;
+    if (currentSession && (currentSession.owner_account_id !== owner || currentSession.model !== config.model || currentSession.credential_revision !== config.credentialRevision)) {
+      return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'company provider binding changed');
+    }
+    if (own && ownSession() && ownSession()!.owner_account_id !== owner) return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation belongs to another account');
+    const oldCompany = db.prepare(`SELECT * FROM ${table} WHERE conversation_id = ? AND ${company} LIMIT 1`).get(target.conversationId) as RunRow | undefined;
+    if (oldCompany && !isOpenAI(oldCompany)) return sendApiError(res, 409, 'MULTIUSER_EXECUTION_SOURCE_MISMATCH', 'this conversation uses another company provider');
+    const current = companyOpenAI.read();
+    if (!own && (!current.enabled || current.model !== config.model || current.credentialRevision !== config.credentialRevision)) return sendApiError(res, 409, 'CONFLICT', 'company provider changed');
+    const currentKey = own ? providerKeys!.read(owner) : null;
+    if (currentKey && (!currentKey.configured || currentKey.credentialRevision !== ownKey!.credentialRevision)) return sendApiError(res, 409, 'CONFLICT', 'your API key changed');
+    const raced = requestedRun(owner, target.conversationId, fields.clientRequestId);
+    if (raced) { res.status(200).json({ runId: raced.id, run: body(raced) }); return; }
+    if (fields.turnIds && !turnIdsUsable(target.conversationId, fields.turnIds)) return sendApiError(res, 409, 'CONFLICT', 'message ids already used');
+    if (!own && ledger.balance(owner).remainingMs === 0) return sendApiError(res, 429, 'MULTIUSER_QUOTA_EXHAUSTED', 'worker quota exhausted');
+    const queued = (db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE owner_account_id = ? AND status = 'queued' AND ${own ? byokRows : company}`).get(owner) as { n: number }).n;
+    if (queued >= 3) return sendApiError(res, 409, 'MULTIUSER_QUEUE_LIMIT', 'queue limit reached');
+    // Shared items captured live above lost nothing while the admission yielded:
+    // decided here, with no await before the commit below.
+    const lostOpenAI = lostSharedCapture(owner, freshShared);
+    if (lostOpenAI) return refuseLostSharedCapture(res, lostOpenAI);
+    if (!pluginStillPinned(owner, target.projectId, pluginSelection)) return refusePlugin(res);
+    if (!studioProjectDefaultsUnchanged(pins.observed, getProject(db, target.projectId))) {
+      return sendApiError(res, 409, 'CONFLICT', 'project defaults changed during admission');
+    }
+    const id = randomUUID(); const createdAt = now();
+    const mcpGrant = captureMcp(fields, res);
+    if (mcpGrant === false) return;
+    const connectorGrant = captureConnectors(fields, res);
+    if (connectorGrant === false) return;
+    const request = JSON.stringify({ ...(mcpGrant ? { mcpGrant, mcpServerIds: fields.mcpServerIds } : {}), ...(connectorGrant ? { connectorGrant, connectorIds: fields.connectorIds } : {}), message: fields.text, ...(instruction ? { instruction } : {}),
+      ...(findings ? { research: { provider: 'tavily' } } : {}),
+      ...(own ? { personalProvider: 'openai', personalModel: currentKey!.model, personalCredentialRevision: currentKey!.credentialRevision }
+        : { companyProvider: 'openai', companyModel: config.model, companyCredentialRevision: config.credentialRevision }), stablePrompt: prompt, stablePromptHash: createHash('sha256').update(prompt).digest('hex'),
+      skillIds: question ? capturedSkillIds : fields.skillIds,
+      skillSnapshots: question ? previousRequest?.skillSnapshots ?? [] : withFixedSkill(fixedCapture?.skill, selected),
+      ...(designSnapshot ? { designSnapshot, designSystemId: designSnapshot.id } : {}),
+      ...(plugin ? { pluginSnapshot: plugin } : {}),
+      ...continuation,
+      ...(question ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId: question.id } } : {}),
+      attachments: fields.attachments, workspaceItems: fields.workspaceItems,
+      ...(fields.commentAttachments.length ? { commentAttachments: fields.commentAttachments } : {}) });
+    const frame = db.transaction(() => {
+      if (own) db.prepare(`INSERT OR IGNORE INTO multiuser_byok_sessions (conversation_id, owner_account_id, provider_id) VALUES (?, ?, 'openai')`)
+        .run(target.conversationId, owner);
+      else db.prepare(`INSERT OR IGNORE INTO multiuser_company_sessions (conversation_id, owner_account_id, provider_id, model, credential_revision) VALUES (?, ?, 'openai', ?, ?)`)
+        .run(target.conversationId, owner, config.model, config.credentialRevision);
+      db.prepare(`INSERT INTO ${table} (id, owner_account_id, project_id, conversation_id, status, created_at, updated_at, request_json, queue_seq, execution_source)
+        VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM ${table}), ?)`)
+        .run(id, owner, target.projectId, target.conversationId, createdAt, createdAt, request, executionSource);
+      if (fields.clientRequestId !== null) db.prepare('INSERT INTO multiuser_run_requests (owner_account_id, conversation_id, client_request_id, run_id) VALUES (?, ?, ?, ?)')
+        .run(owner, target.conversationId, fields.clientRequestId, id);
+      if (question) db.prepare('UPDATE multiuser_run_questions SET answered_by = ? WHERE run_id = ? AND answered_by IS NULL').run(id, question.id);
+      updateProject(db, target.projectId, {});
+      studioMessages.reconcile(row(id)!, fields.turnIds ?? undefined);
+      return persistEvent(id, 'queued', { runId: id });
+    }).immediate();
+    publishEvent(id, frame); dispatch(); res.status(202).json({ runId: id, run: body(row(id)!) });
   };
   app.post('/api/runs', async (req, res) => {
     const inputBody = req.body as Record<string, unknown> | null;
     if (!inputBody || typeof inputBody !== 'object' || Array.isArray(inputBody)) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid run request');
     const source = inputBody.executionSource;
-    if (source !== undefined && source !== 'company_pool' && source !== 'personal_subscription') {
+    if (source !== undefined && source !== 'company_pool' && source !== 'personal_subscription' && source !== 'personal_api_key') {
       return sendApiError(res, 400, 'BAD_REQUEST', 'invalid execution source');
     }
-    if (source === 'personal_subscription') return createPersonalRun(inputBody, res);
+    if (source === 'personal_api_key' || inputBody.agentId === 'openai-byok') {
+      if (inputBody.agentId !== 'openai-byok' || (source !== undefined && source !== 'personal_api_key')) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid execution source');
+      return createOpenAIRun(inputBody, res, undefined, 'personal_api_key');
+    }
+    // The shared Studio sends the standard request without a source: codex is personal-only here.
+    if (inputBody.agentId === 'openai' && (source === undefined || source === 'company_pool')) return createOpenAIRun(inputBody, res);
+    if (source === 'personal_subscription' || (source === undefined && inputBody.agentId === 'codex')) return createPersonalRun(inputBody, res);
     if (inputBody.agentId !== 'test-mock' || inputBody.model !== undefined || inputBody.provider !== undefined ||
         Object.keys(inputBody).some((key) => !['projectId', 'conversationId', 'agentId', 'message', 'delayMs', 'executionSource'].includes(key))) {
       return sendApiError(res, 403, 'MULTIUSER_AGENT_FORBIDDEN', 'only the test mock is available');
@@ -786,12 +2137,15 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (queuedCount >= 3) return sendApiError(res, 409, 'MULTIUSER_QUEUE_LIMIT', 'queue limit reached');
     const id = randomUUID();
     const createdAt = now();
-    db.prepare(`INSERT INTO ${table} (id, owner_account_id, project_id, conversation_id, status, created_at, updated_at, request_json, queue_seq)
-      VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM ${table}))`)
-      .run(id, actor(res), projectId, conversationId, createdAt, createdAt, mockRequest);
+    db.transaction(() => {
+      db.prepare(`INSERT INTO ${table} (id, owner_account_id, project_id, conversation_id, status, created_at, updated_at, request_json, queue_seq)
+        VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM ${table}))`)
+        .run(id, actor(res), projectId, conversationId, createdAt, createdAt, mockRequest);
+      studioMessages.reconcile(row(id)!);
+    })();
     emit(id, 'queued', { runId: id });
     dispatch();
-    res.status(202).json({ run: body(row(id)!) });
+    res.status(202).json({ runId: id, run: body(row(id)!) });
   });
   /**
    * Owner-only: the conversation is pinned to a personal account that is no
@@ -802,19 +2156,24 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   const personalPinStale = (owner: string, conversationId: string): boolean => {
     const pin = personalSession(conversationId);
     const projectId = pin ? getConversation(db, conversationId)?.projectId : undefined;
-    if (!pin || !personal || pin.owner_account_id !== owner || !projectId || !owners.isOwnedBy(projectId, owner)) return false;
+    if (!pin || !personal || pin.owner_account_id !== owner || !projectId || !projects.canWrite(projectId, owner)) return false;
     return !personal.isOwner('accountId', pin.personal_account_id, owner);
   };
+  // A single JSON bind keeps live authority before pagination without a second
+  // grant-policy implementation or SQLite's variable-count ceiling.
+  const readable = 'r.project_id IN (SELECT value FROM json_each(?))';
   app.get('/api/runs', (req, res) => {
     const query = parseRunListQuery(req.query);
     if (!query) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid run list query');
     const owner = actor(res);
+    const visibleProjects = JSON.stringify(projects.readableProjectIds(owner));
     // Ownership and filters apply in SQL before the limit, so a page is never short of the owner's rows.
-    const where = ['r.owner_account_id = ?', 'o.owner_account_id = ?'];
-    const args: Array<string | number> = [owner, owner];
+    const where = ['r.owner_account_id = ?', readable];
+    const args: Array<string | number> = [owner, visibleProjects];
     if (query.projectId !== undefined) { where.push('r.project_id = ?'); args.push(query.projectId); }
     if (query.conversationId !== undefined) { where.push('r.conversation_id = ?'); args.push(query.conversationId); }
-    if (query.status !== undefined) { where.push('r.status = ?'); args.push(query.status); }
+    if (query.status === 'nonterminal') where.push("r.status IN ('queued','active')");
+    else if (query.status !== undefined) { where.push('r.status = ?'); args.push(query.status); }
     if (query.cursor) {
       where.push('(r.created_at < ? OR (r.created_at = ? AND r.id < ?))');
       args.push(query.cursor.createdAt, query.cursor.createdAt, query.cursor.id);
@@ -824,7 +2183,11 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const page = rows.slice(0, query.limit);
     const last = page.at(-1);
     const response: MultiUserRunsResponse = {
-      runs: page.map(body), awaitingInputProjectIds: [],
+      runs: page.map(body), awaitingInputProjectIds: (db.prepare(`SELECT DISTINCT r.project_id AS id FROM multiuser_run_questions q
+        JOIN multiuser_runs r ON r.id = q.run_id JOIN ${PROJECT_OWNERS_TABLE} o ON o.project_id = r.project_id
+        WHERE r.owner_account_id = ? AND ${readable} AND q.answered_by IS NULL
+        AND NOT EXISTS (SELECT 1 FROM multiuser_runs newer WHERE newer.conversation_id = r.conversation_id AND newer.queue_seq > r.queue_seq)`)
+        .all(owner, visibleProjects) as Array<{ id: string }>).map((value) => value.id),
       nextCursor: rows.length > query.limit && last ? `${last.created_at}:${last.id}` : null,
       ...(query.conversationId === undefined ? {} : { personalPinStale: personalPinStale(owner, query.conversationId) }),
     };
@@ -834,10 +2197,30 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   app.get('/api/runs/:id/events', (req, res) => {
     const run = owned(req, res);
     if (!run) return;
+    // Same cursor contract as the single-user stream: header or `?after=`.
+    const header = req.get('Last-Event-ID');
+    const after = req.query.after;
+    if (after !== undefined && (typeof after !== 'string' || (header !== undefined && header !== after))) {
+      sendApiError(res, 400, 'BAD_REQUEST', 'invalid event cursor');
+      return;
+    }
+    const cursor = header ?? after;
+    if (cursor !== undefined && (!/^\d{1,15}$/.test(cursor) || !Number.isSafeInteger(Number(cursor)))) {
+      sendApiError(res, 400, 'BAD_REQUEST', 'invalid event cursor');
+      return;
+    }
+    const since = Number(cursor ?? 0);
+    const last = (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM multiuser_run_events WHERE run_id = ?').get(run.id) as { seq: number }).seq;
+    if (since > last) { sendApiError(res, 400, 'BAD_REQUEST', 'invalid event cursor'); return; }
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-store');
-    const events = db.prepare('SELECT seq, event, data FROM multiuser_run_events WHERE run_id = ? ORDER BY seq').all(run.id) as Array<{ seq: number; event: string; data: string }>;
-    for (const event of events) res.write(`id: ${event.seq}\nevent: ${event.event}\ndata: ${event.data}\n\n`);
+    res.setHeader('X-Accel-Buffering', 'no');
+    bindMultiUserStream(res);
+    const events = db.prepare('SELECT seq, event, data FROM multiuser_run_events WHERE run_id = ? AND seq > ? ORDER BY seq').all(run.id, since) as Array<{ seq: number; event: string; data: string }>;
+    for (const event of events) {
+      if (!multiUserStreamAllowed(res)) return;
+      res.write(`id: ${event.seq}\nevent: ${event.event}\ndata: ${event.data}\n\n`);
+    }
     if (run.status !== 'active' && run.status !== 'queued') { res.end(); return; }
     const set = listeners.get(run.id) ?? new Set<Response>();
     set.add(res);
@@ -849,20 +2232,61 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (!run) return;
     if (run.status === 'active') {
       const child = children.get(run.id);
-      if (child) {
-        cancelPending.add(run.id);
-        child.once('close', () => res.json(body(row(run.id)!)));
-        child.kill('SIGTERM');
+      if (child && running(child)) {
+        markCancelPending(run.id);
+        whenSettled(run.id, () => res.json(body(row(run.id)!)));
+        // A child that closes without settling its run (no worker left to
+        // write the terminal row) is canceled here, which answers the waiter.
+        child.once('close', () => setImmediate(() => finish(run.id, 'canceled')));
+        const interrupt = interrupts.get(run.id);
+        if (interrupt) {
+          interrupt();
+          const fallback = setTimeout(() => { if (children.get(run.id) === child) child.kill('SIGKILL'); }, 2000);
+          child.once('close', () => clearTimeout(fallback));
+        } else child.kill('SIGTERM');
         return;
       }
     }
     finish(run.id, 'canceled');
     res.json(body(row(run.id)!));
   });
+  app.post('/api/runs/:id/steer', (req, res) => {
+    const run = owned(req, res);
+    if (!run) return;
+    const body = req.body as Record<string, unknown> | null;
+    if (!body || Array.isArray(body) || Object.keys(body).some((key) => key !== 'text')
+      || typeof body.text !== 'string' || !body.text.trim() || Buffer.byteLength(body.text) > 64 * 1024) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'text is required; other fields are not accepted');
+    }
+    const verdict = classifyRunSteering({ runtimeAccepts: false, terminal: !['active', 'queued'].includes(run.status), stdinOpen: false });
+    if (!verdict.ok) return sendApiError(res, 409, 'RUN_STEERING_UNSUPPORTED', 'this execution source does not support mid-turn steering',
+      { retryable: false, details: { refusal: verdict.refusal } });
+  });
+  // Telemetry side channel only: the rating itself is the owner's message
+  // write. Multi-user mode has no private-content telemetry egress, so a valid
+  // request is acknowledged as skipped; ownership is still checked first.
+  app.post('/api/runs/:id/feedback', (req, res) => {
+    const run = owned(req, res);
+    if (!run) return;
+    const input = req.body as Record<string, unknown> | null;
+    if (!input || typeof input !== 'object' || Array.isArray(input)
+      || ['projectId', 'conversationId', 'assistantMessageId'].some((key) => Object.hasOwn(input, key))
+      || Object.keys(input).some((key) => !['rating', 'reasonCodes', 'hasCustomReason', 'customReason'].includes(key))
+      || parseStudioMessageFeedback({ rating: input.rating, createdAt: 0,
+        ...(input.reasonCodes === undefined ? {} : { reasonCodes: input.reasonCodes }),
+        ...(input.customReason === undefined ? {} : { customReason: input.customReason }) }) === undefined
+      || (input.hasCustomReason !== undefined && typeof input.hasCustomReason !== 'boolean')) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'invalid feedback');
+    }
+    res.status(202).json({ status: 'skipped_no_sink' } satisfies ChatRunFeedbackResponse);
+  });
   const beginShutdown = () => {
     if (shuttingDown) return;
     shuttingDown = true;
+    chatInvalidation.stop();
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+    // Background memory extraction bills a turn's source: none outlives the daemon.
+    input.memory?.close();
     for (const set of listeners.values()) for (const res of set) res.end();
     listeners.clear();
   };
@@ -871,6 +2295,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (shutdownPromise) return shutdownPromise;
     beginShutdown();
     shutdownPromise = (async () => {
+      // An exited child's run is settling, not running: settle it like its close handler would.
+      for (const [id, child] of [...children]) if (!running(child)) finish(id, 'canceled', { reason: 'daemon_shutdown' });
       const exits = [...children.values()].map((child) => new Promise<void>((resolve) => child.once('close', () => resolve())));
       const wait = async (ms: number) => {
         if (children.size === 0) return;
@@ -892,17 +2318,39 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     return shutdownPromise;
   };
   return {
+    research,
+    async admitInternal(actorRecord, request, allowed, instruction) {
+      const { res, result } = internalMultiUserResponse(actorRecord, allowed);
+      if (request.executionSource === 'company_pool') await createOpenAIRun({ ...request, agentId: 'openai' }, res, instruction);
+      else if (request.executionSource === 'personal_api_key') await createOpenAIRun({ ...request, agentId: 'openai-byok' }, res, instruction, 'personal_api_key');
+      else await createPersonalRun({ ...request, agentId: 'codex', executionSource: 'personal_subscription' }, res, instruction);
+      return result() ?? { status: 499, body: null };
+    },
+    runState(runId, accountId) {
+      const found = row(runId);
+      if (!found || found.owner_account_id !== accountId) return null;
+      const run = body(found);
+      const output = run.output as { text?: unknown; reason?: unknown } | null;
+      return { status: run.status, text: typeof output?.text === 'string' ? output.text : null,
+        reason: typeof output?.reason === 'string' ? output.reason : null };
+    },
     isRunOwner(runId, accountId) {
       const found = row(runId);
-      return !!found && found.owner_account_id === accountId && owners.isOwnedBy(found.project_id, accountId);
+      return !!found && found.owner_account_id === accountId && projects.canView(found.project_id, accountId);
     },
     cancelAccountRuns(accountId) {
-      const active = db.prepare(`SELECT id FROM ${table} WHERE owner_account_id = ? AND status IN ('active','queued')`).all(accountId) as Array<{ id: string }>;
+      // Session revocation stops this account's turns. Deactivation also
+      // suspends every collaborator's turn in its projects; an ordinary logout
+      // by an active owner does not revoke those collaborators' authority.
+      const inactive = accounts.getAccountById(accountId)?.active !== true;
+      const active = db.prepare(`SELECT id FROM ${table} r WHERE status IN ('active','queued') AND
+        (owner_account_id = ? OR (? = 1 AND EXISTS (SELECT 1 FROM ${PROJECT_OWNERS_TABLE} o
+          WHERE o.project_id = r.project_id AND o.owner_account_id = ?)))`).all(accountId, inactive ? 1 : 0, accountId) as Array<{ id: string }>;
       suspendDispatch = true;
       try {
         for (const run of active) {
           const child = children.get(run.id);
-          if (child) { cancelPending.add(run.id); child.kill('SIGTERM'); }
+          if (child && running(child)) { markCancelPending(run.id); child.kill('SIGTERM'); }
           else finish(run.id, 'canceled');
         }
       } finally { suspendDispatch = false; }
@@ -910,6 +2358,45 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       dispatchPersonal();
     },
     cancelPersonalRuns,
+    async cancelProjectRuns(accountId, projectId, conversationId) {
+      const key = targetKey(accountId, projectId, conversationId);
+      deletingTargets.set(key, (deletingTargets.get(key) ?? 0) + 1);
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        const remaining = (deletingTargets.get(key) ?? 1) - 1;
+        if (remaining > 0) deletingTargets.set(key, remaining);
+        else deletingTargets.delete(key);
+      };
+      let keepFence = false;
+      try {
+        const rows = db.prepare(`SELECT id FROM ${table}
+          WHERE (? IS NULL OR owner_account_id = ?) AND project_id = ? AND status IN ('active','queued')
+          ${conversationId === undefined ? '' : 'AND conversation_id = ?'}`)
+          .all(...[accountId, accountId, projectId, ...(conversationId === undefined ? [] : [conversationId])]) as Array<{ id: string }>;
+        const exits: Promise<void>[] = [];
+        suspendDispatch = true;
+        try {
+          for (const run of rows) {
+            const child = children.get(run.id);
+            if (!child || !running(child)) { finish(run.id, 'canceled'); continue; }
+            markCancelPending(run.id);
+            exits.push(new Promise<void>((resolve) => {
+              const deadline = setTimeout(() => { child.kill('SIGKILL'); }, 2_000);
+              deadline.unref();
+              child.once('close', () => { clearTimeout(deadline); resolve(); });
+            }));
+            child.kill('SIGTERM');
+          }
+        } finally { suspendDispatch = false; }
+        await Promise.all(exits);
+        dispatch();
+        dispatchPersonal();
+        keepFence = true;
+        return release;
+      } finally { if (!keepFence) release(); }
+    },
     // A subscription switch: pinned conversations keep their account but start a fresh native thread.
     forgetNativeSessions(accountId) {
       db.prepare('UPDATE multiuser_personal_sessions SET thread_id = NULL, updated_at = ? WHERE owner_account_id = ?').run(now(), accountId);
@@ -918,6 +2405,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     listAccountIds: () => accounts.listAccounts().map((account) => account.id),
     beginShutdown,
     shutdown,
-    companyPoolAvailable: mockAgentScript !== null,
+    get openaiPoolAvailable() { return companyOpenAI.enabled(); },
+    get companyPoolAvailable() { return mockAgentScript !== null || companyOpenAI.enabled(); },
   };
 }

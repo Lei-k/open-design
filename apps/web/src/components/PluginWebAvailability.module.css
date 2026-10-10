@@ -1,0 +1,30 @@
+/* Web availability of a bundled plugin (#61): shown only for Studio records. */
+.availability {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted, var(--text));
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--warning, #d9a441) 14%, transparent);
+  color: var(--text);
+}
+
+.applicable .badge {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+.reasons {
+  overflow-wrap: anywhere;
+}

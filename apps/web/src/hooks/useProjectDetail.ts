@@ -1,3 +1,4 @@
+import { studioFetch as fetch } from '../runtime/studio-transport';
 // Fetches `GET /api/projects/:id` once on mount and caches the response,
 // surfacing the `resolvedDir` field added in PR #451 prereq commit. The
 // daemon route returns `ProjectDetailResponse` (project + resolvedDir)

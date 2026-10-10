@@ -1,3 +1,4 @@
+import { studioSetTimeout as setTimeout, studioFetch as fetch } from '../runtime/studio-transport';
 import { useExperienceError } from '../observability/use-experience-error';
 import type { RecoveryActionBlockReason } from '../runtime/chat/recovery-gating';
 import {
@@ -4578,6 +4579,8 @@ export function FileWorkspace({
           />
         ) : activeLiveArtifact ? (
           <LiveArtifactViewer
+            key={`${projectId}:${activeLiveArtifact.artifactId}`}
+            viewerOnly={viewerOnly}
             projectId={projectId}
             liveArtifact={activeLiveArtifact}
             liveArtifactEvents={liveArtifactEvents}

@@ -19,6 +19,9 @@ const AGENT_LABELS: Record<string, string> = {
   antigravity: 'Antigravity',
   'anthropic-api': 'Anthropic API via OpenCode',
   'openai-api': 'OpenAI API via OpenCode',
+  openai: 'OpenAI',
+  // The shared Studio's own-key OpenAI source (#62/#63).
+  'openai-byok': 'OpenAI',
   'azure-openai-api': 'Azure OpenAI via OpenCode',
   'google-gemini-api': 'Google Gemini via OpenCode',
   'ollama-cloud-api': 'Ollama Cloud API via OpenCode',
@@ -75,6 +78,7 @@ export function agentIconId(
     const base = raw.split(' · ')[0]?.trim() || raw;
     const key = normalizeKey(base);
     const alias = AGENT_ALIASES[key] ?? key;
+    if (alias === 'openai-byok') return 'openai';
     if (AGENT_LABELS[alias]) return alias;
     if (alias.includes('cursor-agent')) return 'cursor-agent';
     for (const id of Object.keys(AGENT_LABELS)) {

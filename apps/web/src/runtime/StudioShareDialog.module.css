@@ -1,0 +1,71 @@
+.dialog {
+  width: min(480px, calc(100vw - 32px));
+}
+
+.form {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.field {
+  display: flex;
+  flex: 1 1 180px;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.status {
+  min-height: 18px;
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.error {
+  color: var(--red);
+}
+
+.members {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.member {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 32px;
+}
+
+.name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.role {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.trigger {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.memberRole {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 128px;
+}

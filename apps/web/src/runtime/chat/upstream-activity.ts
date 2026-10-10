@@ -1,3 +1,4 @@
+import { registerStudioReset } from '../studio-resources';
 /**
  * 上游最近一次「有东西落下来」是什么时候 —— 按 run 记的一张小表。
  *
@@ -63,3 +64,5 @@ export function upstreamActivityAt(runId: string | null | undefined): number | n
 export function __resetUpstreamActivity(): void {
   lastFrameAt.clear();
 }
+
+registerStudioReset(() => { lastFrameAt.clear(); });

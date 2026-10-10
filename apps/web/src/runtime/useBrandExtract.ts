@@ -1,3 +1,4 @@
+import { studioFetch as fetch } from './studio-transport';
 // `useBrandExtract` — kick off a programmatic-first brand extraction.
 //
 // Extraction is no longer an in-place SSE pipeline. `POST /api/brands { url }`

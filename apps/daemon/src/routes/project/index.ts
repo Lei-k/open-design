@@ -1,3 +1,5 @@
+import { multiUserStreamAllowed } from '../../http/multiuser-stream.js';
+import { multiUserActorOf } from '../../http/multiuser-gate.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -102,7 +104,7 @@ import {
 import { connectorService } from '../../connectors/service.js';
 import type { RouteDeps } from '../../server-context.js';
 import { listSkills } from '../../skills.js';
-import { isSafeId } from '../../projects.js';
+import { isSafeId, openProjectReadStreamNoFollow } from '../../projects.js';
 import {
   ensureTeamProjectCommentConversations,
   getFirstProjectConversation,
@@ -338,6 +340,8 @@ export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | '
    * the `OD_PROJECT_CREATE_PREPARATION_TIMEOUT_MS` env seam may shorten it.
    */
   projectCreatePreparationTimeoutMs?: number;
+  readActorSkill?: (owner: string, id: string) => Promise<boolean>;
+  readActorDesignSystem?: (owner: string, id: string) => Promise<boolean>;
   /**
    * Multi-user mode only (#3): scopes `GET /api/projects` to the actor and
    * binds the actor as immutable owner inside the create transaction. Absent
@@ -3955,7 +3959,13 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       // snapshot while a Workspace switch is loading. Use the partition that
       // produced that exact selection for local lookup only. It does not bind
       // this local project to that Workspace or prove current membership.
-      const designSystemValidation = await awaitProjectCreatePreparation<
+      const actor = multiUserActorOf(res);
+      if (actor && designSystemId != null && !await ctx.readActorDesignSystem?.(actor.accountId, designSystemId))
+        return sendApiError(res, 404, 'NOT_FOUND', 'design system not found');
+      if (actor && skillId != null && !await ctx.readActorSkill?.(actor.accountId, skillId))
+        return sendApiError(res, 404, 'NOT_FOUND', 'skill not found');
+      if (actor && !multiUserStreamAllowed(res)) return;
+      const designSystemValidation = actor ? { ok: true as const, id: designSystemId ?? null } : await awaitProjectCreatePreparation<
         Awaited<ReturnType<typeof validateProjectDesignSystemId>>
       >(
         validateProjectDesignSystemId(
@@ -3974,7 +3984,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         );
       }
       const normalizedDesignSystemId = designSystemValidation.id;
-      const skillValidation = await awaitProjectCreatePreparation<
+      const skillValidation = actor ? { ok: true as const, id: skillId ?? null } : await awaitProjectCreatePreparation<
         Awaited<ReturnType<typeof validateProjectSkillId>>
       >(
         validateProjectSkillId(
@@ -5050,7 +5060,9 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
             ? binding.workspaceId.trim()
             : null,
       },
-      resolvedDir,
+      // A Web actor never learns daemon filesystem paths (#60); its files are
+      // addressed by project-relative path through the owner file APIs.
+      resolvedDir: ctx.projectOwnership ? null : resolvedDir,
     };
     res.json(body);
   });
@@ -5368,7 +5380,14 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       if (typeof patch.customInstructions === 'string' && patch.customInstructions.length > 5000) {
         return sendApiError(res, 400, 'BAD_REQUEST', 'customInstructions exceeds 5 000 character limit');
       }
-      if (Object.prototype.hasOwnProperty.call(patch, 'designSystemId')) {
+      if (Object.prototype.hasOwnProperty.call(patch, 'designSystemId') && multiUserActorOf(res)) {
+        const owner = multiUserActorOf(res)!.accountId;
+        if (patch.designSystemId !== null && !await ctx.readActorDesignSystem?.(owner, patch.designSystemId))
+          return sendApiError(res, 404, 'NOT_FOUND', 'design system not found');
+        if (!multiUserStreamAllowed(res)) return;
+        if (!ctx.projectOwnership?.filterVisibleProjects(res, [patchProject]).length)
+          return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
+      } else if (Object.prototype.hasOwnProperty.call(patch, 'designSystemId')) {
         const projectBinding = getWorkspaceProjectByProjectId(db, req.params.id);
         const designSystemValidation = await validateProjectDesignSystemId(
           patch.designSystemId,
@@ -5457,6 +5476,8 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           }
         }
       }
+      // Multi-user: `updatedAt` is only a touch; the server clock decides the value.
+      if (ctx.projectOwnership && patch.updatedAt !== undefined) patch.updatedAt = Date.now();
       const project = updateProject(db, req.params.id, patch);
       if (!project)
         return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
@@ -5524,9 +5545,12 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       // Stop any live agent run in this project before its row and directory
       // are removed, otherwise the CLI subprocess is orphaned — it keeps
       // billing and writes into a directory that no longer exists (#5468).
-      await cancelRunsOwnedBy(design.runs, { projectId: req.params.id });
-      dbDeleteProject(db, req.params.id);
-      await removeProjectDir(PROJECTS_DIR, req.params.id).catch(() => {});
+      const release = await ctx.projectOwnership?.cancelOwnedRuns(res, req.params.id);
+      try {
+        await cancelRunsOwnedBy(design.runs, { projectId: req.params.id });
+        dbDeleteProject(db, req.params.id);
+        await removeProjectDir(PROJECTS_DIR, req.params.id).catch(() => {});
+      } finally { release?.(); }
       /** @type {import('@open-design/contracts').OkResponse} */
       const body = { ok: true };
       res.json(body);
@@ -6278,8 +6302,11 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         res.setHeader('Content-Length', String(meta.size));
       }
 
+      // Reopen through a verified no-follow descriptor: the project tree is
+      // agent-writable, so the path checked above may have been swapped.
+      const stream = await openProjectReadStreamNoFollow(
+        resolveProjectDir(PROJECTS_DIR, projectId, metadata), meta.filePath, { start, end });
       res.status(statusCode);
-      const stream = fs.createReadStream(meta.filePath, { start, end });
       stream.on('error', (streamErr: any) => {
         if (!res.headersSent) {
           sendApiError(res, 500, 'STREAM_ERROR', String(streamErr));
@@ -6540,7 +6567,8 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       // this dynamic inventory.
       res.setHeader('Cache-Control', 'no-store');
       /** @type {import('@open-design/contracts').ProjectFilesResponse} */
-      const body = { files };
+      // A Web actor gets project-relative names only, never the host path (#60).
+      const body = { files: multiUserActorOf(res) ? files.map(({ localPath: _host, ...file }: { localPath?: string }) => file) : files };
       res.json(body);
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err));

@@ -1,4 +1,4 @@
-// Test-only stand-in for `codex app-server` (pinned protocol: codex 0.160.0),
+// Test-only stand-in for `codex app-server` (pinned protocol: codex 0.162.1),
 // used by the multi-user personal-subscription tests (#18). JSON-RPC 2.0, one
 // frame per line on stdio. It never opens a network connection, never talks to
 // a provider and never reads host credentials: every bit of state lives in the
@@ -16,6 +16,8 @@
 //   rateLimits?: ok|unavailable }. A prompt containing `[mock-delay-ms=N]` delays the turn;
 //   `[mock-read=/abs/path]` reports in the reply whether that path was readable;
 //   `[mock-write=relative/path]` writes a deterministic test artifact in cwd.
+//   `promptReplyMarkers: string[]` replies only with markers actually present
+//   in the received prompt, keeping browser persistence witnesses bounded.
 import { randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -28,6 +30,8 @@ const threadsDir = path.join(home, 'sessions');
 
 const send = (frame: Json) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...frame })}\n`);
 const notify = (method: string, params: Json) => send({ method, params });
+const toolReplies = new Map<number, (value: Json) => void>();
+let toolRequestId = -1000;
 const readJson = (file: string): Json | null => {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')) as Json; } catch { return null; }
 };
@@ -89,15 +93,20 @@ function pollDevice(): void {
 
 function threadFile(id: string): string { return path.join(threadsDir, `${id.replace(/[^\w-]/g, '')}.json`); }
 
+let activeTurn: { threadId: string; turnId: string; interrupted: boolean; release?: () => void } | null = null;
+
 async function turn(id: number, params: Json): Promise<void> {
   const threadId = String(params.threadId ?? '');
   const input = Array.isArray(params.input) ? params.input as Json[] : [];
   const text = input.map((part) => (typeof part.text === 'string' ? part.text : '')).join('\n');
   const turnId = `turn_${randomUUID()}`;
+  const active = { threadId, turnId, interrupted: false, release: undefined as (() => void) | undefined };
+  activeTurn = active;
   send({ id, result: { turn: { id: turnId, status: 'inProgress', items: [] } } });
   notify('turn/started', { threadId, turn: { id: turnId, status: 'inProgress', items: [] } });
   const delay = /\[mock-delay-ms=(\d+)\]/u.exec(text);
-  if (delay) await new Promise((resolve) => setTimeout(resolve, Math.min(Number(delay[1]), 5000)));
+  if (delay) await new Promise<void>((resolve) => { const timer = setTimeout(resolve, Math.min(Number(delay[1]), 5000)); active.release = () => { clearTimeout(timer); resolve(); }; });
+  if (active.interrupted) return;
   const mode = fs.existsSync(authFile) ? String(control().turn ?? 'ok') : 'auth-invalid';
   const failed = (message: string, codexErrorInfo: string) => notify('turn/completed', {
     threadId, turn: { id: turnId, status: 'failed', items: [], error: { message, codexErrorInfo } },
@@ -105,6 +114,42 @@ async function turn(id: number, params: Json): Promise<void> {
   if (mode === 'usage-limit') return failed("You've hit your usage limit.", 'usageLimitExceeded');
   if (mode === 'auth-invalid') return failed('unauthorized: provider session expired', 'unauthorized');
   if (mode === 'workspace') return failed('Your workspace does not allow this client', 'unauthorized');
+  if (mode === 'model-error') return failed('Requested model is unavailable: FAKE_S3_SECRET at /host/private/s3', 'badRequest');
+  if (text.includes('[mock-tool-startup-failure]')) {
+    notify('item/completed', { threadId, turnId, item: { type: 'commandExecution', id: 'failed-start',
+      command: 'fixture-tool', status: 'failed', exitCode: null, aggregatedOutput: 'failed to spawn workspace tool' } });
+  }
+  if (text.includes('[mock-mcp-startup-failure]')) {
+    notify('mcpServer/startupStatus/updated', { threadId, name: 'fixture', status: 'failed' });
+  }
+  if (text.includes('[mock-mcp-attempt]')) {
+    notify('item/completed', { threadId, turnId, item: { type: 'mcpToolCall', id: 'mcp_attempt', server: 'fixture',
+      tool: 'lookup', arguments: {}, status: 'failed', result: null, error: { message: 'ordinary tool error' } } });
+  }
+  if (text.includes('[mock-mcp]')) {
+    const call = async (tool: string, args: Json) => {
+      const requestId = toolRequestId--;
+      const reply = await new Promise<Json>((resolve) => { toolReplies.set(requestId, resolve);
+        send({ id: requestId, method: 'item/tool/call', params: { threadId, turnId, callId: `mcp_${requestId}`, tool, arguments: args } }); });
+      const result = reply.result as Json | undefined;
+      if (result?.success !== true) throw new Error('MCP fixture refused');
+      return JSON.parse(String((result.contentItems as Json[])[0]!.text)) as Json;
+    };
+    try {
+      const listed = await call('mcp_list', {});
+      const server = (listed.servers as Json[])[0]!; const tool = (server.tools as Json[])[0]!;
+      await call('mcp_execute', { serverId: server.serverId, toolName: tool.name, input: {} });
+    } catch { return failed('MCP fixture refused', 'badRequest'); }
+  }
+  if (text.includes('[mock-connector]')) {
+    const requestId = toolRequestId--;
+    const reply = await new Promise<Json>((resolve) => {
+      toolReplies.set(requestId, resolve);
+      send({ id: requestId, method: 'item/tool/call', params: { threadId, turnId, callId: `connector_${turnId}`,
+        tool: 'connectors_execute', arguments: { connectorId: 'github', toolName: 'github.github_search_repositories', input: { query: 'fixture' } } } });
+    });
+    if ((reply.result as Json | undefined)?.success !== true) return failed('Connector fixture refused', 'badRequest');
+  }
   const record = readJson(threadFile(threadId)) ?? { turns: 0 };
   record.turns = Number(record.turns ?? 0) + 1;
   fs.writeFileSync(threadFile(threadId), JSON.stringify(record));
@@ -123,22 +168,47 @@ async function turn(id: number, params: Json): Promise<void> {
     const withinCwd = target.startsWith(`${path.resolve(process.cwd())}${path.sep}`);
     if (!withinCwd || relative.split('/').some((part) => part === '..' || part === '')) continue;
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, `generated by ${turnId}\n`);
+    const encoded = control().artifactBytes?.[relative];
+    fs.writeFileSync(target, typeof encoded === 'string' ? Buffer.from(encoded, 'base64') : `generated by ${turnId}\n`);
     writes.push(relative);
   }
-  if (text.includes('[mock-progress]')) {
+  const parity = text.includes('[mock-parity]');
+  if (parity) {
+    notify('item/reasoning/summaryTextDelta', { threadId, turnId, itemId: 'reason', summaryIndex: 0, delta: 'Think through the layout.\n' });
+    notify('warning', { threadId, message: 'Fixture warning' });
+  }
+  if (text.includes('[mock-progress]') || parity) {
     notify('turn/plan/updated', { threadId, turnId, plan: [
       { step: 'Draft the layout', status: 'inProgress' },
       { step: 'Verify the result', status: 'pending' },
     ] });
-    const commandId = `cmd_${randomUUID()}`;
+    const commandId = parity ? 'cmd_fixture' : `cmd_${randomUUID()}`;
     notify('item/started', { threadId, turnId, item: {
       type: 'commandExecution', id: commandId, command: 'test-command --redacted', aggregatedOutput: '', exitCode: null, status: 'inProgress',
     } });
+    // Streamed output, each chunk past the normalizer's 250ms update throttle,
+    // so every chunk becomes its own running-row (tool_in_flight) update.
+    if (parity) {
+      for (const delta of ['compiling PRIVATE_DELTA_OUTPUT=FAKE_S3_SECRET\n', 'wrote /host/private/s3/build.log\n']) {
+        await new Promise((resolve) => setTimeout(resolve, 320));
+        notify('item/commandExecution/outputDelta', { threadId, turnId, itemId: commandId, delta });
+      }
+    }
     notify('item/completed', { threadId, turnId, item: {
       type: 'commandExecution', id: commandId, command: 'test-command --redacted',
-      aggregatedOutput: 'PRIVATE_COMMAND_OUTPUT=must-not-persist\n', exitCode: 0, status: 'completed',
+      aggregatedOutput: 'PRIVATE_COMMAND_OUTPUT=FAKE_S3_SECRET\nHOME=/host/private/s3\nAPI_TOKEN=FAKE_S3_SECRET\n', exitCode: 0, status: 'completed',
     } });
+  }
+  if (parity) {
+    // Patch previews grow file by file before the item completes.
+    const patch = [{ path: 'index.html', kind: 'add', diff: '+safe\n+<main></main>' }, { path: 'styles.css', kind: 'update', diff: '-a\n+b\n+c' }];
+    for (const size of [1, 2]) notify('item/fileChange/patchUpdated', { threadId, turnId, itemId: 'file_fixture', changes: patch.slice(0, size) });
+    for (const item of [
+      { type: 'fileChange', id: 'file_fixture', status: 'completed', changes: patch },
+      { type: 'mcpToolCall', id: 'mcp_fixture', server: 'fixture', tool: 'lookup', arguments: { secret: 'FAKE_S3_SECRET' }, result: { content: 'FAKE_S3_SECRET' }, status: 'completed' },
+      { type: 'webSearch', id: 'web_fixture', query: 'layout', action: { type: 'search', query: 'layout' } },
+    ]) notify('item/completed', { threadId, turnId, item });
+    notify('thread/tokenUsage/updated', { threadId, turnId, tokenUsage: { total: { inputTokens: 20, outputTokens: 10, reasoningOutputTokens: 2 } } });
   }
   for (const written of writes) {
     const fileId = `file_${randomUUID()}`;
@@ -148,10 +218,16 @@ async function turn(id: number, params: Json): Promise<void> {
   }
   const normalReply = JSON.stringify({ codexHome: home, home: process.env.HOME ?? null, cwd: process.cwd(), threadId,
     turnsInThread: record.turns, message: text, envKeys: Object.keys(process.env).sort(),
-    ...(Object.keys(reads).length > 0 ? { reads } : {}), ...(writes.length > 0 ? { writes } : {}) });
+    ...(Object.keys(reads).length > 0 ? { reads } : {}), ...(writes.length > 0 ? { writes } : {}),
+    ...(typeof params.model === 'string' ? { model: params.model } : {}), ...(typeof params.effort === 'string' ? { effort: params.effort } : {}) });
+  fs.writeFileSync(path.join(home, 'mock-turn-evidence.json'), normalReply);
   // Deliberately exceeds the daemon's bounded final-text budget with
   // multi-byte characters, so integration tests cover UTF-8 truncation.
-  const reply = text.includes('[mock-large-output]') ? '界'.repeat(200_000) : normalReply;
+  const markers = control().promptReplyMarkers;
+  const markerReply = Array.isArray(markers) ? markers.slice(0, 12)
+    .filter((marker): marker is string => typeof marker === 'string' && marker.length <= 200 && text.includes(marker)).join('\n') : null;
+  const reply = parity ? 'Done.\n' : typeof control().reply === 'string' ? String(control().reply)
+    : markerReply ?? (text.includes('[mock-large-output]') ? '界'.repeat(200_000) : normalReply);
   const itemId = `msg_${randomUUID()}`;
   notify('item/agentMessage/delta', { threadId, turnId, itemId, delta: reply });
   notify('item/completed', { threadId, turnId, item: { type: 'agentMessage', id: itemId, text: reply } });
@@ -160,12 +236,13 @@ async function turn(id: number, params: Json): Promise<void> {
 
 function handle(frame: Json): void {
   const id = typeof frame.id === 'number' ? frame.id : null;
+  if (id !== null && toolReplies.has(id) && !frame.method) { toolReplies.get(id)!(frame); toolReplies.delete(id); return; }
   const method = String(frame.method ?? '');
   const params = (frame.params && typeof frame.params === 'object' ? frame.params : {}) as Json;
   if (id === null) return; // `initialized` and other client notifications
   const fail = (code: number, message: string) => send({ id, error: { code, message } });
   switch (method) {
-    case 'initialize': return send({ id, result: { userAgent: 'codex_mock/0.160.0 (mock)' } });
+    case 'initialize': return send({ id, result: { userAgent: 'codex_mock/0.162.1 (mock)' } });
     case 'account/login/start': {
       if (params.type !== 'chatgptDeviceCode') return fail(-32602, 'mock supports chatgptDeviceCode only');
       const code = randomBytes(4).toString('hex').toUpperCase();
@@ -207,7 +284,16 @@ function handle(frame: Json): void {
       return send({ id, result: { thread: { id: threadId } } });
     }
     case 'turn/start': void turn(id, params); return;
-    case 'turn/interrupt': return send({ id, result: {} });
+    case 'turn/interrupt': {
+      fs.writeFileSync(path.join(home, 'mock-interrupt.json'), JSON.stringify(params));
+      send({ id, result: {} });
+      if (activeTurn) {
+        activeTurn.interrupted = true;
+        activeTurn.release?.();
+        notify('turn/completed', { threadId: activeTurn.threadId, turn: { id: activeTurn.turnId, status: 'interrupted', items: [] } });
+      }
+      return;
+    }
     default: return fail(-32601, `mock: unsupported method ${method}`);
   }
 }

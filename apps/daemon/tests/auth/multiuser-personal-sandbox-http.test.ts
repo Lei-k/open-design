@@ -3,6 +3,7 @@
 // task in alice's personal run cannot read bob's credential or the daemon
 // database; its own project and CODEX_HOME stay usable. Skipped where bwrap
 // cannot build the sandbox.
+import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -54,7 +55,7 @@ describe.skipIf(!usable)('sandboxed personal lane through the daemon', () => {
     const run = await until(async () => (await daemon.request({ path: `/api/runs/${res.json.run.id}`, cookie: alice.cookie })).json,
       (value) => !['queued', 'running'].includes(value.status), 'personal run');
     expect(run.status, JSON.stringify(run)).toBe('succeeded');
-    const reply = JSON.parse(run.output.text) as { reads: Record<string, string>; envKeys: string[] };
+    const reply = JSON.parse(readFileSync(path.join(codexHome(dataRoot, alice.id), 'mock-turn-evidence.json'), 'utf8')) as { reads: Record<string, string>; envKeys: string[] };
     expect(reply.reads).toEqual({ [own]: 'readable', [other]: 'ENOENT', [database]: 'ENOENT' });
     expect(reply.envKeys).toContain('PATH');
     // bubblewrap is already the filesystem security boundary for personal

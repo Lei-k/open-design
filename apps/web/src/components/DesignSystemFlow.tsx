@@ -1,3 +1,4 @@
+import { studioUsesLocalServices, studioRequestAvailable, studioWindowSetTimeout, studioWindowSessionStorage, studioSessionStorage } from '../runtime/studio-transport';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ChangeEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { Button, Textarea } from '@open-design/components';
 import type {
@@ -130,6 +131,8 @@ import type {
   TrackingDesignSystemStatusValue,
   TrackingDesignSystemsEntryFrom,
 } from '@open-design/contracts/analytics';
+import { useStudioCapabilities, useStudioRequestAvailable, StudioUnavailable } from '../runtime/studio-capabilities';
+import { StudioCatalogShareButton } from '../runtime/StudioShareDialog';
 import { useI18n } from '../i18n';
 import { useWorkspaceContext } from '../collab/useWorkspaceContext';
 import { workspaceIdentityCacheKey } from '../collab/workspace-identity';
@@ -152,6 +155,7 @@ export interface DesignSystemGenerateSnapshot {
 }
 
 interface CreationProps {
+  onDocumentCreated?: (designSystemId: string) => void;
   onBack: () => void;
   onCreated: (projectId: string, project?: Project, conversationId?: string | null) => void;
   onProjectPrepared?: (project: Project) => void;
@@ -300,7 +304,7 @@ function generationJobStorageKey(designSystemId: string): string {
 
 function readRememberedGenerationJob(designSystemId: string): string | null {
   try {
-    return window.sessionStorage.getItem(generationJobStorageKey(designSystemId));
+    return studioWindowSessionStorage().getItem(generationJobStorageKey(designSystemId));
   } catch {
     return null;
   }
@@ -334,7 +338,7 @@ async function resolveDesignSystemWorkspaceProject(
 
 function clearRememberedGenerationJob(designSystemId: string): void {
   try {
-    window.sessionStorage.removeItem(generationJobStorageKey(designSystemId));
+    studioWindowSessionStorage().removeItem(generationJobStorageKey(designSystemId));
   } catch {
     // Best-effort cleanup only.
   }
@@ -342,6 +346,7 @@ function clearRememberedGenerationJob(designSystemId: string): void {
 
 export function DesignSystemCreationFlow({
   onBack,
+  onDocumentCreated,
   onCreated,
   onProjectPrepared,
   onSystemsRefresh,
@@ -354,6 +359,9 @@ export function DesignSystemCreationFlow({
 }: CreationProps) {
   const { t } = useI18n();
   const { context: workspaceContext } = useWorkspaceContext();
+  const studio = useStudioCapabilities();
+  const studioRequest = useStudioRequestAvailable();
+  const canGenerate = studioRequest('POST', '/api/brands');
   const [step, setStep] = useState<SetupStep>('setup');
   // A Library "create design system from selection" hand-off pre-fills the
   // source material with the chosen assets (single-shot; cleared on read).
@@ -401,6 +409,17 @@ export function DesignSystemCreationFlow({
   const githubConnectorLoadedRef = useRef(false);
   const embedded = chrome === 'embedded';
 
+  async function saveDocument() {
+    if (!state.designMd.trim() || generationStarting) return;
+    setGenerationStarting(true); setVisibleError(null);
+    try {
+      const document = await createDesignSystemDraft({ title: parseDesignMd(state.designMd).name || inferDesignSystemTitle(state), body: state.designMd }, workspaceContext);
+      if (!document) { setVisibleError(t('dsFlow.saveChangesFailed')); return; }
+      await onSystemsRefresh?.();
+      if (studio.session && studio.session.snapshot().generation !== studio.generation) return;
+      onDocumentCreated?.(document.id);
+    } finally { setGenerationStarting(false); }
+  }
   function setVisibleError(message: string | null) {
     setError(message);
     if (!message) {
@@ -497,7 +516,7 @@ export function DesignSystemCreationFlow({
   }
 
   const refreshGithubConnector = useCallback(async () => {
-    if (!composioConfigured) {
+    if (!composioConfigured || !studioRequest('GET', '/api/connectors')) {
       githubConnectorRefreshId.current += 1;
       githubConnectorRequestInFlight.current = false;
       setGithubConnector(null);
@@ -548,7 +567,7 @@ export function DesignSystemCreationFlow({
         setGithubConnectorLoading(false);
       }
     }
-  }, [composioConfigured, t]);
+  }, [composioConfigured, studioRequest, t]);
 
   useEffect(() => {
     void refreshGithubConnector();
@@ -1083,7 +1102,9 @@ export function DesignSystemCreationFlow({
               {t('dsCreate.back')}
             </Button>
           </div>
-          <Button
+          {onDocumentCreated ? <Button variant="primary" data-testid="design-system-document-create"
+            disabled={!state.designMd.trim() || generationStarting} onClick={() => void saveDocument()}>{t('ds.saveDesignMd')}</Button> : null}
+          {canGenerate ? <Button
             variant="primary"
             disabled={!hasCreationSource(state)}
             onClick={() => {
@@ -1093,7 +1114,7 @@ export function DesignSystemCreationFlow({
           >
             {t('dsCreate.continueToGeneration')}
             <Icon name="chevron-right" />
-          </Button>
+          </Button> : null}
         </header>
       )}
 
@@ -1105,15 +1126,17 @@ export function DesignSystemCreationFlow({
           </>
         ) : (
           <aside className="ds-setup-hero-col">
-            <DesignSystemCreateHero stacked />
+            <DesignSystemCreateHero stacked intro={canGenerate ? undefined : { title: t('ds.saveDesignMd'), body: t('dsCreate.manualDocumentHelp') }} />
           </aside>
         )}
 
         <div className="ds-setup-form-col">
         <section className="ds-resource-section">
-          <h2>{t('dsCreate.sourceSectionTitle')}</h2>
-          <p>{t('dsCreate.sourceSectionBody')}</p>
+          <h2>{t(canGenerate ? 'dsCreate.sourceSectionTitle' : 'ds.saveDesignMd')}</h2>
+          <p>{t(canGenerate ? 'dsCreate.sourceSectionBody' : 'dsCreate.manualDocumentHelp')}</p>
+          {!canGenerate ? <StudioUnavailable lane="catalogs" /> : null}
           <div className="ds-resource-card">
+            {canGenerate ? <>
             <div className="ds-resource-row">
               <strong>{t('dsCreate.githubWebsiteLabel')}</strong>
               <div className="ds-resource-inline">
@@ -1216,7 +1239,8 @@ export function DesignSystemCreationFlow({
                 }}
               />
             </div>
-            <div className="ds-resource-row ds-resource-row--description">
+            </> : null}
+            {canGenerate ? <div className="ds-resource-row ds-resource-row--description">
               <strong>{t('dsCreate.describeBrand')} <span>{t('dsCreate.optional')}</span></strong>
               <label className="ds-resource-description">
                 <span>{t('dsCreate.describeBrandHelp')}</span>
@@ -1227,7 +1251,7 @@ export function DesignSystemCreationFlow({
                   placeholder={t('dsCreate.companyPlaceholder')}
                 />
               </label>
-            </div>
+            </div> : null}
             <div className="ds-resource-row ds-resource-row--design-md">
               <strong>{t('dsCreate.pasteDesignMd')} <span>{t('dsCreate.optional')}</span></strong>
               <div className="ds-design-md-field">
@@ -1293,6 +1317,9 @@ export function DesignSystemCreationFlow({
                   />
                 ) : (
                   <textarea
+                    data-testid="design-system-document-body"
+                    aria-label="DESIGN.md"
+                    maxLength={256000}
                     rows={5}
                     value={state.designMd}
                     onChange={(event) => handleDesignMdInput(event.target.value)}
@@ -1301,7 +1328,7 @@ export function DesignSystemCreationFlow({
                 )}
               </div>
             </div>
-            <div className="ds-resource-advanced">
+            {canGenerate ? <div className="ds-resource-advanced">
               <button
                 type="button"
                 className="ghost ds-resource-advanced-toggle"
@@ -1434,7 +1461,7 @@ export function DesignSystemCreationFlow({
                   )}
                 </div>
               </div>
-            </div>
+            </div> : null}
           </div>
         </section>
 
@@ -1771,7 +1798,7 @@ export function DesignSystemDetailView({
   }, [initialRevisionJob, onInitialRevisionJobConsumed, t]);
 
   useEffect(() => {
-    if (!system) return undefined;
+    if (!system || !studioUsesLocalServices() && !studioRequestAvailable('POST', `/api/design-systems/${encodeURIComponent(system.id)}/workspace`)) return undefined;
     const currentSystem = system;
     const requestScopeKey = workspaceFilesScopeKey;
     let cancelled = false;
@@ -1941,7 +1968,7 @@ export function DesignSystemDetailView({
         );
         return;
       }
-      timeoutId = window.setTimeout(() => void pollGenerationJob(), 700);
+      timeoutId = studioWindowSetTimeout(() => void pollGenerationJob(), 700);
     }
 
     void pollGenerationJob();
@@ -1987,10 +2014,10 @@ export function DesignSystemDetailView({
         );
         return;
       }
-      timeoutId = window.setTimeout(() => void pollRevisionJob(), 650);
+      timeoutId = studioWindowSetTimeout(() => void pollRevisionJob(), 650);
     }
 
-    timeoutId = window.setTimeout(() => void pollRevisionJob(), 250);
+    timeoutId = studioWindowSetTimeout(() => void pollRevisionJob(), 250);
     return () => {
       cancelled = true;
       if (timeoutId !== undefined) window.clearTimeout(timeoutId);
@@ -2509,7 +2536,7 @@ export function DesignSystemDetailView({
       // a pending revision and switch entry_from accordingly.
       const wasOnboardingHandoff =
         Boolean(peekOnboardingSessionId())
-        || sessionStorage.getItem(`od:auto-send-first:${projectId}`) === '1';
+        || studioSessionStorage().getItem(`od:auto-send-first:${projectId}`) === '1';
       void streamViaDaemon({
         agentId: config.agentId,
         history: agentHistory,
@@ -2817,7 +2844,7 @@ export function DesignSystemDetailView({
   // flashes the old "Review draft design system" scaffold before the workspace
   // mounts. Only when the workspace genuinely cannot be resolved
   // (workspaceLoadError) do we fall through to that legacy UI as an escape hatch.
-  const redirectingToWorkspace = Boolean(onOpenProject) && !workspaceLoadError;
+  const redirectingToWorkspace = studioUsesLocalServices() && Boolean(onOpenProject) && !workspaceLoadError;
   if (!system || redirectingToWorkspace) {
     return (
       <div className="ds-setup-shell ds-setup-shell--center">
@@ -2831,8 +2858,8 @@ export function DesignSystemDetailView({
   }
 
   return (
-    <div className="ds-workspace">
-      <aside className="ds-project-chat">
+    <div className="ds-workspace" style={studioUsesLocalServices() ? undefined : { gridTemplateColumns: 'minmax(0, 1fr)' }}>
+      {studioUsesLocalServices() ? <aside className="ds-project-chat">
         <div className="ds-project-chat__bar">
           <button type="button" className="icon-only" onClick={onBack} aria-label={t('dsCreate.back')}>
             <Icon name="arrow-left" />
@@ -2878,7 +2905,7 @@ export function DesignSystemDetailView({
             onNewConversation={createProjectChatConversation}
           />
         </div>
-      </aside>
+      </aside> : null}
 
       <main className="ds-review-main">
         <header className="ds-review-tabs">
@@ -2896,15 +2923,21 @@ export function DesignSystemDetailView({
             </button>
             <button
               type="button"
+              disabled={!studioUsesLocalServices()}
               className={tab === 'files' ? 'active' : ''}
               onClick={() => setTab('files')}
             >
               {t('dsFlow.tabDesignFiles')}
             </button>
           </div>
-          <Button variant="ghost">
-            {t('common.share')}
-          </Button>
+          {studioUsesLocalServices() ? (
+            <Button variant="ghost">
+              {t('common.share')}
+            </Button>
+          ) : system.source === 'user' ? (
+            // Studio accounts (#61/#65): use grants to other accounts of this deployment.
+            <StudioCatalogShareButton kind="design-system" resourceId={system.id} share={system.studioShare} />
+          ) : null}
         </header>
 
         {tab === 'system' ? (
@@ -2958,13 +2991,13 @@ export function DesignSystemDetailView({
                 </Button>
               ) : null}
             </div>
-            <DesignSystemPackageCard
+            {studioUsesLocalServices() ? <DesignSystemPackageCard
               system={system}
               busy={tokenRebuildBusy || generationActive}
               onRebuildTokenContract={() => void startTokenContractRebuild(false)}
               onForceRebuildTokenContract={() => void startTokenContractRebuild(true)}
-            />
-            <div className="ds-warning-card">
+            /> : <StudioUnavailable lane="catalogs" />}
+            {studioUsesLocalServices() ? <div className="ds-warning-card">
               <Icon name="help-circle" />
               <span>
                 <strong>{t('dsFlow.brandFontsMissingTitle')}</strong>
@@ -2974,7 +3007,7 @@ export function DesignSystemDetailView({
                 <Icon name="upload" />
                 {t('dsFlow.addBrandFonts')}
               </Button>
-            </div>
+            </div> : null}
             {statusLine ? <div className="ds-status-line">{statusLine}</div> : null}
             <WorkspaceActivityCard message={workspaceActivityMessage} active={chatStreaming} />
             {pendingRevision ? (
@@ -3051,6 +3084,8 @@ export function DesignSystemDetailView({
                 value={body}
                 onChange={(event) => setBody(event.target.value)}
                 rows={16}
+                maxLength={256000}
+                data-testid="design-system-document-edit"
                 disabled={!editable}
               />
             </label>
@@ -3859,11 +3894,11 @@ function DropZone({
     previousFinish?.();
     fileDialogPendingRef.current = true;
     fileDialogCanShowLoadingRef.current = false;
-    fileDialogFocusDelayRef.current = window.setTimeout(() => {
+    fileDialogFocusDelayRef.current = studioWindowSetTimeout(() => {
       fileDialogCanShowLoadingRef.current = true;
       fileDialogFocusDelayRef.current = undefined;
     }, SOURCE_FILE_DIALOG_FOCUS_DELAY_MS);
-    fileDialogWarmupRef.current = window.setTimeout(() => {
+    fileDialogWarmupRef.current = studioWindowSetTimeout(() => {
       fileDialogCanShowLoadingRef.current = true;
       fileDialogWarmupRef.current = undefined;
       beginFileDialogReturnLoading();
@@ -3876,7 +3911,7 @@ function DropZone({
     if (!onProcessingStart) return;
     if (fileDialogLoadingFinishRef.current) return;
     fileDialogLoadingFinishRef.current = onProcessingStart();
-    fileDialogStaleRef.current = window.setTimeout(() => {
+    fileDialogStaleRef.current = studioWindowSetTimeout(() => {
       const finish = completeFileDialogTracking();
       finishProcessingLater(finish);
     }, SOURCE_FILE_DIALOG_STALE_MS);
@@ -3895,7 +3930,7 @@ function DropZone({
 
   function finishProcessingLater(finish: (() => void) | undefined) {
     if (!finish) return;
-    window.setTimeout(finish, SOURCE_PROCESSING_MIN_VISIBLE_MS);
+    studioWindowSetTimeout(finish, SOURCE_PROCESSING_MIN_VISIBLE_MS);
   }
   function shouldShowProcessing(files: File[]) {
     if (files.length >= SOURCE_PROCESSING_LOADING_FILE_COUNT) return true;
@@ -3998,10 +4033,10 @@ function DropZone({
 
 function runAfterNextPaint(callback: () => void) {
   if (typeof window.requestAnimationFrame === 'function') {
-    window.requestAnimationFrame(() => window.setTimeout(callback, 0));
+    window.requestAnimationFrame(() => studioWindowSetTimeout(callback, 0));
     return;
   }
-  window.setTimeout(callback, 0);
+  studioWindowSetTimeout(callback, 0);
 }
 
 async function filesFromDataTransfer(dataTransfer: DataTransfer): Promise<File[]> {
@@ -4392,7 +4427,7 @@ function scheduleAfterProjectHandoff(task: () => void): void {
     task();
     return;
   }
-  const run = () => window.setTimeout(task, 0);
+  const run = () => studioWindowSetTimeout(task, 0);
   if (typeof window.requestAnimationFrame === 'function') {
     window.requestAnimationFrame(run);
     return;
@@ -4559,8 +4594,8 @@ async function prepareCreatedDesignSystemProject({
       workspaceContext,
     );
     try {
-      window.sessionStorage.setItem(`od:auto-send-first:${project.id}`, '1');
-      window.sessionStorage.setItem(`od:auto-send-prompt:${project.id}`, prompt);
+      studioWindowSessionStorage().setItem(`od:auto-send-first:${project.id}`, '1');
+      studioWindowSessionStorage().setItem(`od:auto-send-prompt:${project.id}`, prompt);
     } catch {
       // If sessionStorage is unavailable, the project still opens with the
       // pending prompt ready for the user to send manually.
@@ -5129,7 +5164,7 @@ async function fetchGithubConnectorStatusWithTimeout(): Promise<{ connector: Con
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
   try {
     const timeout = new Promise<null>((resolve) => {
-      timeoutId = window.setTimeout(() => {
+      timeoutId = studioWindowSetTimeout(() => {
         timedOut = true;
         controller?.abort();
         resolve(null);

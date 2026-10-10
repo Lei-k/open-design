@@ -3,7 +3,7 @@
 // never consume company-pool slots or the 30h company ledger, and never fall
 // back to the company pool.
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -93,6 +93,25 @@ afterEach(async () => {
 afterAll(async () => { await daemon?.close(); cleanupIsolatedDataRoot(); });
 
 describe('personal subscription run lane', () => {
+  it.each([
+    ['[mock-tool-startup-failure]', 'failed'],
+    ['text-only answer', 'succeeded'],
+    ['[mock-tool-startup-failure] [mock-write=recovered.html]', 'succeeded'],
+    ['[mock-mcp-startup-failure] text-only answer', 'succeeded'],
+    ['[mock-mcp-attempt] ordinary tool error', 'succeeded'],
+    ['[mock-mcp-startup-failure] [mock-mcp-attempt]', 'failed'],
+    ['[mock-mcp-startup-failure] [mock-mcp-attempt] [mock-write=recovered.html]', 'succeeded'],
+  ])('verifies workspace delivery for %s → %s', async (message, expected) => {
+    const project = await newProject(alice);
+    const accepted = await personal(alice, message!, project);
+    expect(accepted.status, accepted.text).toBe(202);
+    const run = await finished(alice, accepted.json.run.id);
+    expect(run.status).toBe(expected);
+    if (expected === 'failed') expect(run.output.reason).toBe('MULTIUSER_RUN_TOOLS_UNAVAILABLE');
+    const transcript = await daemon.request({ path: `/api/projects/${project.id}/conversations/${project.conversationId}/messages`, cookie: alice.cookie });
+    expect(transcript.json.messages.some((m: { role: string; content: string }) => m.role === 'assistant' && m.content.length > 0)).toBe(true);
+  });
+
   it('pins built-in design inputs, sends the stable prompt once, and reports artifact diffs', async () => {
     const project = await newProject(alice);
     const catalog = await daemon.request({ path: '/api/multiuser/design-catalog', cookie: alice.cookie });
@@ -131,10 +150,10 @@ describe('personal subscription run lane', () => {
     expect(firstReply.message).toContain(system.title);
     const events = await daemon.request({ path: `/api/runs/${firstRun.json.run.id}/events`, cookie: alice.cookie });
     expect(events.status, events.text).toBe(200);
-    expect(events.text).toContain('"kind":"todo"');
-    expect(events.text).toContain('"kind":"command","name":"Bash","status":"started"');
-    expect(events.text).toContain('"kind":"command","name":"Bash","status":"completed"');
-    expect(events.text).toContain('"kind":"file","path":"generated/result.html","status":"changed"');
+    expect(events.text).toContain('"name":"TodoWrite"');
+    expect(events.text).toContain('"name":"Bash"');
+    expect(events.text).toContain('"type":"tool_result"');
+    expect(events.text).toContain('"file_path":"generated/result.html"');
     expect(events.text).not.toContain('PRIVATE_COMMAND_OUTPUT');
 
     const followUpRun = await request('make the heading shorter');
@@ -142,7 +161,26 @@ describe('personal subscription run lane', () => {
     const followUp = await finished(alice, followUpRun.json.run.id);
     const followUpReply = JSON.parse(followUp.output.text);
     expect(followUpReply.threadId).toBe(firstReply.threadId);
-    expect(followUpReply.message).toBe('make the heading shorter');
+    // Only the request and the captured, read-only resource location; the stable prompt is not resent.
+    expect(followUpReply.message.split('\n\n# Captured skill resources\n\n')[0]).toBe('make the heading shorter');
+    expect(followUpReply.message).toContain(`- ${skill.id}: [private path]/skill-packages/`);
+
+    // The fixed selection captures its primary skill package and design system
+    // once; the follow-up reuses those bytes rather than the live catalog, and
+    // the prompt never names the daemon's bundled skill directory.
+    const db = new Database(path.join(dataRoot, 'app.sqlite'));
+    let requests: Array<Record<string, any>>;
+    try {
+      requests = [firstRun, followUpRun].map((run) => JSON.parse((db.prepare('SELECT request_json FROM multiuser_runs WHERE id = ?')
+        .get(run.json.run.id) as { request_json: string }).request_json));
+    } finally { db.close(); }
+    for (const captured of requests) {
+      expect(captured.skillSnapshots[0]).toMatchObject({ id: skill.id, package: { id: skill.id, hash: expect.any(String) } });
+      expect(captured.designSnapshot).toMatchObject({ id: system.id });
+      expect(captured.stablePrompt).not.toContain(path.resolve(process.cwd(), '../../skills'));
+    }
+    expect(requests[1]!.skillSnapshots[0].hash).toBe(requests[0]!.skillSnapshots[0].hash);
+    expect(requests[1]!.designSnapshot.hash).toBe(requests[0]!.designSnapshot.hash);
   });
 
   it('runs each user only through their own CODEX_HOME with an explicit environment', async () => {
@@ -155,7 +193,8 @@ describe('personal subscription run lane', () => {
       for (const [user, res, home, other] of [[alice, a, codexHome(dataRoot, alice.id), 'bob-private'], [bob, b, codexHome(dataRoot, bob.id), 'alice-private']] as const) {
         const run = await finished(user, res.json.run.id);
         expect(run.status, JSON.stringify(run)).toBe('succeeded');
-        const reply = JSON.parse(run.output.text);
+        const reply = JSON.parse(readFileSync(path.join(home, 'mock-turn-evidence.json'), 'utf8'));
+        expect(run.output.text.includes(dataRoot)).toBe(false);
         expect(reply.codexHome).toBe(home);
         expect(reply.cwd).toBe(path.join(dataRoot, 'projects', projects.get(user.id)!.id));
         expect(reply.envKeys).toEqual(['CODEX_HOME', 'HOME', 'OD_DATA_DIR', 'TEMP', 'TMP', 'TMPDIR']);
@@ -298,10 +337,15 @@ describe('personal subscription run lane', () => {
     expect(await finished(bob, limited.json.run.id)).toMatchObject({ status: 'failed', output: { reason: 'MULTIUSER_PERSONAL_USAGE_LIMIT' } });
     expect((await summary(daemon, bob)).codex.account).toMatchObject({ status: 'connected', lastProblem: 'usage_limit_reached' });
     expect(ledgerRow(limited.json.run.id)).toBeUndefined();
+    const limitedEvents = await daemon.request({ path: `/api/runs/${limited.json.run.id}/events`, cookie: bob.cookie });
+    expect(limitedEvents.text).toContain('event: error');
+    expect(limitedEvents.text).toContain('"code":"MULTIUSER_PERSONAL_USAGE_LIMIT"');
+    expect(limitedEvents.text).toContain('"reason":"usageLimitExceeded"');
     setTurnMode(dataRoot, bob, { turn: 'auth-invalid' });
     const invalid = await personal(bob, 'invalid');
     expect(await finished(bob, invalid.json.run.id)).toMatchObject({ status: 'failed', output: { reason: 'MULTIUSER_PERSONAL_REAUTH_REQUIRED' } });
     expect((await summary(daemon, bob)).codex.account).toMatchObject({ status: 'requires_reauth' });
+    expect((await daemon.request({ path: `/api/runs/${invalid.json.run.id}/events`, cookie: bob.cookie })).text).toContain('"code":"MULTIUSER_PERSONAL_REAUTH_REQUIRED"');
     const next = await personal(bob, 'after-reauth-needed');
     expect(next.status).toBe(409);
     expect(next.json.error.code).toBe('MULTIUSER_PERSONAL_UNAVAILABLE');
@@ -322,6 +366,7 @@ describe('personal subscription run lane', () => {
     expect(unlink.status, unlink.text).toBe(200);
     expect((await detail(carol, active)).status).toBe('canceled');
     expect((await detail(carol, queued)).status).toBe('canceled');
+    for (const id of [active, queued]) expect((await daemon.request({ path: `/api/runs/${id}/events`, cookie: carol.cookie })).text).toContain('"code":"MULTIUSER_PERSONAL_UNAVAILABLE"');
     expect(existsSync(codexHome(dataRoot, carol.id))).toBe(false);
     expect(existsSync(path.join(codexHome(dataRoot, alice.id), 'auth.json'))).toBe(true);
     expect((await finished(alice, alicePersonal)).status).toBe('succeeded');
@@ -396,7 +441,7 @@ describe('damaged queued run requests', () => {
     expect(run.output).toEqual({ reason: 'MULTIUSER_RUN_REQUEST_INVALID' });
     const events = await eventsOf(user, runId);
     // Never started: no start event, no worker time, no runtime home, no company ledger entry.
-    expect(events.names).toEqual(['queued', 'end']);
+    expect(events.names).toEqual(['queued', 'error', 'end']);
     expect(events.text).not.toContain(MARKER);
     expect(JSON.stringify(run)).not.toContain(MARKER);
     expect(appDb((db) => db.prepare('SELECT started_at, ended_at FROM multiuser_runs WHERE id = ?').get(runId))).toEqual({ started_at: null, ended_at: null });
@@ -424,7 +469,9 @@ describe('damaged queued run requests', () => {
     await expectRequestInvalid(alice, nullRequest);
     const run = await finished(alice, valid);
     expect(run.status, JSON.stringify(run)).toBe('succeeded');
-    expect(JSON.parse(run.output.text).message).toBe('valid-after-damaged');
+    // S52 appends the daemon's Live Artifact tool instructions after the
+    // user's prompt, so the dispatched row is identified by what it opens with.
+    expect(String(JSON.parse(run.output.text).message)).toMatch(/^valid-after-damaged(\n|$)/);
     // Only the valid row took a personal dispatch turn.
     expect(personalTurn(alice)).toBe(turnBefore + 1);
   });
@@ -455,7 +502,7 @@ describe('damaged queued run requests', () => {
     for (const [user, id, message] of [[alice, rows.aliceValid, 'startup-valid-alice'], [carol, rows.carolValid, 'startup-valid-carol']] as const) {
       const run = await finished(user, id);
       expect(run.status, JSON.stringify(run)).toBe('succeeded');
-      expect(JSON.parse(run.output.text).message).toBe(message);
+      expect(String(JSON.parse(run.output.text).message)).toMatch(new RegExp(`^${message}(\\n|$)`));
     }
   });
 
@@ -474,7 +521,7 @@ describe('damaged queued run requests', () => {
       expect(personalTurn(alice)).toBe(turnBefore);
       expect(appDb((db) => db.prepare('SELECT started_at, ended_at FROM multiuser_runs WHERE id = ?').get(broken)))
         .toEqual({ started_at: null, ended_at: null });
-      expect((await eventsOf(alice, broken)).names).toEqual(['queued', 'end']);
+      expect((await eventsOf(alice, broken)).names).toEqual(['queued', 'error', 'end']);
       expect(ledgerRow(broken)).toBeUndefined();
       const next = (await personal(alice, 'after-start-throws', convo)).json.run.id;
       expect((await finished(alice, next)).status).toBe('succeeded');
@@ -498,12 +545,47 @@ describe('damaged queued run requests', () => {
       expect(personalTurn(alice)).toBe(maxBefore + 1);
       expect(appDb((db) => db.prepare('SELECT started_at, ended_at FROM multiuser_runs WHERE id = ?').get(broken)))
         .toEqual({ started_at: clock, ended_at: clock });
-      expect((await eventsOf(alice, broken)).names).toEqual(['queued', 'start', 'end']);
+      expect((await eventsOf(alice, broken)).names).toEqual(['queued', 'start', 'error', 'end']);
       expect(ledgerRow(broken)).toBeUndefined();
       const next = (await personal(alice, 'after-launcher-throws', convo)).json.run.id;
       expect((await finished(alice, next)).status).toBe('succeeded');
       expect(personalTurn(alice)).toBe(maxBefore + 2);
     } finally { launch.mockRestore(); }
+  });
+
+  it('fails the run typed, without an unhandled rejection, when a dependency throws after the version await (S58 A1)', async () => {
+    await personalCapacity(0);
+    const convo = await newProject(alice);
+    const broken = (await personal(alice, 'dispatch-dependency-throws', convo)).json.run.id;
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => { rejections.push(reason); };
+    process.on('unhandledRejection', onRejection);
+    let armed = true;
+    const original = personalCodexAccounts.PersonalCodexAccounts.prototype.usableAccount;
+    // A synchronous dependency (DB/fs) throwing after `await assertSupportedVersion()`.
+    const usable = vi.spyOn(personalCodexAccounts.PersonalCodexAccounts.prototype, 'usableAccount').mockImplementation(function (this: personalCodexAccounts.PersonalCodexAccounts, ownerId: string) {
+      if (armed) { armed = false; throw new Error('planted dispatch dependency failure /secret/path'); }
+      return original.call(this, ownerId);
+    });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await personalCapacity(1);
+      const run = await finished(alice, broken);
+      expect(run).toMatchObject({ status: 'failed', output: { reason: 'MULTIUSER_PERSONAL_RUN_FAILED' } });
+      expect(armed).toBe(false);
+      // Give the event loop a turn so a stray rejection would be reported.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(rejections).toEqual([]);
+      const logged = log.mock.calls.map((args) => args.join(' ')).join('\n');
+      expect(logged).toContain('MULTIUSER_PERSONAL_RUN_FAILED');
+      expect(logged).not.toContain('/secret/path');
+      // The lane keeps dispatching: the daemon is still up and the next run succeeds.
+      const next = (await personal(alice, 'after-dispatch-throws', convo)).json.run.id;
+      expect((await finished(alice, next)).status).toBe('succeeded');
+    } finally {
+      usable.mockRestore(); log.mockRestore();
+      process.off('unhandledRejection', onRejection);
+    }
   });
 
   const maxCompanyTurn = () => appDb((db) => (db.prepare('SELECT MAX(last_seq) AS n FROM multiuser_pool_turns').get() as { n: number | null }).n ?? 0);
@@ -539,7 +621,7 @@ describe('damaged queued run requests', () => {
       await companyCapacity(1);
       expect(await finished(alice, broken)).toMatchObject({ status: 'failed', output: { reason: 'MULTIUSER_RUN_START_FAILED' } });
       expect(companyTurn(alice)).toBe(turnBefore);
-      expect((await eventsOf(alice, broken)).names).toEqual(['queued', 'end']);
+      expect((await eventsOf(alice, broken)).names).toEqual(['queued', 'error', 'end']);
       expect(ledgerRow(broken)).toMatchObject({ status: 'finished', ended_at: clock });
       const next = (await company(alice, 'after-company-start-throws')).json.run.id;
       expect((await finished(alice, next)).status).toBe('succeeded');

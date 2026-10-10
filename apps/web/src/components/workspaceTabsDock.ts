@@ -1,3 +1,4 @@
+import { registerStudioReset } from '../runtime/studio-resources';
 /**
  * Dock registry for the workspace tab strip.
  *
@@ -60,3 +61,5 @@ export function subscribeWorkspaceTabsDock(listener: () => void): () => void {
   window.addEventListener(WORKSPACE_TABS_DOCK_EVENT, listener);
   return () => window.removeEventListener(WORKSPACE_TABS_DOCK_EVENT, listener);
 }
+
+registerStudioReset(() => { currentDock = null; });

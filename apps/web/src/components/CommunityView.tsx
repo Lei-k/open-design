@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import type { InstalledPluginRecord, ProjectKind } from '@open-design/contracts';
 import { useI18n } from '../i18n';
 import { listPlugins } from '../state/projects';
+import { navigate } from '../router';
 import {
   buildCommunityTemplates,
   COMMUNITY_MORE_TYPES,
@@ -85,6 +86,12 @@ interface CommunityViewProps {
     action: PluginUseAction,
     target: CommunityTemplateUseTarget,
   ) => void;
+  /** Browse the gallery without any hand-off (#61): a Studio account has no
+   *  host Remix/Use flow, so the pills are withheld and a card body opens the
+   *  plugin page that states Web availability. This must be stated by the
+   *  shell, not inferred from a missing callback: the desktop gallery renders
+   *  the pills whether or not its destination handlers are wired in. */
+  readOnly?: boolean;
 }
 
 /* Types whose artwork has no house format: user-shot photos, avatars, key art,
@@ -93,7 +100,7 @@ interface CommunityViewProps {
    ratio and reads better as an even grid. */
 const MASONRY_TYPES = new Set<TemplateType>(['Image', 'Video']);
 
-export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: CommunityViewProps) {
+export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin, readOnly = false }: CommunityViewProps) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
   const { context: workspaceContext } = useWorkspaceContext();
@@ -282,8 +289,9 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
   };
   const canRemixTemplate = (template: TemplateDemo) => {
     const record = pluginById.get(template.id);
-    return !isPromptArtifact(template) && Boolean(record && canDuplicatePluginPreview(record));
+    return !readOnly && !isPromptArtifact(template) && Boolean(record && canDuplicatePluginPreview(record));
   };
+  const canUseTemplate = !readOnly;
   const templateById = useCallback(
     (id: string) => templates.find((template) => template.id === id) ?? null,
     [templates],
@@ -301,6 +309,10 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
       ...workspaceDimensions,
     });
     const record = plugins.find((row) => row.id === template.id) ?? null;
+    if (readOnly) {
+      if (record) navigate({ kind: 'marketplace-detail', pluginId: record.id });
+      return;
+    }
     setDetailsRecord(record);
   };
   /** The detail modal's Use split action. Shells that own a Home hand-off
@@ -426,17 +438,19 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
                     )}
                   </button>
                 ) : null}
-                <button
-                  type="button"
-                  className="community-template-card__prompt-btn"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    handleCardUse(template);
-                  }}
-                >
-                  <Icon name="make-same" size={14} />
-                  {t('community.usePrompt')}
-                </button>
+                {canUseTemplate ? (
+                  <button
+                    type="button"
+                    className="community-template-card__prompt-btn"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      handleCardUse(template);
+                    }}
+                  >
+                    <Icon name="make-same" size={14} />
+                    {t('community.usePrompt')}
+                  </button>
+                ) : null}
               </div>
             </div>
             <footer className="community-template-card__foot">

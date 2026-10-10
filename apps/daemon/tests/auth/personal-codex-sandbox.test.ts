@@ -52,7 +52,7 @@ async function probeReads(r: ReturnType<typeof make>, owner: string, paths: stri
   const work = path.join(actorRuntimeDir(r.root, owner), 'probe-run');
   const project = path.join(r.root, 'projects', owner);
   for (const dir of [work, path.join(work, 'tmp'), project]) fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const turn = runPersonalCodexTurn({ ...r.service.appServerLaunch()!, codexHome: account.codexHome, home: work,
+  const turn = await runPersonalCodexTurn({ ...r.service.appServerLaunch()!, codexHome: account.codexHome, home: work,
     temp: path.join(work, 'tmp'), cwd: project, dataRoot: r.root, sandboxMode: 'workspace-write', resumeThreadId: null,
     prompt: paths.map((file) => `[mock-read=${file}]`).join(' ') });
   const result = await turn.done;
@@ -87,6 +87,14 @@ describe.skipIf(!usable)('personal app-server children run in a per-run sandbox'
 });
 
 describe('sandbox arguments', () => {
+  it('mounts captured skills read-only after the writable HOME mount', () => {
+    const home = '/data/rt/a/run'; const skills = `${home}/skill-packages`;
+    const args = personalSandboxArgs({ bwrap: BWRAP, readOnlyPaths: [] },
+      { codexHome: home, home, temp: `${home}/tmp`, cwd: '/data/projects/p', skillPackages: skills });
+    expect(args.slice(-5)).toEqual(['--ro-bind', skills, skills, '--chdir', '/data/projects/p']);
+    expect(args.slice(0, -5)).toEqual(expect.arrayContaining(['--bind', home, home]));
+    expect(args.flatMap((arg, i) => arg === '--bind' ? [args[i + 1]] : [])).not.toContain(skills);
+  });
   it('binds only the child\'s own writable paths, parents first, and no data root', () => {
     const args = personalSandboxArgs({ bwrap: BWRAP, readOnlyPaths: ['/opt/codex'] },
       { codexHome: '/data/rt/a/codex-home', home: '/data/rt/a/run', temp: '/data/rt/a/run/tmp', cwd: '/data/projects/p' });
