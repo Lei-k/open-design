@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -25,6 +25,13 @@ beforeAll(async () => {
   // as the real packages, regardless of the caller's TMPDIR.
   const buildParent = path.join(repo, '.tmp');
   mkdirSync(buildParent, { recursive: true });
+  const staleBefore = Date.now() - 6 * 60 * 60 * 1000;
+  for (const entry of readdirSync(buildParent, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith('studio-cli-build-')) continue;
+    const directory = path.join(buildParent, entry.name);
+    const stat = lstatSync(directory, { throwIfNoEntry: false });
+    if (stat?.isDirectory() && stat.mtimeMs < staleBefore) rmSync(directory, { recursive: true, force: true });
+  }
   buildRoot = mkdtempSync(path.join(buildParent, 'studio-cli-build-'));
   const contractsRoot = path.join(buildRoot, 'contracts');
   const daemonRoot = path.join(buildRoot, 'daemon');

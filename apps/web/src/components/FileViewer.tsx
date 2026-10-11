@@ -16714,8 +16714,8 @@ function HtmlViewer({
                   setArchiveDownloading(true);
                   try {
                     const result = await downloadProjectArchive({ projectId, fallbackTitle: exportTitle });
-                    setArchiveDownloadFailure(result === 'started' ? null : result === 'browser-blocked' ? 'download' : 'request');
-                    if (result !== 'started')
+                    setArchiveDownloadFailure(result.status === 'started' ? null : result.status === 'browser-blocked' ? 'download' : 'request');
+                    if (result.status !== 'started')
                       setExportToast({ message: t('fileViewer.exportFailed'), tone: 'error' });
                   } finally { setArchiveDownloading(false); }
                 }}>
@@ -17519,8 +17519,8 @@ function HtmlViewer({
                     onClick={() => {
                       if (rendererExports) runExportFormat('zip');
                       else void downloadProjectArchive({ projectId, fallbackTitle: exportTitle }).then((result) => {
-                        setArchiveDownloadFailure(result === 'started' ? null : result === 'browser-blocked' ? 'download' : 'request');
-                        if (result !== 'started') setExportToast({ message: t('fileViewer.exportFailed'), tone: 'error' });
+                        setArchiveDownloadFailure(result.status === 'started' ? null : result.status === 'browser-blocked' ? 'download' : 'request');
+                        if (result.status !== 'started') setExportToast({ message: t('fileViewer.exportFailed'), tone: 'error' });
                       });
                     }}
                   >

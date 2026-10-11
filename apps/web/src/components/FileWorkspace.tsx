@@ -4975,12 +4975,12 @@ function DesignSystemProjectPanel({
     notifyKitLoading(t('ds.download'));
     try {
       await refreshKitDependencies({ finalizeBrand: true });
-      const ok =
-        await downloadProjectArchive({
-          projectId,
-          fallbackTitle: system.title,
-          workspaceContext,
-        }) ||
+      const projectArchive = await downloadProjectArchive({
+        projectId,
+        fallbackTitle: system.title,
+        workspaceContext,
+      });
+      const ok = projectArchive.status === 'started' ||
         await downloadDesignSystemArchive({
           designSystemId: system.id,
           fallbackTitle: system.title,

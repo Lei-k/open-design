@@ -1628,7 +1628,7 @@ function DesignSystemDetail({
               projectId,
               fallbackTitle: system.title,
               workspaceContext,
-            })) === 'started'
+            })).status === 'started'
           : false);
       setDownloadFailed(!ok);
       onActionFeedback(ok ? 'success' : 'error', ok ? t('ds.actionDone') : t('dsManager.downloadFailed'));
