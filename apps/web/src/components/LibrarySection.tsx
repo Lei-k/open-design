@@ -1,11 +1,12 @@
-// OD Library tab — the global asset registry grid.
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
+import { studioSetTimeout as setTimeout, studioEventSourceCtor } from '../runtime/studio-transport';
+// OD Library grid — the host registry locally and the account library in Studio.
 //
 // Shows every asset that has entered the system (clipper capture, manual
 // upload, agent task, design-system staging, AI generation) with a source
 // badge, a kind badge, and back-links. Captures from the browser extension
 // stream in live over the `/api/library/events` SSE feed. The OD Clipper is
-// zero-config — it connects automatically whenever OpenDesign is running
-// locally, so there is no pairing step here.
+// automatic locally; Studio Settings supplies an account pairing code.
 //
 // Each card thumbnail is kind-aware (image / video / html / font / color) and
 // opens a full-size, kind-aware preview (LibraryPreviewModal) on click. Cards
@@ -498,6 +499,7 @@ const LibraryCard = memo(function LibraryCard({
 
 export function LibrarySection({ active, onOpenProject }: Props) {
   const t = useT();
+  const studio = useStudioCapabilities();
   const { context: workspaceContext } = useWorkspaceContext();
   const workspaceIdentity = workspaceIdentityCacheKey(workspaceContext);
   const [assets, setAssets] = useState<LibraryAsset[]>([]);
@@ -541,6 +543,18 @@ export function LibrarySection({ active, onOpenProject }: Props) {
     rects: CardRect[];
   } | null>(null);
 
+  const live = useRef(true);
+  const current = useCallback(() => live.current && (studio.hostServices || studio.session?.snapshot().generation === studio.generation),
+    [studio.hostServices, studio.session, studio.generation]);
+  useEffect(() => {
+    live.current = true;
+    const release = studio.session?.bindResource(() => {
+      live.current = false; setAssets([]); setSelectedIds(new Set()); setPreviewId(null);
+      setDsList([]); setDsMenuOpen(false); setUploadOpen(false); setSeedFiles(null); setConfirmDeleteOpen(false);
+    }, studio.generation);
+    return () => { live.current = false; release?.(); };
+  }, [studio.session, studio.generation]);
+
   // Debounce the search box before it touches the network (250ms trailing).
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 250);
@@ -569,13 +583,15 @@ export function LibrarySection({ active, onOpenProject }: Props) {
   }, [filtersActive]);
 
   const load = useCallback(async () => {
+    if (!current()) return;
     setLoading(true);
     const next = await fetchLibraryAssets(query);
+    if (!current()) return;
     // Final filtering is badge-aware (shared with the picker) so `image` excludes
     // element captures and `element` keeps only them; other kinds pass through.
     setAssets(next.filter((a) => matchesKindFilter(a, kind as KindFilterValue)));
     setLoading(false);
-  }, [query, kind]);
+  }, [query, kind, current]);
 
   // Force a reconcile (design systems + agent deliverables → referenced Library
   // rows), then reload so the freshly-indexed assets appear. The throttle lives
@@ -621,6 +637,7 @@ export function LibrarySection({ active, onOpenProject }: Props) {
 
     const flush = async () => {
       timer = null;
+      if (!current()) return;
       // Deletes are free (no fetch); apply them first.
       if (pendingDelete.size) {
         const del = new Set(pendingDelete);
@@ -639,6 +656,7 @@ export function LibrarySection({ active, onOpenProject }: Props) {
         const ids = [...pendingIngest];
         pendingIngest.clear();
         const fetched = await Promise.all(ids.map((id) => fetchLibraryAsset(id)));
+        if (!current()) return;
         // A missing fetch is ambiguous (filtered out? race?) — reload instead.
         if (fetched.some((a) => a === null)) {
           await loadRef.current();
@@ -655,7 +673,9 @@ export function LibrarySection({ active, onOpenProject }: Props) {
     };
 
     try {
-      es = new EventSource('/api/library/events');
+      const EventSourceClass = studioEventSourceCtor();
+      if (!EventSourceClass) return;
+      es = new EventSourceClass('/api/library/events');
       const onIngest = (ev: MessageEvent) => {
         const id = parseEventAssetId(ev.data);
         if (id) pendingIngest.add(id);
@@ -677,7 +697,7 @@ export function LibrarySection({ active, onOpenProject }: Props) {
       if (timer) clearTimeout(timer);
       es?.close();
     };
-  }, [active]);
+  }, [active, current]);
 
   // Drop selected ids that no longer exist after a reload / delete. Membership
   // is a single Set lookup so a large grid + large selection stays O(n).
@@ -691,19 +711,21 @@ export function LibrarySection({ active, onOpenProject }: Props) {
   }, [assets]);
 
   const onDelete = useCallback(async (id: string) => {
+    if (!current()) return;
     const ok = await deleteLibraryAsset(id);
-    if (ok) setAssets((prev) => prev.filter((a) => a.id !== id));
-  }, []);
+    if (current() && ok) setAssets((prev) => prev.filter((a) => a.id !== id));
+  }, [current]);
 
   // "Edit as page": turn a captured html asset into a fresh editable OD project
   // and open it on its index.html. The daemon owns the project creation; here we
   // just gate a spinner and navigate on success.
   const handleEditAsPage = useCallback(
     async (assetId: string) => {
+      if (!current()) return;
       setEditingId(assetId);
       try {
         const result = await editLibraryAssetAsPage(assetId);
-        if (result) {
+        if (current() && result) {
           setPreviewId(null);
           onOpenProject(result.projectId, result.relPath);
         }
@@ -711,19 +733,21 @@ export function LibrarySection({ active, onOpenProject }: Props) {
         setEditingId(null);
       }
     },
-    [onOpenProject],
+    [onOpenProject, current],
   );
 
   const deleteSelected = useCallback(async () => {
+    if (!current()) return;
     const ids = Array.from(selectedIds);
     if (!ids.length) return;
     const results = await Promise.all(ids.map((id) => deleteLibraryAsset(id)));
+    if (!current()) return;
     const deleted = new Set(ids.filter((_, i) => results[i]));
     if (!deleted.size) return;
     setAssets((prev) => prev.filter((a) => !deleted.has(a.id)));
     setSelectedIds(new Set());
     setPreviewId((cur) => (cur && deleted.has(cur) ? null : cur));
-  }, [selectedIds]);
+  }, [selectedIds, current]);
 
   // Bulk delete is destructive and easy to trigger (a button or Delete/
   // Backspace), so it routes through a confirmation dialog instead of removing
@@ -751,11 +775,11 @@ export function LibrarySection({ active, onOpenProject }: Props) {
     dsLoadedRef.current = true;
     let cancelled = false;
     void fetchDesignSystems(workspaceContext).then((list) =>
-      !cancelled && setDsList(list.filter((d) => d.source === 'user')));
+      !cancelled && current() && setDsList(list.filter((d) => d.source === 'user')));
     return () => {
       cancelled = true;
     };
-  }, [dsMenuOpen, workspaceIdentity]);
+  }, [dsMenuOpen, workspaceIdentity, current]);
 
   // Dismiss the menu on outside click / Escape. Deliberately NOT a full-screen
   // backdrop element: a stray bare overlay can paint opaque (e.g. UA button
@@ -780,12 +804,13 @@ export function LibrarySection({ active, onOpenProject }: Props) {
   // assets as source material (fetched into File objects via a hand-off store).
   const createDesignSystemFromSelection = useCallback(async () => {
     const chosen = assets.filter((a) => selectedIds.has(a.id));
-    if (!chosen.length) return;
+    if (!current() || !chosen.length) return;
     setDsBusy(true);
     try {
       const files = (await Promise.all(chosen.map((a) => fetchLibraryAssetAsFile(a)))).filter(
         (f): f is File => f !== null,
       );
+      if (!current()) return;
       setDesignSystemAssetSeed({ files });
       setDsMenuOpen(false);
       setSelectedIds(new Set());
@@ -794,7 +819,7 @@ export function LibrarySection({ active, onOpenProject }: Props) {
     } finally {
       setDsBusy(false);
     }
-  }, [assets, selectedIds]);
+  }, [assets, selectedIds, current]);
 
   // "Chat to design": fetch the selected assets into File objects, hand them to
   // the Home chat composer, and navigate there. The user lands in the creation
@@ -803,20 +828,20 @@ export function LibrarySection({ active, onOpenProject }: Props) {
   // create-design-system File hand-off above, but the destination is Home.
   const chatToDesignFromSelection = useCallback(async () => {
     const chosen = assets.filter((a) => selectedIds.has(a.id));
-    if (!chosen.length) return;
+    if (!current() || !chosen.length) return;
     setDsBusy(true);
     try {
       const files = (await Promise.all(chosen.map((a) => fetchLibraryAssetAsFile(a)))).filter(
         (f): f is File => f !== null,
       );
-      if (!files.length) return;
+      if (!current() || !files.length) return;
       setHomeComposerAssetSeed({ files });
       setSelectedIds(new Set());
       navigate({ kind: 'home', view: 'home' });
     } finally {
       setDsBusy(false);
     }
-  }, [assets, selectedIds]);
+  }, [assets, selectedIds, current]);
 
   // Path B: copy the selected assets into an existing design system's project,
   // stage a composer seed (query + the copied assets as attachments), and open
@@ -824,13 +849,14 @@ export function LibrarySection({ active, onOpenProject }: Props) {
   const optimizeExistingDesignSystem = useCallback(
     async (ds: DesignSystemSummary) => {
       const chosen = assets.filter((a) => selectedIds.has(a.id));
-      if (!chosen.length) return;
+      if (!current() || !chosen.length) return;
       setDsBusy(true);
       try {
         const mutationWorkspaceContext = workspaceContext;
         let projectId = ds.projectId;
         if (!projectId) {
           const detail = await fetchDesignSystem(ds.id, mutationWorkspaceContext);
+          if (!current()) return;
           projectId = detail?.projectId;
         }
         if (!projectId) {
@@ -842,6 +868,7 @@ export function LibrarySection({ active, onOpenProject }: Props) {
           mutationWorkspaceContext,
           mutationWorkspaceContext?.workspaceId ?? null,
         );
+        if (!current()) return;
         const attachments: ChatAttachment[] = [];
         for (const a of chosen) {
           const res = await applyLibraryAsset(
@@ -851,6 +878,7 @@ export function LibrarySection({ active, onOpenProject }: Props) {
             { includeElement: true },
             projectWorkspaceContext,
           );
+          if (!current()) return;
           if (res?.relPath) {
             attachments.push({
               path: res.relPath,
@@ -881,7 +909,7 @@ export function LibrarySection({ active, onOpenProject }: Props) {
         setDsBusy(false);
       }
     },
-    [assets, onOpenProject, selectedIds, workspaceIdentity],
+    [assets, onOpenProject, selectedIds, workspaceIdentity, current],
   );
 
   const toggleOne = useCallback((id: string, index: number) => {
@@ -1140,7 +1168,7 @@ export function LibrarySection({ active, onOpenProject }: Props) {
       <header className="entry-section__head">
         <h1 className="entry-section__title">{t('library.title')}</h1>
         <div className={styles.clipperHint}>
-          <p className={styles.headerHint}>{t('library.headerHint')}</p>
+          <p className={styles.headerHint}>{t(studio.hostServices ? 'library.headerHint' : 'studio.libraryHint')}</p>
           <a
             className={styles.clipperDownload}
             href="https://open-design.ai/clipper"
@@ -1213,7 +1241,7 @@ export function LibrarySection({ active, onOpenProject }: Props) {
           <Icon name="refresh" size={15} className={loading ? styles.spin : undefined} />
           {t('library.refresh')}
         </Button>
-        <Button
+        {studio.hostServices && <Button
           variant="ghost"
           className={`${styles.refreshBtn} od-tooltip`}
           onClick={() => void runSync()}
@@ -1224,7 +1252,7 @@ export function LibrarySection({ active, onOpenProject }: Props) {
         >
           <Icon name="refresh" size={15} className={syncing ? styles.spin : undefined} />
           {syncing ? t('library.syncing') : t('library.sync')}
-        </Button>
+        </Button>}
         <Button
           className={`${styles.uploadBtn} od-tooltip`}
           onClick={() => openUpload()}

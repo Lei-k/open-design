@@ -198,7 +198,7 @@ it('opens only actor instructions and manual memory when settings is usable', ()
       expect(matches.every(({ entry }) => entry.routeClass === 'actor-scoped'), path).toBe(true);
     }
   }
-  for (const path of ['/api/mcp/config', '/api/connectors/discovery', '/api/library/assets', '/api/agents']) {
+  for (const path of ['/api/mcp/config', '/api/connectors/discovery', '/api/agents']) {
     expect(studioRequestAvailable('GET', path, () => true), path).toBe(false);
   }
   // Automatic memory (#62): the account's own history, heuristic rule proposals and extract.
@@ -561,4 +561,21 @@ it('allows exactly the existing administrative metadata/actions through the fron
   expect(studioRequestAvailable('GET', '/api/admin/projects/a', () => true)).toBe(false);
   expect(studioRequestAvailable('GET', '/api/admin/agent-accounts/a/token', () => true)).toBe(false);
   expect(studioRequestAvailable('GET', '/api/admin/pool', () => false)).toBe(false);
+});
+
+
+it('S72 exposes the account library with settings and keeps extension exchange, tools and sync out of browser transport', () => {
+  const routes = [['GET', '/api/library/assets'], ['GET', '/api/library/assets/a'], ['DELETE', '/api/library/assets/a'],
+    ['GET', '/api/library/assets/a/raw'], ['GET', '/api/library/assets/a/figma'], ['GET', '/api/library/assets/a/element'],
+    ['POST', '/api/library/assets/a/apply'], ['POST', '/api/library/assets/a/edit-as-page'], ['GET', '/api/library/events'],
+    ['GET', '/api/library/connection'], ['GET', '/api/library/clipper-probe'], ['POST', '/api/library/pair'],
+    ['POST', '/api/library/ingest'], ['DELETE', '/api/library/tokens/t']] as const;
+  for (const [method, path] of routes) {
+    expect(studioRequestAvailable(method, path, (lane) => lane === 'settings'), path).toBe(true);
+    expect(studioRequestAvailable(method, path, () => false), path).toBe(false);
+    expect(matchMultiUserRoute(method, path).every(({ entry }) => entry.routeClass === 'actor-scoped'), path).toBe(true);
+  }
+  for (const path of ['/api/library/sync', '/api/library/pair/confirm', '/api/tools/library/search', '/api/tools/library/apply']) {
+    expect(studioRequestAvailable('POST', path, () => true), path).toBe(false);
+  }
 });

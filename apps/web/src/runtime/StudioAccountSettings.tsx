@@ -1,3 +1,6 @@
+import { StudioLibrarySettings } from './StudioLibrarySettings';
+import { LibrarySection } from '../components/LibrarySection';
+import { navigate } from '../router';
 import { StudioAccountMenu } from './StudioAccountMenu';
 import { adminSettingsSection, isAdminSettingsSection, StudioAdminNavigation, StudioAdminPanel, useAdminSettingsHeaders } from './StudioAdminSections';
 import { StudioCapabilityMessage, useStudioCapabilityState } from './StudioCapabilityState';
@@ -28,7 +31,7 @@ import { StudioMcpServers } from './StudioMcpServers';
 
 /** Account sections, plus the desktop sections whose lane is still open: those
  * stay in the navigation with the server's reason instead of disappearing. */
-type StudioSettingsSection = 'agentAccounts' | 'skills' | 'general' | 'instructions' | 'memory' | 'media' | 'connectors' | 'mcpClient' | 'integrations' | 'privacy' | 'about' | 'deploy' | 'users' | 'audit' | 'company' | 'personal';
+type StudioSettingsSection = 'library' | 'agentAccounts' | 'skills' | 'general' | 'instructions' | 'memory' | 'media' | 'connectors' | 'mcpClient' | 'integrations' | 'privacy' | 'about' | 'deploy' | 'users' | 'audit' | 'company' | 'personal';
 const PENDING: Partial<Record<StudioSettingsSection, StudioParityLaneId>> = { media: 'generation' };
 
 function studioSection(section: SettingsSection): StudioSettingsSection {
@@ -37,6 +40,7 @@ function studioSection(section: SettingsSection): StudioSettingsSection {
   switch (section) {
     case 'execution': case 'agentAccounts': return 'agentAccounts';
     case 'designSystems': return 'skills';
+    case 'library': return 'library';
     case 'instructions': case 'memory': case 'media': case 'privacy': case 'about': return section;
     case 'composio': return 'connectors';
     case 'mcpClient': return 'mcpClient';
@@ -87,6 +91,7 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
   if (!studio.actor || !studio.session) return null;
   const headers: Record<StudioSettingsSection, { title: string; subtitle: string }> = {
     ...adminHeaders,
+    library: { title: t('library.title'), subtitle: t('studio.libraryHint') },
     agentAccounts: { title: t('agentAccounts.navTitle'), subtitle: t('agentAccounts.navHint') },
     skills: { title: t('settings.skills'), subtitle: t('settings.skillsHint') },
     general: { title: t('settings.general'), subtitle: t('settings.generalHint') },
@@ -118,6 +123,7 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
       {item('general', 'settings')}
       {item('instructions', 'edit')}
       {item('memory', 'brain')}
+      {item('library', 'image')}
       {item('media', 'image')}
       {item('connectors', 'link')}
       {item('mcpClient', 'puzzle')}
@@ -128,6 +134,10 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
       <StudioAdminNavigation section={section} onSelect={setSection} />
     </>}>
     {isAdminSettingsSection(section) && <StudioAdminPanel section={section} />}
+    {section === 'library' && (studio.available('settings') ? <>
+      <StudioLibrarySettings />
+      <LibrarySection active={true} onOpenProject={(projectId, fileName) => { onClose(); navigate({ kind: 'project', projectId, fileName: fileName ?? null }); }} />
+    </> : <StudioUnavailable lane="settings" />)}
     {section === 'deploy' && (studio.available('settings') ? <StudioDeploySettings /> : <StudioUnavailable lane="settings" />)}
     {section === 'agentAccounts' && <>
       <AgentAccountsPage session={studio.session} generation={studio.generation} />

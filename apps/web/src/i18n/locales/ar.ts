@@ -1,6 +1,15 @@
 import type { Dict } from '../types';
 
 export const ar: Dict = {
+  "studio.libraryHint": "مكتبتك تخص حسابك. مزامنة ملفات المضيف غير متاحة.",
+  "studio.libraryPair": "إنشاء رمز اقتران",
+  "studio.libraryExpires": "تنتهي صلاحيته عند {time}",
+  "studio.libraryPairInstructions": "اضبط عنوان Studio هذا في الإضافة وأدخل الرمز خلال خمس دقائق. يمكن استخدام كل رمز مرة واحدة فقط.",
+  "studio.libraryEmpty": "لا توجد إضافات مقترنة.",
+  "studio.libraryLastUsed": "آخر استخدام: {time}",
+  "studio.libraryRevoke": "إلغاء الرمز",
+  "studio.libraryError": "فشل طلب المكتبة. أعد التحميل وحاول مجددًا.",
+
   'studio.deployMissingHint': "اضبط رمز مزودك الخاص في الإعدادات ← النشر.",
   'studio.deployOwnerOnly': "مالك المشروع وحده يمكنه النشر أو إدارة سجلات النشر.",
 

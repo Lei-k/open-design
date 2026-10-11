@@ -252,6 +252,8 @@ export interface RegisterLibrarySource {
 
 export interface RegisterLibraryAssetInput {
   db: SqliteDb;
+  /** Account authority, rechecked before writes and after filesystem awaits. */
+  authorize?: () => void;
   libraryDir: string;
   storage: LibraryStorage;
   source: RegisterLibrarySource;
@@ -342,6 +344,7 @@ export async function registerLibraryAsset(
   const contentHash = createHash('sha256').update(bytes).digest('hex');
 
   // Dedup: same bytes already indexed → append source, union tags.
+  input.authorize?.();
   const existing = findLibraryAssetByHash(db, contentHash);
   if (existing) {
     return dedupIntoExistingAsset(db, existing, input);
@@ -361,7 +364,9 @@ export async function registerLibraryAsset(
     const ext = extForMime(mime, input.filename);
     filePath = libraryObjectPath(libraryDir, contentHash, ext);
     await mkdir(path.dirname(filePath), { recursive: true });
+    input.authorize?.();
     await writeFile(filePath, bytes);
+    input.authorize?.();
   } else {
     // referenced: the bytes already live somewhere; point at the existing file.
     filePath = input.absPath;
@@ -370,6 +375,7 @@ export async function registerLibraryAsset(
   const domain = domainFromUrl(input.sourceUrl);
   const tags = dedupeTags([...(input.tags ?? []), domain]);
 
+  input.authorize?.();
   try {
     insertLibraryAsset(db, {
       id,

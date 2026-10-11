@@ -141,6 +141,14 @@ describe('route classification covers the real inventory', () => {
       .map((entry) => `${entry.routeClass} ${entry.key}`)
       .sort();
     expect(allowed).toEqual([...S5_OWNER_FILE_ROUTES, ...[
+      ...['POST /api/library/pair', 'GET /api/library/connection', 'DELETE /api/library/tokens/:id',
+        'POST /api/library/ingest', 'GET /api/library/clipper-probe', 'GET /api/library/assets', 'GET /api/library/events',
+        'GET /api/library/assets/:id', 'DELETE /api/library/assets/:id', 'GET /api/library/assets/:id/raw',
+        'GET /api/library/assets/:id/figma', 'GET /api/library/assets/:id/element',
+        'POST /api/library/assets/:id/apply', 'POST /api/library/assets/:id/edit-as-page',
+        'POST /api/tools/library/search', 'POST /api/tools/library/apply'].map((key) => `actor-scoped ${key}`),
+      ...['OPTIONS /api/library/pair/confirm', 'POST /api/library/pair/confirm', 'OPTIONS /api/library/ingest'].map((key) => `auth ${key}`),
+
       ...['/api/projects', '/api/multiuser/projects'].flatMap((prefix) => [
         `owner-scoped-project POST ${prefix}/:projectId/critique`, `owner-scoped-project GET ${prefix}/:projectId/critique`,
         ...['', '/events', '/transcript', '/artifact'].map((suffix) => `owner-scoped-run GET ${prefix}/:projectId/critique/:runId${suffix}`),
@@ -538,7 +546,6 @@ describe('route classification covers the real inventory', () => {
       'USE /frames',
       'USE /api/plugin-previews',
       'GET /*splat',
-      'GET /api/library/events',
       'GET /api/workspace/events',
       'GET /api/plugins/events',
     ]) {

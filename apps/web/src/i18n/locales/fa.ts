@@ -1,6 +1,15 @@
 import type { Dict } from '../types';
 
 export const fa: Dict = {
+  "studio.libraryHint": "کتابخانه متعلق به حساب شماست. همگام‌سازی فایل‌های میزبان در دسترس نیست.",
+  "studio.libraryPair": "ایجاد کد جفت‌سازی",
+  "studio.libraryExpires": "انقضا در {time}",
+  "studio.libraryPairInstructions": "این نشانی Studio را در افزونه تنظیم کنید و کد را ظرف پنج دقیقه وارد کنید. هر کد فقط یک بار قابل استفاده است.",
+  "studio.libraryEmpty": "هیچ افزونه‌ای جفت نشده است.",
+  "studio.libraryLastUsed": "آخرین استفاده: {time}",
+  "studio.libraryRevoke": "لغو توکن",
+  "studio.libraryError": "درخواست کتابخانه ناموفق بود. صفحه را دوباره بارگذاری و تلاش کنید.",
+
   'studio.deployMissingHint': "توکن ارائه‌دهنده خود را در تنظیمات ← استقرار تنظیم کنید.",
   'studio.deployOwnerOnly': "فقط مالک پروژه می‌تواند استقرار دهد یا رکوردها را مدیریت کند.",
 

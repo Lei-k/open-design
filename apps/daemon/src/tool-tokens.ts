@@ -87,6 +87,7 @@ export interface StudioMcpGrant {
 }
 
 export interface ToolTokenGrant {
+  studioLibrary?: { ownerAccountId: string };
   studioConnectors?: StudioConnectorGrant;
   studioMcp?: StudioMcpGrant;
   /** Studio provider calls this grant may make (connector + MCP, discovery included); the run default when absent (S62). */
@@ -110,6 +111,7 @@ export interface ToolTokenGrant {
 }
 
 export interface MintToolTokenOptions {
+  studioLibrary?: { ownerAccountId: string };
   studioConnectors?: StudioConnectorGrant;
   studioMcp?: StudioMcpGrant;
   callLimit?: number;
@@ -211,6 +213,7 @@ export class ToolTokenRegistry {
       expiresAt: new Date(expiresAtMs).toISOString(),
       expiresAtMs,
       timer,
+      ...(options.studioLibrary ? { studioLibrary: structuredClone(options.studioLibrary) } : {}),
       ...(options.studioMcp ? { studioMcp: structuredClone(options.studioMcp) } : {}),
       ...(options.callLimit !== undefined ? { callLimit: options.callLimit } : {}),
       ...(options.studioConnectors ? { studioConnectors: structuredClone(options.studioConnectors) } : {}),

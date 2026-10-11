@@ -179,6 +179,12 @@ function reportCapture(res, okText) {
   }
 }
 
+$('pair-account').addEventListener('click', async () => {
+  const code = $('pair-code').value.trim(); $('pair-code').value = '';
+  const res = await send({ type: 'pairAccount', code });
+  render(Boolean(res.connected)); setMsg(res.ok ? t('savedConnected') : t('pairFailed'), res.ok ? 'ok' : 'err');
+});
+
 $('save-daemon').addEventListener('click', async () => {
   const url = $('daemon').value.trim();
   const res = await send({ type: 'setDaemonUrl', url });

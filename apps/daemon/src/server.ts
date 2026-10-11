@@ -1238,6 +1238,7 @@ import {
   isZeroConfigClipperLibraryRequest,
   parseHostHeader,
 } from './origin-validation.js';
+import { registerStudioLibraryRoutes } from './routes/studio-library.js';
 import { registerLibraryRoutes } from './routes/library.js';
 import {
   libraryExtensionAllowedOrigins,
@@ -3550,6 +3551,7 @@ export async function startServer({
     // origin guard.
     // NOTE: `req.path` here is mount-relative (the `/api` prefix is stripped),
     // so the predicate matches `/library/ingest`, not `/api/library/ingest`.
+    if (multiUserMode && req.path === '/library/pair/confirm' && /^(chrome|moz)-extension:\/\/[a-zA-Z0-9-]+$/.test(String(req.headers.origin ?? ''))) return next();
     if (isZeroConfigClipperLibraryRequest(req.method, req.path, req.headers.origin)) {
       return next();
     }
@@ -8818,7 +8820,9 @@ export async function startServer({
     authorizeProjectRequest,
   });
   // OD Library — global asset registry (clipper ingest, grid, pairing, apply).
-  registerLibraryRoutes(app, {
+  const studioLibrary = multiUserMode ? registerStudioLibraryRoutes(app, { db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, accountActive: multiUserFront!.accountActive }) : null;
+  if (studioLibrary) multiUserFront!.setLibraryTokenCurrent((token, origin) => studioLibrary.store.tokenOwner(token, origin) !== null);
+  if (!multiUserMode) registerLibraryRoutes(app, {
     db,
     http: httpDeps,
     paths: pathDeps,
@@ -17706,6 +17710,7 @@ export async function startServer({
     sessionCurrent: multiUserFront?.sessionCurrent,
     ...(studioConnectorRuntime ? { connectors: studioConnectorRuntime } : {}),
     ...(studioMcpRuntime ? { mcp: studioMcpRuntime } : {}),
+    ...(studioLibrary ? { library: studioLibrary } : {}),
     db, dataRoot: RUNTIME_DATA_DIR, dataRootCanonical: RUNTIME_DATA_DIR_CANONICAL, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
     emitProjectEvent,
     ...(studioLiveArtifacts ? { liveArtifacts: studioLiveArtifacts } : {}),

@@ -1,6 +1,15 @@
 import type { Dict } from '../types';
 
 export const hu: Dict = {
+  "studio.libraryHint": "A könyvtár a fiókodhoz tartozik. A gazdagép fájlszinkronizálása nem érhető el.",
+  "studio.libraryPair": "Párosítási kód létrehozása",
+  "studio.libraryExpires": "Lejár: {time}",
+  "studio.libraryPairInstructions": "Állítsd be ezt a Studio URL-t a bővítményben, és öt percen belül írd be a kódot. Minden kód csak egyszer használható.",
+  "studio.libraryEmpty": "Nincs párosított bővítmény.",
+  "studio.libraryLastUsed": "Utolsó használat: {time}",
+  "studio.libraryRevoke": "Token visszavonása",
+  "studio.libraryError": "A könyvtárkérés sikertelen. Töltsd újra, és próbáld ismét.",
+
   'studio.deployMissingHint': "Állítsd be a saját szolgáltatói tokenedet a Beállítások → Telepítés alatt.",
   'studio.deployOwnerOnly': "Csak a projekt tulajdonosa telepíthet és kezelheti a telepítési rekordokat.",
 

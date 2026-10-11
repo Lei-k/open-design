@@ -1,6 +1,15 @@
 import type { Dict } from '../types';
 
 export const id: Dict = {
+  "studio.libraryHint": "Pustaka ini milik akun Anda. Sinkronisasi berkas host tidak tersedia.",
+  "studio.libraryPair": "Buat kode pemasangan",
+  "studio.libraryExpires": "Kedaluwarsa pada {time}",
+  "studio.libraryPairInstructions": "Atur URL Studio ini di ekstensi dan masukkan kode dalam lima menit. Setiap kode hanya dapat digunakan sekali.",
+  "studio.libraryEmpty": "Belum ada ekstensi yang dipasangkan.",
+  "studio.libraryLastUsed": "Terakhir digunakan: {time}",
+  "studio.libraryRevoke": "Cabut token",
+  "studio.libraryError": "Permintaan pustaka gagal. Muat ulang dan coba lagi.",
+
   'studio.deployMissingHint': "Atur token penyedia Anda di Pengaturan → Deploy.",
   'studio.deployOwnerOnly': "Hanya pemilik proyek dapat melakukan deploy atau mengelola catatannya.",
 

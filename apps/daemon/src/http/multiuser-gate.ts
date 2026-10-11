@@ -31,7 +31,7 @@ import { toolTokenRegistry } from '../tool-tokens.js';
 
 import type Database from 'better-sqlite3';
 import type { ErrorRequestHandler, Express, Request, RequestHandler, Response } from 'express';
-import { STUDIO_AUTOMATION_INGESTION_FIELDS, STUDIO_AUTOMATION_PROPOSAL_FIELDS, STUDIO_MEMORY_CONFIG_FIELDS, STUDIO_MEMORY_EXTRACT_FIELDS, isStudioPluginApplyRequest, parseStudioMessageFeedback, parseStudioSettingsWrite, type StudioProjectShareSummary } from '@open-design/contracts';
+import { isStudioLibraryIngestRequest, isStudioLibraryApplyRequest, STUDIO_AUTOMATION_INGESTION_FIELDS, STUDIO_AUTOMATION_PROPOSAL_FIELDS, STUDIO_MEMORY_CONFIG_FIELDS, STUDIO_MEMORY_EXTRACT_FIELDS, isStudioPluginApplyRequest, parseStudioMessageFeedback, parseStudioSettingsWrite, type StudioProjectShareSummary } from '@open-design/contracts';
 import { sendApiError } from './api-errors.js';
 import { setMultiUserStreamAuthority } from './multiuser-stream.js';
 import { clearedSessionCookie, readSessionCookie, registerAuthRoutes } from '../routes/auth.js';
@@ -200,6 +200,7 @@ export function applyUntrustedContentPolicy(res: Response): void {
 // ---- gate -------------------------------------------------------------------
 
 export interface MultiUserGateDeps {
+  libraryTokenCurrent?: (token: string | undefined, origin?: string) => boolean;
   auth: Pick<AuthService, 'resolveSession' | 'isActorCurrent'>;
   allowedOrigins: readonly string[];
   previewOrigin?: string;
@@ -248,6 +249,29 @@ export function createMultiUserGate(deps: MultiUserGateDeps): RequestHandler {
         endpoint: req.path, operation: req.method === 'GET' ? 'mcp:list' : 'mcp:execute' });
       if (!validation.ok) return void sendApiError(res, 401, validation.code, validation.message);
       if (!validation.grant.studioMcp) return void sendApiError(res, 404, 'NOT_FOUND', 'account MCP call refused');
+      req.headers.authorization = toolAuthorization; next(); return;
+    }
+    // S72: only these extension endpoints accept a pairing code / account token.
+    // Their handlers verify code/token and live account authority; Origin alone grants nothing.
+    const libraryExtension = /^(chrome|moz)-extension:\/\/[a-zA-Z0-9-]+$/.test(req.get('origin') ?? '');
+    if ((req.path === '/api/library/pair/confirm' && ['POST', 'OPTIONS'].includes(req.method))
+      || (req.path === '/api/library/clipper-probe' && req.method === 'GET' && toolAuthorization)
+      || (req.path === '/api/library/ingest' && (req.method === 'OPTIONS' || req.method === 'POST' && (toolAuthorization || libraryExtension)))) {
+      if (req.method !== 'OPTIONS' && !req.path.endsWith('/confirm')
+        && !deps.libraryTokenCurrent?.(/^Bearer\s+(.+)$/i.exec(toolAuthorization ?? '')?.[1], req.get('origin'))) {
+        return void sendApiError(res, 401, 'UNAUTHORIZED', 'extension token required');
+      }
+      const limit = req.path.endsWith('/confirm') ? 16384 : 128 * 1024 * 1024;
+      if (req.get('transfer-encoding') || Number(req.get('content-length') ?? 0) > limit) {
+        return void sendApiError(res, 413, 'PAYLOAD_TOO_LARGE', 'capture request too large');
+      }
+      if (toolAuthorization) req.headers.authorization = toolAuthorization;
+      next(); return;
+    }
+    if (req.method === 'POST' && ['/api/tools/library/search', '/api/tools/library/apply'].includes(req.path)) {
+      const validation = toolTokenRegistry.validate(/^Bearer\s+(.+)$/i.exec(toolAuthorization ?? '')?.[1], { endpoint: req.path,
+        operation: req.path.endsWith('/search') ? 'library:search' : 'library:apply' });
+      if (!validation.ok || !validation.grant.studioLibrary) return void sendApiError(res, 401, 'UNAUTHORIZED', 'run library grant required');
       req.headers.authorization = toolAuthorization; next(); return;
     }
     const cookie = readSessionCookie(req.headers.cookie);
@@ -525,6 +549,8 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   if (policy === 'template-save') return only(['name', 'description', 'sourceProjectId'])
     && typeof body.name === 'string' && body.name.trim().length > 0 && body.name.length <= 100 && !body.name.includes('\0')
     && optionalText(body.description, 2000) && typeof body.sourceProjectId === 'string' && body.sourceProjectId.length <= 128;
+  if (policy === 'studio-library-ingest') return isStudioLibraryIngestRequest(body);
+  if (policy === 'studio-library-apply') return isStudioLibraryApplyRequest(body);
   if (policy === 'studio-settings') return parseStudioSettingsWrite(body) !== null;
   if (policy === 'studio-memory-entry') return only(['id', 'name', 'description', 'type', 'body']);
   if (policy === 'studio-memory-index') return only(['index']) && typeof body.index === 'string'
@@ -733,6 +759,7 @@ export interface MultiUserFront {
   setCancelAccountRuns: (cancel: (accountId: string) => void) => void;
   setCompanyPoolAvailable: (check: () => boolean) => void;
   setRenderedExportsAvailable: (check: () => boolean) => void;
+  setLibraryTokenCurrent: (check: (token: string | undefined, origin?: string) => boolean) => void;
   setIsRunOwner: (check: (runId: string, accountId: string) => boolean) => void;
   /** `accountId: null` cancels every account's runs in the project (owner deletion). */
   setCancelProjectRuns: (cancel: (accountId: string | null, projectId: string, conversationId?: string) => Promise<() => void>) => void;
@@ -759,6 +786,7 @@ export function installMultiUserFront(
   });
   let companyPoolAvailable = () => false;
   let renderedExportsAvailable = () => false;
+  let libraryTokenCurrent: ((token: string | undefined, origin?: string) => boolean) | null = null;
   let access: ProjectAccessStore | null = null;
   let cancelAccountRuns: ((accountId: string) => void) | null = null;
   let isRunOwner: ((runId: string, accountId: string) => boolean) | null = null;
@@ -768,6 +796,7 @@ export function installMultiUserFront(
 
   app.use(acknowledgePathlessUse(createMultiUserGate({
     auth,
+    libraryTokenCurrent: (token, origin) => libraryTokenCurrent?.(token, origin) ?? false,
     allowedOrigins: mode.allowedOrigins,
     previewOrigin: mode.previewOrigin,
     isProjectOwner: (projectId, accountId) => access?.ownership.isOwnedBy(projectId, accountId) ?? false,
@@ -838,6 +867,7 @@ export function installMultiUserFront(
     setCancelAccountRuns(cancel) { cancelAccountRuns = cancel; },
     setCompanyPoolAvailable(check) { companyPoolAvailable = check; },
     setRenderedExportsAvailable(check) { renderedExportsAvailable = check; },
+    setLibraryTokenCurrent(check) { libraryTokenCurrent = check; },
     setIsRunOwner(check) { isRunOwner = check; },
     setCancelProjectRuns(cancel) { cancelProjectRuns = cancel; },
     setIsAgentAccountOwner(check) { isAgentAccountOwner = check; },
@@ -859,6 +889,7 @@ export function installMultiUserFront(
       if (precedence.length > 0) {
         throw new Error(`multi-user mode refused: a less specific route is registered ahead of an allowed static route: ${precedence.join(', ')}`);
       }
+      if (!libraryTokenCurrent) throw new Error('multi-user mode refused: account library token authority was not attached');
       if (!bodyPolicyInstalled) throw new Error('multi-user mode refused: body policy middleware was not installed');
       if (!access) throw new Error('multi-user mode refused: project ownership store was not attached');
       if (!cancelAccountRuns) throw new Error('multi-user mode refused: isolated run service was not attached');

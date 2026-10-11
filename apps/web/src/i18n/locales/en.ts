@@ -1,6 +1,15 @@
 import type { Dict } from '../types';
 
 export const en: Dict = {
+  "studio.libraryHint": "Your library belongs to your account. Host filesystem sync is unavailable.",
+  "studio.libraryPair": "Create pairing code",
+  "studio.libraryExpires": "Expires at {time}",
+  "studio.libraryPairInstructions": "In the extension, set this Studio URL and enter the code within five minutes. Each code can be used once.",
+  "studio.libraryEmpty": "No paired extensions.",
+  "studio.libraryLastUsed": "Last used: {time}",
+  "studio.libraryRevoke": "Revoke token",
+  "studio.libraryError": "Library request failed. Reload and try again.",
+
   'studio.deployMissingHint': "Configure your own provider token in Settings → Deploy before deploying.",
   'studio.deployOwnerOnly': "Only the project owner can deploy or operate deployment records.",
 

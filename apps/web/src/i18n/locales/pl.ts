@@ -1,6 +1,15 @@
 import type { Dict } from '../types';
 
 export const pl: Dict = {
+  "studio.libraryHint": "Biblioteka należy do Twojego konta. Synchronizacja plików hosta jest niedostępna.",
+  "studio.libraryPair": "Utwórz kod parowania",
+  "studio.libraryExpires": "Wygasa o {time}",
+  "studio.libraryPairInstructions": "Ustaw ten adres Studio w rozszerzeniu i wpisz kod w ciągu pięciu minut. Każdego kodu można użyć tylko raz.",
+  "studio.libraryEmpty": "Brak sparowanych rozszerzeń.",
+  "studio.libraryLastUsed": "Ostatnio użyto: {time}",
+  "studio.libraryRevoke": "Unieważnij token",
+  "studio.libraryError": "Żądanie biblioteki nie powiodło się. Odśwież i spróbuj ponownie.",
+
   'studio.deployMissingHint': "Skonfiguruj własny token dostawcy w Ustawienia → Wdrożenie.",
   'studio.deployOwnerOnly': "Tylko właściciel projektu może wdrażać i zarządzać rekordami.",
 

@@ -150,6 +150,7 @@ export interface LibraryTaskSnapshot {
 // ---------------------------------------------------------------------------
 
 export interface LibraryIngestRequest {
+  mime?: string;
   kind?: LibraryAssetKind;
   /** Remote resource the daemon should fetch and store (owned). */
   url?: string;
@@ -484,4 +485,41 @@ export interface LibraryConnectionStatus {
     createdAt: number;
     lastUsedAt: number;
   }>;
+}
+
+/** Account clipper controls. Secrets are returned once by pair/confirm only. */
+export interface StudioLibraryTokenSummary {
+  id: string; label: string; extensionOrigin: string; createdAt: number; lastUsedAt: number;
+}
+export interface StudioLibraryConnectionStatus {
+  paired: boolean; tokens: StudioLibraryTokenSummary[];
+}
+/** Existing capture ceiling, bounded requests, and a refusal instead of unbounded account storage. */
+export const STUDIO_LIBRARY_LIMITS = {
+  pairingTtlMs: 5 * 60 * 1000, maxTokens: 16,
+  ingestBytes: 25 * 1024 * 1024, requestBytes: 128 * 1024 * 1024,
+  accountBytes: 256 * 1024 * 1024, assets: 2000, ingestPerMinute: 60,
+} as const;
+
+/** Closed Studio requests cannot assert ownership, file paths, source links or token scope. */
+export function isStudioLibraryIngestRequest(value: unknown): value is LibraryIngestRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  const fields = ['text', 'url', 'dataUrl', 'kind', 'mime', 'filename', 'sourceUrl', 'sourceTitle', 'tags', 'metadata', 'figmaCapture', 'figmaNodeCount', 'elementHtml'];
+  return Object.keys(body).every((key) => fields.includes(key))
+    && !['text', 'url', 'dataUrl', 'mime', 'filename', 'sourceUrl', 'sourceTitle', 'figmaCapture', 'elementHtml'].some((key) => body[key] !== undefined && typeof body[key] !== 'string')
+    && !Object.entries({ mime: 256, filename: 512, sourceUrl: 8192, sourceTitle: 4096, url: 8192 }).some(([key, max]) => typeof body[key] === 'string' && (body[key] as string).length > max)
+    && [body.text, body.url, body.dataUrl].filter((item) => item !== undefined).length === 1
+    && (body.kind === undefined || typeof body.kind === 'string' && ['image', 'video', 'html', 'font', 'text', 'color', 'url', 'design-system'].includes(body.kind))
+    && (body.tags === undefined || Array.isArray(body.tags) && body.tags.length <= 64 && body.tags.every((tag) => typeof tag === 'string' && tag.length <= 256))
+    && (body.metadata === undefined || !!body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata) && JSON.stringify(body.metadata).length <= 65536)
+    && (body.figmaNodeCount === undefined || Number.isSafeInteger(body.figmaNodeCount) && Number(body.figmaNodeCount) >= 0);
+}
+export function isStudioLibraryApplyRequest(value: unknown): value is LibraryApplyRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  return Object.keys(body).every((key) => ['projectId', 'dir', 'includeElement'].includes(key))
+    && typeof body.projectId === 'string' && body.projectId.length > 0
+    && (body.dir === undefined || typeof body.dir === 'string' && body.dir.length > 0 && body.dir.length <= 256 && !/[\\\x00]/.test(body.dir) && !body.dir.startsWith('/') && body.dir.split('/').every((part) => part && part !== '.' && part !== '..'))
+    && (body.includeElement === undefined || typeof body.includeElement === 'boolean');
 }

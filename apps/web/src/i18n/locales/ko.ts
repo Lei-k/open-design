@@ -1,6 +1,15 @@
 import type { Dict } from '../types';
 
 export const ko: Dict = {
+  "studio.libraryHint": "라이브러리는 내 계정에 속합니다. 호스트 파일 동기화는 사용할 수 없습니다.",
+  "studio.libraryPair": "페어링 코드 만들기",
+  "studio.libraryExpires": "{time}에 만료",
+  "studio.libraryPairInstructions": "확장 프로그램에 이 Studio URL을 설정하고 5분 이내에 코드를 입력하세요. 각 코드는 한 번만 사용할 수 있습니다.",
+  "studio.libraryEmpty": "페어링된 확장 프로그램이 없습니다.",
+  "studio.libraryLastUsed": "마지막 사용: {time}",
+  "studio.libraryRevoke": "토큰 취소",
+  "studio.libraryError": "라이브러리 요청에 실패했습니다. 새로 고침 후 다시 시도하세요.",
+
   'studio.deployMissingHint': "설정 → 배포에서 자신의 공급자 토큰을 설정하세요.",
   'studio.deployOwnerOnly': "프로젝트 소유자만 배포와 배포 기록 작업을 할 수 있습니다.",
 
