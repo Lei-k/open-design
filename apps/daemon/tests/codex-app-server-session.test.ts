@@ -925,7 +925,7 @@ describe('OD-owned Codex thread visibility', () => {
 });
 
 
-it('ephemeral Jury thread advertises read-only sandbox and disables mutating/remote built-ins', () => {
+it('ephemeral Jury requests read-only sandbox and explicit mutating/remote config overrides', () => {
   const h = harness({ ephemeral: true, sandboxMode: 'read-only', resumeSessionId: null, onDynamicToolCall: () => ({ files: [] }),
     dynamicTools: [{ name: 'list_project_files', description: 'project context', inputSchema: { type: 'object' } }] });
   completeHandshake(h.child);
@@ -934,6 +934,10 @@ it('ephemeral Jury thread advertises read-only sandbox and disables mutating/rem
     'features.shell_tool': false, 'features.apply_patch_freeform': false, 'features.apply_patch_streaming_events': false,
     web_search: 'disabled', mcp_servers: {},
   } });
+  // This proves the daemon emits an override, not Codex's inherited-config merge semantics.
+  const config = h.child.sent('thread/start')?.params.config;
+  expect(Object.hasOwn(config, 'mcp_servers')).toBe(true);
+  expect(config.mcp_servers).toEqual({});
   expect(h.child.sent('thread/start')?.params.dynamicTools.map((tool: { name: string }) => tool.name)).toEqual(['list_project_files']);
   h.child.emit('close', 0);
 });

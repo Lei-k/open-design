@@ -1049,26 +1049,34 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     settleWaiters.set(id, [...(settleWaiters.get(id) ?? []), done]);
   };
   let critiqueRoutes: ReturnType<typeof registerStudioCritiqueRoutes> | undefined;
-  const finish = (id: string, status: 'succeeded' | 'failed' | 'canceled', output?: unknown) => {
+  const finish = (id: string, status: 'succeeded' | 'failed' | 'canceled', output?: unknown, recoveringCritique = false) => {
     revokeConnectorGrant(id);
     if (storesClosed) return;
     const existing = row(id);
-    if (!existing || (existing.status !== 'active' && existing.status !== 'queued')) return;
+    if (!existing || (!recoveringCritique && existing.status !== 'active' && existing.status !== 'queued')) return;
     // Recovery runs before route registration. A durable Jury SHIP already
     // owns its outcome, including the ordinary parent run's terminal replay.
     if (!critiqueRoutes && storedRequest(existing.request_json)?.critique === true
-      && db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'studio_critique_events'").get()
-      && db.prepare("SELECT 1 FROM studio_critique_events WHERE run_id = ? AND event = 'critique.ship'").get(id)) status = 'succeeded';
+      && db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'studio_critique_events'").get()) {
+      const ship = db.prepare("SELECT json_extract(data, '$.status') AS status FROM studio_critique_events WHERE run_id = ? AND event = 'critique.ship' AND json_valid(data)")
+        .get(id) as { status: string } | undefined;
+      if (ship && ['shipped', 'below_threshold'].includes(ship.status)) status = 'succeeded';
+      else if (ship?.status === 'interrupted') status = 'canceled';
+      else if (ship?.status === 'timed_out') status = 'failed';
+    }
     status = critiqueRoutes?.finish(id, status) ?? status;
-    if (existing.status === 'active' && isCompany(existing)) closeLedgerSpan(existing, status);
+    if ((existing.status === 'active' || recoveringCritique) && isCompany(existing)) closeLedgerSpan(existing, status);
     const projection = projections.get(id);
     projection?.flush();
-    const result = { ...(projection ? { text: projection.text, textTruncated: projection.truncated } : {}),
+    const result = { ...(recoveringCritique && existing.output ? JSON.parse(existing.output) : {}), ...(projection ? { text: projection.text, textTruncated: projection.truncated } : {}),
       ...(output && typeof output === 'object' ? output : {}) } as Record<string, unknown>;
     const frames = db.transaction(() => {
       const time = now();
-      db.prepare(`UPDATE ${table} SET status = ?, output = ?, updated_at = ?, ended_at = CASE WHEN started_at IS NOT NULL THEN ? ELSE ended_at END WHERE id = ?`)
-        .run(status, Object.keys(result).length ? JSON.stringify(result) : null, time, time, id);
+      // Boot repair has no live subscribers. Replace a legacy parent's wrong
+      // terminal projection through the same finish transaction.
+      if (recoveringCritique) db.prepare("DELETE FROM multiuser_run_events WHERE run_id = ? AND event IN ('end', 'error')").run(id);
+      db.prepare(`UPDATE ${table} SET status = ?, output = ?, updated_at = ?, ended_at = CASE WHEN started_at IS NOT NULL OR ? THEN ? ELSE ended_at END WHERE id = ?`)
+        .run(status, Object.keys(result).length ? JSON.stringify(result) : null, time, recoveringCritique ? 1 : 0, time, id);
       const frames: string[] = [];
       if (status === 'failed' || result.reason === 'MULTIUSER_PERSONAL_UNAVAILABLE') {
         const reason = multiUserTerminalErrorCode(existing.execution_source, result.reason);
@@ -2310,7 +2318,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   };
   app.post('/api/runs/:id/cancel', (req, res) => { const run = owned(req, res); if (run) interruptRun(run, res); });
   critiqueRoutes = registerStudioCritiqueRoutes(app, { db, dataRoot, dataRootCanonical: input.dataRootCanonical, accountExists: (id) => accounts.getAccountById(id) !== null, owned, canView: (projectId, owner) => projects.canView(projectId, owner),
-    start: admitRun, interrupt: interruptRun });
+    start: admitRun, interrupt: interruptRun, recover: (id, status) => finish(id, status, undefined, true) });
   app.post('/api/runs/:id/steer', (req, res) => {
     const run = owned(req, res);
     if (!run) return;

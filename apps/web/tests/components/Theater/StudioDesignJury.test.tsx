@@ -111,3 +111,21 @@ it('allows a personal Codex Jury without reopening the disabled media generation
     expect(screen.getByRole('button', { name: 'Start Design Jury' })).toBeTruthy();
   } finally { mock.media = true; }
 });
+
+
+it.each(['interrupted', 'timed_out'] as const)('hides the artifact link for a legacy %s fallback SHIP', async (status) => {
+  mock.fetch.mockImplementation(async (url: string) => Response.json(url.endsWith('/jury-run')
+    ? { status: 'failed', critique: { status, artifactAvailable: false } } : { runs: [{ id: 'jury-run' }] }));
+  render(<StudioDesignJury projectId="p" conversationId="c" agentId="codex" canWrite />);
+  await waitFor(() => expect(mock.streams).toHaveLength(1));
+  const stream = mock.streams[0]!;
+  act(() => {
+    stream.events['critique.run_started']!(new MessageEvent('critique.run_started', { data: JSON.stringify({
+      runId: 'jury-run', protocolVersion: 1, cast: ['critic'], maxRounds: 3, threshold: 8, scale: 10,
+    }) }));
+    stream.events['critique.ship']!(new MessageEvent('critique.ship', { data: JSON.stringify({
+      runId: 'jury-run', round: 1, composite: 7, status, summary: 'Fallback', artifactRef: { projectId: 'p', artifactId: 'jury-run' },
+    }) }));
+  });
+  expect(screen.queryByRole('link', { name: 'Open reviewed artifact' })).toBeNull();
+});

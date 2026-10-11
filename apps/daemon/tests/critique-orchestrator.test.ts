@@ -845,3 +845,36 @@ describe('runOrchestrator - fallback on timeout/abort (Defect 7)', () => {
     expect(shipEvents).toHaveLength(1);
   });
 });
+
+
+it.each(['abort', 'total_timeout', 'per_round_timeout'] as const)('Studio %s after a round has one replay/transcript terminal', async (cause) => {
+  const abort = new AbortController();
+  const { bus, events } = makeBus();
+  const text = happyStream3Rounds(); const second = text.indexOf('<ROUND n="2">');
+  const prefix = text.slice(0, text.indexOf('</PANELIST>', second) + '</PANELIST>'.length);
+  let sent = false;
+  const stdout: AsyncIterable<string> = { [Symbol.asyncIterator]() { return {
+    next: () => sent ? new Promise<IteratorResult<string>>(() => {}) : (sent = true, Promise.resolve({ done: false, value: prefix })),
+    return: async () => ({ done: true, value: undefined }),
+  }; } };
+  const result = await runOrchestrator({
+    runId: 'studio-fallback', projectId: 'p1', conversationId: null, artifactId: 'a1',
+    artifactDir: join(tmpDir, 'studio-fallback'), adapter: 'studio-source', db, stdout,
+    signal: abort.signal, authorized: () => true,
+    cfg: { ...defaultCritiqueConfig(), totalTimeoutMs: cause === 'total_timeout' ? 100 : 10000,
+      perRoundTimeoutMs: cause === 'per_round_timeout' ? 100 : 10000 },
+    bus: { emit(event) {
+      if (['critique.interrupted', 'critique.failed'].includes(event.event))
+        expect(getCritiqueRun(db, 'studio-fallback')?.status).toBe(cause === 'abort' ? 'interrupted' : 'timed_out');
+      bus.emit(event); if (cause === 'abort' && event.event === 'critique.round_end') abort.abort();
+    } },
+  });
+  expect(result.rounds).toHaveLength(1); expect(result.status).toBe(cause === 'abort' ? 'interrupted' : 'timed_out');
+  expect(result.artifactPath).toBeNull();
+  const terminals = events.filter((event) => ['critique.ship', 'critique.interrupted', 'critique.failed', 'critique.degraded'].includes(event.event));
+  expect(terminals.map((event) => event.event)).toEqual([cause === 'abort' ? 'critique.interrupted' : 'critique.failed']);
+  if (cause !== 'abort') expect(terminals[0]?.data).toMatchObject({ cause });
+  const recorded = readFileSync(join(tmpDir, 'studio-fallback', result.transcriptPath!), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as { type: string });
+  expect(recorded.filter((event) => ['ship', 'interrupted', 'failed', 'degraded'].includes(event.type)).map((event) => event.type))
+    .toEqual([cause === 'abort' ? 'interrupted' : 'failed']);
+});

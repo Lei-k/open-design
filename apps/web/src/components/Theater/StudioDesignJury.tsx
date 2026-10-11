@@ -82,7 +82,7 @@ function Jury({ projectId, conversationId, agentId, canWrite }: Props) {
         const action = sseToPanelEvent(eventName, JSON.parse(event.data));
         if (!action) return;
         startedRun.current = runId; setWaiting(false);
-        if (action.type === 'ship') setArtifactRun(runId);
+        if (action.type === 'ship' && ['shipped', 'below_threshold'].includes(action.status)) setArtifactRun(runId);
         send(action);
         if (['ship', 'interrupted', 'failed', 'degraded'].includes(action.type)) { setTerminalRun(runId); source.close(); }
       } catch { setError(true); }
