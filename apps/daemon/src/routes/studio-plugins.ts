@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
 import type {
-  AppliedPluginSnapshot, InstalledPluginRecord, StudioPluginApplyRefusalDetails, StudioPluginApplyRequest,
+  AppliedPluginSnapshot, InstalledPluginRecord, StudioAppliedPluginResponse, StudioPluginApplyRefusalDetails, StudioPluginApplyRequest,
   StudioPluginApplyResponse, StudioPluginRecord, StudioPluginRequirements, PluginPipeline,
 } from '@open-design/contracts';
 import { parseStudioPluginSkillReferences, renderPluginBlock, resolveLocalizedText } from '@open-design/contracts';
@@ -18,6 +18,7 @@ import { createSnapshot, linkSnapshotToProject } from '../plugins/snapshots.js';
 import { evaluateStudioPluginAvailability, evaluateStudioPluginRequirements } from '../plugins/studio-availability.js';
 import { captureStudioCraft } from '../plugins/studio-craft.js';
 import { readStudioPluginDocuments, type StudioPluginDocument } from '../plugins/studio-desktop-steps.js';
+import { studioPinnedPluginSourceRestrictions } from '../plugins/studio-pinned-requirements.js';
 import { captureStudioPluginResources, type StudioPluginResources } from '../plugins/studio-resources.js';
 import { readStudioSkillPackages, type StudioSkillPackage } from '../services/studio-skill-packages.js';
 import { captureStudioPluginDesignContext, type StudioPluginDesignContext } from '../plugins/studio-design-context.js';
@@ -104,7 +105,9 @@ function withoutHostPaths(value: unknown, hostRoots: readonly string[]): unknown
  *   plugins. The snapshot (and the rendered prompt) is captured once and is
  *   immutable; removing or upgrading the bundled plugin never changes it.
  * - Applied snapshots: readable by members of the project (owner, or a grantee
- *   while the owner is active); foreign and missing are one 404.
+ *   while the owner is active); foreign and missing are one 404. Each carries
+ *   the sources whose turns refuse it, derived from its pin as admission
+ *   decides them (S67 repair 2), never from the current catalog row.
  * - Marketplaces: read-only, without host paths. Fetch and changes stay refused at the gate.
  */
 export function registerStudioPluginRoutes(app: Express, input: {
@@ -114,6 +117,11 @@ export function registerStudioPluginRoutes(app: Express, input: {
   designAccess?: Pick<StudioCatalogGrants, 'roleOf'>;
   skillCatalog?: Pick<StudioCatalog, 'readSkills'>;
   skillAccess?: Pick<StudioCatalogGrants, 'roleOf'>;
+  /**
+   * Whether run admission has the canonical Live Artifact registrar (S67).
+   * Absent reads as unavailable, as admission treats a missing registrar.
+   */
+  liveArtifactsAvailable?: () => boolean;
 }): StudioPlugins {
   const { db } = input;
   const now = input.clock ?? Date.now;
@@ -148,16 +156,24 @@ export function registerStudioPluginRoutes(app: Express, input: {
     manifest_source_digest: string; snapshot_json: string; prompt: string; prompt_sha256: string; resource_package_json: string | null;
     requirements_json: string | null };
   const readRow = (snapshotId: string) => db.prepare(`SELECT * FROM ${TABLE} WHERE snapshot_id = ?`).get(snapshotId) as Row | undefined;
-  const capture = (row: Row): StudioPluginCapture => {
+  /** The immutable parts of an application the source derivation reads; no package validation. */
+  const pinOf = (row: Row) => {
     const snapshot = JSON.parse(row.snapshot_json) as AppliedPluginSnapshot;
     const pipeline = snapshot.pipeline;
     const requirements = row.requirements_json === null ? legacyRequirements(snapshot) : JSON.parse(row.requirements_json) as StudioPluginRequirements;
     const resource = row.resource_package_json === null ? undefined : JSON.parse(row.resource_package_json) as StudioSkillPackage;
+    return { snapshot, pipeline, requirements, resource };
+  };
+  const capture = (row: Row): StudioPluginCapture => {
+    const { pipeline, requirements, resource } = pinOf(row);
     if (resource) readStudioSkillPackages([{ id: resource.id, package: resource }]);
     return { snapshotId: row.snapshot_id, projectId: row.project_id, pluginId: row.plugin_id,
       pluginVersion: row.plugin_version, manifestSourceDigest: row.manifest_source_digest, prompt: row.prompt, promptSha256: row.prompt_sha256,
       ...(pipeline ? { pipeline } : {}), ...(resource ? { resourcePackage: resource } : {}), requirements };
   };
+  /** What an application discloses about its sources: the one derivation admission enforces (S67 repair 2). */
+  const pinnedRestrictions = (pin: Pick<StudioPluginCapture, 'requirements' | 'pipeline' | 'resourcePackage'>) =>
+    studioPinnedPluginSourceRestrictions(pin, { liveArtifacts: input.liveArtifactsAvailable?.() === true });
   const ownerActive = (projectId: string) => {
     const owner = projects.ownership.ownerOf(projectId);
     return Boolean(owner && accounts.getAccountById(owner)?.active === true);
@@ -327,16 +343,21 @@ export function registerStudioPluginRoutes(app: Express, input: {
           resources.package ? JSON.stringify(resources.package) : null, JSON.stringify(requirements), now());
       return created;
     })();
+    const restrictions = pinnedRestrictions({ requirements, ...(snapshot.pipeline ? { pipeline: snapshot.pipeline } : {}),
+      ...(resources.package ? { resourcePackage: resources.package } : {}) });
     const response: StudioPluginApplyResponse = { ok: true, ...computed.result, appliedPlugin: snapshot, projectId: body.projectId,
       snapshotId: snapshot.snapshotId, warnings: computed.warnings, manifestSourceDigest: computed.manifestSourceDigest,
-      ...(availability.sourceRestrictions ? { sourceRestrictions: availability.sourceRestrictions } : {}) };
+      ...(restrictions.length ? { sourceRestrictions: restrictions } : {}) };
     res.json(response);
   }));
 
   app.get(`${prefix}/applied-plugins/:snapshotId`, handle((req, res, actor) => {
     const row = readRow(String(req.params.snapshotId));
     if (!row || !canReadProject(row.project_id, actor)) return sendApiError(res, 404, 'NOT_FOUND', 'not found');
-    res.json(JSON.parse(row.snapshot_json) as AppliedPluginSnapshot);
+    const { snapshot, pipeline, requirements, resource } = pinOf(row);
+    const restrictions = pinnedRestrictions({ requirements, ...(pipeline ? { pipeline } : {}), ...(resource ? { resourcePackage: resource } : {}) });
+    const response: StudioAppliedPluginResponse = { ...snapshot, ...(restrictions.length ? { sourceRestrictions: restrictions } : {}) };
+    res.json(response);
   }));
 
   const hostRoots = [input.dataRoot, ...input.hostRoots].filter((root) => root.length > 1);

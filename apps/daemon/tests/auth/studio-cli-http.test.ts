@@ -526,6 +526,9 @@ describe('same Studio APIs through remote od sessions', () => {
     expect(poster).toMatchObject({ ok: true, appliedPlugin: { pluginId: 'example-image-poster' }, sourceRestrictions: posterRestriction });
     const posterText = await cli(['plugin', 'apply', 'example-image-poster', '--project', mediaPid, '--session-file', aFile]);
     expect(posterText.stdout).toContain('[apply] execution sources: not personal-codex: atom:media-image');
+    // S67 repair 2: the applied snapshot reports the restrictions of its own pin (what admission enforces).
+    expect(success(await cli(['plugin', 'snapshots', 'show', poster.snapshotId, '--session-file', aFile, '--json'])))
+      .toMatchObject({ snapshotId: poster.snapshotId, pluginId: 'example-image-poster', sourceRestrictions: posterRestriction });
     const codexTurn = await cli(['run', 'start', '--project', mediaPid, '--conversation', media.conversationId, '--execution-source', 'personal_subscription',
       '--prompt-file', '-', '--session-file', aFile, '--json'], 'Make the poster');
     expect(codexTurn.code).not.toBe(0);

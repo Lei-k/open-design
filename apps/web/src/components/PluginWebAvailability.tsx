@@ -1,4 +1,4 @@
-import type { InstalledPluginRecord, StudioPluginExecutionSource } from '@open-design/contracts';
+import type { InstalledPluginRecord, StudioPluginExecutionSource, StudioPluginSourceRestriction } from '@open-design/contracts';
 import { useI18n } from '../i18n';
 import type { Dict } from '../i18n/types';
 import { studioPluginAvailability, studioPluginReasonTokens } from '../runtime/studio-plugins';
@@ -11,18 +11,25 @@ const SOURCE_LABELS: Record<StudioPluginExecutionSource, keyof Dict> = {
   'account-openai': 'multiuser.executionSourcePersonalKey',
 };
 
+type Translate = (key: keyof Dict, vars?: Record<string, string | number>) => string;
+
 /**
- * One label per execution source whose turns cannot run an applicable plugin
- * (S67), e.g. "Not on Codex · personal subscription · Needs: media-image".
- * The Plugins page, the composer picker/preview and the applied-plugin chip all
- * use these exact labels, as the CLI prints the same reasons.
+ * One label per execution source whose turns cannot run a plugin (S67), e.g.
+ * "Not on Codex · personal subscription · Needs: media-image". The Plugins
+ * page, the composer picker/preview and the applied-plugin chip all use these
+ * exact labels, as the CLI prints the same reasons. Callers pick the source of
+ * the restrictions: the catalog row for a plugin, the pin for an application.
  */
-export function studioPluginRestrictionLabels(record: InstalledPluginRecord | null | undefined,
-  t: (key: keyof Dict, vars?: Record<string, string | number>) => string): string[] {
+export function studioSourceRestrictionLabels(restrictions: readonly StudioPluginSourceRestriction[], t: Translate): string[] {
+  return restrictions.map((item) => t('pluginsView.webSourceRestricted', {
+    source: t(SOURCE_LABELS[item.source]), reasons: studioPluginReasonTokens(item.reasons).join(', ') }));
+}
+
+/** The catalog's restrictions of an applicable plugin (Plugins page, composer picker and preview). */
+export function studioPluginRestrictionLabels(record: InstalledPluginRecord | null | undefined, t: Translate): string[] {
   const availability = studioPluginAvailability(record);
   if (!availability?.applicable) return [];
-  return (availability.sourceRestrictions ?? []).map((item) => t('pluginsView.webSourceRestricted', {
-    source: t(SOURCE_LABELS[item.source]), reasons: studioPluginReasonTokens(item.reasons).join(', ') }));
+  return studioSourceRestrictionLabels(availability.sourceRestrictions ?? [], t);
 }
 
 /** The restriction labels as inline text; nothing when every source runs the plugin. */

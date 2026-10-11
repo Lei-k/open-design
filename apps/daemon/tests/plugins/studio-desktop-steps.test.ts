@@ -56,6 +56,26 @@ describe('detectStudioDesktopSteps', () => {
     expect(subjects('Narrate it: `od media generate --surface audio --audio-kind speech`.')).toEqual([]);
   });
 
+  // S67 repair 2 (review P3): each code span and each fenced command is its own
+  // step. Joining them invented commands out of unrelated descriptive mentions.
+  it('never combines separate code spans or lines into one command', () => {
+    expect(subjects('The executable is named `od`. The accent token is `accent`.')).toEqual([]);
+    expect(subjects('Driving the workflow with the `od` command.\n\nNo `$` prompts and no `plugin` chrome.')).toEqual([]);
+    expect(subjects('Interpreters: `python`, then `scripts/build.py` is the file it would read.')).toEqual([]);
+    expect(subjects('Tools: `npx`\n`hyperframes` is a framework name.')).toEqual([]);
+    expect(subjects('```text\nod\nplugin install\n```')).toEqual([]);
+    expect(subjects('```text\npython\nscripts/a.py\n```')).toEqual([]);
+  });
+
+  it('still closes real and conditional desktop steps inside one span or fenced command', () => {
+    expect(subjects('```bash\nod plugin install --source ./generated\n```')).toEqual(['desktop:od-cli']);
+    expect(subjects('Finally run `od plugin install ./out`.')).toEqual(['desktop:od-cli']);
+    expect(subjects('```bash\n"$OD_BIN" plugin \\\n  install --source ./generated\n```')).toEqual(['desktop:od-cli']);
+    expect(subjects('```bash\npython3 \\\n  scripts/prepare.py\n```')).toEqual(['desktop:local-script']);
+    expect(subjects('If the user wants an MP4, run `npx hyperframes render ./comp`.')).toEqual(['desktop:html-video-render']);
+    expect(subjects('```sh\necho start\nod media scaffold --kind video\n```')).toEqual(['desktop:media-scaffold', 'desktop:od-cli']);
+  });
+
   it('reports every step across documents once, sorted', () => {
     expect(subjects('`$imagegen`', 'Run `python scripts/a.py` and `$imagegen` again.', '`od media scaffold`'))
       .toEqual(['desktop:codex-tool', 'desktop:local-script', 'desktop:media-scaffold', 'desktop:od-cli']);
@@ -104,6 +124,8 @@ describe('the bundled catalog', () => {
     'example-image-poster': [], 'example-frame-glitch-title': [], 'example-frame-data-chart-nyt': [], 'example-frame-flowchart-sticky': [],
     'example-frame-light-leak-cinema': [], 'example-frame-liquid-bg-hero': [], 'example-frame-logo-outro': [],
     'example-frame-macos-notification': [], 'example-vfx-text-cursor': [], 'example-video-hyperframes': [],
+    // S67 repair 2: it only describes the `od` command (and stays closed by its critique requirements).
+    'example-ve-terminal-mono': [],
   };
   const folder = (id: string) => {
     for (const group of fs.readdirSync(REPO_PLUGINS)) {

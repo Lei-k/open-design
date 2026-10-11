@@ -9,7 +9,7 @@ import { InstalledPluginRecordSchema, STUDIO_PARITY_LANES, type AuthAccount, typ
 import { CookieSession } from '../../src/multiuser/session';
 import { StudioCapabilitiesProvider } from '../../src/runtime/studio-capabilities';
 import { studioRequestAvailable } from '../../src/runtime/studio-transport';
-import { studioPluginAvailability, studioPluginOffered, studioPluginReasonTokens } from '../../src/runtime/studio-plugins';
+import { studioAppliedPluginRestrictions, studioPluginAvailability, studioPluginOffered, studioPluginReasonTokens } from '../../src/runtime/studio-plugins';
 import { PluginWebAvailability } from '../../src/components/PluginWebAvailability';
 import { PluginDetailView } from '../../src/components/PluginDetailView';
 
@@ -129,4 +129,15 @@ it('names the execution sources whose turns cannot run an applicable plugin', ()
   const everywhere = screen.getByTestId('plugin-web-availability-everywhere');
   expect(everywhere.getAttribute('data-restricted-sources')).toBeNull();
   expect(everywhere.textContent).not.toContain('Not on');
+});
+
+// S67 repair 2: an application's restrictions come from its pin, as the daemon
+// sends them on the apply response and `GET /api/applied-plugins/:id`.
+it('reads an application\'s pinned source restrictions and drops anything malformed', () => {
+  const pinned = [{ source: 'personal-codex', reasons: [{ code: 'atom', subject: 'media-image' }] }];
+  expect(studioAppliedPluginRestrictions({ snapshotId: 's', sourceRestrictions: pinned })).toEqual(pinned);
+  expect(studioAppliedPluginRestrictions({ snapshotId: 's' })).toEqual([]);
+  expect(studioAppliedPluginRestrictions(null)).toEqual([]);
+  expect(studioAppliedPluginRestrictions({ sourceRestrictions: [{ source: 'desktop', reasons: [{ code: 'atom' }] },
+    { source: 'company-openai', reasons: [{ nope: true }] }, { source: 'account-openai', reasons: 'x' }, ...pinned] })).toEqual(pinned);
 });

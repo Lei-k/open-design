@@ -648,6 +648,46 @@ describe('S67 plugin atoms on Studio execution sources', () => {
     expect((await request(a, 'GET', `/api/runs/${openaiTurn.json.runId}/events`)).text).toContain('"status":"succeeded"');
   });
 
+  // S67 repair 2 (review P2): the restrictions an application discloses come
+  // from its pinned requirements, which admission enforces, not from whatever
+  // the catalog says about the plugin today.
+  it('discloses the pinned source restrictions of an application after the catalog drops the media requirement', async () => {
+    const target = await project(a);
+    const applied = await apply(a, FIXTURE_MEDIA_PLUGIN_ID, { projectId: target.projectId });
+    expect(applied.status, applied.text).toBe(200);
+    const pinnedRestriction = [{ source: 'personal-codex', reasons: [{ code: 'atom', subject: 'media-image' }, { code: 'capability', subject: 'media:image' }] }];
+    expect(applied.json.sourceRestrictions).toEqual(pinnedRestriction);
+    const snapshotId = applied.json.snapshotId as string;
+    const original = withDb((db) => db.prepare('SELECT manifest_json FROM installed_plugins WHERE id = ?').get(FIXTURE_MEDIA_PLUGIN_ID) as { manifest_json: string });
+    try {
+      // v2 of the plugin no longer declares an image surface, capability or atom
+      // (it declares what the every-source Live Artifact fixture declares).
+      withDb((db) => db.prepare(`UPDATE installed_plugins SET manifest_json = json_set(manifest_json, '$.od',
+          (SELECT json_extract(manifest_json, '$.od') FROM installed_plugins WHERE id = ?)) WHERE id = ?`)
+        .run(FIXTURE_LIVE_ARTIFACT_PLUGIN_ID, FIXTURE_MEDIA_PLUGIN_ID));
+      expect((await request(a, 'GET', `/api/plugins/${FIXTURE_MEDIA_PLUGIN_ID}`)).json.availability).toEqual({ applicable: true, reasons: [] });
+      // The v1 application still needs media, so it still discloses the personal Codex restriction…
+      for (const route of [`/api/applied-plugins/${snapshotId}`, `/api/multiuser/catalog/applied-plugins/${snapshotId}`]) {
+        const pinned = await request(a, 'GET', route);
+        expect(pinned.status, pinned.text).toBe(200);
+        expect(pinned.json).toMatchObject({ snapshotId, pluginId: FIXTURE_MEDIA_PLUGIN_ID, sourceRestrictions: pinnedRestriction });
+      }
+      // …which is exactly what admission refuses.
+      const refused = await turn(a, target, { message: '[plugin-media] v1 pin on Codex' });
+      expect(refused.status, refused.text).toBe(409);
+      expect(refused.json.error.details).toEqual({ pluginId: FIXTURE_MEDIA_PLUGIN_ID, ...pinnedRestriction[0] });
+      expect(rows(target.conversationId)).toEqual({ runs: 0, messages: 0 });
+    } finally {
+      withDb((db) => db.prepare('UPDATE installed_plugins SET manifest_json = ? WHERE id = ?').run(original.manifest_json, FIXTURE_MEDIA_PLUGIN_ID));
+    }
+    // An application every source runs discloses none.
+    const plain = await project(a);
+    const everywhere = await apply(a, FIXTURE_LIVE_ARTIFACT_PLUGIN_ID, { projectId: plain.projectId });
+    expect(everywhere.status, everywhere.text).toBe(200);
+    expect(everywhere.json.sourceRestrictions).toBeUndefined();
+    expect((await request(a, 'GET', `/api/applied-plugins/${everywhere.json.snapshotId}`)).json.sourceRestrictions).toBeUndefined();
+  });
+
   it('keeps run-owner authority when an editor runs the owner\'s applied media plugin', async () => {
     const target = await project(a);
     expect((await apply(a, FIXTURE_MEDIA_PLUGIN_ID, { projectId: target.projectId })).status).toBe(200);
@@ -743,11 +783,18 @@ describe('S67 repair 1: desktop-only core steps close plugins at catalog, apply 
           JSON.stringify({ atoms: ['file-read', 'file-write'], capabilities: ['fs:read', 'fs:write', 'prompt:inject'] }), Date.now());
       db.prepare('UPDATE projects SET applied_plugin_snapshot_id = ? WHERE id = ?').run(legacyId, target.projectId);
     });
+    const eventCount = () => withDb((db) => (db.prepare('SELECT COUNT(*) AS n FROM multiuser_run_events').get() as { n: number }).n);
+    const eventsBefore = eventCount();
     const refused = await turn(a, target, { ...source, message: 'Package and install this work' });
     expect(refused.status, refused.text).toBe(409);
     expect(refused.json.error).toMatchObject({ code: 'MULTIUSER_CAPABILITY_UNAVAILABLE', details: { pluginId: PIPELINE_ONLY,
       reasons: [{ code: 'capability', subject: 'desktop:od-cli' }] } });
+    expect(refused.json.runId).toBeUndefined();
     expect(withDb((db) => db.prepare('SELECT id FROM multiuser_runs WHERE conversation_id = ?').all(target.conversationId))).toEqual([]);
     expect(withDb((db) => db.prepare('SELECT id FROM messages WHERE conversation_id = ?').all(target.conversationId))).toEqual([]);
+    expect(eventCount()).toBe(eventsBefore);
+    // S67 repair 2: the application discloses the same refusal for every source, from its pin.
+    expect((await request(a, 'GET', `/api/applied-plugins/${legacyId}`)).json.sourceRestrictions).toEqual(['personal-codex', 'company-openai', 'account-openai']
+      .map((item) => ({ source: item, reasons: [{ code: 'capability', subject: 'desktop:od-cli' }] })));
   });
 });

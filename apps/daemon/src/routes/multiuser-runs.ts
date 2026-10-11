@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
-import { workspaceToolsUnavailable, STUDIO_LIVE_ARTIFACT_BACKGROUND_REFRESH_REFUSED, API_ERROR_CODES, STUDIO_RESEARCH_MAX_SOURCES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, studioPluginSourceReasons, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
+import { workspaceToolsUnavailable, STUDIO_LIVE_ARTIFACT_BACKGROUND_REFRESH_REFUSED, API_ERROR_CODES, STUDIO_RESEARCH_MAX_SOURCES, isStudioCodexModel, isStudioCodexReasoning, MULTIUSER_PERSONAL_RUN_FIELD_POLICY, emittedRenderableQuestionForm, isStudioMessageIdInNamespace, parseStudioMessageFeedback, type ApiErrorCode, type ChatRunFeedbackResponse } from '@open-design/contracts';
 import { PersonalRunEvents } from '../runtimes/personal-run-events.js';
 import { formatProjectAttachmentHint, normalizeCommentAttachments, renderCommentAttachmentHint, resolveSafeProjectAttachments } from '../runtimes/chat-prompt-inputs.js';
 import { renderRunContextPrompt } from '../runtimes/chat-run-context.js';
@@ -47,7 +47,7 @@ import { runStudioPipeline } from '../services/studio-pipeline.js';
 import { createStudioChatInvalidation } from '../services/studio-chat-invalidation.js';
 import { observeStudioProjectDefaults, studioProjectDefaultsUnchanged, type StudioProjectDefaultsObservation } from '../services/studio-project-defaults.js';
 import { STUDIO_MEDIA_PROMPT } from '../runtimes/studio-media.js';
-import { detectStudioDesktopSteps, STUDIO_PLUGIN_PACKAGE_UNREADABLE, studioPluginPackageDocuments } from '../plugins/studio-desktop-steps.js';
+import { studioPinnedPluginSourceReasons } from '../plugins/studio-pinned-requirements.js';
 import { PersonalProviderKeyError, PersonalProviderKeyStore } from '../storage/personal-provider-keys.js';
 import { createStudioResearch, StudioResearchError, type StudioResearch } from '../research/studio-research.js';
 import { renderStudioResearchFindings } from '../prompts/research-contract.js';
@@ -582,16 +582,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
    */
   const refuseSourcePlugin = (res: Response, plugin: PluginSnapshot | null, source: StudioPluginExecutionSource): boolean => {
     if (!plugin) return false;
-    const pinned = plugin.requirements
-      ?? { atoms: [...new Set((plugin.pipeline?.stages ?? []).flatMap((stage) => stage.atoms ?? []))], capabilities: [] };
-    // S67 repair 1: the same desktop-step detector over the pinned package, so
-    // an application captured before a rule existed cannot run a dead core step.
-    const documents = studioPluginPackageDocuments(plugin.resourcePackage);
-    const requirements = { atoms: pinned.atoms, capabilities: [...new Set([...pinned.capabilities,
-      ...(documents ? detectStudioDesktopSteps(documents) : []).map((reason) => reason.subject!)])] };
-    const reasons = studioPluginSourceReasons(requirements, source);
-    if (!documents) reasons.unshift(STUDIO_PLUGIN_PACKAGE_UNREADABLE);
-    if (!input.liveArtifacts && requirements.atoms.includes('live-artifact')) reasons.unshift({ code: 'atom', subject: 'live-artifact' });
+    // One derivation with the restrictions the application discloses (S67
+    // repair 2): pinned requirements plus the desktop-step detector over the
+    // pinned package (repair 1), so a capture predating a rule cannot run it.
+    const reasons = studioPinnedPluginSourceReasons(plugin, source, { liveArtifacts: Boolean(input.liveArtifacts) });
     if (!reasons.length) return false;
     const details: StudioPluginSourceRefusalDetails = { pluginId: plugin.pluginId, source, reasons };
     sendApiError(res, 409, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'the applied plugin needs steps this execution source does not run',

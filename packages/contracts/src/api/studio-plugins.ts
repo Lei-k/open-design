@@ -7,7 +7,7 @@
 // manifest's declarations; there is no per-plugin list. When a capability
 // lands on Web, adding it here makes more plugins applicable.
 
-import type { ApplyResult } from '../plugins/apply.js';
+import type { ApplyResult, AppliedPluginSnapshot } from '../plugins/apply.js';
 import type { InstalledPluginRecord } from '../plugins/installed.js';
 import type { PluginPipeline } from '../plugins/manifest.js';
 
@@ -318,7 +318,23 @@ export type StudioPluginApplyResponse = ApplyResult & {
   snapshotId: string;
   warnings: string[];
   manifestSourceDigest: string;
-  /** Additive (S67): sources whose turns refuse this application; absent when every source runs it. */
+  /**
+   * Additive (S67): sources whose turns refuse this application; absent when
+   * every source runs it. Derived from the application's pinned requirements
+   * (S67 repair 2), exactly as run admission decides them.
+   */
+  sourceRestrictions?: StudioPluginSourceRestriction[];
+};
+
+/**
+ * `GET /api/applied-plugins/:snapshotId` for a Studio account: the immutable
+ * snapshot plus the sources whose turns refuse this application (S67 repair 2).
+ * The restrictions come from the application's pinned requirements, which run
+ * admission enforces, never from the plugin's current catalog row: a catalog
+ * upgrade changes neither. Absent when every source runs the application;
+ * desktop daemons never send it.
+ */
+export type StudioAppliedPluginResponse = AppliedPluginSnapshot & {
   sourceRestrictions?: StudioPluginSourceRestriction[];
 };
 

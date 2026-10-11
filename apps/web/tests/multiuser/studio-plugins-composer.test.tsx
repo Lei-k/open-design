@@ -38,11 +38,21 @@ const applied = { ok: true, query: '', contextItems: [], inputs: [], assets: [],
 let session: CookieSession | null = null;
 afterEach(() => { cleanup(); session?.dispose(); session = null; vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-async function mountComposer() {
+type Fixture = { plugins: unknown[]; pinned?: Record<string, unknown> };
+async function mountComposer(fixture: Fixture = { plugins: [media, everywhere] }) {
+  const handle = await mountComposerHandle(fixture);
+  act(() => handle.current?.openPluginsPanel());
+  await waitFor(() => expect(screen.getAllByText(/Review media plugin|Everywhere plugin/).length).toBeGreaterThan(0));
+  return screen.getByTestId('composer-plugins-popup');
+}
+
+async function mountComposerHandle({ plugins, pinned = {} }: Fixture) {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === '/api/auth/me') return Response.json({ account: actor, studio: capabilities, studioRevision: 1 });
-    if (url === '/api/plugins') return Response.json({ plugins: [media, everywhere] });
+    if (url === '/api/plugins') return Response.json({ plugins });
+    const snapshot = /^\/api\/applied-plugins\/([^/?]+)$/.exec(url)?.[1];
+    if (snapshot) return pinned[snapshot] ? Response.json(pinned[snapshot]) : Response.json({ error: { code: 'NOT_FOUND' } }, { status: 404 });
     if (url === '/api/plugins/review-media/apply' && init?.method === 'POST') return Response.json(applied);
     if (url === '/api/mcp/servers') return Response.json({ servers: [], templates: [] });
     if (url === '/api/connectors') return Response.json({ connectors: [] });
@@ -56,10 +66,14 @@ async function mountComposer() {
     <ChatComposer ref={ref} projectId="review-project" projectFiles={[]} streaming={false} onEnsureProject={async () => 'review-project'}
       onSend={vi.fn()} onStop={vi.fn()} onOpenMcpSettings={vi.fn()} skills={[]} />
   </StudioCapabilitiesProvider>);
-  act(() => ref.current?.openPluginsPanel());
-  await waitFor(() => expect(screen.getAllByText('Review media plugin').length).toBeGreaterThan(0));
-  return screen.getByTestId('composer-plugins-popup');
+  return ref;
 }
+
+const pluginChip = () => waitFor(() => {
+  const found = screen.queryByTestId('staged-contexts')?.querySelector('[data-staged-kind="plugin"]');
+  expect(found).toBeTruthy();
+  return found as HTMLElement;
+});
 
 it('shows the same personal Codex restriction in the composer picker as on the Plugins page', async () => {
   const picker = await mountComposer();
@@ -87,4 +101,43 @@ it('keeps the restriction on the applied-plugin context chip', async () => {
   expect(chip.textContent).toContain('Not on Codex · personal subscription · Needs: media-image');
   const open = within(chip as HTMLElement).getAllByRole('button')[0]!;
   expect(open.getAttribute('aria-label')).toContain('Not on Codex · personal subscription · Needs: media-image');
+});
+
+// S67 repair 2 (review P2): the applied chip discloses the application's
+// pinned restrictions, which run admission enforces, not the current catalog's.
+const v1Snapshot = { ...applied.appliedPlugin, snapshotId: 'snap-media-v1' };
+const restoreApplied = (ref: Awaited<ReturnType<typeof mountComposerHandle>>, snapshot: typeof v1Snapshot) =>
+  act(() => ref.current?.restoreDraft({ text: 'Make the hero image', meta: { appliedPluginSnapshot: snapshot as never,
+    appliedPluginSnapshotId: snapshot.snapshotId } }));
+
+it('keeps the pinned Codex restriction on a restored application after the catalog drops the media requirement', async () => {
+  // v2 of the plugin runs everywhere; the restored v1 application still needs media-image.
+  const v2 = { ...media, version: '2.0.0', availability: { applicable: true, reasons: [] } };
+  const ref = await mountComposerHandle({ plugins: [v2, everywhere],
+    pinned: { 'snap-media-v1': { ...v1Snapshot, sourceRestrictions: [{ source: 'personal-codex',
+      reasons: [{ code: 'atom', subject: 'media-image' }, { code: 'capability', subject: 'media:image' }] }] } } });
+  act(() => ref.current?.openPluginsPanel());
+  const picker = await waitFor(() => screen.getByTestId('composer-plugins-popup'));
+  // The picker describes the catalog's v2, which every source runs.
+  await waitFor(() => expect(within(picker).getByRole('menuitem', { name: /Review media plugin/ }).textContent).not.toContain('Not on'));
+  restoreApplied(ref, v1Snapshot);
+  const chip = await pluginChip();
+  await waitFor(() => expect(chip.textContent).toContain('Not on Codex · personal subscription · Needs: media-image, media:image'));
+  expect(within(chip).getAllByRole('button')[0]!.getAttribute('aria-label'))
+    .toContain('Not on Codex · personal subscription · Needs: media-image, media:image');
+});
+
+it('shows no restriction on a restored application its pin runs everywhere, whatever the catalog now says', async () => {
+  const ref = await mountComposerHandle({ plugins: [media, everywhere], pinned: { 'snap-media-v1': { ...v1Snapshot } } });
+  act(() => ref.current?.openPluginsPanel());
+  // The catalog's current plugin is restricted, and the picker says so.
+  await waitFor(() => expect(screen.getByTestId('composer-plugins-popup').textContent).toContain('Not on Codex · personal subscription'));
+  restoreApplied(ref, v1Snapshot);
+  const chip = await pluginChip();
+  expect(chip.textContent).toContain('Review media plugin');
+  expect(chip.textContent).not.toContain('Not on');
+  // The chip asked the daemon for the pin; after it answers the catalog's restriction still never appears.
+  await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url) === '/api/applied-plugins/snap-media-v1')).toBe(true));
+  await act(async () => { await Promise.resolve(); });
+  expect(chip.textContent).not.toContain('Not on');
 });

@@ -50,9 +50,9 @@ import {
 import { navigate } from '../router';
 import { fetchMcpServers } from "../state/mcp";
 import type { McpServerConfig, McpTemplate } from "../state/mcp";
-import { listPlugins } from "../state/projects";
-import { studioPluginOffered } from "../runtime/studio-plugins";
-import { PluginSourceRestrictions, studioPluginRestrictionLabels } from "./PluginWebAvailability";
+import { fetchStudioAppliedPluginRestrictions, listPlugins } from "../state/projects";
+import { studioAppliedPluginRestrictions, studioPluginOffered } from "../runtime/studio-plugins";
+import { PluginSourceRestrictions, studioSourceRestrictionLabels } from "./PluginWebAvailability";
 import type { AppConfig, ChatAttachment, ChatCommentAttachment, Project, ProjectFile, ProjectMetadata, SkillSummary } from "../types";
 import { DEFAULT_UNSELECTED_SCENARIO_PLUGIN_ID } from '@open-design/contracts';
 import type {
@@ -65,6 +65,7 @@ import type {
   PluginSourceKind,
   ResearchOptions,
   RunContextSelection,
+  StudioPluginSourceRestriction,
   WorkspaceCollabContext,
   WorkspaceContextItem,
 } from '@open-design/contracts';
@@ -876,6 +877,27 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
     } | null>(null);
     const [activeAppliedPlugin, setActiveAppliedPlugin] =
       useState<AppliedPluginSnapshot | null>(null);
+    /*
+     * S67 repair 2: the sources whose turns refuse the applied plugin, as the
+     * daemon derived them from that application's pin — what run admission
+     * enforces. Never the catalog row: after a catalog upgrade the current
+     * plugin and an older application can differ. Seeded by the apply
+     * response; a restored application reads its own pin.
+     */
+    const [pinnedRestrictions, setPinnedRestrictions] =
+      useState<{ snapshotId: string; restrictions: StudioPluginSourceRestriction[] } | null>(null);
+    const pinnedSnapshotId =
+      activeAppliedPlugin && activeAppliedPlugin.pluginId !== DEFAULT_UNSELECTED_SCENARIO_PLUGIN_ID
+        ? activeAppliedPlugin.snapshotId
+        : null;
+    useEffect(() => {
+      if (studio.hostServices || !pinnedSnapshotId || pinnedRestrictions?.snapshotId === pinnedSnapshotId) return;
+      let cancelled = false;
+      void fetchStudioAppliedPluginRestrictions(pinnedSnapshotId).then((restrictions) => {
+        if (!cancelled && restrictions) setPinnedRestrictions({ snapshotId: pinnedSnapshotId, restrictions });
+      });
+      return () => { cancelled = true; };
+    }, [studio.hostServices, pinnedSnapshotId, pinnedRestrictions?.snapshotId]);
     const pluginsSectionRef = useRef<PluginsSectionHandle | null>(null);
     const inlineBackedPluginRef = useRef<{ id: string; label: string } | null>(null);
     async function duplicateDetailsPlugin(record: InstalledPluginRecord) {
@@ -3462,6 +3484,9 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
               renderActiveChip={false}
               onApplied={(brief, applied) => {
                 setActiveAppliedPlugin(applied.appliedPlugin);
+                if (!studio.hostServices && applied.appliedPlugin?.snapshotId) {
+                  setPinnedRestrictions({ snapshotId: applied.appliedPlugin.snapshotId, restrictions: studioAppliedPluginRestrictions(applied) });
+                }
                 // Use functional setState so stale closures from the @-mention
                 // flow (which awaits applyById after setDraft) still see the
                 // latest draft value before deciding whether to seed.
@@ -3500,9 +3525,10 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                   ? {
                       id: visibleAppliedPlugin.pluginId,
                       title: visibleAppliedPlugin.pluginTitle ?? visibleAppliedPlugin.pluginId,
-                      // S67: the applied plugin's source restrictions stay visible in context.
-                      restrictions: studioPluginRestrictionLabels(
-                        installedPlugins.find((plugin) => plugin.id === visibleAppliedPlugin.pluginId), t),
+                      // S67: the application's own (pinned) source restrictions stay visible in context.
+                      restrictions: pinnedRestrictions?.snapshotId === visibleAppliedPlugin.snapshotId
+                        ? studioSourceRestrictionLabels(pinnedRestrictions.restrictions, t)
+                        : [],
                     }
                   : null
               }

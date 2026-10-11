@@ -1160,6 +1160,29 @@ Repair 2 closing evidence: 310 daemon tests passed across 18 focused files (two 
 
 Repair 3 closing evidence: six distinct behavioral RED cases on the committed Repair 2 baseline now pass. Final focused gates pass 115 daemon tests across 10 files and 163 Theater tests across 18 files, including tracked R11/R10, updated R7, retained R1/R8/R9, dual interrupted/timeout legacy terminals, lone fallbacks, healthy already-indexed rows and second-boot stability. Normal run/company provider regressions pass. Guard, locale checks, diff validation, contracts/daemon builds, Web typecheck and daemon test types pass. Exact commands, counts and retained development failures are in GATES.md. No full suites, browser, real-provider, native sandbox or deployment acceptance is claimed.
 
+## S67 — Live Artifact and media plugin atoms on Studio (#61, #63, #68; PR #88)
+
+The original S67 write-up and its Repair 1 never reached this file; the writer session was lost. This summary is taken from the lane's code and tests. The Web capability registry runs `live-artifact` on every source through the run-bound S52 tools, and `media-image|video|audio` on the OpenAI sources through the S34 functions. Personal Codex is a typed source gap. Apply pins per-source `requirements` with the immutable application. Admission refuses a turn whose source cannot run the pin with `409 MULTIUSER_CAPABILITY_UNAVAILABLE` and writes nothing. Repair 1 added the desktop-step detector over each plugin's Markdown (catalog, apply and the pinned package at admission) and a restriction badge in the composer.
+
+### Repair 2 — pinned restrictions and per-command detection
+
+- **The applied chip discloses the pin (P2).** The composer chip read its restrictions from the current catalog row. After a catalog upgrade dropped the media requirement, a restored older application lost its Codex warning, while admission still refused Codex. Now `plugins/studio-pinned-requirements.ts` is the one derivation: pinned requirements, plus the detector over the pinned package, plus the fixed Live Artifact and unreadable-package refusals. Admission, the apply response's `sourceRestrictions` and `GET /api/applied-plugins/:id` all use it. That GET now returns the additive `StudioAppliedPluginResponse.sourceRestrictions`. The composer seeds them from the apply response and, in Studio, reads them for a restored application by snapshot id. It never re-derives them from plugin ids or the catalog. The picker and preview keep the catalog's restrictions. `od plugin snapshots show` prints the same field. No locale strings changed.
+- **One command at a time (P3).** The detector joined separate code spans, so "named `od`. … token `accent`" read as `od accent`. Each inline span and each logical fenced line (with `\` continuations) is now evaluated on its own, using horizontal-only whitespace. A span that only names something is a description. Real and conditional steps still close, and the distinctive-token rules still scan whole documents.
+- **Recount** (bundled tree, same evaluator as the catalog route): 460 listed, **10 applicable / 450 unavailable**, 0 `live-artifact` refusals. Plugins closed by desktop-step reasons alone: `example-audio-jingle`, `example-hatch-pet`, `example-hyperframes`, `example-video-shortform`, `od-share-to-community`. Against HEAD's detector the only change is `example-ve-terminal-mono`, which loses its false `desktop:od-cli`. It stays unavailable on critique reasons, so no count moved.
+- **Evidence.** RED→GREEN:
+  - Detector: 3 RED, then 25/25.
+  - Composer: 2 RED (restored v1 pin with a v2 catalog; restored unrestricted pin with a restricted catalog), then 4/4.
+  - HTTP: 4 RED (the pinned disclosure after a catalog drop, and the three pre-detector-pin sources now also asserting no events and the disclosure), then the full file at 44/44.
+
+  Also passing:
+  - Availability, pipeline and plugin-route units: 97/97 across 6 files.
+  - CLI plugin case with its login prerequisite: 2/2, with the new snapshot assertion. The full CLI file is 26/27; the export case needs a renderer this host lacks.
+  - Sharing and provider-key (editor billing) suites: 13/13.
+  - Web: runtime plugin tests plus composer 10/10, adjacent composer and plugin suites 190/190.
+  - Contracts/host/daemon builds, daemon source and test types, Web typecheck, guard, `i18n:check` and `git diff --check`.
+
+  Not run: the transport oracle (transport untouched), full suites, the browser suite, and real-provider or deployment acceptance.
+
 ## S68 — Admin presentation inside the Studio shell
 
 Users, Audit, company OpenAI configuration and pool metadata, quotas, personal worker capacity and usage now compose the shared Settings frame. Account control opens these sections from the shared Studio rail and remains available on Settings pages. Existing `/admin/users` and `/admin/audit` links resolve to that same presentation; the separate admin frame and legacy admin navigation are removed. Login/setup identity and the existing legacy project fallback remain. About presents the already exposed version and public health boolean. Personal worker rows preserve the server's connected, expired-sign-in and provider-disabled statuses using existing localized labels.

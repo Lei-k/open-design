@@ -15,6 +15,12 @@
 // shell/CLI shapes (`python x.py`, `od plugin …`) match only inside Markdown
 // code spans or fenced blocks, so prose (e.g. Polish "od") never trips them.
 // A package that cannot be read within bounds is itself a refusal.
+//
+// Repair 2 (review P3): each inline code span and each logical line of a
+// fenced block is one command, evaluated on its own. A span that only names
+// something (the `od` executable, an `accent` token, a `$` prompt) is a
+// description, not a step; joining separate spans used to invent commands out
+// of unrelated prose ("named `od`. … token `accent`" read as `od accent`).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -47,16 +53,23 @@ const ANYWHERE: ReadonlyArray<[StudioDesktopStepSubject, RegExp]> = [
   ['desktop:music-sfx-audio', /--audio-kind\b[^\n]*\b(?:music|sfx)\b/i],
   ['desktop:codex-tool', /\$imagegen\b|\bimage_gen\b/],
 ];
-const SCRIPT = /(?:^|[\s(;|&"'])(?:python3?|bash|sh|zsh|node|deno|bun|ruby|perl|tsx|ts-node)\s+(?:-[\w-]+\s+)*["']?(?:\$\{?\w+\}?\/|~\/|\.{0,2}\/|[\w.-]+\/)?[\w.${}/-]*\.(?:py|sh|bash|zsh|js|mjs|cjs|ts|rb|pl)\b|(?:^|[\s(;|&"'])\.\/[\w./-]+\.(?:py|sh|bash)\b/m;
-const OD_COMMAND = /(?:^|[\s(;|&"'])(?:od|\$\{?OD_BIN\}?)["']?\s+([a-z][\w-]*)(?:\s+([a-z][\w-]*))?/gm;
+// Command shapes, matched within one command (see `commandsOf`): whitespace
+// between words is horizontal only, so no rule reaches into another line.
+const SCRIPT = /(?:^|[\s(;|&"'])(?:python3?|bash|sh|zsh|node|deno|bun|ruby|perl|tsx|ts-node)[ \t]+(?:-[\w-]+[ \t]+)*["']?(?:\$\{?\w+\}?\/|~\/|\.{0,2}\/|[\w.-]+\/)?[\w.${}/-]*\.(?:py|sh|bash|zsh|js|mjs|cjs|ts|rb|pl)\b|(?:^|[\s(;|&"'])\.\/[\w./-]+\.(?:py|sh|bash)\b/;
+const OD_COMMAND = /(?:^|[\s(;|&"'])(?:od|\$\{?OD_BIN\}?)["']?[ \t]+([a-z][\w-]*)(?:[ \t]+([a-z][\w-]*))?/g;
 const OD_MAPPED = new Set(['media generate', 'tools live-artifacts']);
-const RENDER_CLI = /\bnpx\s+(?:-y\s+)?(?:hyperframes|remotion)\b|\b(?:hyperframes|remotion)\s+render\b/i;
+const RENDER_CLI = /\bnpx[ \t]+(?:-y[ \t]+)?(?:hyperframes|remotion)\b|\b(?:hyperframes|remotion)[ \t]+render\b/i;
+const FENCED = /^(```|~~~)[^\n]*\n([\s\S]*?)^\1/gm;
 
-/** Inline code spans and fenced blocks of a Markdown document. */
-function codeOf(text: string): string {
-  const fenced = [...text.matchAll(/^(```|~~~)[^\n]*\n([\s\S]*?)^\1/gm)].map((match) => match[2]);
-  const inline = [...text.replace(/^(```|~~~)[^\n]*\n[\s\S]*?^\1/gm, '').matchAll(/`([^`\n]+)`/g)].map((match) => match[1]);
-  return [...fenced, ...inline].join('\n');
+/**
+ * The commands of a Markdown document, each evaluated on its own: every inline
+ * code span, and every logical line of a fenced block (a trailing `\` joins
+ * the next line, as a shell does). Never a concatenation of separate units.
+ */
+function commandsOf(text: string): string[] {
+  const fenced = [...text.matchAll(FENCED)].flatMap((match) => match[2]!.replace(/\\\r?\n[ \t]*/g, ' ').split(/\r?\n/));
+  const inline = [...text.replace(FENCED, '').matchAll(/`([^`\n]+)`/g)].map((match) => match[1]!);
+  return [...fenced, ...inline].filter((command) => command.trim().length > 0);
 }
 
 /** Typed reasons for every desktop-only step any document instructs, sorted. */
@@ -64,11 +77,12 @@ export function detectStudioDesktopSteps(documents: readonly StudioPluginDocumen
   const found = new Set<StudioDesktopStepSubject>();
   for (const document of documents) {
     for (const [subject, pattern] of ANYWHERE) if (pattern.test(document.text)) found.add(subject);
-    const code = codeOf(document.text);
-    if (SCRIPT.test(code)) found.add('desktop:local-script');
-    if (RENDER_CLI.test(code)) found.add('desktop:html-video-render');
-    for (const match of code.matchAll(OD_COMMAND)) {
-      if (!OD_MAPPED.has(`${match[1]} ${match[2] ?? ''}`.trim())) found.add('desktop:od-cli');
+    for (const command of commandsOf(document.text)) {
+      if (SCRIPT.test(command)) found.add('desktop:local-script');
+      if (RENDER_CLI.test(command)) found.add('desktop:html-video-render');
+      for (const match of command.matchAll(OD_COMMAND)) {
+        if (!OD_MAPPED.has(`${match[1]} ${match[2] ?? ''}`.trim())) found.add('desktop:od-cli');
+      }
     }
   }
   return [...found].sort().map((subject) => ({ code: 'capability', subject }));
