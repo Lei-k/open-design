@@ -15,9 +15,13 @@ let root: string;
 let aFile: string;
 let bFile: string;
 beforeAll(async () => {
-  // This suite exercises the compiled entry point. Build every daemon source
+  // This suite exercises the compiled entry point. Build contracts and daemon
   // before starting the fixture so a direct Vitest run cannot reuse stale dist.
-  execFileSync(process.execPath, [path.resolve('../..', 'node_modules/typescript/bin/tsc'), '-p', 'tsconfig.json'], { timeout: 180_000, stdio: 'pipe' });
+  const compiler = path.resolve('../..', 'node_modules/typescript/bin/tsc');
+  const contractsRoot = path.resolve('../..', 'packages/contracts');
+  execFileSync(process.execPath, ['esbuild.config.mjs'], { cwd: contractsRoot, timeout: 180_000, stdio: 'pipe' });
+  execFileSync(process.execPath, [compiler, '-p', 'tsconfig.json', '--emitDeclarationOnly'], { cwd: contractsRoot, timeout: 180_000, stdio: 'pipe' });
+  execFileSync(process.execPath, [compiler, '-p', 'tsconfig.json'], { timeout: 180_000, stdio: 'pipe' });
   ({ dataRoot: root } = await loadIsolatedServerModule());
   daemon = await startMultiUserDaemon(multiUserOptions({ testMockAgentScript: path.resolve('../..', 'mocks/run-isolation-agent.ts'), testPersonalCodexAppServer: PERSONAL_CODEX_MOCK, studioRenderer: { assetHosts: [] },
     testCompanyOpenAIFetch: async () => new Response('data: ' + JSON.stringify({ type: 'response.output_text.delta', delta: 'CLI company completed.\n' })

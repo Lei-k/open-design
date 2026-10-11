@@ -297,7 +297,7 @@ describe('U02/U03 — single use, supersession and expiry', () => {
   it('deactivation withdraws the outstanding credential; issuing to a deactivated account is refused', async () => {
     const admin = await seedAdmin();
     const { account, setup } = service.provisionAccount(admin, { username: 'carol', role: 'user' });
-    service.updateAccount(admin, account.id, { active: false });
+    service.updateAccount(admin, account.id, { revision: store.getAccountById(account.id)!.updatedAt, active: false });
     expect(credentialRows()).toEqual([]);
     await expectAuthError(service.completePasswordSetup({ token: setup.token, password: 'carol-password-123' }), 'SETUP_INVALID');
     await expectAuthError(() => service.issueSetupCredential(admin, account.id, store.getAccountById(account.id)?.updatedAt ?? 0), 'VALIDATION');
@@ -368,15 +368,15 @@ describe('U05 — privilege guard and the usable-admin invariant', () => {
     await expectAuthError(() => service.updateAccount(admin, admin.accountId, { active: false }), 'LAST_ADMIN');
     await expectAuthError(() => service.issueSetupCredential(admin, admin.accountId, store.getAccountById(admin.accountId)?.updatedAt ?? 0), 'LAST_ADMIN');
     // Demoting or deactivating the pending admin is always allowed.
-    expect(service.updateAccount(admin, pending.id, { role: 'user' }).role).toBe('user');
-    service.updateAccount(admin, pending.id, { role: 'admin' });
+    expect(service.updateAccount(admin, pending.id, { revision: store.getAccountById(pending.id)!.updatedAt, role: 'user' }).role).toBe('user');
+    service.updateAccount(admin, pending.id, { revision: store.getAccountById(pending.id)!.updatedAt, role: 'admin' });
     const reissued = service.issueSetupCredential(admin, pending.id, store.getAccountById(pending.id)?.updatedAt ?? 0);
     expect(setup.token).not.toBe(reissued.token);
     await service.completePasswordSetup({ token: reissued.token, password: 'p-admin-password-1' });
     // Now usable: the first admin may step down.
     await expectAuthError(() => service.updateAccount(admin, admin.accountId, { role: 'user' }), 'FORBIDDEN');
     const second = service.resolveSession((await service.login({ username: 'p-admin', password: 'p-admin-password-1' })).session.token)!;
-    expect(service.updateAccount(second, admin.accountId, { role: 'user' }).role).toBe('user');
+    expect(service.updateAccount(second, admin.accountId, { revision: store.getAccountById(admin.accountId)!.updatedAt, role: 'user' }).role).toBe('user');
   });
 
   it('a reset on an admin is refused when it would leave no usable admin', async () => {
@@ -394,7 +394,7 @@ describe('U05 — privilege guard and the usable-admin invariant', () => {
     const aliceOther = secondConnection();
     const aliceAdmin = (await loginActor(aliceOther.service, 'alice', ALICE_PW)).actor;
     // Connection B (alice) demotes root; connection A (root's stale handle) is refused.
-    aliceOther.service.updateAccount(aliceAdmin, admin.accountId, { role: 'user' });
+    aliceOther.service.updateAccount(aliceAdmin, admin.accountId, { revision: store.getAccountById(admin.accountId)!.updatedAt, role: 'user' });
     await expectAuthError(() => service.updateAccount(admin, aliceAdmin.accountId, { role: 'user' }), 'FORBIDDEN');
     await expectAuthError(() => service.provisionAccount(admin, { username: 'mallory', role: 'admin' }), 'FORBIDDEN');
     // Alice is now the only usable admin, seen fresh from connection A as well.
@@ -412,7 +412,7 @@ describe('U05 — privilege guard and the usable-admin invariant', () => {
     const held = holdNextKdf();
     const creating = service.createAccount(aliceAdmin, { username: 'mallory', password: 'mallory-password-1', role: 'admin' });
     await held.entered;
-    other.service.updateAccount(admin, aliceAdmin.accountId, { role: 'user' });
+    other.service.updateAccount(admin, aliceAdmin.accountId, { revision: store.getAccountById(aliceAdmin.accountId)!.updatedAt, role: 'user' });
     held.release();
     await expectAuthError(creating, 'FORBIDDEN');
     expect(store.getAccountByUsername('mallory')).toBeNull();
@@ -441,7 +441,7 @@ describe('U05 — privilege guard and the usable-admin invariant', () => {
     const held = holdNextKdf();
     const redeem = service.completePasswordSetup({ token: setup.token, password: 'carol-password-123' });
     await held.entered;
-    other.service.updateAccount(admin, account.id, { active: false });
+    other.service.updateAccount(admin, account.id, { revision: store.getAccountById(account.id)!.updatedAt, active: false });
     held.release();
     await expectAuthError(redeem, 'SETUP_INVALID');
     expect(store.getAccountById(account.id)).toMatchObject({ active: false, passwordState: 'setup_required' });
@@ -491,8 +491,8 @@ describe('U08 — append-only administrator audit', () => {
     const { account: carol, setup } = service.provisionAccount(admin, { username: 'carol', role: 'user' });
     await service.completePasswordSetup({ token: setup.token, password: 'carol-password-123' });
     const legacy = await service.createAccount(admin, { username: 'alice', password: ALICE_PW, role: 'user' });
-    service.updateAccount(admin, legacy.id, { role: 'admin' });
-    service.updateAccount(admin, legacy.id, { role: 'admin' }); // no-op: not audited
+    service.updateAccount(admin, legacy.id, { revision: store.getAccountById(legacy.id)!.updatedAt, role: 'admin' });
+    service.updateAccount(admin, legacy.id, { revision: store.getAccountById(legacy.id)!.updatedAt, role: 'admin' }); // no-op: not audited
     await loginActor(service, 'carol', 'carol-password-123');
     expect(service.revokeAccountSessions(admin, carol.id)).toBe(1);
     const reset = service.issueSetupCredential(admin, carol.id, store.getAccountById(carol.id)?.updatedAt ?? 0);
@@ -578,7 +578,7 @@ describe('U08 — append-only administrator audit', () => {
     try {
       expect(() => service.issueSetupCredential(admin, legacy.id, store.getAccountById(legacy.id)?.updatedAt ?? 0)).toThrow();
       expect(() => service.provisionAccount(admin, { username: 'carol', role: 'user' })).toThrow();
-      expect(() => service.updateAccount(admin, legacy.id, { active: false })).toThrow();
+      expect(() => service.updateAccount(admin, legacy.id, { revision: store.getAccountById(legacy.id)!.updatedAt, active: false })).toThrow();
     } finally {
       db.exec('DROP TRIGGER test_fail_audit');
       db.close();
