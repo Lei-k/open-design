@@ -6134,4 +6134,16 @@ export interface Dict {
   'studio.admin.accountChanged': string;
   'studio.admin.lastAdmin': string;
   'studio.admin.usernameTaken': string;
+  'studio.synthesis.finalize': string;
+  'studio.synthesis.handoff': string;
+  'studio.synthesis.personalCodex': string;
+  'studio.synthesis.chooseSource': string;
+  'studio.synthesis.providerDisabled': string;
+  'studio.synthesis.keyMissing': string;
+  'studio.synthesis.quotaExhausted': string;
+  'studio.synthesis.readOnly': string;
+  'studio.synthesis.failed': string;
+  'studio.synthesis.stale': string;
+  'studio.synthesis.authorityChanged': string;
+  'studio.synthesis.saved': string;
 }

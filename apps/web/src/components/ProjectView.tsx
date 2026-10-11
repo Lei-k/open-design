@@ -1,3 +1,4 @@
+import { StudioSynthesisActions } from './StudioSynthesisActions';
 import { bindStudioPendingWrite } from '../runtime/studio-resources';
 import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioSetInterval as setInterval, studioFetch as fetch, studioWindowLocalStorage, studioWindowSessionStorage } from '../runtime/studio-transport';
 import { StudioDesignJury } from './Theater/StudioDesignJury';
@@ -13739,6 +13740,9 @@ export function ProjectView({
         enabled={critiqueTheaterEnabled}
         workspaceContext={projectRunWorkspaceContext}
       />}
+      {!studio.hostServices && <StudioSynthesisActions projectId={project.id} conversationId={activeConversationId}
+        canWrite={!projectMutationReadOnly}
+        executionSource={executionAgentId === 'openai' ? 'company_pool' : executionAgentId === 'openai-byok' ? 'personal_api_key' : executionAgentId === 'codex' ? 'personal_subscription' : null} />}
       {/* ProjectActionsToolbar removed per 00efdcba — hide finalize-design
           toolbar from project header. Restore from cf1cd9bb if product
           wants the Finalize + Continue-in-CLI buttons back in the chrome. */}

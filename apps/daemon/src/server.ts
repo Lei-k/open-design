@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { StudioMcpRuntime } from './mcp-client/studio-runtime.js';
+import { registerStudioSynthesisRoutes } from './routes/studio-synthesis.js';
 import { registerStudioDeployRoutes } from './routes/studio-deploy.js';
 import { registerStudioMcpToolRoutes } from './routes/studio-mcp-tools.js';
 import { registerMultiUserStatic } from './http/multiuser-static.js';
@@ -17723,6 +17724,13 @@ export async function startServer({
     ...(studioDesignCatalog ? { designCatalog: studioDesignCatalog } : {}),
     ...(studioPlugins ? { plugins: studioPlugins } : {}),
   }) : null;
+  // Project synthesis uses the actor's OpenAI worker source and quota (#66).
+  if (multiUserRuns && multiUserMode) registerStudioSynthesisRoutes(app, {
+    db, projectsRoot: PROJECTS_DIR, designSystemsRoot: DESIGN_SYSTEMS_DIR, pool: multiUserRuns,
+    sessionCurrent: (actor) => multiUserFront!.sessionCurrent(actor), accountActive: multiUserFront!.accountActive,
+    ...(studioDesignCatalog ? { designCatalog: studioDesignCatalog } : {}),
+    ...(multiUserMode.testCompanyOpenAIFetch ? { fetch: multiUserMode.testCompanyOpenAIFetch } : {}),
+  });
   // Account research on each account's own Tavily key (#63); never the host research key.
   if (multiUserRuns) registerStudioResearchRoutes(app, { research: multiUserRuns.research });
   // Account connectors (#62, S58): the company Composio key and each account's own OAuth connections.

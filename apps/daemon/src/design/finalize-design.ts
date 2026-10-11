@@ -93,6 +93,14 @@ export interface FinalizeOptions {
   now?: () => Date;
   fetchImpl?: typeof globalThis.fetch;
   signal?: AbortSignal;
+  /** Studio supplies only owned captured inputs and a checked storage commit. */
+  studio?: {
+    directory: string;
+    transcript: { jsonl: string; messageCount: number };
+    designSystemBody: string | null;
+    artifact: ResolvedArtifact | null;
+    commit(designMd: string, usage: { inputTokens: number; outputTokens: number }): void;
+  };
   // Override the helper-internal upstream-call timeout. Production callers
   // omit this so the helper bounds at DEFAULT_TIMEOUT_MS; tests pass a
   // smaller value to exercise the AbortSignal.any composition without
@@ -280,7 +288,7 @@ export async function finalizeDesignPackage(
   // bare `projectDir` would silently land DESIGN.md in the hidden daemon
   // data dir for these projects (PR #832 P1 finding from @lefarcen).
   const projectMetadata = (project as { metadata?: { baseDir?: string } | null }).metadata ?? null;
-  const dir = resolveProjectDir(projectsRoot, projectId, projectMetadata ?? undefined);
+  const dir = options.studio?.directory ?? resolveProjectDir(projectsRoot, projectId, projectMetadata ?? undefined);
   // For imported-folder projects, `dir` is the user's own directory and
   // already exists; mkdirSync is a no-op (recursive:true is idempotent).
   // For native projects, it lazily creates `.od/projects/<id>`.
@@ -312,8 +320,9 @@ export async function finalizeDesignPackage(
     // Phase 3: export transcript via the PR #493 primitive. Returns the
     // disk path; we read the body and run it through the truncation
     // policy so a 4 MB transcript does not blow Anthropic's context.
-    const transcriptResult = exportProjectTranscript(db, projectsRoot, projectId, { now });
-    const transcriptJsonl = fs.readFileSync(transcriptResult.path, 'utf8');
+    const transcriptResult = options.studio?.transcript ?? exportProjectTranscript(db, projectsRoot, projectId, { now });
+    const transcriptJsonl = 'jsonl' in transcriptResult && typeof transcriptResult.jsonl === 'string'
+      ? transcriptResult.jsonl : fs.readFileSync((transcriptResult as { path: string }).path, 'utf8');
     const truncatedJsonl = truncateTranscriptForPrompt(transcriptJsonl);
 
     // Phase 4: design system. Project may not have one selected; readDesignSystem
@@ -323,14 +332,14 @@ export async function finalizeDesignPackage(
       typeof (project as { designSystemId?: unknown }).designSystemId === 'string'
         ? ((project as { designSystemId: string }).designSystemId)
         : null;
-    const designSystemBody = designSystemId
+    const designSystemBody = options.studio ? options.studio.designSystemBody : designSystemId
       ? await readDesignSystem(designSystemsRoot, designSystemId)
       : null;
 
     // Phase 5: current artifact (active tab → newest .artifact.json → null).
     // Thread metadata so imported-folder projects discover the real artifacts
     // under metadata.baseDir rather than the empty `.od/projects/<id>` dir.
-    const artifact = await resolveCurrentArtifact(
+    const artifact = options.studio ? options.studio.artifact : await resolveCurrentArtifact(
       db,
       projectsRoot,
       projectId,
@@ -420,6 +429,12 @@ export async function finalizeDesignPackage(
     // reopen for fsync → rename. On any failure unlink tmp; rethrow so the
     // route handler maps the error.
     const encoded = Buffer.from(designMd, 'utf8');
+    if (options.studio) {
+      options.studio.commit(designMd, { inputTokens, outputTokens });
+      return { designMdPath: OUTPUT_FILENAME, bytesWritten: encoded.length, model: options.model,
+        inputTokens, outputTokens, artifact: artifact ? { name: artifact.name, updatedAt: null } : null,
+        transcriptMessageCount: transcriptResult.messageCount, designSystemId };
+    }
     try {
       fs.writeFileSync(tmpPath, encoded, { flag: 'wx' });
       const fsyncFd = fs.openSync(tmpPath, 'r+');
@@ -787,7 +802,7 @@ export function extractDesignMd(
   return out;
 }
 
-function extractTokenUsage(
+export function extractTokenUsage(
   payload: unknown,
   protocol: FinalizeProviderProtocol,
 ): { inputTokens: number; outputTokens: number } {

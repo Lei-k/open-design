@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
-import type { Brand } from '@open-design/contracts';
+import { STUDIO_PARITY_LANES, type Brand, type AuthAccount, type StudioRuntimeCapabilities } from '@open-design/contracts';
+import { CookieSession } from '../../src/multiuser/session';
+import { StudioCapabilitiesProvider } from '../../src/runtime/studio-capabilities';
 import type { ComponentProps, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -75,13 +77,14 @@ type MockChatPaneProps = {
   continueBrandAgentExtractionBusy?: boolean;
 };
 
+const translation = vi.hoisted(() => ({ t: (key: string) => key }));
 vi.mock('../../src/i18n', () => ({
   useI18n: () => ({
     locale: 'en',
     setLocale: () => undefined,
-    t: (key: string) => key,
+    t: translation.t,
   }),
-  useT: () => (key: string) => key,
+  useT: () => translation.t,
 }));
 
 vi.mock('../../src/router', () => ({
@@ -1768,6 +1771,26 @@ describe('ProjectView pending prompt seeding', () => {
       expect(composerValue()).toBe('');
     });
   });
+  it('S71 exposes project finalize and conversation handoff on a Studio OpenAI source', async () => {
+    const account: AuthAccount = { id:'A',username:'A',role:'user',active:true,passwordState:'set',createdAt:1,updatedAt:1 };
+    const capabilities = { schemaVersion:1,shell:'studio', executionSources:[{agentId:'openai-byok',source:'personal_api_key'}],
+      features:Object.fromEntries(STUDIO_PARITY_LANES.map(({id}) => [id,{status:'pilot',reason:'Pilot'}])) } as StudioRuntimeCapabilities;
+    vi.stubGlobal('fetch', vi.fn(async (input) => {
+      const url=String(input);
+      if (url === '/api/auth/me') return Response.json({account,studio:capabilities,studioRevision:1,studioMessageIdPrefix:'mua_0123456789abcdef01234567_'});
+      if (url.endsWith('/synthesis')) return Response.json({digest:'a'.repeat(64),defaultSource:'personal_api_key',sources:[{executionSource:'personal_api_key',available:true,reason:null}],results:{}});
+      if (url.endsWith('/access')) { const member={accountId:'A',username:'A',role:'owner'}; return Response.json({projectId:'s71-project',role:'owner',shared:false,self:member,owner:member,members:[member]}); }
+      return Response.json({runs:[],questions:[],files:[],presence:[],comments:[]});
+    }));
+    const session = new CookieSession(); await session.verify(); const snapshot = session.snapshot();
+    render(<StudioCapabilitiesProvider session={session} generation={snapshot.generation} actor={account} capabilities={snapshot.studio!}>
+      {projectViewElement(project('s71-project'))}
+    </StudioCapabilitiesProvider>);
+    await waitFor(() => expect((screen.getByRole('button',{name:'studio.synthesis.finalize'}) as HTMLButtonElement).disabled).toBe(false));
+    expect(await screen.findByRole('button',{name:'studio.synthesis.handoff'})).toBeTruthy();
+  });
+
+
 });
 
 function composerValue(): string {

@@ -24,7 +24,9 @@ beforeAll(async () => {
   execFileSync(process.execPath, [compiler, '-p', 'tsconfig.json'], { timeout: 180_000, stdio: 'pipe' });
   ({ dataRoot: root } = await loadIsolatedServerModule());
   daemon = await startMultiUserDaemon(multiUserOptions({ testMockAgentScript: path.resolve('../..', 'mocks/run-isolation-agent.ts'), testPersonalCodexAppServer: PERSONAL_CODEX_MOCK, studioRenderer: { assetHosts: [] },
-    testCompanyOpenAIFetch: async () => new Response('data: ' + JSON.stringify({ type: 'response.output_text.delta', delta: 'CLI company completed.\n' })
+    testCompanyOpenAIFetch: async (url) => String(url).endsWith('/chat/completions')
+      ? Response.json({ choices: [{ message: { content: '# CLI design\nContinue the Studio design.' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } })
+      : new Response('data: ' + JSON.stringify({ type: 'response.output_text.delta', delta: 'CLI company completed.\n' })
       + '\n\ndata: ' + JSON.stringify({ type: 'response.completed', response: { output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'CLI company completed.' }] }] } }) + '\n\n',
       { headers: { 'content-type': 'text/event-stream' } }),
     testTavilyFetch: async () => Response.json({ answer: 'CLI research summary', results: [{ title: 'CLI source', url: 'https://example.test/cli', content: 'CLI snippet' }] }) }));
@@ -790,3 +792,53 @@ it('exposes the admin Settings actions through the real pinned-session CLI with 
     for (const action of [['users', 'list'], ['audit'], ['pool', 'get'], ['personal', 'get']]) expect((await cli(['admin', ...action, '--session-file', other, '--json'])).code).not.toBe(0);
   }
 }, 120000);
+
+
+it('S71 finalizes and hands off with Studio OpenAI sources through the compiled session CLI', async () => {
+  const session = path.join(root, 's71-cli-session');
+  // Earlier cases revoke Alice's original harness session. Authenticate this
+  // fixture independently, like the public-link and routine CLI witnesses.
+  const cookie = await login(daemon, alice.username, alice.password);
+  const pilot = await daemon.request({ path: `/api/admin/users/${alice.id}/studio-pilot`, cookie: admin.cookie });
+  expect(pilot.status, pilot.text).toBe(200);
+  expect((await daemon.request({ method: 'PUT', path: `/api/admin/users/${alice.id}/studio-pilot`, cookie: admin.cookie,
+    body: { studioPilot: true, revision: pilot.json.revision } })).status).toBe(200);
+  success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', alice.username,
+    '--password-file', '-', '--session-file', session, '--json'], alice.password));
+  const ownKey = 'sk-s71-cli-own-fixture-01234567890123456789';
+  const currentKey = await daemon.request({ path: '/api/multiuser/settings/provider-keys', cookie });
+  expect(currentKey.status, currentKey.text).toBe(200);
+  const openaiKey = currentKey.json.keys.find((key: { provider: string }) => key.provider === 'openai');
+  expect(openaiKey).toBeDefined();
+  expect((await daemon.request({ method: 'PUT', path: '/api/multiuser/settings/provider-keys/openai', cookie,
+    body: { revision: openaiKey.revision, apiKey: ownKey, model: 'gpt-s71-cli' } })).status).toBe(200);
+  const company = await daemon.request({ path: '/api/admin/pool/openai', cookie: admin.cookie });
+  expect(company.status, company.text).toBe(200);
+  expect((await daemon.request({ method: 'PUT', path: '/api/admin/pool/openai', cookie: admin.cookie,
+    body: { revision: company.json.provider.revision, enabled: true, capacity: 2, apiKey: 'sk-s71-cli-company-fixture-0123456789', model: 'gpt-s71-company' } })).status).toBe(200);
+  const made = success(await cli(['project', 'create', '--name', 'S71 CLI', '--session-file', session, '--json']));
+  const pid = made.project.id; const cid = made.conversationId;
+  // The preceding admin case can set test-mock capacity to zero. Seed through
+  // the account's mocked OpenAI turn instead; run admission owns message ids.
+  const admitted = await daemon.request({ method: 'POST', path: '/api/runs', cookie,
+    body: { projectId: pid, conversationId: cid, agentId: 'openai-byok', executionSource: 'personal_api_key', message: 'A calm page' } });
+  expect(admitted.status, admitted.text).toBe(202);
+  const finished = await daemon.request({ path: `/api/runs/${admitted.json.runId}/events`, cookie });
+  expect(finished.status, finished.text).toBe(200);
+  expect(finished.text).toContain('"status":"succeeded"');
+  const transcript = await daemon.request({ path: `/api/projects/${pid}/conversations/${cid}/messages`, cookie });
+  expect(transcript.status, transcript.text).toBe(200);
+  expect(transcript.json.messages).toContainEqual(expect.objectContaining({ role: 'user', content: 'A calm page' }));
+  for (const executionSource of ['personal_api_key', 'company_pool']) {
+    const finalized = await cli(['project','finalize',pid,'--execution-source',executionSource,'--session-file',session,'--json']);
+    expect(success(finalized)).toMatchObject({ current: true, executionSource, fileName: 'DESIGN.md', inputTokens: 11 });
+    expect(finalized.stdout + finalized.stderr).not.toContain(ownKey);
+    const handoff = success(await cli(['project','handoff',pid,'--prompt-file','-','--session-file',session,'--json'], JSON.stringify({ conversationId: cid, executionSource })));
+    expect(handoff).toMatchObject({ current: true, executionSource, fileName: 'HANDOFF.md', prompt: expect.stringContaining('Continue the Studio design') });
+    expect(success(await cli(['project','synthesis',pid,'--session-file',session,'--json'])).results.handoff.current).toBe(true);
+  }
+  const codex = await cli(['project','finalize',pid,'--execution-source','personal_subscription','--session-file',session,'--json']);
+  expect(codex.code).toBe(1); expect(codex.stderr).toContain('MULTIUSER_CAPABILITY_UNAVAILABLE');
+  const bad = await cli(['project','finalize',pid,'--prompt-file','-','--session-file',session,'--json'], JSON.stringify({ apiKey: ownKey }));
+  expect(bad.code).toBe(1); expect(bad.stdout + bad.stderr).not.toContain(ownKey);
+}, 120_000);

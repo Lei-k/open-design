@@ -24,6 +24,21 @@ const actor = (role: 'admin' | 'user', accountId = `${role}-1`): AuthActor => ({
   sessionExpiresAt: Number.MAX_SAFE_INTEGER,
 });
 
+it('S71 synthesis aliases require project edit access and closed credential-free bodies', () => {
+  for (const prefix of ['/api/projects/p', '/api/multiuser/projects/p']) {
+    for (const suffix of ['finalize/openai', 'handoff']) {
+      const route = matchMultiUserRoute('POST', `${prefix}/${suffix}`)[0]!;
+      expect(route.entry.routeClass).toBe('owner-scoped-project');
+      expect(route.entry.sharedRole).toBe('edit');
+      expect(route.entry.bodyPolicy).toBe('studio-synthesis');
+      expect(multiUserBodyAllowed(route.entry.bodyPolicy!, { executionSource: 'personal_api_key', ...(suffix === 'handoff' ? { conversationId: 'c' } : {}) })).toBe(true);
+      for (const field of ['apiKey', 'baseUrl', 'protocol', 'model'])
+        expect(multiUserBodyAllowed(route.entry.bodyPolicy!, { [field]: 'secret' })).toBe(false);
+    }
+  }
+  expect(matchMultiUserRoute('POST', '/api/brands/b/finalize')[0]!.entry.routeClass).toBe('blocked-in-multiuser');
+});
+
 describe('classification registry is well formed', () => {
   it('has unique keys, compilable patterns and a reason for every entry', () => {
     const seen = new Set<string>();
@@ -346,4 +361,9 @@ describe('S41 bundled plugin routes (#61)', () => {
       expect(ok(body), JSON.stringify(body)).toBe(false);
     }
   });
+});
+
+it('S71 rejects non-string execution sources without coercion or exceptions', () => {
+  for (const executionSource of [['personal_api_key'], { toString: 'company_pool' }, {}, 1, true, null])
+    expect(multiUserBodyAllowed('studio-synthesis', { executionSource })).toBe(false);
 });

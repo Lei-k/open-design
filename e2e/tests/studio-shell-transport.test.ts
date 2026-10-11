@@ -531,7 +531,7 @@ it('S61 MCP runtime endpoints are classified but cookie transport cannot borrow 
   }
 });
 
-it('S63 opens account deploy settings and owner delivery only, with explicit classes and no synthesis/domain routes',()=> {
+it('S63 opens account deploy settings and owner delivery only, with explicit classes and no domain routes',()=> {
   for(const [method,path,lane] of [['GET','/api/deploy/config','settings'],['PUT','/api/deploy/config','settings'],['GET','/api/multiuser/deploy/config','settings'],
     ['POST','/api/projects/p/deploy','delivery'],['POST','/api/projects/p/deploy/preflight','delivery'],['GET','/api/projects/p/deployments','delivery'],
     ['GET','/api/projects/p/deployments/d','delivery'],['POST','/api/projects/p/deployments/d/status','delivery'],['POST','/api/projects/p/deployments/d/check-link','delivery'],
@@ -539,7 +539,7 @@ it('S63 opens account deploy settings and owner delivery only, with explicit cla
     expect(studioRequestAvailable(method,path,l=>l===lane),path).toBe(true);expect(studioRequestAvailable(method,path,()=>false),path).toBe(false);
     const matches=matchMultiUserRoute(method,path);expect(matches.length).toBeGreaterThan(0);expect(matches.every(m=>m.entry.routeClass!=='blocked-in-multiuser')).toBe(true);
   }
-  for(const [method,path] of [['GET','/api/deploy/cloudflare-pages/zones'],['POST','/api/projects/p/finalize/openai'],['POST','/api/projects/p/handoff']] as const) {
+  for(const [method,path] of [['GET','/api/deploy/cloudflare-pages/zones']] as const) {
     expect(studioRequestAvailable(method,path,()=>true)).toBe(false);expect(matchMultiUserRoute(method,path).every(m=>m.entry.routeClass==='blocked-in-multiuser')).toBe(true);
   }
 });
@@ -561,4 +561,20 @@ it('allows exactly the existing administrative metadata/actions through the fron
   expect(studioRequestAvailable('GET', '/api/admin/projects/a', () => true)).toBe(false);
   expect(studioRequestAvailable('GET', '/api/admin/agent-accounts/a/token', () => true)).toBe(false);
   expect(studioRequestAvailable('GET', '/api/admin/pool', () => false)).toBe(false);
+});
+
+it('S71 synthesis uses the delivery boundary, edit-scoped aliases and credential-free policy', () => {
+  for (const prefix of ['/api/projects/p', '/api/multiuser/projects/p']) {
+    for (const [method, suffix] of [['GET', 'synthesis'], ['POST', 'finalize/openai'], ['POST', 'handoff']] as const) {
+      const route = `${prefix}/${suffix}`;
+      expect(studioRequestAvailable(method, route, lane => lane === 'delivery'), route).toBe(true);
+      expect(studioRequestAvailable(method, route, () => false), route).toBe(false);
+      const match = matchMultiUserRoute(method, route)[0]!;
+      expect(match.entry.routeClass).toBe('owner-scoped-project');
+      expect(match.entry.sharedRole).toBe(method === 'GET' ? 'view' : 'edit');
+      if (method === 'POST') expect(match.entry.bodyPolicy).toBe('studio-synthesis');
+    }
+  }
+  expect(studioRequestAvailable('POST', '/api/projects/p/finalize/anthropic', () => true)).toBe(false);
+  expect(studioRequestAvailable('POST', '/api/brands/b/finalize', () => true)).toBe(false);
 });

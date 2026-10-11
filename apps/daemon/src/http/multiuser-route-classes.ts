@@ -46,7 +46,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'studio-memory-rules-suggest' | 'studio-memory-extract' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'catalog-share' | 'deploy-config' | 'studio-deploy' | 'provider-key' | 'composio-config' | 'connector-prepare' | 'studio-mcp-server' | 'studio-mcp-import' | 'studio-mcp-oauth' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'studio-plugin-apply' | 'studio-live-artifact' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'studio-memory-rules-suggest' | 'studio-memory-extract' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'catalog-share' | 'deploy-config' | 'studio-deploy' | 'studio-synthesis' | 'provider-key' | 'composio-config' | 'connector-prepare' | 'studio-mcp-server' | 'studio-mcp-import' | 'studio-mcp-oauth' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'studio-plugin-apply' | 'studio-live-artifact' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -362,9 +362,14 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'POST /api/projects/:id/browser-sessions',
     'DELETE /api/projects/:id/browser-sessions/:sessionId',
   ]),
-  ...group('blocked-in-multiuser', 'finalize and handoff synthesize with separate AI provider keys; they are not cloud deploy wrappers', [
-    'POST /api/projects/:id/finalize/:provider', 'POST /api/projects/:id/handoff',
-  ], { capabilityRefusal: 'deploy-synthesis' }),
+  ...['finalize/:provider', 'handoff', 'synthesis'].flatMap((suffix) => {
+    const method = suffix === 'synthesis' ? 'GET' : 'POST';
+    const destination = `/api/multiuser/projects/:id/${suffix}`;
+    const extras = { projectParam: 'id', ...(method === 'POST' ? { bodyPolicy: 'studio-synthesis' as const, maxBodyBytes: 8192 } : {}) };
+    return [...group('owner-scoped-project', 'Studio synthesis uses the actor OpenAI source and project edit authority',
+      [`${method} /api/projects/:id/${suffix}`], { ...extras, rewriteTo: destination }),
+      ...group('owner-scoped-project', 'project-owned Studio synthesis alias', [`${method} ${destination}`], extras)];
+  }),
   ...group('blocked-in-multiuser', 'Cloudflare custom domains and zone discovery are unavailable on multi-user Web; use the provider-managed pages.dev link.', [
     'GET /api/deploy/cloudflare-pages/zones',
   ], { capabilityRefusal: 'deploy-domains' }),
@@ -1140,6 +1145,10 @@ export const MULTIUSER_SHARED_PROJECT_ROLES: Readonly<Record<string, ProjectShar
     String.raw`POST ${PROJECT_FILE_RE}\/files\/(.+)\/versions$/u`,
     String.raw`POST ${PROJECT_FILE_RE}\/files\/(.+)\/versions\/([^/]+)\/restore$/u`,
   ].map((key) => [key, 'edit' as const])),
+  ...Object.fromEntries(['finalize/:provider', 'handoff'].flatMap((suffix) =>
+    [`POST /api/projects/:id/${suffix}`, `POST /api/multiuser/projects/:id/${suffix}`]).map((key) => [key, 'edit' as const])),
+  'GET /api/projects/:id/synthesis': 'view',
+  'GET /api/multiuser/projects/:id/synthesis': 'view',
   'POST /api/projects/:projectId/critique': 'edit',
   'POST /api/multiuser/projects/:projectId/critique': 'edit',
   'GET /api/projects/:projectId/critique': 'view',

@@ -1,3 +1,4 @@
+import { StudioSynthesisActions } from './StudioSynthesisActions';
 import { StudioCapabilityMessage, useStudioCapabilityState } from '../runtime/StudioCapabilityState';
 import { StudioExternalLink } from '../runtime/StudioExternalLink';
 import { StudioDeployMenu } from '../runtime/StudioDeploy';
@@ -7233,7 +7234,7 @@ function ReactComponentViewer({
                   </div>
                 ) : null}
               </div>
-              {viewerOnly ? null : (
+              {!studio.hostServices ? <StudioSynthesisActions projectId={projectId} canWrite={!viewerOnly} /> : viewerOnly ? null : (
                 <HandoffButton
                   projectId={projectId}
                   projectKind={projectKind}
@@ -17558,7 +17559,7 @@ function HtmlViewer({
                   </AnchoredMenuShell>
                 ) : null}
               </div>
-              {viewerOnly ? null : (
+              {!studio.hostServices ? <StudioSynthesisActions projectId={projectId} canWrite={!viewerOnly} /> : viewerOnly ? null : (
                 <HandoffButton
                   projectId={projectId}
                   projectKind={projectKind}

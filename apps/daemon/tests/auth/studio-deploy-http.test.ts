@@ -449,12 +449,16 @@ it('safe capture refuses links, missing references, file/count/byte limits and t
     (await call(a, 'POST', `/api/projects/${size}/deploy`, { fileName: '../other.html', providerId: 'vercel' })).status,
   ).toBeGreaterThanOrEqual(400);
 });
-it('finalize/handoff and zones/custom domains stay precisely refused', async () => {
+it('finalize/handoff require source selection; zones/custom domains stay precisely refused', async () => {
   const id = await project();
+  const conversations = await call(a, 'GET', `/api/projects/${id}/conversations`);
+  expect(conversations.status, conversations.text).toBe(200);
+  const conversationId = conversations.json.conversations[0].id;
   for (const suffix of ['finalize/openai', 'handoff']) {
-    const res = await call(a, 'POST', `/api/projects/${id}/${suffix}`, {});
-    expect(res.status).toBe(403);
-    expect(res.json.error.details.reason).toContain('separate AI provider');
+    const res = await call(a, 'POST', `/api/projects/${id}/${suffix}`, suffix === 'handoff' ? { conversationId } : {});
+    expect(res.status, res.text).toBe(409);
+    expect(res.json.error).toMatchObject({ code: 'MULTIUSER_CAPABILITY_UNAVAILABLE',
+      details: { capability: 'deploy-synthesis', reason: 'source-required' } });
   }
   expect((await call(a, 'GET', '/api/deploy/cloudflare-pages/zones')).status).toBe(403);
   expect(

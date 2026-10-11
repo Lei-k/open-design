@@ -79,6 +79,8 @@ export function studioRequestAvailable(method: string, path: string,
   if (/^\/api\/projects\/[^/]+\/tabs$/.test(path)) return ['GET', 'PUT'].includes(method);
   if (/^\/api\/projects\/[^/]+\/events$/.test(path)) return method === 'GET';
   if (usable('delivery')) {
+    if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/synthesis$/.test(path)) return method === 'GET';
+    if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/(?:finalize\/openai|handoff)$/.test(path)) return method === 'POST';
     if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/archive$/.test(path)) return method === 'GET';
     if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/archive\/batch$/.test(path)) return method === 'POST';
     if (/^\/api\/(?:multiuser\/)?projects\/[^/]+\/export\/html$/.test(path)) return method === 'POST';

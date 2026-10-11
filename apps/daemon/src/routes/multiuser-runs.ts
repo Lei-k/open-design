@@ -63,6 +63,7 @@ import type { PersonalSandbox } from '../services/personal-sandbox.js';
 import { internalMultiUserResponse, type InternalMultiUserResult } from '../http/multiuser-internal.js';
 import type { AuthActor } from '../services/auth-service.js';
 import type { StudioPluginCapture, StudioPlugins } from './studio-plugins.js';
+import { StudioSynthesisError, type StudioSynthesisPool } from '../services/studio-synthesis.js';
 
 type RunRow = {
   id: string; owner_account_id: string; project_id: string; conversation_id: string;
@@ -395,7 +396,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   runState(runId: string, accountId: string): { status: string; text: string | null; reason: string | null } | null;
   beginShutdown(): void; shutdown(): Promise<void>; companyPoolAvailable: boolean; openaiPoolAvailable: boolean;
   /** Account research on the account's own Tavily key (#63); shared with the research route. */
-  research: StudioResearch } {
+  research: StudioResearch } & StudioSynthesisPool {
   const { db, dataRoot, projectsRoot } = input;
   type DesignSnapshot = { id: string; hash: string; prompt: Pick<Parameters<typeof composeSystemPrompt>[0],
     'designSystemBody' | 'designSystemTitle' | 'designSystemUsageMd' | 'designSystemTokensCss' |
@@ -1134,6 +1135,15 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   /** Host worker slots for turns on accounts' own keys; the provider bill is the account's. */
   const byokCapacity = () => providerKeys ? Number((db.prepare("SELECT value FROM multiuser_pool_config WHERE key = 'personal-api-key-capacity'")
     .get() as { value: string } | undefined)?.value ?? '4') : 0;
+  // S71 one-shot synthesis borrows the ordinary OpenAI worker slots and ledger.
+  const synthesis = new Map<string, { accountId: string; projectId: string; source: 'company_pool' | 'personal_api_key'; abort: AbortController; finish(): void }>();
+  // Synthesis captures the project transcript, so any conversation deletion
+  // in that project also fences this whole-project operation.
+  const synthesisDeleting = (accountId: string, projectId: string) => [...deletingTargets.keys()].some((key) => {
+    const [owner, project] = JSON.parse(key) as [string | null, string];
+    return project === projectId && (owner === null || owner === accountId);
+  });
+  const synthesisCount = (source: string) => [...synthesis.values()].filter((job) => job.source === source).length;
   const providerCapacity = (run: RunRow) => isByok(run) ? byokCapacity()
     : isOpenAI(run) ? companyOpenAI.available() ? companyOpenAI.read().capacity : 0 : capacity();
   const lane = (run: RunRow) => isByok(run) ? 'byok' : isOpenAI(run) ? 'openai' : 'mock';
@@ -1148,8 +1158,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         const turns = new Map((db.prepare('SELECT account_id, last_seq FROM multiuser_pool_turns').all() as Array<{ account_id: string; last_seq: number }>)
           .map((turn) => [turn.account_id, turn.last_seq]));
         // One active turn per account and lane; company quota binds company turns only.
-        const eligible = queued.filter((run) => active.filter((other) => lane(other) === lane(run)).length < providerCapacity(run)
+        const eligible = queued.filter((run) => active.filter((other) => lane(other) === lane(run)).length
+          + (isOpenAI(run) ? synthesisCount(run.execution_source) : 0) < providerCapacity(run)
           && (isByok(run) || ledger.balance(run.owner_account_id).remainingMs > 0)
+          && ![...synthesis.values()].some((job) => job.accountId === run.owner_account_id && job.source === run.execution_source)
           && !active.some((other) => other.owner_account_id === run.owner_account_id && isByok(other) === isByok(run)));
         const next = eligible.sort((a, b) => (turns.get(a.owner_account_id) ?? 0) - (turns.get(b.owner_account_id) ?? 0)
           || Number(a.queue_seq) - Number(b.queue_seq))[0];
@@ -1658,7 +1670,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   };
   app.get('/api/admin/pool', (_req, res) => {
     const rows = db.prepare(`SELECT * FROM ${table} WHERE status IN ('active', 'queued') AND ${company}`).all() as RunRow[];
-    const counts = (openai: boolean, status: string) => rows.filter((run) => isOpenAI(run) === openai && run.status === status).length;
+    const counts = (openai: boolean, status: string) => rows.filter((run) => isOpenAI(run) === openai && run.status === status).length
+      + (openai && status === 'active' ? synthesisCount('company_pool') : 0);
     const users: import('@open-design/contracts').AdminPoolResponse['users'] = {};
     for (const account of accounts.listAccounts()) {
       const balance = ledger.balance(account.id);
@@ -2380,6 +2393,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     // Background memory extraction bills a turn's source: none outlives the daemon.
     input.memory?.close();
+    for (const job of [...synthesis.values()]) { job.abort.abort(); job.finish(); }
     for (const set of listeners.values()) for (const res of set) res.end();
     listeners.clear();
   };
@@ -2412,6 +2426,58 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   };
   return {
     research,
+    synthesisSource(accountId, source) {
+      const reason = source === 'personal_subscription' ? 'personal-codex'
+        : source === 'personal_api_key' ? !providerKeys ? 'provider-disabled' : !providerKeys.configured(accountId) ? 'key-missing' : null
+        : !companyOpenAI.available() ? 'provider-disabled' : ledger.balance(accountId).remainingMs === 0 ? 'quota-exhausted' : null;
+      return { executionSource: source, available: reason === null, reason };
+    },
+    beginSynthesis(accountId, projectId, source, checkAuthority) {
+      checkAuthority();
+      if (shuttingDown || storesClosed || synthesisDeleting(accountId, projectId) || !accounts.getAccountById(accountId)?.active
+        || !accounts.getStudioPilot(accountId).studioPilot || !projects.canWrite(projectId, accountId))
+        throw new StudioSynthesisError(409, 'MULTIUSER_SYNTHESIS_AUTHORITY_CHANGED');
+      const own = source === 'personal_api_key';
+      const execution = own ? providerKeys?.execution(accountId) : companyOpenAI.execution();
+      if (!execution) throw new StudioSynthesisError(403, own ? 'MULTIUSER_PROVIDER_KEY_MISSING' : 'MULTIUSER_PROVIDER_DISABLED');
+      const model = 'config' in execution ? execution.config.model : execution.model;
+      const revision = 'config' in execution ? execution.config.credentialRevision : execution.credentialRevision;
+      const active = db.prepare(`SELECT * FROM ${table} WHERE status = 'active' AND ${workerRows}`).all() as RunRow[];
+      const sameLane = active.filter((run) => own ? isByok(run) : isOpenAI(run) && isCompany(run));
+      if ([...synthesis.values()].some((job) => job.accountId === accountId && job.source === source)
+        || sameLane.some((run) => run.owner_account_id === accountId)
+        || sameLane.length + synthesisCount(source) >= (own ? byokCapacity() : companyOpenAI.read().capacity))
+        throw new StudioSynthesisError(409, 'CONFLICT');
+      const id = randomUUID();
+      if (!own) {
+        const admission = ledger.start({ actorId: accountId, runId: id, projectId, providerId: 'openai' });
+        if (admission.status !== 'started') throw new StudioSynthesisError(admission.status === 'denied' && admission.reason === 'quota_exhausted' ? 429 : 409,
+          admission.status === 'denied' && admission.reason === 'quota_exhausted' ? 'MULTIUSER_QUOTA_EXHAUSTED' : 'CONFLICT');
+      }
+      const abort = new AbortController();
+      let loss: unknown;
+      const check = () => {
+        if (loss) throw loss;
+        checkAuthority();
+        const current = own ? providerKeys?.read(accountId) : companyOpenAI.read();
+        if (abort.signal.aborted || shuttingDown || storesClosed || synthesisDeleting(accountId, projectId) || !accounts.getAccountById(accountId)?.active
+          || !accounts.getStudioPilot(accountId).studioPilot || !projects.canWrite(projectId, accountId)
+          || !current?.configured || current.model !== model || current.credentialRevision !== revision
+          || !own && !companyOpenAI.enabled()) throw new StudioSynthesisError(409, 'MULTIUSER_SYNTHESIS_AUTHORITY_CHANGED');
+        if (!own && ledger.balance(accountId).remainingMs === 0) throw new StudioSynthesisError(429, 'MULTIUSER_QUOTA_EXHAUSTED');
+      };
+      const timer = setInterval(() => { try { check(); } catch (error) { loss = error; abort.abort(); } }, 50);
+      timer.unref();
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true; clearInterval(timer); synthesis.delete(id);
+        if (!own && !storesClosed) ledger.finish(accountId, id);
+        dispatch();
+      };
+      synthesis.set(id, { accountId, projectId, source, abort, finish });
+      return { id, apiKey: execution.apiKey, model, signal: abort.signal, check, finish };
+    },
     async admitInternal(actorRecord, request, allowed, instruction) {
       const { res, result } = internalMultiUserResponse(actorRecord, allowed);
       if (request.executionSource === 'company_pool') await createOpenAIRun({ ...request, agentId: 'openai' }, res, instruction);
@@ -2437,6 +2503,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       // suspends every collaborator's turn in its projects; an ordinary logout
       // by an active owner does not revoke those collaborators' authority.
       const inactive = accounts.getAccountById(accountId)?.active !== true;
+      for (const job of synthesis.values()) if (job.accountId === accountId || inactive && !projects.canWrite(job.projectId, job.accountId)) job.abort.abort();
       const active = db.prepare(`SELECT id FROM ${table} r WHERE status IN ('active','queued') AND
         (owner_account_id = ? OR (? = 1 AND EXISTS (SELECT 1 FROM ${PROJECT_OWNERS_TABLE} o
           WHERE o.project_id = r.project_id AND o.owner_account_id = ?)))`).all(accountId, inactive ? 1 : 0, accountId) as Array<{ id: string }>;
@@ -2455,6 +2522,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     async cancelProjectRuns(accountId, projectId, conversationId) {
       const key = targetKey(accountId, projectId, conversationId);
       deletingTargets.set(key, (deletingTargets.get(key) ?? 0) + 1);
+      for (const job of synthesis.values()) if (job.projectId === projectId && (accountId === null || job.accountId === accountId)) job.abort.abort();
       let released = false;
       const release = () => {
         if (released) return;
