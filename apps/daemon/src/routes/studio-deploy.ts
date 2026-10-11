@@ -56,7 +56,7 @@ export function registerStudioDeployRoutes(app: Express, deps: RegisterStudioDep
     )
       throw new AuthorityChanged();
   };
-  const failed = (res: Response, error: unknown) => {
+  const failed = (res: Response, error: unknown, mayDeploy = false) => {
     if (
       error instanceof StudioDeployRecordMissing ||
       ((error instanceof OutboundAuthorityRefused || error instanceof StudioDeployAuthorityRefused) && error.cause instanceof StudioDeployRecordMissing)
@@ -74,7 +74,9 @@ export function registerStudioDeployRoutes(app: Express, deps: RegisterStudioDep
         res,
         409,
         'MULTIUSER_DEPLOY_AUTHORITY_CHANGED',
-        'Account, session, token or project authority changed; no local result was saved. The provider may already have created a remote deployment; check your provider account.',
+        mayDeploy
+          ? 'Account, session, token or project authority changed; no local result was saved. The provider may already have created a remote deployment; check your provider account.'
+          : 'Account, session, token or project authority changed; review your access and try again.',
       );
     if (error instanceof StudioDeployInputError)
       return sendApiError(
@@ -267,7 +269,7 @@ export function registerStudioDeployRoutes(app: Express, deps: RegisterStudioDep
       res.setHeader('Cache-Control', 'no-store');
       res.json(row);
     } catch (error) {
-      failed(res, error);
+      failed(res, error, !preflight);
     } finally {
       running.delete(target.actor.accountId);
     }

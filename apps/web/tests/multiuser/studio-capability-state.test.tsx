@@ -190,15 +190,24 @@ it('share link group has one popup advisory while every link retains a same-tab 
   expect(links.length).toBeGreaterThan(1);
   expect(links.every((link) => !link.getAttribute('target'))).toBe(true);
 });
-it('failed owned ZIP download uses the shared permission state and remains retryable', async () => {
+it.each(['http', 'network', 'browser'].flatMap((failure) => ['button', 'menu'].map((entry) => ({ failure, entry }))))('owned ZIP $failure failure from $entry has the correct retryable state', async ({ failure, entry }) => {
   const original = fetch;
   vi.stubGlobal('fetch', vi.fn(async (input, init) => String(input).endsWith('/archive')
-    ? Response.json({}, { status: 403 }) : original(input, init)));
+    ? failure === 'network' ? Promise.reject(new TypeError('Network failed')) : failure === 'http' ? Response.json({}, { status: 503 }) : new Response('zip') : original(input, init)));
+  vi.spyOn(URL, 'createObjectURL').mockImplementation(() => { throw new DOMException('Blocked', 'NotAllowedError'); });
   await mount(<FileViewer projectId="p" projectKind="prototype" file={{ name: 'index.html', path: 'index.html', type: 'file', size: 10, mtime: 1, kind: 'html', mime: 'text/html' }} liveHtml="<html><body>Hi</body></html>" />);
-  fireEvent.click(screen.getByTestId('download-project-archive'));
+  if (entry === 'button') fireEvent.click(screen.getByTestId('download-project-archive'));
+  else {
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Download as .zip' }));
+  }
   await waitFor(() => {
+    if (entry === 'menu') {
+      expect(screen.getAllByRole('status').some((reason) => reason.getAttribute('data-capability-state') === (failure === 'browser' ? 'permission-denied' : 'retryable-error'))).toBe(true);
+      return;
+    }
     const reason = document.getElementById(screen.getByTestId('download-project-archive').getAttribute('aria-describedby')!);
-    expect(reason?.getAttribute('data-capability-state')).toBe('permission-denied');
+    expect(reason?.getAttribute('data-capability-state')).toBe(failure === 'browser' ? 'permission-denied' : 'retryable-error');
   });
   expect((screen.getByTestId('download-project-archive') as HTMLButtonElement).disabled).toBe(false);
 });

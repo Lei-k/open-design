@@ -39,6 +39,8 @@ export const tr: Dict = {
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
   "studio.deployRefreshBusy": "Dağıtım yenilemesi meşgul. Kısa bir süre sonra tekrar deneyin.",
   "studio.deployAuthorityChanged": "Hesap, oturum, belirteç veya proje erişimi değişti. Yerel sonuç kaydedilmedi. Sağlayıcı uzak dağıtımı zaten oluşturmuş olabilir; sağlayıcı hesabınızı kontrol edin.",
+  "studio.deployAccessChanged": "Hesap, oturum, belirteç veya proje erişimi değişti. Erişiminizi kontrol edip tekrar deneyin.",
+  "plugins.restrictionsUnknown": "Kısıtlamalar bilinmiyor",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Kaydedilen anılar ve profil bilgileri sonraki çalıştırmalara eklenir. Otomatik çıkarım isteğe bağlıdır: OpenAI turlarından sonra o turun kendi kaynağında (şirket havuzu veya kendi anahtarınız) çalışır ve kişisel Codex turlarında atlanır.",
 
