@@ -285,3 +285,30 @@ it('R11 boots legacy duplicate terminals without an index and is unchanged on se
   a.cookie = await login(daemon, a.username, a.password);
   expect(snapshot()).toEqual(repaired);
 }, 180000);
+
+it('R13 boots three non-fallback terminals, keeps the earliest and records the quarantine once', async () => {
+  const run = await jury(); await settle(run.base);
+  const healthy = await jury(); await settle(healthy.base);
+  await daemon.close();
+  const db = new Database(path.join(root, 'app.sqlite'));
+  let earliest: unknown;
+  try {
+    db.exec('DROP INDEX IF EXISTS studio_critique_terminal');
+    earliest = db.prepare("SELECT * FROM studio_critique_events WHERE run_id = ? AND event = 'critique.ship'").get(run.runId);
+    const last = (db.prepare('SELECT MAX(seq) AS seq FROM studio_critique_events WHERE run_id = ?').get(run.runId) as { seq: number }).seq;
+    db.prepare('INSERT INTO studio_critique_events VALUES (?, ?, ?, ?)').run(run.runId, last + 1, 'critique.interrupted', JSON.stringify({ runId: run.runId }));
+    db.prepare('INSERT INTO studio_critique_events VALUES (?, ?, ?, ?)').run(run.runId, last + 2, 'critique.failed', JSON.stringify({ runId: run.runId, cause: 'orchestrator_internal' }));
+  } finally { db.close(); }
+  for (let boot = 0; boot < 2; boot++) {
+    daemon = await startMultiUserDaemon(multiUserOptions({ testCompanyOpenAIFetch: fixture }));
+    a.cookie = await login(daemon, a.username, a.password);
+    expect((await daemon.request({ path: healthy.base, cookie: a.cookie })).json.status).toBe('succeeded');
+    const check = new Database(path.join(root, 'app.sqlite'));
+    try {
+      expect(check.prepare("SELECT * FROM studio_critique_events WHERE run_id = ? AND event IN ('critique.ship', 'critique.interrupted', 'critique.failed', 'critique.degraded')").all(run.runId)).toEqual([earliest]);
+      expect(check.prepare('SELECT code FROM multiuser_recovery_issues WHERE run_id = ?').all(run.runId)).toEqual([{ code: 'MULTIUSER_CRITIQUE_DUPLICATE_TERMINAL' }]);
+      expect(() => check.prepare('INSERT INTO studio_critique_events VALUES (?, 999, ?, ?)').run(run.runId, 'critique.failed', '{}')).toThrow(/UNIQUE/);
+    } finally { check.close(); }
+    if (boot === 0) await daemon.close();
+  }
+}, 180000);

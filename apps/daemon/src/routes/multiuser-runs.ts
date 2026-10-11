@@ -2401,7 +2401,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   };
   app.post('/api/runs/:id/cancel', (req, res) => { const run = owned(req, res); if (run) interruptRun(run, res); });
   critiqueRoutes = registerStudioCritiqueRoutes(app, { db, dataRoot, dataRootCanonical: input.dataRootCanonical, accountExists: (id) => accounts.getAccountById(id) !== null, owned, canView: (projectId, owner) => projects.canView(projectId, owner),
-    start: admitRun, interrupt: interruptRun, recover: (id, status) => finish(id, status, undefined, true) });
+    start: admitRun, interrupt: interruptRun, recordIssue: (id, code) => studioMessages.recordIssue(id, code), recover: (id, status) => finish(id, status, undefined, true) });
   app.post('/api/runs/:id/steer', (req, res) => {
     const run = owned(req, res);
     if (!run) return;

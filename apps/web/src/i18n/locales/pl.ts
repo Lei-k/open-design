@@ -39,6 +39,8 @@ export const pl: Dict = {
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
   "studio.deployRefreshBusy": "Odświeżanie wdrożenia jest zajęte. Spróbuj ponownie za chwilę.",
   "studio.deployAuthorityChanged": "Konto, sesja, token lub dostęp do projektu uległy zmianie. Nie zapisano lokalnego wyniku. Dostawca mógł już utworzyć zdalne wdrożenie; sprawdź swoje konto u dostawcy.",
+  "studio.deployAccessChanged": "Dostęp do konta, sesji, tokenu lub projektu uległ zmianie. Sprawdź swoje uprawnienia i spróbuj ponownie.",
+  "plugins.restrictionsUnknown": "Ograniczenia nieznane",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Zapisane wspomnienia i dane profilu są uwzględniane w kolejnych uruchomieniach. Automatyczne wyodrębnianie jest opcjonalne: działa po turach OpenAI na źródle danej tury (pula firmowa lub Twój klucz) i jest pomijane dla osobistych tur Codex.",
 

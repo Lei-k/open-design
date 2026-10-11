@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -14,14 +14,49 @@ let admin: Principal;
 let root: string;
 let aFile: string;
 let bFile: string;
+let buildRoot: string;
+let cliEntry: string;
 beforeAll(async () => {
-  // This suite exercises the compiled entry point. Build contracts and daemon
-  // before starting the fixture so a direct Vitest run cannot reuse stale dist.
-  const compiler = path.resolve('../..', 'node_modules/typescript/bin/tsc');
-  const contractsRoot = path.resolve('../..', 'packages/contracts');
+  // Compile a private source snapshot with the normal package build tools.
+  // Neither existing shared dist nor another worker's partially written build
+  // can satisfy this suite. A compile failure fails setup, without a fallback.
+  const repo = path.resolve('../..');
+  // Stay inside the workspace so TypeScript sees the same root ambient types
+  // as the real packages, regardless of the caller's TMPDIR.
+  const buildParent = path.join(repo, '.tmp');
+  mkdirSync(buildParent, { recursive: true });
+  const staleBefore = Date.now() - 6 * 60 * 60 * 1000;
+  for (const entry of readdirSync(buildParent, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith('studio-cli-build-')) continue;
+    const directory = path.join(buildParent, entry.name);
+    const stat = lstatSync(directory, { throwIfNoEntry: false });
+    if (stat?.isDirectory() && stat.mtimeMs < staleBefore) rmSync(directory, { recursive: true, force: true });
+  }
+  buildRoot = mkdtempSync(path.join(buildParent, 'studio-cli-build-'));
+  const contractsRoot = path.join(buildRoot, 'contracts');
+  const daemonRoot = path.join(buildRoot, 'daemon');
+  const linkDependencies = (source: string, target: string) => {
+    mkdirSync(target, { recursive: true });
+    for (const name of readdirSync(source)) {
+      if (name.startsWith('@')) linkDependencies(path.join(source, name), path.join(target, name));
+      else symlinkSync(path.join(source, name), path.join(target, name), 'junction');
+    }
+  };
+  for (const [source, target] of [[path.join(repo, 'packages/contracts'), contractsRoot], [path.join(repo, 'apps/daemon'), daemonRoot]] as const) {
+    mkdirSync(target);
+    for (const name of ['src', 'package.json', 'tsconfig.json']) cpSync(path.join(source, name), path.join(target, name), { recursive: true });
+    linkDependencies(path.join(source, 'node_modules'), path.join(target, 'node_modules'));
+  }
+  const contractLink = path.join(daemonRoot, 'node_modules/@open-design/contracts');
+  rmSync(contractLink);
+  symlinkSync(contractsRoot, contractLink, 'junction');
+  cpSync(path.join(repo, 'packages/contracts/esbuild.config.mjs'), path.join(contractsRoot, 'esbuild.config.mjs'));
+  const compiler = path.join(repo, 'node_modules/typescript/bin/tsc');
   execFileSync(process.execPath, ['esbuild.config.mjs'], { cwd: contractsRoot, timeout: 180_000, stdio: 'pipe' });
   execFileSync(process.execPath, [compiler, '-p', 'tsconfig.json', '--emitDeclarationOnly'], { cwd: contractsRoot, timeout: 180_000, stdio: 'pipe' });
-  execFileSync(process.execPath, [compiler, '-p', 'tsconfig.json'], { timeout: 180_000, stdio: 'pipe' });
+  execFileSync(process.execPath, [compiler, '-p', 'tsconfig.json'], { cwd: daemonRoot, timeout: 180_000, stdio: 'pipe' });
+  cliEntry = path.join(daemonRoot, 'dist/cli.js');
+  process.env.OD_DAEMON_CLI_PATH = cliEntry;
   ({ dataRoot: root } = await loadIsolatedServerModule());
   daemon = await startMultiUserDaemon(multiUserOptions({ testMockAgentScript: path.resolve('../..', 'mocks/run-isolation-agent.ts'), testPersonalCodexAppServer: PERSONAL_CODEX_MOCK, studioRenderer: { assetHosts: [] },
     testCompanyOpenAIFetch: async () => new Response('data: ' + JSON.stringify({ type: 'response.output_text.delta', delta: 'CLI company completed.\n' })
@@ -34,14 +69,19 @@ beforeAll(async () => {
   aFile = path.join(root, 'cli-a-session');
   bFile = path.join(root, 'cli-b-session');
 }, 240_000);
-afterAll(async () => { await daemon?.close(); cleanupIsolatedDataRoot(); });
+afterAll(async () => {
+  try { await daemon?.close(); } finally {
+    cleanupIsolatedDataRoot();
+    if (buildRoot) rmSync(buildRoot, { recursive: true, force: true });
+  }
+});
 
 function cli(args: string[], input = ''): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const env = { ...process.env };
     delete env.NODE_OPTIONS;
     delete env.OD_DAEMON_URL;
-    const child = spawn(process.execPath, [path.resolve('dist/cli.js'), ...args], {
+    const child = spawn(process.execPath, [cliEntry, ...args], {
       env, stdio: ['pipe', 'pipe', 'pipe'], timeout: 15_000,
     });
     let stdout = '';

@@ -18,6 +18,7 @@ export function registerStudioCritiqueRoutes(app: Express, input: {
   canView(projectId: string, accountId: string): boolean;
   start(body: Record<string, unknown>, res: Response): Promise<unknown>;
   interrupt(run: Run, res: Response): void;
+  recordIssue(id: string, code: 'MULTIUSER_CRITIQUE_DUPLICATE_TERMINAL'): void;
   recover(id: string, status: 'succeeded' | 'failed' | 'canceled'): void;
 }) {
   const { db } = input;
@@ -41,7 +42,7 @@ export function registerStudioCritiqueRoutes(app: Express, input: {
     for (const frame of fallbacks) {
       const value = JSON.parse(frame.data) as { status: 'interrupted' | 'timed_out'; round: number; composite: number };
       const other = db.prepare(`SELECT event, data FROM studio_critique_events WHERE run_id = ? AND seq != ?
-        AND event IN ('critique.ship', 'critique.interrupted', 'critique.failed', 'critique.degraded') LIMIT 1`)
+        AND event IN ('critique.ship', 'critique.interrupted', 'critique.failed', 'critique.degraded') ORDER BY seq LIMIT 1`)
         .get(frame.run_id, frame.seq) as { event: string; data: string } | undefined;
       let event: CritiqueSseEvent = value.status === 'interrupted'
         ? { event: 'critique.interrupted', data: { runId: frame.run_id, bestRound: value.round, composite: value.composite } }
@@ -63,6 +64,19 @@ export function registerStudioCritiqueRoutes(app: Express, input: {
         updateCritiqueRun(db, run.id, { status, score: value.composite, artifactPath: null, transcriptPath: null });
         input.recover(run.id, status === 'interrupted' ? 'canceled' : 'failed');
         db.prepare('UPDATE multiuser_runs SET critique_reconciled = 1 WHERE id = ?').run(run.id);
+      }
+    }
+    // Only an old database without the constraint needs the corruption scan.
+    // The issue row quarantines the discarded terminals from replay; one run
+    // cannot prevent every account's daemon from booting.
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'studio_critique_terminal'").get()) {
+      const duplicates = db.prepare(`SELECT run_id, MIN(seq) AS earliest FROM studio_critique_events
+        WHERE event IN ('critique.ship', 'critique.interrupted', 'critique.failed', 'critique.degraded')
+        GROUP BY run_id HAVING COUNT(*) > 1`).all() as Array<{ run_id: string; earliest: number }>;
+      for (const frame of duplicates) {
+        input.recordIssue(frame.run_id, 'MULTIUSER_CRITIQUE_DUPLICATE_TERMINAL');
+        db.prepare(`DELETE FROM studio_critique_events WHERE run_id = ? AND seq > ?
+          AND event IN ('critique.ship', 'critique.interrupted', 'critique.failed', 'critique.degraded')`).run(frame.run_id, frame.earliest);
       }
     }
     db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS studio_critique_terminal ON studio_critique_events(run_id)

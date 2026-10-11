@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DesignSystemSummary } from '@open-design/contracts';
 
+import type { ProjectArchiveDownloadResult } from '../../src/runtime/exports';
 import { DesignSystemsTab } from '../../src/components/DesignSystemsTab';
 import {
   deleteDesignSystemDraft,
@@ -14,7 +15,7 @@ import {
 
 const exportMocks = vi.hoisted(() => ({
   downloadDesignSystemArchive: vi.fn(async () => true),
-  downloadProjectArchive: vi.fn(async () => false),
+  downloadProjectArchive: vi.fn(async (): Promise<ProjectArchiveDownloadResult> => ({ status: 'request-failed' })),
 }));
 
 vi.mock('../../src/providers/registry', async () => {
@@ -42,7 +43,7 @@ afterEach(() => {
   exportMocks.downloadDesignSystemArchive.mockReset();
   exportMocks.downloadDesignSystemArchive.mockResolvedValue(true);
   exportMocks.downloadProjectArchive.mockReset();
-  exportMocks.downloadProjectArchive.mockResolvedValue(false);
+  exportMocks.downloadProjectArchive.mockResolvedValue({ status: 'request-failed' });
   vi.restoreAllMocks();
 });
 
@@ -287,7 +288,13 @@ describe('DesignSystemsTab', () => {
     await waitFor(() => expect(screen.getByText('Done')).toBeTruthy());
   });
 
-  it('shows loading and result feedback for detail overflow downloads', async () => {
+  it.each([
+    { designSystemStarted: true, projectStatus: 'request-failed', result: 'Done' },
+    { designSystemStarted: false, projectStatus: 'started', result: 'Done' },
+    { designSystemStarted: false, projectStatus: 'request-failed', result: 'Could not download the design system. Please try again.' },
+    { designSystemStarted: false, projectStatus: 'browser-blocked', result: 'Could not download the design system. Please try again.' },
+  ] as const)('shows detail download feedback ($designSystemStarted / project $projectStatus)', async ({ designSystemStarted, projectStatus, result }) => {
+    exportMocks.downloadProjectArchive.mockResolvedValue({ status: projectStatus });
     let resolveDownload!: (value: boolean) => void;
     exportMocks.downloadDesignSystemArchive.mockImplementationOnce(
       () => new Promise((resolve) => {
@@ -296,7 +303,7 @@ describe('DesignSystemsTab', () => {
     );
     render(
       <DesignSystemsTab
-        systems={systems}
+        systems={systems.map((system) => system.id === 'user:acme' ? { ...system, projectId: 'ds-acme' } : system)}
         selectedId={null}
         onSelect={() => {}}
         onCreate={() => {}}
@@ -308,9 +315,15 @@ describe('DesignSystemsTab', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Download design system (.zip + SKILLS.md)' }));
 
     expect(screen.getByText('Download design system (.zip + SKILLS.md)')).toBeTruthy();
-    resolveDownload(true);
+    resolveDownload(designSystemStarted);
 
-    await waitFor(() => expect(screen.getByText('Done')).toBeTruthy());
+    await waitFor(() => expect(document.querySelector('.od-toast-message')?.textContent).toBe(result));
+    if (designSystemStarted) expect(exportMocks.downloadProjectArchive).not.toHaveBeenCalled();
+    else expect(exportMocks.downloadProjectArchive).toHaveBeenCalledOnce();
+    if (result !== 'Done') {
+      expect(screen.queryByText('Done')).toBeNull();
+      expect(document.querySelector('.od-toast')?.getAttribute('role')).toBe('alert');
+    }
   });
 
   it('explains when a design system delete is denied instead of suggesting a retry', async () => {

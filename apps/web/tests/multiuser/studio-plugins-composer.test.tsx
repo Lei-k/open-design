@@ -142,6 +142,36 @@ it('shows no restriction on a restored application its pin runs everywhere, what
   expect(chip.textContent).not.toContain('Not on');
 });
 
+it.each(['http', 'network'] as const)('restored pin %s failure is unknown and a bounded retry restores restrictions', async (failure) => {
+  const ref = await mountComposerHandle({ plugins: [media] });
+  const original = fetch;
+  let attempts = 0;
+  let recover = false;
+  vi.stubGlobal('fetch', vi.fn(async (url, init) => {
+    if (String(url) !== '/api/applied-plugins/snap-media-v1') return original(url, init);
+    attempts++;
+    if (recover) return Response.json({ ...v1Snapshot, sourceRestrictions: restriction });
+    if (failure === 'network') throw new TypeError('Network failed');
+    return Response.json({}, { status: 503 });
+  }));
+  restoreApplied(ref, v1Snapshot);
+  const chip = await pluginChip();
+  await waitFor(() => expect(chip.textContent).toContain('Restrictions unknown'));
+  expect(within(chip).getAllByRole('button')[0]!.getAttribute('aria-label')).toContain('Restrictions unknown');
+  recover = true;
+  await waitFor(() => expect(chip.textContent).toContain('Not on Codex · personal subscription · Needs: media-image'), { timeout: 4000 });
+  expect(chip.textContent).not.toContain('Restrictions unknown');
+  expect(attempts).toBe(2);
+});
+it('restored pin retries stop after three attempts and retain unknown restrictions', async () => {
+  const ref = await mountComposerHandle({ plugins: [media] });
+  restoreApplied(ref, v1Snapshot);
+  const chip = await pluginChip();
+  await waitFor(() => expect(chip.textContent).toContain('Restrictions unknown'));
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 3300)); });
+  expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url) === '/api/applied-plugins/snap-media-v1')).toHaveLength(3);
+  expect(chip.textContent).toContain('Restrictions unknown');
+});
 
 // S70: entry-point component witness paired with the daemon catalog/HTTP
 // specimens of these three newly applicable bundled plugins.

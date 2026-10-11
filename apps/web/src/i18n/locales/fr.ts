@@ -39,6 +39,8 @@ export const fr: Dict = {
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
   "studio.deployRefreshBusy": "L’actualisation du déploiement est occupée. Réessayez dans un instant.",
   "studio.deployAuthorityChanged": "Le compte, la session, le jeton ou l’accès au projet a changé. Aucun résultat local n’a été enregistré. Le fournisseur a peut-être déjà créé un déploiement distant ; vérifiez votre compte chez le fournisseur.",
+  "studio.deployAccessChanged": "L’accès au compte, à la session, au jeton ou au projet a changé. Vérifiez vos droits et réessayez.",
+  "plugins.restrictionsUnknown": "Restrictions inconnues",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Les mémoires enregistrées et les informations de profil sont incluses dans les prochaines exécutions. L’extraction automatique est facultative : elle s’exécute après les tours OpenAI sur la source de ce tour (le pool de l’entreprise ou votre propre clé) et est ignorée pour les tours Codex personnels.",
 

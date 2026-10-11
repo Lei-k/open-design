@@ -2,7 +2,7 @@ import type { StudioWebAction } from '@open-design/host';
 import type { Dict } from '../i18n/types';
 
 export type StudioCapabilityStatus = 'available' | 'permission-denied' | 'permission-prompt' |
-  'unsupported-browser' | 'deployment-disabled' | 'narrow-viewport-alternative';
+  'retryable-error' | 'unsupported-browser' | 'deployment-disabled' | 'narrow-viewport-alternative';
 export interface StudioCapabilityFacts {
   hostServices: boolean;
   narrow?: boolean;
@@ -11,7 +11,7 @@ export interface StudioCapabilityFacts {
   directoryInput?: boolean;
   renderedExports?: boolean;
   permissionGranted?: boolean;
-  failure?: 'permission' | 'download' | 'storage';
+  failure?: 'permission' | 'download' | 'request' | 'storage';
 }
 export interface StudioCapabilityState {
   status: StudioCapabilityStatus;
@@ -45,6 +45,7 @@ export function resolveStudioCapability(action: StudioWebAction, facts: StudioCa
       if (facts.failure === 'permission') return state('permission-denied', false, 'studio.capability.clipboardDenied', 'studio.capability.manualCopy');
       break;
     case 'download':
+      if (facts.failure === 'request') return state('retryable-error', true, 'fileViewer.exportFailed', 'studio.capability.downloadAlternative');
       if (facts.failure === 'download') return state('permission-denied', true, 'studio.capability.download', 'studio.capability.downloadAlternative');
       // Anchor delivery cannot prove completion or observe browser blocking.
       return state(facts.narrow ? 'narrow-viewport-alternative' : 'available', true, 'studio.capability.download', 'studio.capability.downloadAlternative');
