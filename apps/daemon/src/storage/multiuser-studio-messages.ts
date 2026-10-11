@@ -67,11 +67,20 @@ export class MultiUserStudioMessages {
     // live work, not every run ever stored. Each row is its own unit: one
     // damaged row is quarantined and never blocks another account or startup.
     const events = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'multiuser_run_events'").get();
+    const marker = (db.prepare('PRAGMA table_info(multiuser_runs)').all() as Array<{ name: string }>).some((column) => column.name === 'critique_reconciled')
+      ? ' AND critique_reconciled = 0' : '';
+    db.transaction(() => {
+      db.prepare(`DELETE FROM messages WHERE run_id IN (SELECT id FROM multiuser_runs
+        WHERE json_valid(request_json) AND json_extract(request_json, '$.critique') = 1${marker})`).run();
+      db.prepare(`DELETE FROM multiuser_studio_turns WHERE run_id IN (SELECT id FROM multiuser_runs
+        WHERE json_valid(request_json) AND json_extract(request_json, '$.critique') = 1${marker})`).run();
+    })();
     const rows = db.prepare(`SELECT r.* FROM multiuser_runs r
       JOIN ${PROJECT_OWNERS_TABLE} o ON o.project_id = r.project_id AND o.owner_account_id = r.owner_account_id
       JOIN conversations c ON c.id = r.conversation_id AND c.project_id = r.project_id
       LEFT JOIN multiuser_studio_turns t ON t.run_id = r.id
-      WHERE NOT EXISTS (${QUARANTINED('r.id')}) AND (r.status IN ('queued', 'active') OR t.run_id IS NULL${events ? `
+      WHERE COALESCE(CASE WHEN json_valid(r.request_json) THEN json_extract(r.request_json, '$.critique') END, 0) != 1
+        AND NOT EXISTS (${QUARANTINED('r.id')}) AND (r.status IN ('queued', 'active') OR t.run_id IS NULL${events ? `
         OR NOT EXISTS (SELECT 1 FROM messages m WHERE m.id = t.assistant_message_id AND COALESCE(m.last_run_event_id, '')
           = COALESCE((SELECT CAST(MAX(e.seq) AS TEXT) FROM multiuser_run_events e WHERE e.run_id = r.id), ''))` : ''})
       ORDER BY r.created_at, r.queue_seq, r.id`).all() as StudioRunMessageInput[];
@@ -109,6 +118,7 @@ export class MultiUserStudioMessages {
    * afterwards the stored binding is final.
    */
   reconcile(run: StudioRunMessageInput, proposed?: StudioTurnIds): boolean {
+    try { if (JSON.parse(run.request_json ?? '{}').critique === true) return true; } catch { /* ordinary recovery handles malformed requests */ }
     if (this.db.prepare(QUARANTINED('?')).get(run.id)) return false;
     const bound = this.db.prepare('SELECT 1 FROM multiuser_studio_turns WHERE run_id = ?').get(run.id);
     const ids = bound || !proposed ? this.ids(run.id) : proposed;

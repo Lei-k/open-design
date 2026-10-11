@@ -149,6 +149,7 @@ export interface PersonalTurnResult {
  * notification, so classification keeps reading the failed turn itself.
  */
 export async function runPersonalCodexTurn(input: AppServerEnvironment & {
+  ephemeral?: boolean;
   prompt: string; resumeThreadId: string | null; sandboxMode: CodexSandboxMode; onThread?: (threadId: string) => void;
   /** This turn's admitted model/effort; absent means the account's own default. */
   model?: string; reasoning?: string;
@@ -189,7 +190,7 @@ export async function runPersonalCodexTurn(input: AppServerEnvironment & {
   const session = attachCodexAppServerSession({
     child, prompt: input.prompt, cwd: input.cwd, sandboxMode: input.sandboxMode,
     model: input.model ?? null, reasoning: input.reasoning ?? null,
-    resumeSessionId: input.resumeThreadId, resumeSessionOwned: input.resumeThreadId !== null,
+    ephemeral: input.ephemeral === true, resumeSessionId: input.ephemeral ? null : input.resumeThreadId, resumeSessionOwned: input.resumeThreadId !== null,
     reportToolStartupFailures: input.reportToolStartupFailures === true,
     ...(input.dynamicTools && input.onDynamicToolCall ? { dynamicTools: input.dynamicTools, dynamicToolsPrompt: input.dynamicToolsPrompt, onDynamicToolCall: input.onDynamicToolCall } : {}),
     onAgentEvent: (event) => {

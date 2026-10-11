@@ -2,6 +2,7 @@
 // @ts-nocheck
 import { readFileSync, writeFileSync } from 'node:fs';
 import { runStudioDeployCli } from './deploy/studio-cli.js';
+import { runCritiqueCli } from './critique/cli.js';
 import { basename } from 'node:path';
 import { runDaemonCliStartup, startDaemonRuntime } from './daemon-startup.js';
 import { runLiveArtifactsMcpServer } from './mcp-live-artifacts-server.js';
@@ -422,6 +423,7 @@ const PLUGIN_LIST_BOOLEAN_FLAGS = new Set([
 ]);
 
 const SUBCOMMAND_MAP = {
+  critique: async (args) => { process.exitCode = await runCritiqueCli(args, cliDaemonUrl); },
   admin: (args) => runStudioPilotCli(args, remoteSessionFile),
   account: (args) => runAccountCli(args, remoteSessionFile),
   // Account connectors (#62, S58): the same /api/connectors endpoints as Settings → Connectors.

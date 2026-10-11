@@ -141,6 +141,11 @@ describe('route classification covers the real inventory', () => {
       .map((entry) => `${entry.routeClass} ${entry.key}`)
       .sort();
     expect(allowed).toEqual([...S5_OWNER_FILE_ROUTES, ...[
+      ...['/api/projects', '/api/multiuser/projects'].flatMap((prefix) => [
+        `owner-scoped-project POST ${prefix}/:projectId/critique`, `owner-scoped-project GET ${prefix}/:projectId/critique`,
+        ...['', '/events', '/transcript', '/artifact'].map((suffix) => `owner-scoped-run GET ${prefix}/:projectId/critique/:runId${suffix}`),
+        `owner-scoped-run POST ${prefix}/:projectId/critique/:runId/interrupt`,
+      ]),
       'actor-scoped GET /api/deploy/config',
       'actor-scoped PUT /api/deploy/config',
       'actor-scoped GET /api/multiuser/deploy/config',

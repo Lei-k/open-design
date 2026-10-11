@@ -7,6 +7,24 @@ const { studioRequestAvailable } = await import(runtime) as {
   studioRequestAvailable(method: string, path: string, usable?: (lane: string) => boolean, renderedExports?: boolean, researchSearch?: boolean, connectors?: boolean, mcpServers?: boolean): boolean;
 };
 
+it('opens exactly the S66 Jury session routes with execution and media disabled and keeps host conformance closed', () => {
+  for (const prefix of ['/api/projects/p/critique', '/api/multiuser/projects/p/critique']) {
+    for (const [method, suffix] of [['POST', ''], ['GET', ''], ['GET', '/r'], ['GET', '/r/events'], ['GET', '/r/transcript'], ['GET', '/r/artifact'], ['POST', '/r/interrupt']]) {
+      const route = `${prefix}${suffix}`;
+      expect(studioRequestAvailable(method!, route, (lane) => lane === 'execution')).toBe(true);
+      expect(studioRequestAvailable(method!, route, () => false)).toBe(false);
+      expect(studioRequestAvailable(method!, route, (lane) => lane === 'generation')).toBe(false);
+      const matches = matchMultiUserRoute(method!, route);
+      expect(matches).toHaveLength(1);
+      expect(matches[0]!.entry.routeClass).toBe(suffix ? 'owner-scoped-run' : 'owner-scoped-project');
+      if (!suffix) expect(matches[0]!.entry).toMatchObject({ projectParam: 'projectId', sharedRole: method === 'POST' ? 'edit' : 'view' });
+    }
+    for (const suffix of ['/r/rerun', '/r/rounds', '/r/ship', '/r/conformance']) expect(studioRequestAvailable('POST', `${prefix}${suffix}`, () => true)).toBe(false);
+  }
+  expect(studioRequestAvailable('GET', '/api/critique/conformance', () => true)).toBe(false);
+  expect(studioRequestAvailable('GET', '/api/projects/p/critique/r/interrupt', () => true)).toBe(false);
+});
+
 it('classifies every observed request from the real App and cookie entry lifecycle', () => {
   // Component execution stays in web; only this cross-runtime oracle imports
   // daemon authority. Threads keep the bounded child free of worker processes.

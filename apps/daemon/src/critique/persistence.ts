@@ -355,7 +355,7 @@ export function markRunInterruptedRecovery(
  */
 export function reconcileStaleRuns(
   db: Database.Database,
-  options: { staleAfterMs: number; now?: number },
+  options: { staleAfterMs: number; now?: number; runIds?: readonly string[] },
 ): number {
   const now = options.now ?? Date.now();
   const cutoff = now - options.staleAfterMs;
@@ -366,9 +366,10 @@ export function reconcileStaleRuns(
         `SELECT ${COLS}
            FROM critique_runs
           WHERE status = 'running'
-            AND updated_at < ?`,
+            AND updated_at < ?
+            AND (? IS NULL OR id IN (SELECT value FROM json_each(?)))`,
       )
-      .all(cutoff) as RawCritiqueRunRow[];
+      .all(cutoff, options.runIds ? JSON.stringify(options.runIds) : null, options.runIds ? JSON.stringify(options.runIds) : null) as RawCritiqueRunRow[];
 
     if (staleRows.length === 0) return 0;
 

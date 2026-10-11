@@ -1,5 +1,6 @@
 import { bindStudioPendingWrite } from '../runtime/studio-resources';
 import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioSetInterval as setInterval, studioFetch as fetch, studioWindowLocalStorage, studioWindowSessionStorage } from '../runtime/studio-transport';
+import { StudioDesignJury } from './Theater/StudioDesignJury';
 import { StudioLane, useStudioCapabilities, useStudioRequestAvailable } from '../runtime/studio-capabilities';
 import { useStudioResearchReady } from '../runtime/studio-research';
 import { StudioExecutionSource } from '../runtime/StudioExecutionSource';
@@ -13732,11 +13733,12 @@ export function ProjectView({
   // project frame flashing twice on the way in from Home.
   return (
     <CollabProvider value={collabValue}>
-      <CritiqueTheaterMount
+      {!studio.hostServices ? <StudioDesignJury projectId={project.id} conversationId={activeConversationId}
+        agentId={executionAgentId ?? null} canWrite={!currentConversationReadOnly} /> : <CritiqueTheaterMount
         projectId={project.id}
         enabled={critiqueTheaterEnabled}
         workspaceContext={projectRunWorkspaceContext}
-      />
+      />}
       {/* ProjectActionsToolbar removed per 00efdcba — hide finalize-design
           toolbar from project header. Restore from cf1cd9bb if product
           wants the Finalize + Continue-in-CLI buttons back in the chrome. */}
