@@ -112,7 +112,7 @@ it.each(['disable', 'clear', 'rotate', 'disconnect', 'replace', 'pilot', 'logout
   if (change === 'pilot') await mutate(admin, 'PUT', `/api/admin/users/${a.id}/studio-pilot`, { revision: 0, studioPilot: false });
   if (change === 'logout') await mutate(a, 'POST', '/api/auth/logout', {});
   if (change === 'sessions-revoke') await mutate(admin, 'POST', `/api/auth/users/${a.id}/sessions/revoke`, {});
-  if (change === 'password-reset') await mutate(admin, 'POST', `/api/auth/users/${a.id}/password`, { password: 'S59-new-battery-staple-password' });
+  if (change === 'password-reset') expect((await mutate(admin, 'POST', `/api/auth/users/${a.id}/password`, { password: 'S59-new-battery-staple-password', revision: await currentAccountRevision(daemon.request, a.id, admin.cookie) })).status).toBe(204);
   if (change === 'role-change') await mutate(admin, 'PATCH', `/api/auth/users/${a.id}`, { revision: await currentAccountRevision(daemon.request, a.id, admin.cookie), role: 'admin' });
   for (const body of [undefined, args]) {
     const result = await tool(g.token, body); expect(result.status, result.text).toBe(409);

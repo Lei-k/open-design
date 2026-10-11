@@ -202,7 +202,7 @@ describe('U02/U03 — single use, supersession and expiry', () => {
   it('reissue invalidates the earlier outstanding credential', async () => {
     const admin = await seedAdmin();
     const { account, setup: first } = service.provisionAccount(admin, { username: 'carol', role: 'user' });
-    const second = service.issueSetupCredential(admin, account.id);
+    const second = service.issueSetupCredential(admin, account.id, store.getAccountById(account.id)?.updatedAt ?? 0);
     expect(second.purpose).toBe('setup');
     expect(second.token).not.toBe(first.token);
     expect(credentialRows()).toHaveLength(1);
@@ -256,7 +256,7 @@ describe('U02/U03 — single use, supersession and expiry', () => {
     const held = holdNextKdf();
     const redeem = service.completePasswordSetup({ token: setup.token, password: 'carol-password-123' });
     await held.entered;
-    const fresh = service.issueSetupCredential(admin, account.id);
+    const fresh = service.issueSetupCredential(admin, account.id, store.getAccountById(account.id)?.updatedAt ?? 0);
     held.release();
     await expectAuthError(redeem, 'SETUP_INVALID');
     expect(store.getAccountById(account.id)?.passwordState).toBe('setup_required');
@@ -300,8 +300,8 @@ describe('U02/U03 — single use, supersession and expiry', () => {
     service.updateAccount(admin, account.id, { active: false });
     expect(credentialRows()).toEqual([]);
     await expectAuthError(service.completePasswordSetup({ token: setup.token, password: 'carol-password-123' }), 'SETUP_INVALID');
-    await expectAuthError(() => service.issueSetupCredential(admin, account.id), 'VALIDATION');
-    await expectAuthError(() => service.issueSetupCredential(admin, 'missing'), 'NOT_FOUND');
+    await expectAuthError(() => service.issueSetupCredential(admin, account.id, store.getAccountById(account.id)?.updatedAt ?? 0), 'VALIDATION');
+    await expectAuthError(() => service.issueSetupCredential(admin, 'missing', store.getAccountById('missing')?.updatedAt ?? 0), 'NOT_FOUND');
   });
 });
 
@@ -316,7 +316,7 @@ describe('U04 — admin-issued password recovery', () => {
     const { admin, aliceId } = await seedAlice();
     const s1 = await loginActor(service, 'alice', ALICE_PW);
     const s2 = await loginActor(service, 'alice', ALICE_PW);
-    const reset = service.issueSetupCredential(admin, aliceId);
+    const reset = service.issueSetupCredential(admin, aliceId, store.getAccountById(aliceId)?.updatedAt ?? 0);
     expect(reset.purpose).toBe('reset');
     expect(service.resolveSession(s1.token)).toBeNull();
     expect(service.resolveSession(s2.token)).toBeNull();
@@ -331,7 +331,7 @@ describe('U04 — admin-issued password recovery', () => {
 
   it('a failed commit consumes nothing and leaves no partial durable state', async () => {
     const { admin, aliceId } = await seedAlice();
-    const reset = service.issueSetupCredential(admin, aliceId);
+    const reset = service.issueSetupCredential(admin, aliceId, store.getAccountById(aliceId)?.updatedAt ?? 0);
     const before = store.getAccountById(aliceId);
     const auditBefore = auditActions();
     const db = rawDb();
@@ -351,8 +351,8 @@ describe('U04 — admin-issued password recovery', () => {
 
   it('the legacy direct-password reset (test-only) withdraws any outstanding credential', async () => {
     const { admin, aliceId } = await seedAlice();
-    const reset = service.issueSetupCredential(admin, aliceId);
-    await service.resetPassword(admin, aliceId, 'direct-password-77');
+    const reset = service.issueSetupCredential(admin, aliceId, store.getAccountById(aliceId)?.updatedAt ?? 0);
+    await service.resetPassword(admin, aliceId, 'direct-password-77', store.getAccountById(aliceId)?.updatedAt ?? 0);
     expect(credentialRows()).toEqual([]);
     expect(store.getAccountById(aliceId)?.passwordState).toBe('set');
     await expectAuthError(service.completePasswordSetup({ token: reset.token, password: 'alice-new-password-9' }), 'SETUP_INVALID');
@@ -366,11 +366,11 @@ describe('U05 — privilege guard and the usable-admin invariant', () => {
     const { account: pending, setup } = service.provisionAccount(admin, { username: 'p-admin', role: 'admin' });
     await expectAuthError(() => service.updateAccount(admin, admin.accountId, { role: 'user' }), 'LAST_ADMIN');
     await expectAuthError(() => service.updateAccount(admin, admin.accountId, { active: false }), 'LAST_ADMIN');
-    await expectAuthError(() => service.issueSetupCredential(admin, admin.accountId), 'LAST_ADMIN');
+    await expectAuthError(() => service.issueSetupCredential(admin, admin.accountId, store.getAccountById(admin.accountId)?.updatedAt ?? 0), 'LAST_ADMIN');
     // Demoting or deactivating the pending admin is always allowed.
     expect(service.updateAccount(admin, pending.id, { role: 'user' }).role).toBe('user');
     service.updateAccount(admin, pending.id, { role: 'admin' });
-    const reissued = service.issueSetupCredential(admin, pending.id);
+    const reissued = service.issueSetupCredential(admin, pending.id, store.getAccountById(pending.id)?.updatedAt ?? 0);
     expect(setup.token).not.toBe(reissued.token);
     await service.completePasswordSetup({ token: reissued.token, password: 'p-admin-password-1' });
     // Now usable: the first admin may step down.
@@ -382,9 +382,9 @@ describe('U05 — privilege guard and the usable-admin invariant', () => {
   it('a reset on an admin is refused when it would leave no usable admin', async () => {
     const admin = await seedAdmin();
     const second = await service.createAccount(admin, { username: 'alice', password: ALICE_PW, role: 'admin' });
-    const reset = service.issueSetupCredential(admin, second.id);
+    const reset = service.issueSetupCredential(admin, second.id, store.getAccountById(second.id)?.updatedAt ?? 0);
     expect(reset.purpose).toBe('reset');
-    await expectAuthError(() => service.issueSetupCredential(admin, admin.accountId), 'LAST_ADMIN');
+    await expectAuthError(() => service.issueSetupCredential(admin, admin.accountId, store.getAccountById(admin.accountId)?.updatedAt ?? 0), 'LAST_ADMIN');
     expect(store.getAccountById(admin.accountId)?.passwordState).toBe('set');
   });
 
@@ -426,7 +426,7 @@ describe('U05 — privilege guard and the usable-admin invariant', () => {
     const other = secondConnection();
     const aliceAdmin = (await loginActor(service, 'alice', ALICE_PW)).actor;
     const held = holdNextKdf();
-    const resetting = service.resetPassword(aliceAdmin, store.getAccountByUsername('bob')!.id, 'taken-over-password-1');
+    const resetting = service.resetPassword(aliceAdmin, store.getAccountByUsername('bob')!.id, 'taken-over-password-1', store.getAccountById(store.getAccountByUsername('bob')!.id)?.updatedAt ?? 0);
     await held.entered;
     other.service.revokeAccountSessions(admin, aliceAdmin.accountId);
     held.release();
@@ -495,9 +495,9 @@ describe('U08 — append-only administrator audit', () => {
     service.updateAccount(admin, legacy.id, { role: 'admin' }); // no-op: not audited
     await loginActor(service, 'carol', 'carol-password-123');
     expect(service.revokeAccountSessions(admin, carol.id)).toBe(1);
-    const reset = service.issueSetupCredential(admin, carol.id);
+    const reset = service.issueSetupCredential(admin, carol.id, store.getAccountById(carol.id)?.updatedAt ?? 0);
     await service.completePasswordSetup({ token: reset.token, password: 'carol-password-456' });
-    await service.resetPassword(admin, legacy.id, 'direct-password-77');
+    await service.resetPassword(admin, legacy.id, 'direct-password-77', store.getAccountById(legacy.id)?.updatedAt ?? 0);
     // Failures are not audit events.
     await expectAuthError(() => service.updateAccount(admin, 'missing', { active: false }), 'NOT_FOUND');
     await expectAuthError(service.completePasswordSetup({ token: reset.token, password: 'carol-password-789' }), 'SETUP_INVALID');
@@ -576,7 +576,7 @@ describe('U08 — append-only administrator audit', () => {
     db.exec(`CREATE TRIGGER test_fail_audit BEFORE INSERT ON auth_audit
       BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END`);
     try {
-      expect(() => service.issueSetupCredential(admin, legacy.id)).toThrow();
+      expect(() => service.issueSetupCredential(admin, legacy.id, store.getAccountById(legacy.id)?.updatedAt ?? 0)).toThrow();
       expect(() => service.provisionAccount(admin, { username: 'carol', role: 'user' })).toThrow();
       expect(() => service.updateAccount(admin, legacy.id, { active: false })).toThrow();
     } finally {

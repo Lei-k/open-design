@@ -17778,7 +17778,7 @@ export async function startServer({
       invalidatePreviewScopes: (ownerId) => multiUserDesign?.invalidateOwnerCapabilities(ownerId) });
     multiUserFront?.setIsAgentAccountOwner((param, id, accountId) => personalCodex.isOwner(param, id, accountId));
     registerMultiUserAgentAccountRoutes(app, {
-      personal: personalCodex, runs: multiUserRuns.personalLane, listAccountIds: multiUserRuns.listAccountIds,
+      personal: personalCodex, runs: multiUserRuns.personalLane, listAccounts: multiUserRuns.listAccounts,
       companyPoolAvailable: () => multiUserRuns.companyPoolAvailable,
     });
   }

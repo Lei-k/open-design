@@ -35,7 +35,7 @@ import {
   removeJsonInstall,
 } from './mcp-agent-install.js';
 import { resolveMcpWorkspaceContext } from './mcp-workspace-context.js';
-import { cliSessionFetch, extractCliSessionFile, pinCliServerOrigin, readCliSession, runAccountCli, runSessionCli, runStudioPilotCli } from './http/cli-session.js';
+import { AdminCliRefusal, cliSessionFetch, extractCliSessionFile, pinCliServerOrigin, readCliSession, runAccountCli, runSessionCli, runStudioPilotCli } from './http/cli-session.js';
 
 let argv;
 let remoteSessionFile = null;
@@ -896,7 +896,10 @@ if (first && SUBCOMMAND_MAP[first]) {
   try { await SUBCOMMAND_MAP[first](rest); }
   catch (error) {
     if (!remoteSessionFile) throw error;
-    process.stderr.write(`${JSON.stringify({ ok: false, error: { code: 'CLI_SESSION_REQUEST_FAILED', message: 'Authenticated request failed or ended before its terminal event; verify the session and resume without replaying mutations' } })}\n`);
+    const failure = error instanceof AdminCliRefusal && error.code
+      ? { code: error.code, message: 'Administrative request refused; review the current state before retrying' }
+      : { code: 'CLI_SESSION_REQUEST_FAILED', message: 'Authenticated request failed or ended before its terminal event; verify the session and resume without replaying mutations' };
+    process.stderr.write(`${JSON.stringify({ ok: false, error: failure })}\n`);
     process.exitCode = 1;
   }
   // Respect a non-zero exit code a handler set via process.exitCode (e.g. a

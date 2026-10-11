@@ -139,7 +139,7 @@ describe('admin lifecycle actions cancel the target owner\'s work only', () => {
     expect((await detail(alice, companyQueued)).status).toBe('queued');
     expect((await detail(alice, personalQueued)).status).toBe('queued');
 
-    const reset = await daemon.request({ method: 'POST', path: `/api/auth/users/${alice.id}/password`, cookie: admin.cookie, body: {} });
+    const reset = await daemon.request({ method: 'POST', path: `/api/auth/users/${alice.id}/password`, cookie: admin.cookie, body: { revision: await currentAccountRevision(daemon.request, alice.id, admin.cookie) } });
     expect(reset.status, reset.text).toBe(201);
     expect(reset.json.setup.purpose).toBe('reset');
 

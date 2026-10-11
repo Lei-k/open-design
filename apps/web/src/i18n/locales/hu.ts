@@ -5811,4 +5811,7 @@ export const hu: Dict = {
   "studio.admin.collapseSidebar": "Beállítások oldalsávjának összecsukása",
   "studio.admin.sections": "Beállítási szakaszok",
   'studio.admin.capacityWarning': "A kapacitás vagy kvóta módosítása leállíthatja vagy késleltetheti a futó és várakozó feladatokat.",
+  "studio.admin.accountChanged": "Ez a fiók megváltozott. Töltsd újra, ellenőrizd az aktuális állapotot, majd próbáld újra.",
+  "studio.admin.lastAdmin": "Az utolsó használható rendszergazda nem fokozható le és nem tiltható le, jelszava sem állítható vissza.",
+  "studio.admin.usernameTaken": "Ez a felhasználónév már foglalt. Válassz másikat.",
 };

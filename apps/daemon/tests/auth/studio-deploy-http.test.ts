@@ -310,7 +310,7 @@ it.each(['clear', 'replace', 'logout', 'disable', 'revoke', 'reset'])(
     else if (action === 'logout') await call(a, 'POST', '/api/auth/logout', {});
     else if (action === 'disable') await call(admin, 'PATCH', `/api/auth/users/${a.id}`, { revision: await currentAccountRevision(daemon.request, a.id, admin.cookie), active: false });
     else if (action === 'revoke') await call(admin, 'POST', `/api/auth/users/${a.id}/sessions/revoke`, {});
-    else await call(admin, 'POST', `/api/auth/users/${a.id}/password`, { password: a.password });
+    else expect((await call(admin, 'POST', `/api/auth/users/${a.id}/password`, { password: a.password, revision: await currentAccountRevision(daemon.request, a.id, admin.cookie) })).status).toBe(204);
     release();
     const res = await pending;
     expect(res.json.error.code, res.text).toBe('MULTIUSER_DEPLOY_AUTHORITY_CHANGED');

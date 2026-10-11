@@ -5811,4 +5811,7 @@ export const tr: Dict = {
   "studio.admin.collapseSidebar": "Ayarlar kenar çubuğunu daralt",
   "studio.admin.sections": "Ayar bölümleri",
   'studio.admin.capacityWarning': "Kapasite veya kota değişiklikleri çalışan ve sıradaki işleri durdurabilir veya geciktirebilir.",
+  "studio.admin.accountChanged": "Bu hesap değişti. Yeniden yükleyin, güncel durumu inceleyin ve tekrar deneyin.",
+  "studio.admin.lastAdmin": "Son kullanılabilir yöneticinin yetkisi düşürülemez, hesabı devre dışı bırakılamaz veya parolası sıfırlanamaz.",
+  "studio.admin.usernameTaken": "Bu kullanıcı adı zaten alınmış. Başka bir ad seçin.",
 };

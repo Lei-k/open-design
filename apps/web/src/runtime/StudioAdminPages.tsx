@@ -6,6 +6,9 @@ import { CookieSession, RequestFailure } from '../multiuser/session';
 import styles from '../multiuser/MultiUserApp.module.css';
 function failureKey(error: unknown) {
   if (error instanceof RequestFailure) {
+    if (error.code === 'LAST_ADMIN') return 'studio.admin.lastAdmin' as const;
+    if (error.code === 'USERNAME_TAKEN') return 'studio.admin.usernameTaken' as const;
+    if (error.code === 'CONFLICT') return 'studio.admin.accountChanged' as const;
     if (error.status === 409) return 'multiuser.conflict' as const;
     if (error.status === 403) return 'multiuser.denied' as const;
     if (error.status === 400) return 'multiuser.invalid' as const;
@@ -59,7 +62,7 @@ function AdminUsersContent(props: OwnedProps) {
     if (account.id === props.account.id && action !== 'revoke') return;
     setBusy(true); setActionError(null); setSetup(null); setNotice(null);
     const suffix = action === 'reset' ? '/password' : action === 'revoke' ? '/sessions/revoke' : '';
-    const body = action === 'active' ? { active: !account.active, revision: account.updatedAt } : action === 'role' ? { role: account.role === 'admin' ? 'user' : 'admin', revision: account.updatedAt } : {};
+    const body = action === 'active' ? { active: !account.active, revision: account.updatedAt } : action === 'role' ? { role: account.role === 'admin' ? 'user' : 'admin', revision: account.updatedAt } : action === 'reset' ? { revision: account.updatedAt } : {};
     try {
       const result = await props.session.request<AuthIssueSetupCredentialResponse>(`/api/auth/users/${encodeURIComponent(account.id)}${suffix}`, { method: suffix ? 'POST' : 'PATCH', body: JSON.stringify(body) }, props.generation);
       setConfirm(null);

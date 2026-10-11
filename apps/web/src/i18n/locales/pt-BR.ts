@@ -5811,4 +5811,7 @@ export const ptBR: Dict = {
   "studio.admin.collapseSidebar": "Recolher barra de configurações",
   "studio.admin.sections": "Seções de configurações",
   'studio.admin.capacityWarning': "Alterar capacidade ou cota pode parar ou atrasar tarefas em execução e na fila.",
+  "studio.admin.accountChanged": "Esta conta foi alterada. Recarregue, revise o estado atual e tente novamente.",
+  "studio.admin.lastAdmin": "O último administrador disponível não pode ser rebaixado, desativado nem ter a senha redefinida.",
+  "studio.admin.usernameTaken": "Este nome de usuário já está em uso. Escolha outro.",
 };

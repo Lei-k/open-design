@@ -44,7 +44,7 @@ export interface AuthUpdateAccountRequest {
 /** GET /api/admin/pool: aggregate operational metadata, never project content. */
 export interface AdminPoolResponse {
   providers: Record<string, { capacity: number; active: number; queued: number }>;
-  users: Record<string, { usedMs: number; budgetMs: number; remainingMs: number }>;
+  users: Record<string, { username: string; usedMs: number; budgetMs: number; remainingMs: number }>;
 }
 
 /** A freshly issued one-time credential. `token` is the only copy. */
@@ -66,6 +66,11 @@ export interface AuthCreateAccountResponse {
 }
 
 /** `POST /api/auth/users/:id/password` with no password field: issue a setup/reset credential. */
+export interface AuthIssueSetupCredentialRequest {
+  /** Observed account.updatedAt; re-read and review after a conflict. */
+  revision: number;
+}
+
 export interface AuthIssueSetupCredentialResponse {
   setup: AuthSetupCredential;
 }

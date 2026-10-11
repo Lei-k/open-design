@@ -294,7 +294,7 @@ describe('auth service — admin-only management', () => {
     await expectAuthError(() => service.updateAccount(alice, alice.accountId, { role: 'admin' }), 'FORBIDDEN');
     await expectAuthError(() => service.updateAccount(alice, bob.id, { active: false }), 'FORBIDDEN');
     await expectAuthError(() => service.revokeAccountSessions(alice, bob.id), 'FORBIDDEN');
-    await expectAuthError(service.resetPassword(alice, bob.id, 'valid-password-12'), 'FORBIDDEN');
+    await expectAuthError(service.resetPassword(alice, bob.id, 'valid-password-12', store.getAccountById(bob.id)?.updatedAt ?? 0), 'FORBIDDEN');
   });
 
   it('ignores a forged actor role: authority comes from the stored account', async () => {
@@ -353,7 +353,7 @@ describe('auth service — admin-only management', () => {
   it('admin password reset revokes the target sessions and replaces the password', async () => {
     const { admin, alice } = await seedAdminAndUsers();
     const a = await loginActor('alice', ALICE_PW);
-    await service.resetPassword(admin, alice.id, 'fresh-password-333');
+    await service.resetPassword(admin, alice.id, 'fresh-password-333', store.getAccountById(alice.id)?.updatedAt ?? 0);
     expect(service.resolveSession(a.token)).toBeNull();
     await expectAuthError(service.login({ username: 'alice', password: ALICE_PW }), 'INVALID_CREDENTIALS');
     await expect(service.login({ username: 'alice', password: 'fresh-password-333' })).resolves.toBeTruthy();

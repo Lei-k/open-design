@@ -100,6 +100,7 @@ export interface AdminPersonalAccountsResponse {
   activePersonalRuns: number;
   queuedPersonalRuns: number;
   users: Record<string, {
+    username: string;
     codex: { linked: boolean; status: PersonalAccountStatus | null; linkedAt: number | null;
       verifiedAt: number | null; updatedAt: number | null };
     /** Visibility only; personal runs are not charged to the company worker-time budget. */

@@ -340,7 +340,7 @@ describe('OAuth bound to account, session and server', () => {
     if (change === 'logout') await call(user, 'POST', '/api/auth/logout', {});
     if (change === 'session rotation') expect((await call(user, 'POST', '/api/auth/session/rotate', {})).status).toBe(200);
     if (change === 'admin session revoke') expect((await asAdmin('POST', `/api/auth/users/${user.id}/sessions/revoke`, {})).status).toBe(200);
-    if (change === 'password reset') expect((await asAdmin('POST', `/api/auth/users/${user.id}/password`, { password: `${user.password}-reset` })).status).toBe(204);
+    if (change === 'password reset') expect((await asAdmin('POST', `/api/auth/users/${user.id}/password`, { password: `${user.password}-reset`, revision: await currentAccountRevision(daemon.request, user.id, admin.cookie) })).status).toBe(204);
     if (change === 'account disabled') expect((await asAdmin('PATCH', `/api/auth/users/${user.id}`, { revision: await currentAccountRevision(daemon.request, user.id, admin.cookie), active: false })).status).toBe(200);
     if (change === 'pilot change') {
       const pilot = await asAdmin('GET', `/api/admin/users/${user.id}/studio-pilot`);

@@ -6103,4 +6103,7 @@ export interface Dict {
   'studio.admin.collapseSidebar': string;
   'studio.admin.sections': string;
   'studio.admin.capacityWarning': string;
+  'studio.admin.accountChanged': string;
+  'studio.admin.lastAdmin': string;
+  'studio.admin.usernameTaken': string;
 }

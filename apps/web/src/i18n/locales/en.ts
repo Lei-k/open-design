@@ -5826,4 +5826,7 @@ export const en: Dict = {
   "studio.admin.collapseSidebar": "Collapse settings sidebar",
   "studio.admin.sections": "Settings sections",
   'studio.admin.capacityWarning': "Changing capacity or quota can stop or delay running and queued work.",
+  "studio.admin.accountChanged": "This account changed. Reload, review the current state and retry.",
+  "studio.admin.lastAdmin": "The last usable administrator cannot be demoted, disabled or reset.",
+  "studio.admin.usernameTaken": "This username is already taken. Choose another username.",
 };

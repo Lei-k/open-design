@@ -5810,4 +5810,7 @@ export const ja: Dict = {
   "studio.admin.collapseSidebar": "設定サイドバーを折りたたむ",
   "studio.admin.sections": "設定セクション",
   'studio.admin.capacityWarning': "容量や割り当てを変更すると、実行中または待機中の作業が停止または遅延する場合があります。",
+  "studio.admin.accountChanged": "このアカウントは変更されました。再読み込みし、現在の状態を確認してから再試行してください。",
+  "studio.admin.lastAdmin": "最後の利用可能な管理者の権限変更、無効化、パスワードリセットはできません。",
+  "studio.admin.usernameTaken": "このユーザー名は既に使用されています。別の名前を選んでください。",
 };

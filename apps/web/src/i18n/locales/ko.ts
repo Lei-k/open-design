@@ -5810,4 +5810,7 @@ export const ko: Dict = {
   "studio.admin.collapseSidebar": "설정 사이드바 접기",
   "studio.admin.sections": "설정 섹션",
   'studio.admin.capacityWarning': "용량이나 할당량을 변경하면 실행 중이거나 대기 중인 작업이 중단되거나 지연될 수 있습니다.",
+  "studio.admin.accountChanged": "이 계정이 변경되었습니다. 새로고침하고 현재 상태를 확인한 뒤 다시 시도하세요.",
+  "studio.admin.lastAdmin": "마지막 사용 가능한 관리자의 권한을 낮추거나 계정을 비활성화하거나 비밀번호를 재설정할 수 없습니다.",
+  "studio.admin.usernameTaken": "이미 사용 중인 사용자 이름입니다. 다른 이름을 선택하세요.",
 };

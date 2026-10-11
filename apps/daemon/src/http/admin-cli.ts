@@ -1,11 +1,14 @@
-import { cliSessionFetch, readCliSession } from './cli-session.js';
+import { cliSessionFetch, readCliSession, refuseAdminCliResponse } from './cli-session.js';
 
 const HELP = `Usage: od admin users list [--q <username>] [--limit <1..100>] [--offset <0..10000>] [--json]
        od admin users create <username> --role user|admin [--json]
        od admin users update <id> --revision <account.updatedAt> [--role user|admin] [--active true|false] [--json]
-       od admin users reset|revoke <id> [--json]
+       od admin users reset <id> --revision <account.updatedAt> [--json]
+       od admin users revoke <id> [--json]
        od admin audit [--limit <1..100>] [--before <id>] [--json]
        od admin pool get [--json]
+       od admin pool openai get --session-file <path> [--json]
+       od admin pool openai set --help
        od admin pool provider <id> --capacity <0..16> [--json]
        od admin pool quota <account-id> --minutes <0..10080> [--json]
        od admin personal get|set [--capacity <0..16>] [--json]
@@ -57,6 +60,7 @@ export async function runAdminMetadataCli(args: string[], sessionFile: string | 
       body = { revision, ...(flags['--role'] ? { role: flags['--role'] } : {}), ...(flags['--active'] ? { active: flags['--active'] === 'true' } : {}) };
     } else if (command === 'reset' || command === 'revoke') {
       path = '/api/auth/users/' + identifier(id) + (command === 'reset' ? '/password' : '/sessions/revoke'); method = 'POST'; body = {};
+      if (command === 'reset') { allowed = ['--revision']; body = { revision: integer('--revision', 0, Number.MAX_SAFE_INTEGER) }; }
     }
   } else if (domain === 'audit') { expected = 1; allowed = ['--limit', '--before']; path = '/api/auth/audit' + query(['limit', 'before']); }
   else if (domain === 'pool') {
@@ -73,6 +77,6 @@ export async function runAdminMetadataCli(args: string[], sessionFile: string | 
   if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') throw new Error('TLS verification must not be disabled');
   const credential = readCliSession(sessionFile);
   const response = await cliSessionFetch(credential)(credential.origin + path, { method, ...(body ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}) });
-  if (!response.ok) throw new Error(`Admin request refused (${response.status})`);
+  if (!response.ok) await refuseAdminCliResponse(response);
   process.stdout.write(JSON.stringify(await response.json()) + '\n');
 }

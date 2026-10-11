@@ -6256,4 +6256,7 @@ export const zhCN: Dict = {
   "studio.admin.collapseSidebar": "收起设置侧栏",
   "studio.admin.sections": "设置分区",
   'studio.admin.capacityWarning': "更改容量或额度可能停止或延迟运行及排队中的任务。",
+  "studio.admin.accountChanged": "此账号已变更。请重新加载，核对当前状态后重试。",
+  "studio.admin.lastAdmin": "不能降级、停用最后一位可用管理员，也不能重置其密码。",
+  "studio.admin.usernameTaken": "此用户名已被使用。请选择其他用户名。",
 };

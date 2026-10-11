@@ -5810,4 +5810,7 @@ export const fr: Dict = {
   "studio.admin.collapseSidebar": "Réduire la barre des paramètres",
   "studio.admin.sections": "Sections des paramètres",
   'studio.admin.capacityWarning': "Modifier la capacité ou le quota peut arrêter ou retarder les tâches en cours et en attente.",
+  "studio.admin.accountChanged": "Ce compte a changé. Rechargez, vérifiez son état actuel et réessayez.",
+  "studio.admin.lastAdmin": "Le dernier administrateur utilisable ne peut pas être rétrogradé, désactivé ni faire l’objet d’une réinitialisation de mot de passe.",
+  "studio.admin.usernameTaken": "Ce nom d’utilisateur est déjà utilisé. Choisissez-en un autre.",
 };

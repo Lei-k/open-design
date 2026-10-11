@@ -314,7 +314,7 @@ describe('OAuth callback binding', () => {
     if (change === 'session rotation') expect((await daemon.request({ method: 'POST', path: '/api/auth/session/rotate', cookie: user.cookie,
       headers: { origin: MU_TEST_ORIGIN }, body: {} })).status).toBe(200);
     if (change === 'admin session revoke') expect((await asAdmin('POST', `/api/auth/users/${user.id}/sessions/revoke`, {})).status).toBe(200);
-    if (change === 'password reset') expect((await asAdmin('POST', `/api/auth/users/${user.id}/password`, { password: `${password}-reset` })).status).toBe(204);
+    if (change === 'password reset') expect((await asAdmin('POST', `/api/auth/users/${user.id}/password`, { password: `${password}-reset`, revision: await currentAccountRevision(daemon.request, user.id, admin.cookie) })).status).toBe(204);
     if (change === 'account disabled') expect((await asAdmin('PATCH', `/api/auth/users/${user.id}`, { revision: await currentAccountRevision(daemon.request, user.id, admin.cookie), active: false })).status).toBe(200);
     if (change === 'pilot change') {
       const pilot = await asAdmin('GET', `/api/admin/users/${user.id}/studio-pilot`);

@@ -5811,4 +5811,7 @@ export const id: Dict = {
   "studio.admin.collapseSidebar": "Ciutkan bilah pengaturan",
   "studio.admin.sections": "Bagian pengaturan",
   'studio.admin.capacityWarning': "Mengubah kapasitas atau kuota dapat menghentikan atau menunda pekerjaan berjalan dan antrean.",
+  "studio.admin.accountChanged": "Akun ini telah berubah. Muat ulang, tinjau keadaan terbaru, lalu coba lagi.",
+  "studio.admin.lastAdmin": "Administrator terakhir yang dapat digunakan tidak dapat diturunkan perannya, dinonaktifkan, atau diatur ulang kata sandinya.",
+  "studio.admin.usernameTaken": "Nama pengguna ini sudah digunakan. Pilih nama lain.",
 };

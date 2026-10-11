@@ -6263,4 +6263,7 @@ export const zhTW: Dict = {
   "studio.admin.collapseSidebar": "收合設定側欄",
   "studio.admin.sections": "設定區段",
   'studio.admin.capacityWarning': "變更容量或額度可能停止或延遲執行中與佇列中的工作。",
+  "studio.admin.accountChanged": "此帳號已變更。請重新載入，核對目前狀態後重試。",
+  "studio.admin.lastAdmin": "不能降級、停用最後一位可用管理員，也不能重設其密碼。",
+  "studio.admin.usernameTaken": "此使用者名稱已被使用。請選擇其他名稱。",
 };

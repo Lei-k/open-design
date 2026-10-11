@@ -159,14 +159,14 @@ describe('U01/U02 — provisioning and recipient setup over HTTP', () => {
 describe('U04/U06 — admin-issued reset over HTTP', () => {
   it('kills the old sessions and password, fires the cancellation callback, supersedes on reissue', async () => {
     const { admin, alice, aliceId } = await seed();
-    const issued = await call({ method: 'POST', path: `/api/auth/users/${aliceId}/password`, cookie: admin, body: {} });
+    const issued = await call({ method: 'POST', path: `/api/auth/users/${aliceId}/password`, cookie: admin, body: { revision: await currentAccountRevision(call, aliceId, admin) } });
     expect(issued.status, issued.text).toBe(201);
     expect(issued.json.setup).toMatchObject({ purpose: 'reset', expiresAt: clock.now() + DAY_MS });
     expect(revokedCallbacks).toEqual([aliceId]);
     expect((await call({ path: '/api/auth/me', cookie: alice })).status).toBe(401);
     expect((await call({ method: 'POST', path: '/api/auth/login', body: { username: 'alice', password: ALICE_PW } })).status).toBe(401);
 
-    const reissued = await call({ method: 'POST', path: `/api/auth/users/${aliceId}/password`, cookie: admin, body: {} });
+    const reissued = await call({ method: 'POST', path: `/api/auth/users/${aliceId}/password`, cookie: admin, body: { revision: await currentAccountRevision(call, aliceId, admin) } });
     expect(reissued.status).toBe(201);
     const stale = await call({ method: 'POST', path: '/api/auth/setup', body: { token: issued.json.setup.token, password: 'alice-new-password-1' } });
     expect(stale.status).toBe(401);
@@ -181,10 +181,10 @@ describe('U04/U06 — admin-issued reset over HTTP', () => {
       const res = await call({ method: 'POST', path: `/api/auth/users/${adminId}/password`, cookie: alice, body });
       expect(res.status).toBe(403);
     }
-    const legacy = await call({ method: 'POST', path: `/api/auth/users/${aliceId}/password`, cookie: admin, body: { password: 'direct-password-77' } });
+    const legacy = await call({ method: 'POST', path: `/api/auth/users/${aliceId}/password`, cookie: admin, body: { revision: await currentAccountRevision(call, aliceId, admin), password: 'direct-password-77' } });
     expect(legacy.status).toBe(204);
     await login('alice', 'direct-password-77');
-    const lastAdmin = await call({ method: 'POST', path: `/api/auth/users/${adminId}/password`, cookie: admin, body: {} });
+    const lastAdmin = await call({ method: 'POST', path: `/api/auth/users/${adminId}/password`, cookie: admin, body: { revision: await currentAccountRevision(call, adminId, admin) } });
     expect(lastAdmin.status).toBe(409);
     const missing = await call({ method: 'POST', path: '/api/auth/users/nope/password', cookie: admin, body: {} });
     expect(missing.status).toBe(404);
@@ -268,7 +268,7 @@ describe('U08 — admin audit read over HTTP', () => {
   it('never writes setup credentials or passwords to console or the failure journal', async () => {
     const { admin, aliceId } = await seed();
     const created = await call({ method: 'POST', path: '/api/auth/users', cookie: admin, body: { username: 'carol', role: 'user' } });
-    const reset = await call({ method: 'POST', path: `/api/auth/users/${aliceId}/password`, cookie: admin, body: {} });
+    const reset = await call({ method: 'POST', path: `/api/auth/users/${aliceId}/password`, cookie: admin, body: { revision: await currentAccountRevision(call, aliceId, admin) } });
     const tokens = [created.json.setup.token as string, reset.json.setup.token as string];
     await call({ method: 'POST', path: '/api/auth/setup', body: { token: tokens[0], password: 'short' } });
     await call({ method: 'POST', path: '/api/auth/setup', body: { token: tokens[0], password: 'carol-password-123' } });

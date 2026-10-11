@@ -5811,4 +5811,7 @@ export const it: Dict = {
   "studio.admin.collapseSidebar": "Comprimi barra delle impostazioni",
   "studio.admin.sections": "Sezioni delle impostazioni",
   'studio.admin.capacityWarning': "Modificare capacità o quota può interrompere o ritardare le attività in corso e in coda.",
+  "studio.admin.accountChanged": "Questo account è cambiato. Ricarica, verifica lo stato attuale e riprova.",
+  "studio.admin.lastAdmin": "Non puoi declassare o disattivare l’ultimo amministratore utilizzabile, né reimpostarne la password.",
+  "studio.admin.usernameTaken": "Questo nome utente è già in uso. Scegline un altro.",
 };

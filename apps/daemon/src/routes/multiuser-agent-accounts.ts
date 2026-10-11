@@ -18,7 +18,7 @@ export interface PersonalRunLaneControls {
 export function registerMultiUserAgentAccountRoutes(app: Express, deps: {
   personal: PersonalCodexAccounts;
   runs: PersonalRunLaneControls;
-  listAccountIds: () => string[];
+  listAccounts: () => Array<{ id: string; username: string }>;
   companyPoolAvailable: boolean | (() => boolean);
 }): void {
   const { personal } = deps;
@@ -73,11 +73,12 @@ export function registerMultiUserAgentAccountRoutes(app: Express, deps: {
   }));
 
   app.get('/api/admin/agent-accounts', handle((_req, res) => {
-    const ids = deps.listAccountIds();
+    const accounts = deps.listAccounts();
+    const ids = accounts.map(({ id }) => id);
     const stats = deps.runs.stats();
     const linked = personal.adminView(ids);
     const users: AdminPersonalAccountsResponse['users'] = {};
-    for (const id of ids) users[id] = { codex: linked[id]!, personalWorkerMs: stats.workerMsByOwner.get(id) ?? 0 };
+    for (const { id, username } of accounts) users[id] = { username, codex: linked[id]!, personalWorkerMs: stats.workerMsByOwner.get(id) ?? 0 };
     const body: AdminPersonalAccountsResponse = { personalWorkerCapacity: stats.capacity, activePersonalRuns: stats.active,
       queuedPersonalRuns: stats.queued, users };
     res.json(body);

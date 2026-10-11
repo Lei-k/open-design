@@ -5810,4 +5810,7 @@ export const pl: Dict = {
   "studio.admin.collapseSidebar": "Zwiń pasek ustawień",
   "studio.admin.sections": "Sekcje ustawień",
   'studio.admin.capacityWarning': "Zmiana pojemności lub limitu może zatrzymać albo opóźnić zadania aktywne i oczekujące.",
+  "studio.admin.accountChanged": "To konto zostało zmienione. Odśwież, sprawdź jego obecny stan i spróbuj ponownie.",
+  "studio.admin.lastAdmin": "Nie można obniżyć uprawnień ani wyłączyć ostatniego dostępnego administratora ani zresetować jego hasła.",
+  "studio.admin.usernameTaken": "Ta nazwa użytkownika jest już zajęta. Wybierz inną.",
 };

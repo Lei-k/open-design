@@ -47,7 +47,7 @@ it('does not reuse an observed access revision after same-tick password resets',
   const changed = await patch(targetId, { role: 'user', revision: observed });
   expect(changed.status).toBe(200);
   const revision = changed.json.account.updatedAt;
-  expect((await harness.request({ method: 'POST', path: `/api/auth/users/${targetId}/password`, cookie: admin, body: {} })).status).toBe(201);
+  expect((await harness.request({ method: 'POST', path: `/api/auth/users/${targetId}/password`, cookie: admin, body: { revision } })).status).toBe(201);
   expect((await patch(targetId, { role: 'admin', revision })).status).toBe(409);
   expect((await patch(targetId, { role: 'admin', revision: observed })).status).toBe(409);
 });

@@ -5811,4 +5811,7 @@ export const de: Dict = {
   "studio.admin.collapseSidebar": "Einstellungsseitenleiste einklappen",
   "studio.admin.sections": "Einstellungsbereiche",
   'studio.admin.capacityWarning': "Änderungen an Kapazität oder Kontingent können laufende und wartende Aufgaben stoppen oder verzögern.",
+  "studio.admin.accountChanged": "Dieses Konto wurde geändert. Lade neu, prüfe den aktuellen Stand und versuche es erneut.",
+  "studio.admin.lastAdmin": "Der letzte aktive Administrator kann weder herabgestuft noch deaktiviert werden; sein Passwort kann nicht zurückgesetzt werden.",
+  "studio.admin.usernameTaken": "Dieser Benutzername ist bereits vergeben. Wähle einen anderen.",
 };

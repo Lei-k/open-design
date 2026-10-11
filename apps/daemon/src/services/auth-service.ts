@@ -539,21 +539,23 @@ export class AuthService {
    * retired in the same transaction (the caller then cancels the owner's runs)
    * and the owner chooses the replacement with the reset credential.
    */
-  issueSetupCredential(actor: AuthActor, accountId: string): IssuedSetupCredential {
+  issueSetupCredential(actor: AuthActor, accountId: string, revision: number): IssuedSetupCredential {
     this.requireAdmin(actor);
     return this.store.transaction(() => {
       const issuer = this.requireAdmin(actor);
       const target = this.store.getAccountById(accountId);
       if (!target) throw new AuthError('NOT_FOUND');
+      this.assertResetAllowed(issuer, target, revision);
       if (!target.active) throw new AuthError('VALIDATION', 'account is deactivated');
       const at = this.now();
-      let account = target;
       if (target.passwordState === 'set') {
-        if (target.role === 'admin' && this.store.countUsableAdmins() <= 1) throw new AuthError('LAST_ADMIN');
-        this.store.updatePassword(target.id, { passwordHash: NO_PASSWORD_HASH, passwordState: 'reset_required' }, at);
         this.store.deleteSessionsForAccount(target.id);
-        account = { ...target, passwordHash: NO_PASSWORD_HASH, passwordState: 'reset_required', updatedAt: at };
       }
+      // Every reissue supersedes a credential, including for pending accounts.
+      // Advance the revision for each such write, even within one clock tick.
+      this.store.updatePassword(target.id, { passwordHash: NO_PASSWORD_HASH,
+        passwordState: target.passwordState === 'set' ? 'reset_required' : target.passwordState }, at);
+      const account = this.store.getAccountById(target.id)!;
       return this.issueCredentialRow(issuer.id, account, at);
     });
   }
@@ -673,15 +675,18 @@ export class AuthService {
    * fixtures; recovery is `issueSetupCredential`. Withdraws any outstanding
    * setup/reset credential.
    */
-  async resetPassword(actor: AuthActor, accountId: string, newPassword: string): Promise<void> {
+  async resetPassword(actor: AuthActor, accountId: string, newPassword: string, revision: number): Promise<void> {
     this.requireAdmin(actor);
     const target = this.store.getAccountById(accountId);
     if (!target) throw new AuthError('NOT_FOUND');
+    this.assertResetAllowed(this.requireAdmin(actor), target, revision);
     assertPasswordPolicy(newPassword, target.username);
     const passwordHash = await hashPassword(newPassword, this.passwordParams);
     this.store.transaction(() => {
       const issuer = this.requireAdmin(actor);
-      if (!this.store.getAccountById(accountId)) throw new AuthError('NOT_FOUND');
+      const current = this.store.getAccountById(accountId);
+      if (!current) throw new AuthError('NOT_FOUND');
+      this.assertResetAllowed(issuer, current, revision);
       const at = this.now();
       this.store.updatePassword(accountId, { passwordHash, passwordState: 'set' }, at);
       this.store.deleteSetupCredentialsForAccount(accountId);
@@ -691,6 +696,13 @@ export class AuthService {
   }
 
   // ---- internals -------------------------------------------------------
+
+  private assertResetAllowed(issuer: AuthAccountRecord, target: AuthAccountRecord, revision: number): void {
+    if (!Number.isSafeInteger(revision) || revision < 0) throw new AuthError('VALIDATION');
+    if (revision !== target.updatedAt) throw new AuthError('CONFLICT');
+    if (target.role === 'admin' && target.active && target.passwordState === 'set' && this.store.countUsableAdmins() <= 1) throw new AuthError('LAST_ADMIN');
+    if (issuer.id === target.id) throw new AuthError('FORBIDDEN', 'use the own-password flow to change your password');
+  }
 
   private isSessionFresh(session: AuthSessionRecord, at: number): boolean {
     return at < session.expiresAt && at - session.lastSeenAt < this.sessionIdleTtlMs;

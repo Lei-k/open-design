@@ -5811,4 +5811,7 @@ export const ar: Dict = {
   "studio.admin.collapseSidebar": "طي الشريط الجانبي للإعدادات",
   "studio.admin.sections": "أقسام الإعدادات",
   'studio.admin.capacityWarning': "تغيير السعة أو الحصة قد يوقف أو يؤخر المهام الجارية والمعلقة.",
+  "studio.admin.accountChanged": "تغيّر هذا الحساب. أعد التحميل وراجع الحالة الحالية ثم أعد المحاولة.",
+  "studio.admin.lastAdmin": "لا يمكن تخفيض دور آخر مسؤول صالح أو تعطيله أو إعادة تعيين كلمة مروره.",
+  "studio.admin.usernameTaken": "اسم المستخدم هذا مستخدم بالفعل. اختر اسمًا آخر.",
 };
