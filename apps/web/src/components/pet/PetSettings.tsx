@@ -1,3 +1,4 @@
+import { StudioCapabilityMessage, useStudioCapabilityState } from '../../runtime/StudioCapabilityState';
 import { useStudioRequestAvailable } from '../../runtime/studio-capabilities';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
@@ -54,6 +55,7 @@ const ACCENT_SWATCHES = [
 
 export function PetSettings({ cfg, setCfg }: Props) {
   const communitySyncAvailable = useStudioRequestAvailable()('POST', '/api/codex-pets/sync');
+  const petState = useStudioCapabilityState('pet');
   const t = useT();
   const analytics = useAnalytics();
   const pet: PetConfig = cfg.pet ?? { ...DEFAULT_PET, custom: defaultCustomPet() };
@@ -532,6 +534,7 @@ export function PetSettings({ cfg, setCfg }: Props) {
 
   return (
     <section className="settings-section">
+      <StudioCapabilityMessage state={petState} />
       {petActionStatus ? (
         <p className="pet-action-status" role="status">
           <Icon name="check" size={14} />

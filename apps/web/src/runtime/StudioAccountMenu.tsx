@@ -39,15 +39,19 @@ export function StudioAccountMenu({ placement }: { placement: 'rail' | 'chrome' 
       <span className={styles.name}>{name}</span>
     </button>
     {open ? <div role="menu" aria-label={t('multiuser.navigation')} className={styles.menu}>
-      <button type="button" role="menuitem" onClick={go(() => navigate({ kind: 'home', view: 'home' }))}>
+      {placement === 'page' ? <a role="menuitem" href="/">
         <Icon name="home" size={14} /><span>{t('settings.pageBackToHome')}</span>
-      </button>
-      <button type="button" role="menuitem" onClick={go(() => navigate({ kind: 'home', view: 'settings' }))}>
+      </a> : <button type="button" role="menuitem" onClick={go(() => navigate({ kind: 'home', view: 'home' }))}>
+        <Icon name="home" size={14} /><span>{t('settings.pageBackToHome')}</span>
+      </button>}
+      {placement === 'page' ? <a role="menuitem" href="/settings">
         <Icon name="settings" size={14} /><span>{t('settings.kicker')}</span>
-      </button>
+      </a> : <button type="button" role="menuitem" onClick={go(() => navigate({ kind: 'home', view: 'settings' }))}>
+        <Icon name="settings" size={14} /><span>{t('settings.kicker')}</span>
+      </button>}
       {studio.actor.role === 'admin' ? <>
-        <a role="menuitem" href="/admin/users"><Icon name="users" size={14} /><span>{t('multiuser.users')}</span></a>
-        <a role="menuitem" href="/admin/audit"><Icon name="eye" size={14} /><span>{t('multiuser.audit')}</span></a>
+        <a role="menuitem" href="/settings?section=users"><Icon name="users" size={14} /><span>{t('multiuser.users')}</span></a>
+        <a role="menuitem" href="/settings?section=audit"><Icon name="eye" size={14} /><span>{t('multiuser.audit')}</span></a>
       </> : null}
       <button type="button" role="menuitem" onClick={go(() => { flushSync(() => { void session.logout(); }); })}>
         <Icon name="arrow-left" size={14} /><span>{t('multiuser.signOut')}</span>

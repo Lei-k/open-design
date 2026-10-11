@@ -1,3 +1,4 @@
+import { currentAccountRevision } from './helpers.js';
 import { randomUUID } from 'node:crypto';
 import { symlinkSync } from 'node:fs';
 import path from 'node:path';
@@ -88,8 +89,8 @@ it('is owner-only, refuses symlinks, and stops serving when the project or accou
   symlinkSync(path.join(root, 'app.sqlite'), path.join(root, 'projects', other, 'site', 'img', 'leak.svg'));
   expect((await daemon.request({ method: 'POST', path: `/api/projects/${other}/files/${file}/publish-public`, cookie: a.cookie })).status).toBe(409);
   expect((await publicGet(`${PREVIEW_ORIGIN}/api/multiuser/public/${'x'.repeat(32)}/index.html`)).status).toBe(404);
-  expect((await daemon.request({ method: 'PATCH', path: `/api/auth/users/${a.id}`, cookie: admin.cookie, body: { active: false } })).status).toBeLessThan(300);
+  expect((await daemon.request({ method: 'PATCH', path: `/api/auth/users/${a.id}`, cookie: admin.cookie, body: { revision: await currentAccountRevision(daemon.request, a.id, admin.cookie),  active: false } })).status).toBeLessThan(300);
   expect((await publicGet(published.json.url)).status).toBe(404);
-  expect((await daemon.request({ method: 'PATCH', path: `/api/auth/users/${a.id}`, cookie: admin.cookie, body: { active: true } })).status).toBeLessThan(300);
+  expect((await daemon.request({ method: 'PATCH', path: `/api/auth/users/${a.id}`, cookie: admin.cookie, body: { revision: await currentAccountRevision(daemon.request, a.id, admin.cookie),  active: true } })).status).toBeLessThan(300);
   expect((await publicGet(published.json.url)).status).toBe(200);
 });

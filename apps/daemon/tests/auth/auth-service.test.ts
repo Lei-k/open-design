@@ -194,7 +194,7 @@ describe('auth service — login and sessions', () => {
 
   it('gives the same generic failure for unknown user, wrong password and inactive user', async () => {
     const { admin, alice } = await seedAdminAndUsers();
-    service.updateAccount(admin, alice.id, { active: false });
+    service.updateAccount(admin, alice.id, { revision: store.getAccountById(alice.id)!.updatedAt, active: false });
     const errors = [
       await expectAuthError(service.login({ username: 'nobody', password: ALICE_PW }), 'INVALID_CREDENTIALS'),
       await expectAuthError(service.login({ username: 'bob', password: ALICE_PW }), 'INVALID_CREDENTIALS'),
@@ -294,7 +294,7 @@ describe('auth service — admin-only management', () => {
     await expectAuthError(() => service.updateAccount(alice, alice.accountId, { role: 'admin' }), 'FORBIDDEN');
     await expectAuthError(() => service.updateAccount(alice, bob.id, { active: false }), 'FORBIDDEN');
     await expectAuthError(() => service.revokeAccountSessions(alice, bob.id), 'FORBIDDEN');
-    await expectAuthError(service.resetPassword(alice, bob.id, 'valid-password-12'), 'FORBIDDEN');
+    await expectAuthError(service.resetPassword(alice, bob.id, 'valid-password-12', store.getAccountById(bob.id)?.updatedAt ?? 0), 'FORBIDDEN');
   });
 
   it('ignores a forged actor role: authority comes from the stored account', async () => {
@@ -310,13 +310,13 @@ describe('auth service — admin-only management', () => {
     const { admin, alice, bob } = await seedAdminAndUsers();
     const a = await loginActor('alice', ALICE_PW);
     const b = await loginActor('bob', BOB_PW);
-    service.updateAccount(admin, alice.id, { role: 'admin' });
+    service.updateAccount(admin, alice.id, { revision: store.getAccountById(alice.id)!.updatedAt, role: 'admin' });
     expect(service.resolveSession(a.token)).toBeNull();
     expect(service.resolveSession(b.token)).not.toBeNull();
     const a2 = await loginActor('alice', ALICE_PW);
     expect(a2.actor.role).toBe('admin');
 
-    service.updateAccount(admin, bob.id, { active: false });
+    service.updateAccount(admin, bob.id, { revision: store.getAccountById(bob.id)!.updatedAt, active: false });
     expect(service.resolveSession(b.token)).toBeNull();
     await expectAuthError(service.login({ username: 'bob', password: BOB_PW }), 'INVALID_CREDENTIALS');
   });
@@ -325,10 +325,10 @@ describe('auth service — admin-only management', () => {
     const { admin, alice } = await seedAdminAndUsers();
     await expectAuthError(() => service.updateAccount(admin, admin.accountId, { role: 'user' }), 'LAST_ADMIN');
     await expectAuthError(() => service.updateAccount(admin, admin.accountId, { active: false }), 'LAST_ADMIN');
-    service.updateAccount(admin, alice.id, { role: 'admin' });
-    // With a second admin the first may step down.
-    service.updateAccount(admin, admin.accountId, { role: 'user' });
+    service.updateAccount(admin, alice.id, { revision: store.getAccountById(alice.id)!.updatedAt, role: 'admin' });
+    await expectAuthError(() => service.updateAccount(admin, admin.accountId, { role: 'user' }), 'FORBIDDEN');
     const aliceAdmin = (await loginActor('alice', ALICE_PW)).actor;
+    service.updateAccount(aliceAdmin, admin.accountId, { revision: store.getAccountById(admin.accountId)!.updatedAt, role: 'user' });
     await expectAuthError(() => service.updateAccount(aliceAdmin, alice.id, { active: false }), 'LAST_ADMIN');
     await expectAuthError(() => service.updateAccount(aliceAdmin, alice.id, { role: 'user' }), 'LAST_ADMIN');
   });
@@ -353,7 +353,7 @@ describe('auth service — admin-only management', () => {
   it('admin password reset revokes the target sessions and replaces the password', async () => {
     const { admin, alice } = await seedAdminAndUsers();
     const a = await loginActor('alice', ALICE_PW);
-    await service.resetPassword(admin, alice.id, 'fresh-password-333');
+    await service.resetPassword(admin, alice.id, 'fresh-password-333', store.getAccountById(alice.id)?.updatedAt ?? 0);
     expect(service.resolveSession(a.token)).toBeNull();
     await expectAuthError(service.login({ username: 'alice', password: ALICE_PW }), 'INVALID_CREDENTIALS');
     await expect(service.login({ username: 'alice', password: 'fresh-password-333' })).resolves.toBeTruthy();

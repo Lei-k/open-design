@@ -30,6 +30,28 @@ export const LOCALE_LABEL: Record<Locale, string> = {
 // flat (not deeply nested) so missing-key TS errors point straight at the
 // offending string instead of a generic object mismatch.
 export interface Dict {
+  'studio.capability.deployment': string;
+  'studio.capability.settings': string;
+  'studio.capability.notificationUnsupported': string;
+  'studio.capability.activity': string;
+  'studio.capability.notificationDenied': string;
+  'studio.capability.notificationPrompt': string;
+  'studio.capability.directoryUnsupported': string;
+  'studio.capability.filesAlternative': string;
+  'studio.capability.rendererDisabled': string;
+  'studio.capability.htmlZipAlternative': string;
+  'studio.capability.download': string;
+  'studio.capability.downloadAlternative': string;
+  'studio.capability.clipboardDenied': string;
+  'studio.capability.manualCopy': string;
+  'studio.capability.clipboardUnsupported': string;
+  'studio.capability.popup': string;
+  'studio.capability.sameTab': string;
+  'studio.capability.storage': string;
+  'studio.capability.signOutAlternative': string;
+  'studio.capability.narrow': string;
+  'studio.deployMissingHint': string;
+  'studio.deployOwnerOnly': string;
   'studio.deployStatus': string;
   'studio.deployCheckLink': string;
   'studio.deployRedeploy': string;
@@ -41,6 +63,8 @@ export interface Dict {
   'studio.deployToken': string;
   'studio.deployClear': string;
   'studio.deployFailed': string;
+  'studio.deployRefreshBusy': string;
+  'studio.deployAuthorityChanged': string;
   'studio.deployHistoryFull': string;
   'studio.deployProgress': string;
   'studio.liveArtifact.outputMapping': string;
@@ -5127,6 +5151,9 @@ export interface Dict {
   'sketch.textModalTitle': string;
   // Critique Theater (Phase 8 components; Phase 9 fills non-English locales)
   'critiqueTheater.userFacingName': string;
+  'critiqueTheater.studioStart': string;
+  'critiqueTheater.studioPrompt': string;
+  'critiqueTheater.studioArtifact': string;
   'critiqueTheater.roleDesigner': string;
   'critiqueTheater.roleCritic': string;
   'critiqueTheater.roleBrand': string;
@@ -6091,4 +6118,20 @@ export interface Dict {
   'agentAccounts.outcomeFailed': string;
   'agentAccounts.failureWorkspace': string;
   'agentAccounts.actionFailed': string;
+  'studio.admin.personal': string;
+  'studio.admin.operationsHelp': string;
+  'studio.admin.budget': string;
+  'studio.admin.used': string;
+  'studio.admin.remaining': string;
+  'studio.admin.health': string;
+  'studio.admin.auditFilter': string;
+  'studio.admin.roleWarning': string;
+  'studio.admin.activeWarning': string;
+  'studio.admin.expandSidebar': string;
+  'studio.admin.collapseSidebar': string;
+  'studio.admin.sections': string;
+  'studio.admin.capacityWarning': string;
+  'studio.admin.accountChanged': string;
+  'studio.admin.lastAdmin': string;
+  'studio.admin.usernameTaken': string;
 }

@@ -1,3 +1,4 @@
+import { currentAccountRevision } from './helpers.js';
 import { randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -125,7 +126,7 @@ async function change(kind: string, grant: Awaited<ReturnType<typeof heldGrant>>
   if (kind === 'cancel') await call(a, 'POST', `/api/runs/${grant.runId}/cancel`, {});
   if (kind === 'finish') db.prepare("UPDATE multiuser_runs SET status = 'succeeded' WHERE id = ?").run(grant.runId);
   if (kind === 'logout') await call(a, 'POST', '/api/auth/logout', {});
-  if (kind === 'account-disable') await call(admin, 'PATCH', `/api/auth/users/${a.id}`, { active: false });
+  if (kind === 'account-disable') await call(admin, 'PATCH', `/api/auth/users/${a.id}`, { revision: await currentAccountRevision(daemon.request, a.id, admin.cookie), active: false });
   const row = store.get(a.id, 'mine')!;
   if (kind === 'server-disable' || kind === 'endpoint-change' || kind === 'header-change') await call(a, 'PATCH', '/api/multiuser/mcp/servers/mine', { revision: row.revision,
     ...(kind === 'server-disable' ? { enabled: false } : kind === 'endpoint-change' ? { url: fixture.url('/other') } : { headers: { 'X-Api-Key': 'changed-S61-value' } }) });

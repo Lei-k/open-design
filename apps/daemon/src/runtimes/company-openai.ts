@@ -77,10 +77,17 @@ export async function runCompanyOpenAITurn(input: {
   fetch?: typeof fetch;
   /** Image, speech and video functions on the same key and bill as the turn (#63). */
   media?: boolean;
+  /** Jury profile: project context reads only, including forged tool calls. */
+  projectReadOnly?: boolean;
   liveArtifacts?: StudioLiveArtifactTools;
   mcp?: { execute(name: string, args: Record<string, unknown>): Promise<unknown> };
   connectors?: { execute(name: string, args: Record<string, unknown>): Promise<unknown> };
 }): Promise<CompanyOpenAITurnResult> {
+  const readTools = new Set(['list_project_files', 'read_project_file']);
+  const offeredTools = input.projectReadOnly ? tools.filter((tool) => readTools.has(tool.name))
+    : [...tools.filter((tool) => tool.name !== 'run_skill_script' || input.runSkillScript), ...(input.media ? mediaTools : []),
+      ...(input.liveArtifacts ? artifactTools : []), ...(input.mcp ? STUDIO_MCP_TOOL_DESCRIPTORS.map(({ inputSchema, ...tool }) => ({ type: 'function', ...tool, parameters: inputSchema, strict: false })) : []),
+      ...(input.connectors ? STUDIO_CONNECTOR_TOOL_DESCRIPTORS.map(({ inputSchema, ...tool }) => ({ type: 'function', ...tool, parameters: inputSchema, strict: false })) : [])];
   const signal = AbortSignal.any([input.worker.abort.signal, AbortSignal.timeout(COMPANY_OPENAI_TURN_TIMEOUT_MS)]);
   const check = () => { signal.throwIfAborted(); if (!input.authorized()) throw new Error('company_authority_changed'); };
   const history: Json[] = [...(input.systemPrompt ? [{ role: 'developer', content: input.systemPrompt }] : []),
@@ -96,8 +103,7 @@ export async function runCompanyOpenAITurn(input: {
       method: 'POST', signal, redirect: 'error', headers: { authorization: `Bearer ${input.apiKey}`, 'content-type': 'application/json' },
       body: JSON.stringify({ model: input.model, store: false, stream: true, input: history,
         include: ['reasoning.encrypted_content'], max_output_tokens: 8192, parallel_tool_calls: false,
-        tools: [...tools.filter((tool) => tool.name !== 'run_skill_script' || input.runSkillScript), ...(input.media ? mediaTools : []),
-          ...(input.liveArtifacts ? artifactTools : []), ...(input.mcp ? STUDIO_MCP_TOOL_DESCRIPTORS.map(({ inputSchema, ...tool }) => ({ type: 'function', ...tool, parameters: inputSchema, strict: false })) : []), ...(input.connectors ? STUDIO_CONNECTOR_TOOL_DESCRIPTORS.map(({ inputSchema, ...tool }) => ({ type: 'function', ...tool, parameters: inputSchema, strict: false })) : [])] }),
+        tools: offeredTools }),
     });
     check();
     if (!response.ok || !response.body || !response.headers.get('content-type')?.includes('text/event-stream')) {
@@ -142,6 +148,7 @@ export async function runCompanyOpenAITurn(input: {
       let result: unknown; let failed = false; let startupFailed = false; let planPublished = false;
       try {
         const args = JSON.parse(call.arguments) as Json;
+        if (input.projectReadOnly && !readTools.has(call.name)) throw new Error('readonly project tool refused');
         if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('invalid tool arguments');
         if (call.name !== 'update_plan') emit({ type: 'tool_use', id: call.call_id, name: call.name,
           input: { ...(typeof args.path === 'string' ? { file_path: args.path } : {}),

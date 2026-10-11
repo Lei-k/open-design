@@ -2,6 +2,7 @@
 // @ts-nocheck
 import { readFileSync, writeFileSync } from 'node:fs';
 import { runStudioDeployCli } from './deploy/studio-cli.js';
+import { runCritiqueCli } from './critique/cli.js';
 import { basename } from 'node:path';
 import { runDaemonCliStartup, startDaemonRuntime } from './daemon-startup.js';
 import { runLiveArtifactsMcpServer } from './mcp-live-artifacts-server.js';
@@ -35,7 +36,7 @@ import {
   removeJsonInstall,
 } from './mcp-agent-install.js';
 import { resolveMcpWorkspaceContext } from './mcp-workspace-context.js';
-import { cliSessionFetch, extractCliSessionFile, pinCliServerOrigin, readCliSession, runAccountCli, runSessionCli, runStudioPilotCli } from './http/cli-session.js';
+import { AdminCliRefusal, cliSessionFetch, extractCliSessionFile, pinCliServerOrigin, readCliSession, runAccountCli, runSessionCli, runStudioPilotCli } from './http/cli-session.js';
 
 let argv;
 let remoteSessionFile = null;
@@ -422,6 +423,7 @@ const PLUGIN_LIST_BOOLEAN_FLAGS = new Set([
 ]);
 
 const SUBCOMMAND_MAP = {
+  critique: async (args) => { process.exitCode = await runCritiqueCli(args, cliDaemonUrl); },
   admin: (args) => runStudioPilotCli(args, remoteSessionFile),
   account: (args) => runAccountCli(args, remoteSessionFile),
   // Account connectors (#62, S58): the same /api/connectors endpoints as Settings → Connectors.
@@ -896,7 +898,10 @@ if (first && SUBCOMMAND_MAP[first]) {
   try { await SUBCOMMAND_MAP[first](rest); }
   catch (error) {
     if (!remoteSessionFile) throw error;
-    process.stderr.write(`${JSON.stringify({ ok: false, error: { code: 'CLI_SESSION_REQUEST_FAILED', message: 'Authenticated request failed or ended before its terminal event; verify the session and resume without replaying mutations' } })}\n`);
+    const failure = error instanceof AdminCliRefusal && error.code
+      ? { code: error.code, message: 'Administrative request refused; review the current state before retrying' }
+      : { code: 'CLI_SESSION_REQUEST_FAILED', message: 'Authenticated request failed or ended before its terminal event; verify the session and resume without replaying mutations' };
+    process.stderr.write(`${JSON.stringify({ ok: false, error: failure })}\n`);
     process.exitCode = 1;
   }
   // Respect a non-zero exit code a handler set via process.exitCode (e.g. a

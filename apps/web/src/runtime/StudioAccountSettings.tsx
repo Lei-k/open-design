@@ -1,3 +1,6 @@
+import { StudioAccountMenu } from './StudioAccountMenu';
+import { adminSettingsSection, isAdminSettingsSection, StudioAdminNavigation, StudioAdminPanel, useAdminSettingsHeaders } from './StudioAdminSections';
+import { StudioCapabilityMessage, useStudioCapabilityState } from './StudioCapabilityState';
 import { StudioDeploySettings } from './StudioDeploy';
 import { AgentAccountsPage } from '../multiuser/AgentAccountsPage';
 import { Button } from '@open-design/components';
@@ -25,10 +28,12 @@ import { StudioMcpServers } from './StudioMcpServers';
 
 /** Account sections, plus the desktop sections whose lane is still open: those
  * stay in the navigation with the server's reason instead of disappearing. */
-type StudioSettingsSection = 'agentAccounts' | 'skills' | 'general' | 'instructions' | 'memory' | 'media' | 'connectors' | 'mcpClient' | 'integrations' | 'privacy' | 'about' | 'deploy';
+type StudioSettingsSection = 'agentAccounts' | 'skills' | 'general' | 'instructions' | 'memory' | 'media' | 'connectors' | 'mcpClient' | 'integrations' | 'privacy' | 'about' | 'deploy' | 'users' | 'audit' | 'company' | 'personal';
 const PENDING: Partial<Record<StudioSettingsSection, StudioParityLaneId>> = { media: 'generation' };
 
 function studioSection(section: SettingsSection): StudioSettingsSection {
+  const admin = adminSettingsSection();
+  if (admin) return admin;
   switch (section) {
     case 'execution': case 'agentAccounts': return 'agentAccounts';
     case 'designSystems': return 'skills';
@@ -45,6 +50,7 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
   initial: AppConfig; onSkillsChanged?: (id?: string) => void; onPersist: (config: AppConfig) => Promise<void> | void }) {
   const studio = useStudioCapabilities();
   const t = useT();
+  const adminHeaders = useAdminSettingsHeaders();
   const [section, setSection] = useState<StudioSettingsSection>(() => studioSection(initialSection));
   useEffect(() => { setSection(studioSection(initialSection)); }, [initialSection]);
   const [config, setConfig] = useState(initial);
@@ -80,6 +86,7 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
   };
   if (!studio.actor || !studio.session) return null;
   const headers: Record<StudioSettingsSection, { title: string; subtitle: string }> = {
+    ...adminHeaders,
     agentAccounts: { title: t('agentAccounts.navTitle'), subtitle: t('agentAccounts.navHint') },
     skills: { title: t('settings.skills'), subtitle: t('settings.skillsHint') },
     general: { title: t('settings.general'), subtitle: t('settings.generalHint') },
@@ -103,7 +110,7 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
   </div>;
   // Media is usable once an OpenAI source can generate it (#63); the other open lanes keep their reason.
   const pending = section === 'media' && studio.available('generation') ? undefined : PENDING[section];
-  return <SettingsFrame presentation={presentation} onClose={onClose}
+  return <SettingsFrame presentation={presentation} onClose={onClose} accountControl={presentation === 'page' ? <StudioAccountMenu placement="page" /> : undefined}
     header={<SettingsSectionHeader title={headers[section].title} subtitle={headers[section].subtitle} />}
     nav={<>
       {item('agentAccounts', 'key')}
@@ -118,7 +125,9 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
       {item('integrations', 'puzzle')}
       {item('privacy', 'eye')}
       {item('about', 'settings')}
+      <StudioAdminNavigation section={section} onSelect={setSection} />
     </>}>
+    {isAdminSettingsSection(section) && <StudioAdminPanel section={section} />}
     {section === 'deploy' && (studio.available('settings') ? <StudioDeploySettings /> : <StudioUnavailable lane="settings" />)}
     {section === 'agentAccounts' && <>
       <AgentAccountsPage session={studio.session} generation={studio.generation} />
@@ -191,7 +200,21 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
 function StudioAbout({ loaded: provided }: { loaded: AppVersionInfo | null }) {
   const t = useT();
   const studio = useStudioCapabilities();
+  const aboutState = useStudioCapabilityState('about');
+  const [clearFailed, setClearFailed] = useState(false);
+  const clearState = useStudioCapabilityState('clear-data');
   const [clearing, setClearing] = useState(false);
+  const [health, setHealth] = useState<boolean | null>(null);
+  useEffect(() => {
+    let live = true;
+    const release = studio.session?.bindResource(() => { live = false; setHealth(null); }, studio.generation);
+    void studioFetch('/api/health', { cache: 'no-store' }).then(async (response) => {
+      const result = response.ok ? await response.json() as { ok?: unknown } : null;
+      if (live) setHealth(result?.ok === true);
+    }).catch((error) => { if (live && !(error instanceof DOMException && error.name === 'AbortError')) setHealth(false); });
+    return () => { live = false; release?.(); };
+  }, [studio.session, studio.generation]);
+
   const loaded = provided ?? bootVersion();
   const [state, setState] = useState<{ status: 'idle' | 'checking' | 'current' | 'deployed' | 'failed'; version?: string }>({ status: 'idle' });
   const check = async () => {
@@ -204,7 +227,9 @@ function StudioAbout({ loaded: provided }: { loaded: AppVersionInfo | null }) {
     } catch (error) { if (!(error instanceof DOMException && error.name === 'AbortError')) setState({ status: 'failed' }); }
   };
   return <section className="settings-section" data-testid="studio-about">
+    <StudioCapabilityMessage state={aboutState} />
     <dl className="settings-about-list">
+      <div><dt>{t('studio.admin.health')}</dt><dd data-testid="studio-about-health">{health === true ? t('multiuser.active') : health === false ? t('multiuser.requestError') : '—'}</dd></div>
       <div><dt>{t('settings.appVersion')}</dt><dd data-testid="studio-about-version">{loaded ? `${loaded.version} · ${loaded.channel}` : '—'}</dd></div>
     </dl>
     <p role="status" aria-live="polite">{state.status === 'checking' ? t('settings.updateStatusChecking')
@@ -216,9 +241,11 @@ function StudioAbout({ loaded: provided }: { loaded: AppVersionInfo | null }) {
     {state.status === 'deployed' ? <Button variant="primary" data-testid="studio-about-reload"
       onClick={() => window.location.reload()}>{t('studio.aboutReloadPage')}</Button> : null}
     <div className="settings-general-block">
+      <StudioCapabilityMessage state={clearState} />
+      {clearFailed ? <p role="alert" id="studio-clear-data-error">{t('studio.settingsError')}</p> : null}
       <p className="hint">{t('studio.aboutClearDataHint')}</p>
-      <Button variant="ghost" data-testid="studio-about-clear-data" disabled={clearing || !studio.session}
-        onClick={() => { if (!studio.session) return; setClearing(true); void clearStudioBrowserData(studio.session).finally(() => setClearing(false)); }}>
+      <Button variant="ghost" data-testid="studio-about-clear-data" aria-describedby={clearFailed ? "studio-clear-data-error" : undefined} disabled={clearing || !studio.session}
+        onClick={() => { if (!studio.session) return; setClearing(true); setClearFailed(false); void clearStudioBrowserData(studio.session).catch(() => setClearFailed(true)).finally(() => setClearing(false)); }}>
         {t('studio.aboutClearData')}</Button>
     </div>
   </section>;

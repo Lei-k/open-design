@@ -17701,9 +17701,10 @@ export async function startServer({
     ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
   }) : null;
   const multiUserRuns = multiUserMode ? registerMultiUserRunRoutes(app, {
+    sessionCurrent: multiUserFront?.sessionCurrent,
     ...(studioConnectorRuntime ? { connectors: studioConnectorRuntime } : {}),
     ...(studioMcpRuntime ? { mcp: studioMcpRuntime } : {}),
-    db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
+    db, dataRoot: RUNTIME_DATA_DIR, dataRootCanonical: RUNTIME_DATA_DIR_CANONICAL, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
     emitProjectEvent,
     ...(studioLiveArtifacts ? { liveArtifacts: studioLiveArtifacts } : {}),
     ...(multiUserMode.testMockAgentScript ? { mockAgentScript: multiUserMode.testMockAgentScript } : {}),
@@ -17778,7 +17779,7 @@ export async function startServer({
       invalidatePreviewScopes: (ownerId) => multiUserDesign?.invalidateOwnerCapabilities(ownerId) });
     multiUserFront?.setIsAgentAccountOwner((param, id, accountId) => personalCodex.isOwner(param, id, accountId));
     registerMultiUserAgentAccountRoutes(app, {
-      personal: personalCodex, runs: multiUserRuns.personalLane, listAccountIds: multiUserRuns.listAccountIds,
+      personal: personalCodex, runs: multiUserRuns.personalLane, listAccounts: multiUserRuns.listAccounts,
       companyPoolAvailable: () => multiUserRuns.companyPoolAvailable,
     });
   }

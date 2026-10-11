@@ -275,3 +275,23 @@ it('does not classify a missing project file as a workspace-tool startup failure
   expect(events.find((event) => event.type === 'tool_result')).toMatchObject({ isError: true });
   expect(events.some((event) => event.startupFailed === true)).toBe(false);
 });
+
+it('Jury project-readonly profile refuses forged write/media/MCP/connector/Live Artifact calls before effects', async () => {
+  await writeFile(path.join(root, 'owner/keep.txt'), 'original');
+  let round = 0; const effects: string[] = []; let advertised: string[] = [];
+  const fetcher: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    advertised = body.tools.map((tool: { name: string }) => tool.name);
+    if (!round++) return completed([
+      call('write_project_file', { path: 'keep.txt', content: 'changed' }, 'write'),
+      call('generate_image', { prompt: 'cost', path: 'paid.png', size: 'auto' }, 'media'),
+      call('mcp_execute', {}, 'mcp'), call('connectors_execute', {}, 'connector'), call('live_artifacts_create', {}, 'live'),
+    ]);
+    return completed([], 'finished');
+  };
+  await turn(fetcher, { projectReadOnly: true, media: true,
+    mcp: { execute: async () => { effects.push('mcp'); } }, connectors: { execute: async () => { effects.push('connector'); } },
+    liveArtifacts: { execute: async () => { effects.push('live'); } } });
+  expect(await readFile(path.join(root, 'owner/keep.txt'), 'utf8')).toBe('original');
+  expect(effects).toEqual([]); expect(advertised.sort()).toEqual(['list_project_files', 'read_project_file']);
+});

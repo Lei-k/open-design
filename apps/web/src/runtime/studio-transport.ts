@@ -56,6 +56,19 @@ export function studioRequestAvailable(method: string, path: string,
   if (/^\/api\/(?:version|health)$/.test(path)) return method === 'GET';
   // Public, no-store deployment version (About → check for a newer deployment).
   if (path === '/api/version') return method === 'GET';
+  // S68: existing administrative metadata only; the cookie-backed daemon
+  // independently requires the current admin role on every action.
+  if (usable('admin')) {
+    if (path === '/api/auth/users') return method === 'GET' || method === 'POST';
+    if (path === '/api/auth/audit') return method === 'GET';
+    if (/^\/api\/auth\/users\/[^/]+$/.test(path)) return method === 'PATCH';
+    if (/^\/api\/auth\/users\/[^/]+\/(?:password|sessions\/revoke)$/.test(path)) return method === 'POST';
+    if (path === '/api/admin/pool' || path === '/api/admin/agent-accounts') return method === 'GET';
+    if (path === '/api/admin/pool/openai') return method === 'GET' || method === 'PUT';
+    if (/^\/api\/admin\/users\/[^/]+\/studio-pilot$/.test(path)) return method === 'GET' || method === 'PUT';
+    if (/^\/api\/admin\/pool\/(?:providers\/[^/]+|users\/[^/]+\/quota)$/.test(path)
+      || path === '/api/admin/agent-accounts/personal-capacity') return method === 'PUT';
+  }
   if (path === '/api/active') return method === 'GET' || method === 'POST';
   if (path === '/api/projects') return method === 'GET' || method === 'POST';
   if (/^\/api\/projects\/[^/]+$/.test(path)) return ['GET', 'PATCH', 'DELETE'].includes(method);
@@ -166,6 +179,11 @@ export function studioRequestAvailable(method: string, path: string,
     if (/^\/api\/multiuser\/mcp\/oauth\/(?:start|disconnect)$/.test(mcpPath)) return method === 'POST';
     if (/^\/api\/multiuser\/mcp\/oauth\/(?:refresh|cancel)$/.test(path)) return method === 'POST';
     if (mcpPath === '/api/multiuser/mcp/oauth/status') return method === 'GET';
+  }
+  // S66: Jury uses any enabled execution source, independently from media.
+  if (usable('execution')) {
+    const jury = /^\/api\/(?:multiuser\/)?projects\/[^/]+\/critique(?:\/[^/]+(?:\/(events|transcript|artifact|interrupt))?)?$/.exec(path);
+    if (jury) return jury[1] === 'interrupt' ? method === 'POST' : method === 'GET' || (!jury[1] && /^\/api\/(?:multiuser\/)?projects\/[^/]+\/critique$/.test(path) && method === 'POST');
   }
   // Account research (#63) on the account's own Tavily key.
   if (usable('generation') && researchSearch && /^\/api\/(?:multiuser\/)?research\/search$/.test(path)) return method === 'POST';

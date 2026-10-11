@@ -19,8 +19,9 @@ const studio: StudioRuntimeCapabilities = { schemaVersion: 1, shell: 'studio', f
 const account = { id: 'A', username: 'pilot-A', role: 'user', active: true, passwordState: 'set', createdAt: 1, updatedAt: 1 };
 const project = { id: 'owned-project', name: 'Owned project', createdAt: 1, updatedAt: 1, metadata: { kind: 'prototype' } };
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-it('renders the existing App without attempting unavailable service requests, including failure diagnostics', async () => {
-  vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }));
+it.each([1024, 390])('renders the existing App at %s px without unavailable service requests, including failure diagnostics', async (width) => {
+  vi.stubGlobal('innerWidth', width); vi.stubGlobal('innerHeight', 844);
+  vi.stubGlobal('matchMedia', () => ({ matches: width <= 600, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }));
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal('IntersectionObserver', class { observe() {} unobserve() {} disconnect() {} });
   const requests: Array<{ source: string; method: string; path: string }> = [];
@@ -45,6 +46,7 @@ it('renders the existing App without attempting unavailable service requests, in
     record('fetch', input, init);
     const path = new URL(String(input), location.origin).pathname;
     if (path === '/api/auth/me') return Response.json({ account: currentAccount, studio: effective, studioRevision: revision });
+    if (path === '/api/auth/users') return Response.json({ accounts: [currentAccount], page: { total: 1, limit: 20, offset: 0 } });
     if (path === '/api/projects') return Response.json({ projects: [currentProject] });
     if (path === '/api/projects/owned-project') return Response.json({ project: currentProject });
     if (path.endsWith('/conversations')) return Response.json({ conversations: [{ id: 'conv', title: 'Conversation', studioCanWrite: true, createdAt: 1, updatedAt: 1 }] });
@@ -112,6 +114,21 @@ it('renders the existing App without attempting unavailable service requests, in
     // Admin entries live in the shell's account menu.
     fireEvent.click(await screen.findByTestId('studio-account-trigger'));
     await screen.findByRole('menuitem', { name: 'Users' }); capture();
+    await act(async () => { window.history.pushState({}, '', '/admin/users'); window.dispatchEvent(new PopStateEvent('popstate')); });
+    await screen.findByTestId('studio-settings-nav-users');
+    await screen.findByRole('button', { name: 'Create account' });
+    const openAdminPage = screen.getByRole('button', { name: 'Create account' });
+    currentAccount = { ...currentAccount, role: 'user' };
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    await screen.findByRole('alert');
+    expect(openAdminPage.isConnected).toBe(false);
+    expect(screen.queryByRole('button', { name: 'Create account' })).toBeNull();
+    currentAccount = { ...currentAccount, role: 'admin' };
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    await screen.findByRole('button', { name: 'Create account' });
+    await act(async () => navigate({ kind: 'project', projectId: project.id, conversationId: 'conv', fileName: null }));
+    await screen.findByTestId('chat-composer');
+
     const adminShell = document.querySelector('[data-studio-pilot]')!;
     // Revision alone must also replace the private tree, even with unchanged capabilities.
     revision++;

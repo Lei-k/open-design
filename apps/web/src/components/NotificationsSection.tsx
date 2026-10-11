@@ -1,4 +1,6 @@
-import { useState, type Dispatch, type SetStateAction } from 'react';
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
+import { StudioCapabilityMessage, useStudioCapabilityState } from '../runtime/StudioCapabilityState';
+import { useEffect, useId, useState, type Dispatch, type SetStateAction } from 'react';
 import { Button } from '@open-design/components';
 import { useI18n } from '../i18n';
 import { useAnalytics } from '../analytics/provider';
@@ -51,10 +53,19 @@ export function NotificationsSection({
 }) {
   const { t } = useI18n();
   const analytics = useAnalytics();
+  const studio = useStudioCapabilities();
+  const reasonId = useId();
   const notif = cfg.notifications ?? DEFAULT_NOTIFICATIONS;
   const [permission, setPermission] = useState<NotificationPermission | 'unsupported'>(
     () => notificationPermission(),
   );
+  const notificationState = useStudioCapabilityState('notifications', { notification: permission });
+  useEffect(() => {
+    if (studio.hostServices) return;
+    const refresh = () => setPermission(notificationPermission());
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, [studio.hostServices]);
   const [testStatus, setTestStatus] = useState<ReturnType<typeof testNotificationStatusText> | null>(null);
 
   const updateNotif = (
@@ -224,7 +235,8 @@ export function NotificationsSection({
                   type="button"
                   className={'seg-btn seg-btn--on' + (notif.desktopEnabled ? ' active' : '')}
                   aria-pressed={notif.desktopEnabled}
-                  disabled={permission === 'unsupported'}
+                  disabled={permission === 'unsupported' || !notificationState.usable}
+                  aria-describedby={notificationState.reasonKey ? reasonId : undefined}
                   onClick={() => { if (!notif.desktopEnabled) void toggleDesktop(); }}
                 >
                   <span className="seg-title">{t('common.active')}</span>
@@ -233,7 +245,7 @@ export function NotificationsSection({
                   type="button"
                   className={'seg-btn' + (!notif.desktopEnabled ? ' active' : '')}
                   aria-pressed={!notif.desktopEnabled}
-                  disabled={permission === 'unsupported'}
+                  disabled={studio.hostServices && permission === 'unsupported'}
                   onClick={() => { if (notif.desktopEnabled) void toggleDesktop(); }}
                 >
                   <span className="seg-title">{t('common.inactive')}</span>
@@ -242,10 +254,11 @@ export function NotificationsSection({
             </div>
           </div>
         </div>
-        {permission === 'unsupported' ? (
+        <StudioCapabilityMessage state={notificationState} id={reasonId} />
+        {studio.hostServices && permission === 'unsupported' ? (
           <p className="hint">{t('settings.notifyDesktopUnsupported')}</p>
         ) : null}
-        {permission === 'denied' ? (
+        {studio.hostServices && permission === 'denied' ? (
           <p className="hint">{t('settings.notifyDesktopBlocked')}</p>
         ) : null}
         {notif.desktopEnabled && permission === 'granted' ? (

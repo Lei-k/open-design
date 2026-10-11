@@ -39,6 +39,8 @@ export interface PersonalSandboxMounts {
   skillPackages?: string;
   /** Provider children need the remote API; company skill scripts do not get a network. */
   network?: boolean;
+  /** Jury has immutable project context; private runtime homes remain writable. */
+  readOnlyCwd?: boolean;
 }
 
 const SYSTEM_DIRECTORIES = ['/usr', '/etc/ssl', '/etc/ca-certificates', '/etc/pki', '/etc/alternatives'];
@@ -70,7 +72,7 @@ export function personalSandboxArgs(sandbox: PersonalSandbox, mounts: PersonalSa
   // Parents before children, so a nested writable path is not hidden by its parent's mount.
   const writable = [...new Set([mounts.codexHome, mounts.home, mounts.temp, mounts.cwd])]
     .sort((a, b) => a.length - b.length);
-  for (const dir of writable) args.push('--bind', dir, dir);
+  for (const dir of writable) args.push(mounts.readOnlyCwd && dir === mounts.cwd ? '--ro-bind' : '--bind', dir, dir);
   if (mounts.skillPackages) args.push('--ro-bind', mounts.skillPackages, mounts.skillPackages);
   args.push('--chdir', mounts.cwd);
   return args;

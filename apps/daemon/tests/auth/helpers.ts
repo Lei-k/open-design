@@ -160,3 +160,15 @@ export function cookiePairFrom(setCookies: string[]): string | null {
   if (eq <= 0 || pair.slice(eq + 1).length === 0) return null;
   return pair;
 }
+
+/** Observe account metadata through the same HTTP surface before an access write. */
+export async function currentAccountRevision(request: (req: RawRequest) => Promise<RawResponse>, id: string, cookie: string): Promise<number> {
+  for (let offset = 0; offset <= 10000; offset += 100) {
+    const response = await request({ path: `/api/auth/users?limit=100&offset=${offset}`, cookie });
+    if (response.status !== 200) break;
+    const account = response.json.accounts.find((entry: { id: string }) => entry.id === id);
+    if (account) return account.updatedAt;
+    if (offset + 100 >= response.json.page.total) break;
+  }
+  throw new Error('Cannot observe target account revision');
+}

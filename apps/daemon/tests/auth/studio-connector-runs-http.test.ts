@@ -1,3 +1,4 @@
+import { currentAccountRevision } from './helpers.js';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -104,15 +105,15 @@ it('S59 list cannot select a foreign connector through query and desktop grants 
 });
 it.each(['disable', 'clear', 'rotate', 'disconnect', 'replace', 'pilot', 'logout', 'sessions-revoke', 'password-reset', 'role-change'])('S59 authority table: %s refuses subsequent calls without provider I/O', async (change) => {
   const g = grant(a);
-  if (change === 'disable') await mutate(admin, 'PATCH', `/api/auth/users/${a.id}`, { active: false });
+  if (change === 'disable') await mutate(admin, 'PATCH', `/api/auth/users/${a.id}`, { revision: await currentAccountRevision(daemon.request, a.id, admin.cookie), active: false });
   if (change === 'clear' || change === 'rotate') company.update(admin.id, { revision: company.read().revision, apiKey: change === 'clear' ? null : 'S59_ROTATED_COMPOSIO_KEY' });
   if (change === 'disconnect') store.markDisconnected(a.id, 'github');
   if (change === 'replace') store.saveConnection(a.id, 'github', { providerConnectionId: 'replacement', accountLabel: 'replacement', credentialRevision: company.read().credentialRevision });
   if (change === 'pilot') await mutate(admin, 'PUT', `/api/admin/users/${a.id}/studio-pilot`, { revision: 0, studioPilot: false });
   if (change === 'logout') await mutate(a, 'POST', '/api/auth/logout', {});
   if (change === 'sessions-revoke') await mutate(admin, 'POST', `/api/auth/users/${a.id}/sessions/revoke`, {});
-  if (change === 'password-reset') await mutate(admin, 'POST', `/api/auth/users/${a.id}/password`, { password: 'S59-new-battery-staple-password' });
-  if (change === 'role-change') await mutate(admin, 'PATCH', `/api/auth/users/${a.id}`, { role: 'admin' });
+  if (change === 'password-reset') expect((await mutate(admin, 'POST', `/api/auth/users/${a.id}/password`, { password: 'S59-new-battery-staple-password', revision: await currentAccountRevision(daemon.request, a.id, admin.cookie) })).status).toBe(204);
+  if (change === 'role-change') await mutate(admin, 'PATCH', `/api/auth/users/${a.id}`, { revision: await currentAccountRevision(daemon.request, a.id, admin.cookie), role: 'admin' });
   for (const body of [undefined, args]) {
     const result = await tool(g.token, body); expect(result.status, result.text).toBe(409);
     expect(result.json.error.code).toBe('MULTIUSER_CONNECTOR_AUTHORITY_CHANGED');

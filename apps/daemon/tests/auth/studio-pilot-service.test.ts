@@ -41,7 +41,7 @@ it('denies ordinary callers before any target account or pilot lookup', () => {
 it('retains account disable and last-admin protection when pilots change', () => {
   opened.service.updateStudioPilot(admin, admin.accountId, { studioPilot: true, revision: 0 });
   expect(() => opened.service.updateAccount(admin, admin.accountId, { active: false })).toThrow('last usable admin');
-  opened.service.updateAccount(admin, user.accountId, { active: false });
+  opened.service.updateAccount(admin, user.accountId, { revision: opened.store.getAccountById(user.accountId)!.updatedAt, active: false });
   opened.service.updateStudioPilot(admin, user.accountId, { studioPilot: true, revision: 0 });
   expect(opened.store.getAccountById(user.accountId)?.active).toBe(false);
   expect(() => opened.service.getOwnStudioPilot(user)).toThrow();

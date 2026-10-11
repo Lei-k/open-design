@@ -250,6 +250,7 @@ export const API_ERROR_CODES = [
   // answered unusably (its body is never echoed); LIMIT_REACHED: the account
   // already has the maximum number of servers.
   'MULTIUSER_DEPLOY_HISTORY_FULL',
+  'MULTIUSER_DEPLOY_REFRESH_BUSY',
   'MULTIUSER_DEPLOY_TOKEN_MISSING',
   'MULTIUSER_DEPLOY_AUTHORITY_CHANGED',
   'MULTIUSER_DEPLOY_CAPTURE_REFUSED',
@@ -281,6 +282,8 @@ export const API_ERROR_CODES = [
   'LIVE_ARTIFACT_REFRESH_AUTHORITY_CHANGED',
   'LIVE_ARTIFACT_SOURCE_RECONFIRM_REQUIRED',
   'INTERNAL_ERROR',
+  'LAST_ADMIN',
+  'USERNAME_TAKEN',
 ] as const;
 
 export type ApiErrorCode = (typeof API_ERROR_CODES)[number];

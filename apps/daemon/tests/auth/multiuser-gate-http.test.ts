@@ -9,6 +9,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { currentAccountRevision } from './helpers.js';
 import {
   MULTIUSER_ROUTE_CLASSIFICATION,
   findPrecedenceOrderViolations,
@@ -140,6 +141,11 @@ describe('route classification covers the real inventory', () => {
       .map((entry) => `${entry.routeClass} ${entry.key}`)
       .sort();
     expect(allowed).toEqual([...S5_OWNER_FILE_ROUTES, ...[
+      ...['/api/projects', '/api/multiuser/projects'].flatMap((prefix) => [
+        `owner-scoped-project POST ${prefix}/:projectId/critique`, `owner-scoped-project GET ${prefix}/:projectId/critique`,
+        ...['', '/events', '/transcript', '/artifact'].map((suffix) => `owner-scoped-run GET ${prefix}/:projectId/critique/:runId${suffix}`),
+        `owner-scoped-run POST ${prefix}/:projectId/critique/:runId/interrupt`,
+      ]),
       'actor-scoped GET /api/deploy/config',
       'actor-scoped PUT /api/deploy/config',
       'actor-scoped GET /api/multiuser/deploy/config',
@@ -990,7 +996,7 @@ describe('session lifecycle takes effect immediately', () => {
       method: 'PATCH',
       path: `/api/auth/users/${carolId}`,
       cookie: admin.cookie,
-      body: { active: false },
+      body: { active: false, revision: await currentAccountRevision(daemon.request, carolId, admin.cookie) },
     });
     expect(disable.status).toBe(200);
     expect((await daemon.request({ path: '/api/projects', cookie: carol })).status).toBe(401);

@@ -1,3 +1,4 @@
+import { currentAccountRevision } from './helpers.js';
 // S40 (#61/#65): team catalogs. An account shares a private skill or design
 // document with another account of the same deployment for `use`; the
 // grantee lists, inspects, previews and selects it in its own turns, which
@@ -105,7 +106,7 @@ describe('team catalogs between accounts', () => {
     expect((await share('skills', skillId, a.username)).text).toBe(unknown.text);
     const gone = await request(admin, 'POST', '/api/auth/users', { username: 'catalog-gone', password: 'catalog-gone-password-battery', role: 'user' });
     expect(gone.status, gone.text).toBe(201);
-    expect((await request(admin, 'PATCH', `/api/auth/users/${gone.json.account.id}`, { active: false })).status).toBe(200);
+    expect((await request(admin, 'PATCH', `/api/auth/users/${gone.json.account.id}`, { revision: await currentAccountRevision(daemon.request, gone.json.account.id, admin.cookie), active: false })).status).toBe(200);
     expect((await share('skills', skillId, 'catalog-gone')).text).toBe(unknown.text);
     for (const body of [{ username: b.username, role: 'edit' }, { username: b.username }, { username: b.username, role: 'use', accountId: b.id }]) {
       expect((await request(a, 'PUT', `/api/multiuser/catalog/skills/${enc(skillId)}/shares`, body)).status).toBe(400);
@@ -287,7 +288,7 @@ describe('team catalogs between accounts', () => {
     const missingSkill = `studio-skill:${randomUUID()}`;
     const missingDesign = `user:studio_${randomUUID()}`;
 
-    expect((await request(admin, 'PATCH', `/api/auth/users/${owner.id}`, { active: false })).status).toBe(200);
+    expect((await request(admin, 'PATCH', `/api/auth/users/${owner.id}`, { revision: await currentAccountRevision(daemon.request, owner.id, admin.cookie), active: false })).status).toBe(200);
     // Lists, detail, files, preview bytes and the member view: the same refusal as a missing id.
     expect(JSON.stringify(await listed(b, 'skills'))).not.toContain(skillId);
     expect(JSON.stringify(await listed(b, 'design-systems'))).not.toContain(designId);
@@ -314,7 +315,7 @@ describe('team catalogs between accounts', () => {
     expect(kept).toContain('OWNER_OFF_SKILL_ORIGINAL'); expect(kept).toContain('OWNER_OFF_DESIGN_ORIGINAL');
 
     // Reactivation lifts the suspension: grants were never revoked, so they apply again.
-    expect((await request(admin, 'PATCH', `/api/auth/users/${owner.id}`, { active: true })).status).toBe(200);
+    expect((await request(admin, 'PATCH', `/api/auth/users/${owner.id}`, { revision: await currentAccountRevision(daemon.request, owner.id, admin.cookie), active: true })).status).toBe(200);
     expect((await listed(b, 'skills')).find((item) => item.id === skillId)?.studioShare).toMatchObject({ role: 'use', ownerUsername: owner.username });
     expect((await request(b, 'GET', `/api/design-systems/${enc(designId)}/preview`)).text).toContain('OWNER_OFF_DESIGN_ORIGINAL');
   }, 90_000);
@@ -333,7 +334,7 @@ describe('team catalogs between accounts', () => {
     const losses: Array<{ label: string; lose: (owner: Principal, ids: { skillId: string; designId: string }) => Promise<void> }> = [
       { label: 'skill revoked', lose: async (owner, ids) => { expect((await revoke('skills', ids.skillId, b.id, owner)).status).toBe(200); } },
       { label: 'design revoked', lose: async (owner, ids) => { expect((await revoke('design-systems', ids.designId, b.id, owner)).status).toBe(200); } },
-      { label: 'owner deactivated', lose: async (owner) => { expect((await request(admin, 'PATCH', `/api/auth/users/${owner.id}`, { active: false })).status).toBe(200); } },
+      { label: 'owner deactivated', lose: async (owner) => { expect((await request(admin, 'PATCH', `/api/auth/users/${owner.id}`, { revision: await currentAccountRevision(daemon.request, owner.id, admin.cookie), active: false })).status).toBe(200); } },
       { label: 'control (no change)', lose: async () => {} },
     ];
     for (const source of sources) {

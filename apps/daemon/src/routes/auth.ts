@@ -124,12 +124,12 @@ export interface RegisterAuthRoutesDeps {
 const STATUS_BY_AUTH_CODE: Record<AuthErrorCode, { status: number; code: ApiErrorCode }> = {
   CONFLICT: { status: 409, code: 'CONFLICT' },
   VALIDATION: { status: 400, code: 'BAD_REQUEST' },
-  USERNAME_TAKEN: { status: 409, code: 'CONFLICT' },
+  USERNAME_TAKEN: { status: 409, code: 'USERNAME_TAKEN' },
   BOOTSTRAP_CLOSED: { status: 409, code: 'CONFLICT' },
   INVALID_CREDENTIALS: { status: 401, code: 'UNAUTHORIZED' },
   FORBIDDEN: { status: 403, code: 'FORBIDDEN' },
   NOT_FOUND: { status: 404, code: 'NOT_FOUND' },
-  LAST_ADMIN: { status: 409, code: 'CONFLICT' },
+  LAST_ADMIN: { status: 409, code: 'LAST_ADMIN' },
   SETUP_INVALID: { status: 401, code: 'UNAUTHORIZED' },
 };
 
@@ -532,6 +532,8 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
     // Authorization first (non-admins get 403 regardless of body), then the
     // service validates the patch shape.
     const prior = auth.listAccounts(actor).find((entry) => entry.id === String(req.params.id));
+    if (!prior) throw new AuthError('NOT_FOUND');
+    if (!Number.isSafeInteger(body?.revision) || Number(body?.revision) < 0) throw new AuthError('VALIDATION');
     const account = auth.updateAccount(actor, String(req.params.id), (body ?? []) as UpdateAccountPatch);
     if (prior && (prior.role !== account.role || (prior.active && !account.active))) {
       deps.onAccountSessionsRevoked?.(String(req.params.id));
@@ -548,14 +550,19 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
   app.post(`${p}/users/:id/password`, requireSession, handle(async (req, res) => {
     const body = bodyObject(req);
     const accountId = String(req.params.id);
+    // Authorization and existence precede request validation, as for access writes.
+    const actor = actorOf(res);
+    if (!auth.listAccounts(actor).some((account) => account.id === accountId)) throw new AuthError('NOT_FOUND');
+    if (!Number.isSafeInteger(body?.revision) || Number(body?.revision) < 0) throw new AuthError('VALIDATION');
+    const revision = Number(body?.revision);
     if (hasOwn(body, 'password')) {
       // LEGACY, TEST-ONLY: the admin sets the password directly (fixtures).
-      await auth.resetPassword(actorOf(res), accountId, stringField(body, 'password'));
+      await auth.resetPassword(actor, accountId, stringField(body, 'password'), revision);
       deps.onAccountSessionsRevoked?.(accountId);
       res.status(204).end();
       return;
     }
-    const setup = auth.issueSetupCredential(actorOf(res), accountId);
+    const setup = auth.issueSetupCredential(actor, accountId, revision);
     // A reset retired the owner's sessions: cancel their queued/active work.
     deps.onAccountSessionsRevoked?.(accountId);
     res.status(201).json({ setup });

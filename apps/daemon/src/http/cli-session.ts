@@ -1,6 +1,6 @@
 import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { parseStudioRuntimeCapabilities, type AuthAccount, type AuthSessionResponse, type StudioPilotState, type CompanyOpenAIConfigResponse,
+import { API_ERROR_CODES, parseStudioRuntimeCapabilities, type AuthAccount, type AuthSessionResponse, type StudioPilotState, type CompanyOpenAIConfigResponse,
   type StudioProviderKeyResponse, type StudioProviderKeySummary, type StudioProviderKeysResponse, type StudioComposioConfigResponse } from '@open-design/contracts';
 
 export interface CliSessionCredential {
@@ -203,11 +203,32 @@ export async function runSessionCli(args: string[], sessionFile: string | null):
   process.stdout.write(`${JSON.stringify({ ok: true, sessionRemoved: true })}\n`);
 }
 
+/** A declared error token is safe to print; server messages and bodies are not. */
+export class AdminCliRefusal extends Error {
+  constructor(readonly status: number, readonly code: typeof API_ERROR_CODES[number] | undefined, label: string) {
+    super(`${label} request refused (${status})${code ? ` ${code}` : ''}`);
+  }
+}
+
+export async function refuseAdminCliResponse(response: Response, label = 'Admin'): Promise<never> {
+  const failure: unknown = await response.json().catch(() => null);
+  const error = failure && typeof failure === 'object' && 'error' in failure ? failure.error : null;
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : null;
+  const typed = typeof code === 'string' ? API_ERROR_CODES.find((known) => known === code) : undefined;
+  throw new AdminCliRefusal(response.status, typed, label);
+}
+
 /** Explicit optimistic write; never silently read/retry a conflicting mutation. */
 export async function runStudioPilotCli(args: string[], sessionFile: string | null): Promise<void> {
+  if (['users', 'audit', 'personal', 'health'].includes(args[0] ?? '') || (args[0] === 'pool' && args[1] !== 'openai')) {
+    const { runAdminMetadataCli } = await import('./admin-cli.js');
+    return runAdminMetadataCli(args, sessionFile);
+  }
   if (args[0] === 'pool') return runCompanyOpenAICli(args.slice(1), sessionFile);
   if (args[0] === 'connectors') return runCompanyComposioCli(args.slice(1), sessionFile);
   if (args.includes('--help')) {
+    const { runAdminMetadataCli } = await import('./admin-cli.js');
+    await runAdminMetadataCli(['--help'], sessionFile);
     process.stdout.write('Usage: od admin pool openai get|set --help\n       od admin connectors composio get|set|clear --help\n       od admin studio-pilot get <account-id> --session-file <path> [--json]\n       od admin studio-pilot set <account-id> --enabled true|false --revision <integer> --session-file <path> [--json]\n');
     return;
   }
@@ -232,7 +253,7 @@ export async function runStudioPilotCli(args: string[], sessionFile: string | nu
   const response = await cliSessionFetch(credential)(`${credential.origin}/api/admin/users/${encodeURIComponent(accountId)}/studio-pilot`, body ? {
     method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   } : undefined);
-  if (!response.ok) throw new Error(`Pilot request refused (${response.status})`);
+  if (!response.ok) await refuseAdminCliResponse(response, 'Pilot');
   const result = await response.json() as StudioPilotState;
   if (typeof result.studioPilot !== 'boolean' || !Number.isSafeInteger(result.revision) || result.revision < 0) throw new Error('Invalid pilot response');
   process.stdout.write(`${JSON.stringify({ studioPilot: result.studioPilot, revision: result.revision })}\n`);
@@ -271,7 +292,7 @@ async function runCompanyOpenAICli(args: string[], sessionFile: string | null): 
   const response = await cliSessionFetch(credential)(`${credential.origin}/api/admin/pool/openai`, body ? {
     method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   } : undefined);
-  if (!response.ok) throw new Error(`Company pool request refused (${response.status})`);
+  if (!response.ok) await refuseAdminCliResponse(response, 'Company pool');
   const { provider: result } = await response.json() as CompanyOpenAIConfigResponse;
   if (result?.providerId !== 'openai' || typeof result.enabled !== 'boolean' || typeof result.configured !== 'boolean'
     || typeof result.model !== 'string' || !Number.isSafeInteger(result.capacity) || !Number.isSafeInteger(result.revision)
@@ -316,7 +337,7 @@ async function runCompanyComposioCli(args: string[], sessionFile: string | null)
   const response = await cliSessionFetch(credential)(`${credential.origin}/api/connectors/composio/config`, body ? {
     method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   } : undefined);
-  if (!response.ok) throw new Error(`Connectors key request refused (${response.status})`);
+  if (!response.ok) await refuseAdminCliResponse(response, 'Connectors key');
   const result = await response.json() as Partial<StudioComposioConfigResponse>;
   if (typeof result.configured !== 'boolean' || typeof result.apiKeyTail !== 'string' || result.apiKeyTail.length > 4
     || !Number.isSafeInteger(result.revision) || !Number.isSafeInteger(result.credentialRevision) || typeof result.canManage !== 'boolean') throw new Error('Invalid connectors key response');
