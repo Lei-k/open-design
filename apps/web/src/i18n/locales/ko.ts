@@ -40,6 +40,7 @@ export const ko: Dict = {
   "studio.deployRefreshBusy": "배포 새로고침이 사용 중입니다. 잠시 후 다시 시도하세요.",
   "studio.deployAuthorityChanged": "계정, 세션, 토큰 또는 프로젝트 접근 권한이 변경되었습니다. 로컬 결과가 저장되지 않았습니다. 공급자가 이미 원격 배포를 생성했을 수 있으니 공급자 계정을 확인하세요.",
   "studio.deployAccessChanged": "계정, 세션, 토큰 또는 프로젝트 접근 권한이 변경되었습니다. 권한을 확인하고 다시 시도하세요.",
+  "plugins.restrictionsUnknown": "제한 사항 알 수 없음",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "저장된 메모리와 프로필 정보는 이후 실행에 포함됩니다. 자동 추출은 선택 사항이며, OpenAI 턴이 끝난 뒤 해당 턴의 소스(회사 풀 또는 내 키)로 실행되고 개인 Codex 턴에서는 건너뜁니다.",
 

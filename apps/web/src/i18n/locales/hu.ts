@@ -40,6 +40,7 @@ export const hu: Dict = {
   "studio.deployRefreshBusy": "A telepítés frissítése foglalt. Próbáld újra rövidesen.",
   "studio.deployAuthorityChanged": "A fiók, a munkamenet, a token vagy a projekthozzáférés megváltozott. Nem lett helyi eredmény mentve. A szolgáltató már létrehozhatott egy távoli telepítést; ellenőrizd a szolgáltatói fiókodat.",
   "studio.deployAccessChanged": "A fiók, munkamenet, token vagy projekt hozzáférése megváltozott. Ellenőrizze a hozzáférését, és próbálja újra.",
+  "plugins.restrictionsUnknown": "Ismeretlen korlátozások",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "A mentett emlékek és profiladatok bekerülnek a későbbi futtatásokba. Az automatikus kinyerés opcionális: OpenAI-körök után fut az adott kör saját forrásán (vállalati keret vagy a saját kulcsod), személyes Codex-köröknél kimarad.",
 

@@ -40,6 +40,7 @@ export const zhTW: Dict = {
   "studio.deployRefreshBusy": "部署重新整理正忙，請稍後重試。",
   "studio.deployAuthorityChanged": "帳號、工作階段、權杖或專案存取權限已變更。未儲存本地結果。供應商可能已建立遠端部署，請檢查你的供應商帳號。",
   "studio.deployAccessChanged": "帳號、工作階段、權杖或專案存取權限已變更。請檢查權限後重試。",
+  "plugins.restrictionsUnknown": "限制未知",
   'studio.deployProgress': '正在部署…',
   "studio.manualMemoryHint": "已儲存的記憶和個人資料會用於之後的執行。自動擷取需手動開啟：在 OpenAI 回合結束後使用該回合自身的來源（公司池或你自己的金鑰）執行，個人 Codex 回合會略過。",
 

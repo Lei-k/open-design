@@ -40,6 +40,7 @@ export const ptBR: Dict = {
   "studio.deployRefreshBusy": "A atualização da implantação está ocupada. Tente novamente em breve.",
   "studio.deployAuthorityChanged": "A conta, a sessão, o token ou o acesso ao projeto mudou. Nenhum resultado local foi salvo. O provedor pode já ter criado uma implantação remota; confira sua conta no provedor.",
   "studio.deployAccessChanged": "O acesso à conta, sessão, token ou projeto mudou. Revise seu acesso e tente novamente.",
+  "plugins.restrictionsUnknown": "Restrições desconhecidas",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Memórias salvas e dados do perfil são incluídos nas próximas execuções. A extração automática é opcional: ela roda após turnos da OpenAI na fonte do próprio turno (o pool da empresa ou sua chave) e é ignorada em turnos pessoais do Codex.",
 

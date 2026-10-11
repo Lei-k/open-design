@@ -40,6 +40,7 @@ export const en: Dict = {
   "studio.deployRefreshBusy": "Deployment refresh is busy. Try again shortly.",
   "studio.deployAuthorityChanged": "Account, session, token or project access changed. No local result was saved. The provider may already have created a remote deployment; check your provider account.",
   "studio.deployAccessChanged": "Account, session, token or project access changed. Review your access and try again.",
+  "plugins.restrictionsUnknown": "Restrictions unknown",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Saved memories and profile facts are included in future runs. Automatic extraction is opt-in: it runs after OpenAI turns on that turn's own source (the company pool or your own key) and is skipped for personal Codex turns.",
 
