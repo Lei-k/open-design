@@ -74,6 +74,8 @@ export interface Dict {
   'studio.deployFailed': string;
   'studio.deployRefreshBusy': string;
   'studio.deployAuthorityChanged': string;
+  'studio.deployAccessChanged': string;
+  'plugins.restrictionsUnknown': string;
   'studio.deployHistoryFull': string;
   'studio.deployProgress': string;
   'studio.liveArtifact.outputMapping': string;

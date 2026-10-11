@@ -1255,12 +1255,14 @@ export async function downloadDesignSystemArchive(opts: {
   }
 }
 
+export type ProjectArchiveDownloadResult = { status: 'started' | 'request-failed' | 'browser-blocked' };
+
 export async function downloadProjectArchive(opts: {
   projectId: string;
   fallbackTitle: string;
   root?: string;
   workspaceContext?: WorkspaceCollabContext | null;
-}): Promise<boolean> {
+}): Promise<ProjectArchiveDownloadResult> {
   const root = opts.root?.replace(/^\/+|\/+$/g, '') ?? '';
   const url = `/api/projects/${encodeURIComponent(opts.projectId)}/archive${
     root ? `?root=${encodeURIComponent(root)}` : ''
@@ -1273,11 +1275,16 @@ export async function downloadProjectArchive(opts: {
       : await fetch(url);
     if (!resp.ok) throw new Error(`archive request failed (${resp.status})`);
     const blob = await resp.blob();
-    triggerDownload(blob, archiveFilenameFrom(resp, opts.fallbackTitle, root));
-    return true;
+    try {
+      triggerDownload(blob, archiveFilenameFrom(resp, opts.fallbackTitle, root));
+      return { status: 'started' };
+    } catch (error) {
+      if (error instanceof DOMException && ['NotAllowedError', 'SecurityError'].includes(error.name)) return { status: 'browser-blocked' };
+      throw error;
+    }
   } catch (err) {
     console.warn('[downloadProjectArchive] failed:', err);
-    return false;
+    return { status: 'request-failed' };
   }
 }
 

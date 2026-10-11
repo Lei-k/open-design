@@ -701,7 +701,11 @@ describe('FileWorkspace design-system project surface', () => {
     ]);
   });
 
-  it('refreshes before downloading the current project archive', async () => {
+  it.each([
+    { projectStatus: 200, fallbackStatus: 200, result: 'Done' },
+    { projectStatus: 503, fallbackStatus: 200, result: 'Done' },
+    { projectStatus: 503, fallbackStatus: 503, result: 'Something went wrong. Please try again.' },
+  ])('refreshes before downloading the current project archive ($projectStatus / fallback $fallbackStatus)', async ({ projectStatus, fallbackStatus, result }) => {
     registryMocks.fetchProjectFileText.mockImplementation((_projectId: string, name: string) => {
       if (name === 'DESIGN.md') return Promise.resolve('# Acme');
       return Promise.resolve(null);
@@ -750,7 +754,7 @@ describe('FileWorkspace design-system project surface', () => {
         });
       }
       return new Response(new Blob(['zip']), {
-        status: 200,
+        status: url === '/api/projects/ds-acme/archive' ? projectStatus : fallbackStatus,
         headers: { 'Content-Disposition': 'attachment; filename="acme.zip"' },
       });
     });
@@ -793,12 +797,17 @@ describe('FileWorkspace design-system project surface', () => {
       await Promise.resolve();
     });
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await waitFor(() => expect(container.querySelector('.od-toast-message')?.textContent).toBe(result));
+    if (projectStatus !== 200 && fallbackStatus !== 200) {
+      expect(container.textContent).not.toContain('Done');
+      expect(container.querySelector('.od-toast')?.getAttribute('role')).toBe('alert');
+    }
     expect(events).toEqual([
       '/api/brands/brand-acme/finalize',
       'refresh-files',
       'refresh-design-systems',
       '/api/projects/ds-acme/archive',
+      ...(projectStatus !== 200 ? ['/api/design-systems/user%3Aacme/archive'] : []),
     ]);
   });
 

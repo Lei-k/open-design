@@ -18,13 +18,17 @@ export function StudioDeploySettings() {
         await Promise.all(
           (['vercel', 'cloudflare-pages'] as const).map(async (provider) => {
             const response = await studioFetch(`/api/deploy/config?providerId=${provider}`);
-            if (!response.ok) throw new Error();
+            if (!response.ok) {
+              const data = await response.json().catch(() => null);
+              throw new Error(data?.error?.code);
+            }
             return response.json() as Promise<StudioDeployConfig>;
           }),
         ),
       );
-    } catch {
-      setError(t('studio.deployFailed'));
+    } catch (error) {
+      setError(t(error instanceof Error && error.message === 'MULTIUSER_DEPLOY_AUTHORITY_CHANGED'
+        ? 'studio.deployAccessChanged' : 'studio.deployFailed'));
     }
   };
   useEffect(() => {
@@ -51,10 +55,14 @@ export function StudioDeploySettings() {
             : { teamId: fields.get('teamId'), teamSlug: fields.get('teamSlug') }),
         }),
       });
-      if (!response.ok) throw new Error();
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error?.code);
+      }
       await load();
-    } catch {
-      setError(t('studio.deployFailed'));
+    } catch (error) {
+      setError(t(error instanceof Error && error.message === 'MULTIUSER_DEPLOY_AUTHORITY_CHANGED'
+        ? 'studio.deployAccessChanged' : 'studio.deployFailed'));
     } finally {
       setBusy(false);
     }
@@ -67,10 +75,14 @@ export function StudioDeploySettings() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ providerId: config.providerId, revision: config.revision, token: null }),
       });
-      if (!res.ok) throw new Error();
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error?.code);
+      }
       await load();
-    } catch {
-      setError(t('studio.deployFailed'));
+    } catch (error) {
+      setError(t(error instanceof Error && error.message === 'MULTIUSER_DEPLOY_AUTHORITY_CHANGED'
+        ? 'studio.deployAccessChanged' : 'studio.deployFailed'));
     } finally {
       setBusy(false);
     }
@@ -149,7 +161,10 @@ export function StudioDeployMenu({
       const configs = await Promise.all(
         (['vercel', 'cloudflare-pages'] as const).map(async (p) => {
           const response = await studioFetch(`/api/deploy/config?providerId=${p}`);
-          if (!response.ok) throw new Error();
+          if (!response.ok) {
+            const data = await response.json().catch(() => null);
+            throw new Error(data?.error?.code);
+          }
           return response.json() as Promise<StudioDeployConfig>;
         }),
       );
@@ -158,8 +173,9 @@ export function StudioDeployMenu({
       const res = await studioFetch(`/api/projects/${projectId}/deployments`);
       if (generation !== loadGeneration.current) return;
       if (res.ok) setRecords((await res.json()).deployments);
-    } catch {
-      setError(t('studio.deployFailed'));
+    } catch (error) {
+      setError(t(error instanceof Error && error.message === 'MULTIUSER_DEPLOY_AUTHORITY_CHANGED'
+        ? 'studio.deployAccessChanged' : 'studio.deployFailed'));
     }
   };
   useEffect(() => {
@@ -170,7 +186,7 @@ export function StudioDeployMenu({
       loadGeneration.current++;
     };
   }, [projectId, fileName, owner]);
-  const act = async (path: string, method: string, body?: unknown) => {
+  const act = async (path: string, method: string, body?: unknown, mayDeploy = false) => {
     setBusy(true);
     setError('');
     try {
@@ -183,19 +199,20 @@ export function StudioDeployMenu({
         const code = data?.error?.code;
         setError(t(code === 'MULTIUSER_DEPLOY_HISTORY_FULL' ? 'studio.deployHistoryFull'
           : code === 'MULTIUSER_DEPLOY_REFRESH_BUSY' ? 'studio.deployRefreshBusy'
-            : code === 'MULTIUSER_DEPLOY_AUTHORITY_CHANGED' ? 'studio.deployAuthorityChanged'
+            : code === 'MULTIUSER_DEPLOY_AUTHORITY_CHANGED' ? (mayDeploy ? 'studio.deployAuthorityChanged' : 'studio.deployAccessChanged')
               : 'studio.deployFailed'));
         return;
       }
       await load();
-    } catch {
-      setError(t('studio.deployFailed'));
+    } catch (error) {
+      setError(t(error instanceof Error && error.message === 'MULTIUSER_DEPLOY_AUTHORITY_CHANGED'
+        ? 'studio.deployAccessChanged' : 'studio.deployFailed'));
     } finally {
       setBusy(false);
     }
   };
   const deploy = (provider: StudioDeployProvider) =>
-    act(`/api/projects/${projectId}/deploy`, 'POST', { fileName, providerId: provider });
+    act(`/api/projects/${projectId}/deploy`, 'POST', { fileName, providerId: provider }, true);
   return (
     <section className={styles.panel} data-testid="studio-deploy-menu">
       <strong>{t('studio.deployTitle')}</strong>
@@ -237,6 +254,7 @@ export function StudioDeployMenu({
                         `/api/projects/${projectId}/deployments/${row.id}${action === 'delete' ? '' : `/${action}`}`,
                         action === 'delete' ? 'DELETE' : 'POST',
                         action === 'delete' ? undefined : {},
+                        action === 'redeploy',
                       )
                     }
                   >

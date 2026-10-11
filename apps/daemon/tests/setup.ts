@@ -1,3 +1,4 @@
+import { expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -17,6 +18,8 @@ function pnpmInvocation(): { args: string[]; command: string } {
 }
 
 function ensureDaemonCliBuilt() {
+  // This suite compiles its own isolated CLI; never materialize shared dist.
+  if (path.basename(expect.getState().testPath ?? '') === 'studio-cli-http.test.ts') return;
   if (existsSync(daemonCliDist)) return;
   const pnpm = pnpmInvocation();
   execFileSync(pnpm.command, [...pnpm.args, 'run', 'build'], {
