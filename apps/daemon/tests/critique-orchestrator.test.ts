@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { migrateCritique, getCritiqueRun } from '../src/critique/persistence.js';
+import { runStudioCritique } from '../src/critique/studio.js';
 import { runOrchestrator, type CritiqueSseBus, type OrchestratorParams } from '../src/critique/orchestrator.js';
 import type { CritiqueSseEvent } from '@open-design/contracts/critique';
 import { defaultCritiqueConfig, type CritiqueConfig } from '@open-design/contracts/critique';
@@ -847,7 +848,7 @@ describe('runOrchestrator - fallback on timeout/abort (Defect 7)', () => {
 });
 
 
-it.each(['abort', 'total_timeout', 'per_round_timeout'] as const)('Studio %s after a round has one replay/transcript terminal', async (cause) => {
+it.each(['abort', 'provider_limit', 'total_timeout', 'per_round_timeout'] as const)('Studio %s after a round has one replay/transcript terminal', async (cause) => {
   const abort = new AbortController();
   const { bus, events } = makeBus();
   const text = happyStream3Rounds(); const second = text.indexOf('<ROUND n="2">');
@@ -865,16 +866,39 @@ it.each(['abort', 'total_timeout', 'per_round_timeout'] as const)('Studio %s aft
       perRoundTimeoutMs: cause === 'per_round_timeout' ? 100 : 10000 },
     bus: { emit(event) {
       if (['critique.interrupted', 'critique.failed'].includes(event.event))
-        expect(getCritiqueRun(db, 'studio-fallback')?.status).toBe(cause === 'abort' ? 'interrupted' : 'timed_out');
-      bus.emit(event); if (cause === 'abort' && event.event === 'critique.round_end') abort.abort();
+        expect(getCritiqueRun(db, 'studio-fallback')?.status).toBe(cause === 'abort' ? 'interrupted' : cause === 'provider_limit' ? 'failed' : 'timed_out');
+      bus.emit(event); if (event.event === 'critique.round_end' && ['abort', 'provider_limit'].includes(cause))
+        abort.abort(cause === 'provider_limit' ? new Error('company_response_limit') : undefined);
     } },
   });
-  expect(result.rounds).toHaveLength(1); expect(result.status).toBe(cause === 'abort' ? 'interrupted' : 'timed_out');
+  expect(result.rounds).toHaveLength(1); expect(result.status).toBe(cause === 'abort' ? 'interrupted' : cause === 'provider_limit' ? 'failed' : 'timed_out');
   expect(result.artifactPath).toBeNull();
   const terminals = events.filter((event) => ['critique.ship', 'critique.interrupted', 'critique.failed', 'critique.degraded'].includes(event.event));
   expect(terminals.map((event) => event.event)).toEqual([cause === 'abort' ? 'critique.interrupted' : 'critique.failed']);
-  if (cause !== 'abort') expect(terminals[0]?.data).toMatchObject({ cause });
+  if (cause !== 'abort') expect(terminals[0]?.data).toMatchObject({ cause: cause === 'provider_limit' ? 'orchestrator_internal' : cause });
   const recorded = readFileSync(join(tmpDir, 'studio-fallback', result.transcriptPath!), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as { type: string });
   expect(recorded.filter((event) => ['ship', 'interrupted', 'failed', 'degraded'].includes(event.type)).map((event) => event.type))
     .toEqual([cause === 'abort' ? 'interrupted' : 'failed']);
+});
+
+
+it('Studio output cap persists a system failure after a completed round', async () => {
+  const events: CritiqueSseEvent[] = [];
+  let roundDone!: () => void;
+  const round = new Promise<void>((resolve) => { roundDone = resolve; });
+  const text = happyStream3Rounds();
+  await expect(runStudioCritique({
+    db, dataRootCanonical: tmpDir, owner: 'actor', projectId: 'p1', conversationId: 'c1', runId: 'output-cap',
+    authorized: () => true, cancel() {}, emit(event) {
+      events.push(event); if (event.event === 'critique.round_end') roundDone();
+    }, async runStage(_directive, onText) {
+      onText(text.slice(0, text.indexOf('<ROUND n="2">')));
+      await round;
+      onText('x'.repeat(9 * 1024 * 1024));
+      return { value: null, ok: true, text: '' };
+    },
+  })).rejects.toThrow('critique_output_limit');
+  expect(getCritiqueRun(db, 'output-cap')?.status).toBe('failed');
+  expect(events.filter((event) => ['critique.ship', 'critique.failed', 'critique.interrupted', 'critique.degraded'].includes(event.event)))
+    .toEqual([{ event: 'critique.failed', data: { runId: 'output-cap', cause: 'orchestrator_internal' } }]);
 });

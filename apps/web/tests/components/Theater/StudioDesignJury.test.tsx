@@ -27,7 +27,7 @@ it('starts with the conversation execution source and mounts the private Jury st
 });
 it('replays private rounds into Theater and exposes only the matching SHIP artifact', async () => {
   mock.fetch.mockImplementation(async (url: string) => Response.json(url.endsWith('/jury-run')
-    ? { status: 'succeeded' } : { runs: [{ id: 'jury-run' }] }));
+    ? { status: 'succeeded', critique: { artifactAvailable: true } } : { runs: [{ id: 'jury-run' }] }));
   render(<StudioDesignJury projectId="p" conversationId="c" agentId="codex" canWrite />);
   await waitFor(() => expect(mock.streams).toHaveLength(1));
   const stream = mock.streams[0]!;
@@ -43,7 +43,7 @@ it('replays private rounds into Theater and exposes only the matching SHIP artif
       artifactRef: { projectId: 'p', artifactId: 'jury-run' },
     }) }));
   });
-  expect(screen.getByRole('link', { name: 'Open reviewed artifact' }).getAttribute('href')).toBe('/api/projects/p/critique/jury-run/artifact');
+  expect((await screen.findByRole('link', { name: 'Open reviewed artifact' })).getAttribute('href')).toBe('/api/projects/p/critique/jury-run/artifact');
   expect(stream.closed).toBe(true);
 });
 it('shows the capability reason with no callable controls', () => {
@@ -127,5 +127,25 @@ it.each(['interrupted', 'timed_out'] as const)('hides the artifact link for a le
       runId: 'jury-run', round: 1, composite: 7, status, summary: 'Fallback', artifactRef: { projectId: 'p', artifactId: 'jury-run' },
     }) }));
   });
+  expect(screen.queryByRole('link', { name: 'Open reviewed artifact' })).toBeNull();
+});
+
+
+it.each(['shipped', 'below_threshold'] as const)('R10 hides a %s artifact link when the status endpoint reports none', async (status) => {
+  mock.fetch.mockImplementation(async (url: string) => Response.json(url.endsWith('/jury-run')
+    ? { status: 'succeeded', critique: { status, artifactAvailable: false } } : { runs: [{ id: 'jury-run' }] }));
+  render(<StudioDesignJury projectId="p" conversationId="c" agentId="codex" canWrite />);
+  await waitFor(() => expect(mock.streams).toHaveLength(1));
+  const stream = mock.streams[0]!;
+  await act(async () => {
+    stream.events['critique.run_started']!(new MessageEvent('critique.run_started', { data: JSON.stringify({
+      runId: 'jury-run', protocolVersion: 1, cast: ['critic'], maxRounds: 3, threshold: 8, scale: 10,
+    }) }));
+    stream.events['critique.ship']!(new MessageEvent('critique.ship', { data: JSON.stringify({
+      runId: 'jury-run', round: 3, composite: 7, status, summary: 'Fallback: best round 3',
+      artifactRef: { projectId: 'p', artifactId: 'jury-run' },
+    }) }));
+  });
+  expect(stream.closed).toBe(true);
   expect(screen.queryByRole('link', { name: 'Open reviewed artifact' })).toBeNull();
 });

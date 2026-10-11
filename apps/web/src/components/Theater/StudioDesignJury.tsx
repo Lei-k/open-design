@@ -46,14 +46,18 @@ function Jury({ projectId, conversationId, agentId, canWrite }: Props) {
   useEffect(() => {
     if (!runId) return;
     let active = true;
+    setArtifactRun(null);
     void studioFetch(`${base}/${encodeURIComponent(runId)}`).then((res) => res.ok ? res.json() : Promise.reject()).then((value: StudioCritiqueResponse) => {
+      if (active && live.current) {
+        setArtifactRun(value.critique?.artifactAvailable === true ? runId : null);
+      }
       if (active && live.current && startedRun.current !== runId) {
         setWaiting(['active', 'queued'].includes(value.status));
         if (['succeeded', 'failed', 'canceled'].includes(value.status)) setTerminalRun(runId);
       }
     }).catch(() => { if (active && live.current) setError(true); });
     return () => { active = false; };
-  }, [base, runId]);
+  }, [base, runId, terminalRun]);
   const start = async () => {
     if (busy || !prompt.trim() || !conversationId || !canWrite || !['codex', 'openai', 'openai-byok'].includes(agentId ?? '')) return;
     revision.current++; setBusy(true); setError(false); setArtifactRun(null);
@@ -82,7 +86,6 @@ function Jury({ projectId, conversationId, agentId, canWrite }: Props) {
         const action = sseToPanelEvent(eventName, JSON.parse(event.data));
         if (!action) return;
         startedRun.current = runId; setWaiting(false);
-        if (action.type === 'ship' && ['shipped', 'below_threshold'].includes(action.status)) setArtifactRun(runId);
         send(action);
         if (['ship', 'interrupted', 'failed', 'degraded'].includes(action.type)) { setTerminalRun(runId); source.close(); }
       } catch { setError(true); }

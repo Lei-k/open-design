@@ -27,16 +27,47 @@ export function registerStudioCritiqueRoutes(app: Express, input: {
     PRIMARY KEY(run_id, seq))`);
   const columns = db.prepare('PRAGMA table_info(multiuser_runs)').all() as Array<{ name: string }>;
   if (!columns.some((column) => column.name === 'critique_reconciled')) db.exec('ALTER TABLE multiuser_runs ADD COLUMN critique_reconciled INTEGER NOT NULL DEFAULT 0');
-  db.exec(`CREATE INDEX IF NOT EXISTS studio_critique_pending_recovery ON multiuser_runs(id)
-    WHERE critique_reconciled = 0 AND json_valid(request_json) AND json_extract(request_json, '$.critique') = 1;
-    CREATE UNIQUE INDEX IF NOT EXISTS studio_critique_terminal ON studio_critique_events(run_id)
-    WHERE event IN ('critique.ship', 'critique.interrupted', 'critique.failed', 'critique.degraded')`);
-  // Old writers marked fallback SHIPs reconciled too. The partial index
-  // scans only those invalid frames; conversion removes them from the index.
-  db.exec(`CREATE INDEX IF NOT EXISTS studio_critique_fallback_recovery ON studio_critique_events(run_id)
-    WHERE event = 'critique.ship' AND json_valid(data) AND json_extract(data, '$.status') IN ('interrupted', 'timed_out');
-    UPDATE multiuser_runs SET critique_reconciled = 0 WHERE id IN (SELECT run_id FROM studio_critique_events
-      WHERE event = 'critique.ship' AND json_valid(data) AND json_extract(data, '$.status') IN ('interrupted', 'timed_out'))`);
+  // Repair the two known legacy fallback shapes before enforcing uniqueness:
+  // fallback SHIP + lifecycle terminal, or a lone fallback SHIP. The partial
+  // index bounds this scan, and repaired frames leave it permanently.
+  db.transaction(() => {
+    db.exec(`CREATE INDEX IF NOT EXISTS studio_critique_pending_recovery ON multiuser_runs(id)
+      WHERE critique_reconciled = 0 AND json_valid(request_json) AND json_extract(request_json, '$.critique') = 1;
+      CREATE INDEX IF NOT EXISTS studio_critique_fallback_recovery ON studio_critique_events(run_id)
+      WHERE event = 'critique.ship' AND json_valid(data) AND json_extract(data, '$.status') IN ('interrupted', 'timed_out')`);
+    const fallbacks = db.prepare(`SELECT run_id, seq, data FROM studio_critique_events
+      WHERE event = 'critique.ship' AND json_valid(data) AND json_extract(data, '$.status') IN ('interrupted', 'timed_out')`)
+      .all() as Array<{ run_id: string; seq: number; data: string }>;
+    for (const frame of fallbacks) {
+      const value = JSON.parse(frame.data) as { status: 'interrupted' | 'timed_out'; round: number; composite: number };
+      const other = db.prepare(`SELECT event, data FROM studio_critique_events WHERE run_id = ? AND seq != ?
+        AND event IN ('critique.ship', 'critique.interrupted', 'critique.failed', 'critique.degraded') LIMIT 1`)
+        .get(frame.run_id, frame.seq) as { event: string; data: string } | undefined;
+      let event: CritiqueSseEvent = value.status === 'interrupted'
+        ? { event: 'critique.interrupted', data: { runId: frame.run_id, bestRound: value.round, composite: value.composite } }
+        : { event: 'critique.failed', data: { runId: frame.run_id, cause: 'orchestrator_internal' } };
+      if (other) {
+        db.prepare('DELETE FROM studio_critique_events WHERE run_id = ? AND seq = ?').run(frame.run_id, frame.seq);
+        event = { event: other.event, data: JSON.parse(other.data) } as CritiqueSseEvent;
+      } else {
+        db.prepare('UPDATE studio_critique_events SET event = ?, data = ? WHERE run_id = ? AND seq = ?')
+          .run(event.event, JSON.stringify(event.data), frame.run_id, frame.seq);
+      }
+      db.prepare('UPDATE multiuser_runs SET critique_reconciled = 0 WHERE id = ?').run(frame.run_id);
+      const run = db.prepare("SELECT * FROM multiuser_runs WHERE id = ? AND json_valid(request_json) AND json_extract(request_json, '$.critique') = 1").get(frame.run_id) as Run | undefined;
+      const critique = getCritiqueRun(db, frame.run_id);
+      if (!run || !critique || critique.projectId !== run.project_id || !input.accountExists(run.owner_account_id)) continue;
+      if (event.event === 'critique.interrupted' || event.event === 'critique.failed') {
+        const status = event.event === 'critique.interrupted' ? 'interrupted'
+          : ['total_timeout', 'per_round_timeout'].includes(event.data.cause) || !other && value.status === 'timed_out' ? 'timed_out' : 'failed';
+        updateCritiqueRun(db, run.id, { status, score: value.composite, artifactPath: null, transcriptPath: null });
+        input.recover(run.id, status === 'interrupted' ? 'canceled' : 'failed');
+        db.prepare('UPDATE multiuser_runs SET critique_reconciled = 1 WHERE id = ?').run(run.id);
+      }
+    }
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS studio_critique_terminal ON studio_critique_events(run_id)
+      WHERE event IN ('critique.ship', 'critique.interrupted', 'critique.failed', 'critique.degraded')`);
+  })();
   const pending = db.prepare(`SELECT r.* FROM multiuser_runs r WHERE r.critique_reconciled = 0
     AND r.status NOT IN ('active', 'queued') AND json_valid(r.request_json) AND json_extract(r.request_json, '$.critique') = 1`).all() as Run[];
   const listeners = new Map<string, Set<Response>>();
@@ -186,20 +217,7 @@ export function registerStudioCritiqueRoutes(app: Express, input: {
     const ship = db.prepare("SELECT data FROM studio_critique_events WHERE run_id = ? AND event = 'critique.ship'").get(run.id) as { data: string } | undefined;
     const critique = getCritiqueRun(db, run.id);
     if (ship && critique) {
-      const value = JSON.parse(ship.data) as { status: 'shipped' | 'below_threshold' | 'interrupted' | 'timed_out'; composite: number; round: number };
-      if (value.status === 'interrupted' || value.status === 'timed_out') {
-        const event: CritiqueSseEvent = value.status === 'interrupted'
-          ? { event: 'critique.interrupted', data: { runId: run.id, bestRound: value.round, composite: value.composite } }
-          : { event: 'critique.failed', data: { runId: run.id, cause: 'orchestrator_internal' } };
-        db.transaction(() => {
-          db.prepare("UPDATE studio_critique_events SET event = ?, data = ? WHERE run_id = ? AND event = 'critique.ship'")
-            .run(event.event, JSON.stringify(event.data), run.id);
-          updateCritiqueRun(db, run.id, { status: value.status, score: value.composite, artifactPath: null, transcriptPath: null });
-          input.recover(run.id, value.status === 'interrupted' ? 'canceled' : 'failed');
-          db.prepare('UPDATE multiuser_runs SET critique_reconciled = 1 WHERE id = ?').run(run.id);
-        })();
-        continue;
-      }
+      const value = JSON.parse(ship.data) as { status: 'shipped' | 'below_threshold'; composite: number; round: number };
       updateCritiqueRun(db, run.id, { status: value.status, score: value.composite,
         artifactPath: critique.artifactPath ?? (['shipped', 'below_threshold'].includes(value.status) ? recoverPublishedArtifact(run) : null) });
       input.recover(run.id, 'succeeded');

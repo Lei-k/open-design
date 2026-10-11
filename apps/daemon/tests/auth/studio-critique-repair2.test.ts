@@ -14,10 +14,11 @@ vi.mock('@open-design/contracts/critique', async (original) => {
 });
 
 let daemon: StartedMultiUserDaemon; let root: string; let a: Principal; let admin: Principal;
-let mode: 'good' | 'limit' | 'total_timeout' | 'per_round_timeout' = 'good';
+let mode: 'good' | 'limit' | 'total_timeout' | 'per_round_timeout' | 'noship' = 'good';
 const fixture: typeof fetch = async (_url, init) => {
-  const text = syntheticGoodTranscript();
-  if (mode !== 'good') {
+  const full = syntheticGoodTranscript();
+  const text = mode === 'noship' ? `${full.slice(0, full.indexOf('<SHIP'))}\n</CRITIQUE_RUN>\n` : full;
+  if (mode !== 'good' && mode !== 'noship') {
     const second = text.indexOf('<ROUND n="2">');
     const first = text.slice(0, text.indexOf('</PANELIST>', second) + '</PANELIST>'.length);
     const enc = new TextEncoder();
@@ -72,9 +73,9 @@ it('R7 output-limit abort after round 1: parent status vs Jury status vs replay'
     const parent = await daemon.request({ path: `/api/runs/${run.runId}`, cookie: a.cookie });
     note(`[R7] parent=${s.json.status} output=${JSON.stringify(parent.json.output)} critique=${s.json.critique?.status} artifactAvailable=${s.json.critique?.artifactAvailable} replayTail=${tail.join(',')} artifact=${art.status}`);
     // A non-SHIP Jury outcome must not be reported as a succeeded run.
-    expect(s.json.critique.status).toBe('interrupted');
-    expect(s.json.status).toBe('canceled');
-    expect(t.json.events.filter((e: { type: string }) => ['ship', 'interrupted', 'failed', 'degraded'].includes(e.type)).map((e: { type: string }) => e.type)).toEqual(['interrupted']);
+    expect(s.json.critique.status).toBe('failed');
+    expect(s.json.status).toBe('failed');
+    expect(t.json.events.filter((e: { type: string }) => ['ship', 'interrupted', 'failed', 'degraded'].includes(e.type)).map((e: { type: string }) => e.type)).toEqual(['failed']);
     expect(s.json.critique.artifactAvailable).toBe(false); expect(art.status).toBe(404);
   } finally { mode = 'good'; }
 }, 120_000);
@@ -219,3 +220,68 @@ it('boot recovery finalizes a published result through the normal finish path an
   expect(parentEvents.text).toContain('"status":"succeeded"');
   expect(parentEvents.text.match(/^event: end$/gm)).toHaveLength(1);
 });
+
+
+it('R10 no-SHIP best-round fallback has no artifact despite below_threshold status', async () => {
+  mode = 'noship';
+  try {
+    const run = await jury(); const status = await settle(run.base);
+    expect(status.json).toMatchObject({ status: 'succeeded', critique: { status: 'below_threshold', artifactAvailable: false } });
+    const replay = await daemon.request({ path: `${run.base}/transcript`, cookie: a.cookie });
+    expect(replay.json.events.filter((event: { type: string }) => ['ship', 'failed', 'interrupted', 'degraded'].includes(event.type)))
+      .toEqual([expect.objectContaining({ type: 'ship', status: 'below_threshold', summary: expect.stringContaining('Fallback: best round') })]);
+    expect((await daemon.request({ path: `${run.base}/artifact`, cookie: a.cookie })).status).toBe(404);
+  } finally { mode = 'good'; }
+});
+
+it('R11 boots legacy duplicate terminals without an index and is unchanged on second boot', async () => {
+  const interrupted = await jury(); await settle(interrupted.base);
+  const timedOut = await jury(); await settle(timedOut.base);
+  const single = await jury(); await settle(single.base);
+  const healthy = await jury(); await settle(healthy.base);
+  const ids = [interrupted.runId, timedOut.runId, single.runId, healthy.runId];
+  const snapshot = () => {
+    const db = new Database(path.join(root, 'app.sqlite'), { readonly: true });
+    try { return ids.map((id) => ({
+      parent: db.prepare('SELECT * FROM multiuser_runs WHERE id = ?').get(id),
+      jury: db.prepare('SELECT * FROM critique_runs WHERE id = ?').get(id),
+      replay: db.prepare('SELECT * FROM studio_critique_events WHERE run_id = ? ORDER BY seq').all(id),
+      events: db.prepare('SELECT * FROM multiuser_run_events WHERE run_id = ? ORDER BY seq').all(id),
+    })); } finally { db.close(); }
+  };
+  const before = snapshot();
+  await daemon.close();
+  const db = new Database(path.join(root, 'app.sqlite'));
+  try {
+    db.exec('DROP INDEX IF EXISTS studio_critique_terminal; DROP INDEX IF EXISTS studio_critique_fallback_recovery');
+    for (const [run, status, event] of [[interrupted, 'interrupted', 'critique.interrupted'], [timedOut, 'timed_out', 'critique.failed'], [single, 'timed_out', null]] as const) {
+      const ship = db.prepare("SELECT seq, data FROM studio_critique_events WHERE run_id = ? AND event = 'critique.ship'").get(run.runId) as { seq: number; data: string };
+      db.prepare('UPDATE studio_critique_events SET data = ? WHERE run_id = ? AND seq = ?')
+        .run(JSON.stringify({ ...JSON.parse(ship.data), status }), run.runId, ship.seq);
+      if (event) db.prepare('INSERT INTO studio_critique_events VALUES (?, ?, ?, ?)').run(run.runId, ship.seq + 1, event,
+        JSON.stringify(event === 'critique.interrupted' ? { runId: run.runId, bestRound: 3, composite: 8.6 }
+          : { runId: run.runId, cause: 'total_timeout' }));
+      db.prepare("UPDATE multiuser_runs SET status = 'succeeded', ended_at = NULL, critique_reconciled = 1 WHERE id = ?").run(run.runId);
+      db.prepare('UPDATE critique_runs SET status = ?, artifact_path = NULL WHERE id = ?').run(status, run.runId);
+    }
+  } finally { db.close(); }
+  daemon = await startMultiUserDaemon(multiUserOptions({ testCompanyOpenAIFetch: fixture }));
+  a.cookie = await login(daemon, a.username, a.password);
+  for (const [run, parent, status, type] of [[interrupted, 'canceled', 'interrupted', 'interrupted'], [timedOut, 'failed', 'timed_out', 'failed'], [single, 'failed', 'timed_out', 'failed']] as const) {
+    expect((await daemon.request({ path: run.base, cookie: a.cookie })).json)
+      .toMatchObject({ status: parent, critique: { status, artifactAvailable: false } });
+    const replay = await daemon.request({ path: `${run.base}/transcript`, cookie: a.cookie });
+    expect(replay.json.events.filter((event: { type: string }) => ['ship', 'failed', 'interrupted', 'degraded'].includes(event.type)))
+      .toEqual([expect.objectContaining({ type })]);
+    const events = await daemon.request({ path: `/api/runs/${run.runId}/events`, cookie: a.cookie });
+    expect(events.text.match(/^event: end$/gm)).toHaveLength(1);
+    expect(events.text).toContain(`"status":"${parent}"`);
+  }
+  const repaired = snapshot();
+  expect(repaired[3]).toEqual(before[3]);
+  expect(repaired.slice(0, 3).every((row) => (row.parent as { ended_at: number }).ended_at > 0)).toBe(true);
+  await daemon.close();
+  daemon = await startMultiUserDaemon(multiUserOptions({ testCompanyOpenAIFetch: fixture }));
+  a.cookie = await login(daemon, a.username, a.password);
+  expect(snapshot()).toEqual(repaired);
+}, 180000);

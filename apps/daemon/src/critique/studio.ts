@@ -44,7 +44,9 @@ export async function runStudioCritique<T>(input: {
     adapter: 'studio-source', stdout, signal: abort.signal, authorized: input.authorized,
     child: { kill() { input.cancel(); return true; } }, bus: { emit(event) {
       eventBytes += Buffer.byteLength(JSON.stringify(event));
-      if (eventBytes > MAX_TRANSCRIPT_BYTES) { abort.abort(); input.cancel(); throw new Error('critique_transcript_limit'); }
+      if (eventBytes > MAX_TRANSCRIPT_BYTES && !['critique.ship', 'critique.failed', 'critique.interrupted', 'critique.degraded'].includes(event.event)) {
+        const error = new Error('critique_transcript_limit'); abort.abort(error); input.cancel(); throw error;
+      }
       if (input.authorized()) input.emit(event);
     } },
   });
@@ -55,14 +57,24 @@ export async function runStudioCritique<T>(input: {
       skill: { id: 'design-jury' } }), (text) => {
       check(); abort.signal.throwIfAborted();
       bytes += Buffer.byteLength(text);
-      if (bytes > MAX_TRANSCRIPT_BYTES) { abort.abort(); input.cancel(); throw new Error('critique_output_limit'); }
+      if (bytes > MAX_TRANSCRIPT_BYTES) {
+        const error = new Error('critique_output_limit'); abort.abort(error); input.cancel(); throw error;
+      }
       queue.push(text); wake?.(); wake = undefined;
     });
+    if (!result.ok && input.authorized()) { abort.abort(new Error('critique_source_failed')); input.cancel(); }
     ended = true; wake?.();
     const outcome = await orchestration;
     check(); abort.signal.throwIfAborted();
     if (!result.ok || !['shipped', 'below_threshold'].includes(outcome.status)) throw new Error('critique_not_shipped');
     return { value: result.value };
+  } catch (error) {
+    // A provider limit/error is a system failure. A revocation or explicit
+    // interruption has already aborted the run or removed its authority.
+    if (!abort.signal.aborted && input.authorized()) {
+      abort.abort(error instanceof Error ? error : new Error('critique_source_failed')); input.cancel();
+    }
+    throw error;
   } finally {
     ended = true; wake?.(); abort.abort(); clearInterval(timer);
     await orchestration;

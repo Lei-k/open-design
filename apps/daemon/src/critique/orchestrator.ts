@@ -621,6 +621,11 @@ export async function runOrchestrator(
     // All non-clean termination paths: SIGTERM the child.
     killChild();
 
+    // Studio uses an explicit Error abort reason for source/budget failures.
+    // Default user/authority aborts retain interruption semantics; desktop
+    // adapters keep their existing abort protocol.
+    if (err instanceof AbortError && params.authorized && authorized()
+      && signal?.reason instanceof Error && signal.reason.name !== 'AbortError') err = signal.reason;
     // Classify the error.
     if (err instanceof AbortError) {
       finalStatus = 'interrupted';
