@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { hash as blake3Hash } from 'blake3-wasm';
-import { listFiles, readProjectFile, validateProjectPath } from './projects.js';
+import { listFiles, readProjectFile, validateProjectPath, mimeFor } from './projects.js';
 import { findRealTagOffset, HTML_TAG_PATTERNS } from '@open-design/contracts/runtime/html-injection-points';
 
 export const VERCEL_PROVIDER_ID = 'vercel-self';
@@ -28,10 +28,11 @@ type CloudflarePagesConfigHints = {
   lastZoneName?: string;
   lastDomainPrefix?: string;
 };
-type DeployFile = { file: string; data: Buffer | Uint8Array | string; contentType?: string; sourcePath?: string };
+export type DeployFile = { file: string; data: Buffer | Uint8Array | string; contentType?: string; sourcePath?: string };
 type DeployFilePlan = { entryPath: string; html: string; files: DeployFile[]; missing: string[]; invalid: string[] };
 type DeployOptions = {
   metadata?: unknown;
+  capturedFiles?: ReadonlyMap<string, Buffer>;
   hookScriptUrl?: string;
   providerId?: DeployProviderId;
   includeProjectFiles?: boolean;
@@ -245,7 +246,13 @@ export async function buildDeployFilePlan(projectsRoot: string, projectId: strin
     throw new DeployError('Only HTML files can be deployed.', 400, undefined, 'NOT_HTML');
   }
 
-  const entry = await readProjectFile(projectsRoot, projectId, entryPath, options.metadata);
+  const read = async (name: string) => {
+    if (!options.capturedFiles) return readProjectFile(projectsRoot, projectId, name, options.metadata);
+    const buffer = options.capturedFiles.get(name);
+    if (!buffer) throw Object.assign(new Error('missing captured file'), { code: 'ENOENT' });
+    return { buffer, mime: mimeFor(name), artifactManifest: undefined };
+  };
+  const entry = await read(entryPath);
   const html = entry.buffer.toString('utf8');
   const entryBase = path.posix.dirname(entryPath);
   const deployHtml = injectDeployHookScript(
@@ -299,7 +306,7 @@ export async function buildDeployFilePlan(projectsRoot: string, projectId: strin
 
     let projectFile;
     try {
-      projectFile = await readProjectFile(projectsRoot, projectId, safePath, options.metadata);
+      projectFile = await read(safePath);
     } catch (err) {
       if (isErrnoException(err) && err.code === 'ENOENT') {
         missing.push(safePath);
@@ -324,7 +331,13 @@ export async function buildDeployFilePlan(projectsRoot: string, projectId: strin
     }
   }
 
-  if (options.includeProjectFiles) {
+  if (options.includeProjectFiles && options.capturedFiles) {
+    for (const [name, data] of options.capturedFiles) {
+      if (!files.has(name) && name !== 'index.html') {
+        files.set(name, { file: name, data, contentType: mimeFor(name), sourcePath: name });
+      }
+    }
+  } else if (options.includeProjectFiles) {
     await addVisibleProjectFilesToDeployPlan(files, {
       projectsRoot,
       projectId,
@@ -386,6 +399,19 @@ function isLinkedFolderProject(metadata: unknown) {
   );
 }
 
+/** Shared Vercel file payload; desktop request behavior is unchanged. */
+export function vercelDeploymentRequestBody(files: DeployFile[], projectId: string) {
+  return {
+    name: safeVercelProjectName(`od-${projectId}`),
+    files: files.map((f) => ({
+      file: f.file,
+      data: Buffer.from(f.data).toString('base64'),
+      encoding: 'base64',
+    })),
+    projectSettings: { framework: null },
+  };
+}
+
 export async function deployToVercel({ config, files, projectId }: { config: DeployConfig; files: DeployFile[]; projectId: string }) {
   if (!config?.token) {
     throw new DeployError('Vercel token is required.', 400, undefined, 'VERCEL_TOKEN_REQUIRED');
@@ -397,15 +423,7 @@ export async function deployToVercel({ config, files, projectId }: { config: Dep
       Authorization: `Bearer ${config.token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      name: safeVercelProjectName(`od-${projectId}`),
-      files: files.map((f) => ({
-        file: f.file,
-        data: Buffer.from(f.data).toString('base64'),
-        encoding: 'base64',
-      })),
-      projectSettings: { framework: null },
-    }),
+    body: JSON.stringify(vercelDeploymentRequestBody(files, projectId)),
   });
 
   const created = await readVercelJson(createResp);

@@ -539,6 +539,8 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
   if (policy === 'studio-memory-extract') return only(STUDIO_MEMORY_EXTRACT_FIELDS)
     && Object.values(body).every((value) => typeof value === 'string' && Buffer.byteLength(value) <= 64 * 1024 && !value.includes('\0'));
   if (policy === 'public-link-revoke') return only(['slug']) && (body.slug === undefined || typeof body.slug === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(body.slug));
+  if (policy === 'deploy-config') return only(['providerId','revision','token','teamId','teamSlug','accountId','projectName','lastZoneId','lastZoneName','lastDomainPrefix']) && Number.isSafeInteger(body.revision);
+  if (policy === 'studio-deploy') return only(['fileName','providerId','target','cloudflarePages']) && typeof body.fileName === 'string' && (body.target === undefined || body.target === 'preview' || body.target === 'production');
   if (policy === 'provider-key') return only(['revision', 'apiKey', 'model']) && Number.isSafeInteger(body.revision)
     && (body.apiKey === undefined || body.apiKey === null || typeof body.apiKey === 'string' && body.apiKey.length <= 4096)
     && (body.model === undefined || typeof body.model === 'string' && body.model.length <= 128);

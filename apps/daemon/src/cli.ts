@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // @ts-nocheck
 import { readFileSync, writeFileSync } from 'node:fs';
+import { runStudioDeployCli } from './deploy/studio-cli.js';
 import { basename } from 'node:path';
 import { runDaemonCliStartup, startDaemonRuntime } from './daemon-startup.js';
 import { runLiveArtifactsMcpServer } from './mcp-live-artifacts-server.js';
@@ -12870,6 +12871,7 @@ async function runAutomation(args) {
 // ---------------------------------------------------------------------------
 
 async function runDeploy(args) {
+  if (['config','run','list','status','check-link','redeploy','delete'].includes(args[0])) { process.exitCode = await runStudioDeployCli(args, cliDaemonUrl); return; }
   let flags;
   try {
     flags = parseFlags(args, { string: DEPLOY_STRING_FLAGS, boolean: DEPLOY_BOOLEAN_FLAGS });
@@ -12879,6 +12881,11 @@ async function runDeploy(args) {
   }
   if (flags.help || flags.h) {
     console.log(`Usage: od deploy <projectId> --file <fileName> [options]
+
+Account deploy commands:
+  od deploy config set|show|clear --provider vercel|cloudflare-pages --revision N [--token-file path|-]
+  od deploy run|list|status|check-link|redeploy|delete PROJECT [DEPLOYMENT] [--json]
+  Tokens are read only from a private 0600 file or stdin; argv tokens are refused.
 
 Required:
   <projectId>              Project id to deploy.

@@ -1,3 +1,4 @@
+import type { StudioDeployOutboundInjection } from '../deploy/studio-provider.js';
 // Multi-user mode switch (issues #3/#4, epic #9) — resolved once at startup.
 //
 // Semantics (see specs/current/web-multiuser-authz-gate.md):
@@ -96,6 +97,8 @@ export interface MultiUserModeOptions {
    * startServer test harness only; there is no environment or config path.
    */
   testMcpOutbound?: StudioMcpOutboundTestInjection;
+  /** Programmatic loopback deploy fixtures only; no configuration or environment switch. */
+  testDeployOutbound?: StudioDeployOutboundInjection;
   /** Programmatic, shorter Live Artifact connector/MCP refresh deadline (S62 tests only; never configurable). */
   testLiveArtifactSourceDeadlineMs?: number;
   /** Test harness clock for pool accounting. */
@@ -176,6 +179,8 @@ export interface ResolvedMultiUserMode {
   testTavilyFetch?: typeof fetch;
   testComposioFetch?: typeof fetch;
   testMcpOutbound?: StudioMcpOutboundTestInjection;
+  /** Programmatic loopback deploy fixtures only; no configuration or environment switch. */
+  testDeployOutbound?: StudioDeployOutboundInjection;
   testLiveArtifactSourceDeadlineMs?: number;
   poolClock?: () => number;
   /** How personal app-server children start; absent means the feature is off. */
@@ -270,6 +275,7 @@ export function resolveMultiUserMode(input: {
     ...(options.testCompanyOpenAIFetch ? { testCompanyOpenAIFetch: options.testCompanyOpenAIFetch } : {}),
     ...(options.testTavilyFetch ? { testTavilyFetch: options.testTavilyFetch } : {}),
     ...(options.testComposioFetch ? { testComposioFetch: options.testComposioFetch } : {}),
+    ...(options.testDeployOutbound ? { testDeployOutbound: { ...options.testDeployOutbound } } : {}),
     ...(options.testMcpOutbound ? { testMcpOutbound: { ...options.testMcpOutbound } } : {}),
     ...(typeof options.testLiveArtifactSourceDeadlineMs === 'number' && options.testLiveArtifactSourceDeadlineMs > 0
       ? { testLiveArtifactSourceDeadlineMs: options.testLiveArtifactSourceDeadlineMs } : {}),

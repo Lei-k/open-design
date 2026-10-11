@@ -122,3 +122,4 @@ export * from './api/multiuser-design.js';
 export type { StudioProjectMetadata, StudioProjectCreateRequest, StudioTemplateSaveRequest, StudioDirectoryImportFields, StudioArchiveBatchRequest, StudioArchiveDownload } from './api/studio-projects.js';
 
 export { STUDIO_ARCHIVE_SHA256_HEADER } from './api/studio-projects.js';
+export * from './api/studio-deploy.js';

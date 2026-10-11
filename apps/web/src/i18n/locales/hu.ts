@@ -1,6 +1,18 @@
 import type { Dict } from '../types';
 
 export const hu: Dict = {
+  'studio.deployStatus': 'Refresh status',
+  'studio.deployCheckLink': 'Check link',
+  'studio.deployRedeploy': 'Redeploy',
+  'studio.deployDelete': 'Delete record',
+  'studio.deployTitle': 'Deploy',
+  'studio.deployHint': 'Deploy your own projects using your own provider token. Removing a token keeps external deployments.',
+  'studio.deployConfigured': 'Configured',
+  'studio.deployMissing': 'No token configured',
+  'studio.deployToken': 'Provider token',
+  'studio.deployClear': 'Clear token',
+  'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
+  'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "A mentett emlékek és profiladatok bekerülnek a későbbi futtatásokba. Az automatikus kinyerés opcionális: OpenAI-körök után fut az adott kör saját forrásán (vállalati keret vagy a saját kulcsod), személyes Codex-köröknél kimarad.",
 
   "studio.settingsReload": "Reload saved settings",

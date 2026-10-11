@@ -302,7 +302,7 @@ it('opens the account provider key only with a usable execution lane and never a
   }
 });
 
-it('opens deployment-local public links only with a usable delivery lane and never deploy or social share', () => {
+it('opens deployment-local public links only with a usable delivery lane and never social share', () => {
   for (const [method, path] of [['GET', '/api/projects/p/files/site%2Findex.html/publish-public'], ['POST', '/api/projects/p/files/index.html/publish-public'],
     ['DELETE', '/api/projects/p/files/index.html/publish-public'], ['GET', '/api/multiuser/projects/p/public-links']] as const) {
     expect(studioRequestAvailable(method, path, (lane) => lane === 'delivery'), `${method} ${path}`).toBe(true);
@@ -311,7 +311,7 @@ it('opens deployment-local public links only with a usable delivery lane and nev
     expect(matchMultiUserRoute(method, path).every(({ entry }) => entry.routeClass === 'owner-scoped-project'), path).toBe(true);
   }
   expect(matchMultiUserRoute('GET', '/api/multiuser/public/abc/index.html').every(({ entry }) => entry.routeClass === 'preview-capability')).toBe(true);
-  for (const [method, path] of [['POST', '/api/projects/p/deploy'], ['GET', '/api/deploy/config'], ['POST', '/api/social-share'],
+  for (const [method, path] of [['POST', '/api/social-share'],
     ['GET', '/api/multiuser/public/abc/index.html']] as const) {
     expect(studioRequestAvailable(method, path, () => true), `${method} ${path}`).toBe(false);
   }
@@ -510,5 +510,18 @@ it('S61 MCP runtime endpoints are classified but cookie transport cannot borrow 
   for (const [method, path] of [['GET', '/api/tools/mcp/list'], ['POST', '/api/tools/mcp/execute']]) {
     expect(matchMultiUserRoute(method!, path!).map(({ entry }) => entry.routeClass)).toEqual(['actor-scoped']);
     expect(studioRequestAvailable(method!, path!, () => true, true, true, true, true)).toBe(false);
+  }
+});
+
+it('S63 opens account deploy settings and owner delivery only, with explicit classes and no synthesis/domain routes',()=> {
+  for(const [method,path,lane] of [['GET','/api/deploy/config','settings'],['PUT','/api/deploy/config','settings'],['GET','/api/multiuser/deploy/config','settings'],
+    ['POST','/api/projects/p/deploy','delivery'],['POST','/api/projects/p/deploy/preflight','delivery'],['GET','/api/projects/p/deployments','delivery'],
+    ['GET','/api/projects/p/deployments/d','delivery'],['POST','/api/projects/p/deployments/d/status','delivery'],['POST','/api/projects/p/deployments/d/check-link','delivery'],
+    ['POST','/api/projects/p/deployments/d/redeploy','delivery'],['DELETE','/api/projects/p/deployments/d','delivery']] as const) {
+    expect(studioRequestAvailable(method,path,l=>l===lane),path).toBe(true);expect(studioRequestAvailable(method,path,()=>false),path).toBe(false);
+    const matches=matchMultiUserRoute(method,path);expect(matches.length).toBeGreaterThan(0);expect(matches.every(m=>m.entry.routeClass!=='blocked-in-multiuser')).toBe(true);
+  }
+  for(const [method,path] of [['GET','/api/deploy/cloudflare-pages/zones'],['POST','/api/projects/p/finalize/openai'],['POST','/api/projects/p/handoff']] as const) {
+    expect(studioRequestAvailable(method,path,()=>true)).toBe(false);expect(matchMultiUserRoute(method,path).every(m=>m.entry.routeClass==='blocked-in-multiuser')).toBe(true);
   }
 });

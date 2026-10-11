@@ -4,6 +4,18 @@ import { MULTIUSER_ROUTE_CLASSIFICATION } from '../../src/http/multiuser-route-c
 import { multiUserStudioCapabilities, studioLaneForRoute, studioRouteParityInventory } from '../../src/http/studio-parity.js';
 
 describe('Studio parity delivery ledger (#52)', () => {
+  it('assigns account deploy config to settings and owner deployment operations to delivery on both aliases', () => {
+    const routes = MULTIUSER_ROUTE_CLASSIFICATION.filter((entry) =>
+      /^\/api\/(?:multiuser\/)?deploy\/config$/.test(entry.path)
+      || /^\/api\/(?:multiuser\/)?projects\/:id\/(?:deploy|deployments)(?:\/|$)/.test(entry.path),
+    );
+    expect(routes).toHaveLength(20);
+    for (const route of routes)
+      expect(studioLaneForRoute(route), route.key).toBe(route.path.endsWith('/deploy/config') ? 'settings' : 'delivery');
+    const capabilities = multiUserStudioCapabilities(true);
+    expect(capabilities.features.settings.status).toBe('pilot');
+    expect(capabilities.features.delivery.status).toBe('pilot');
+  });
   it('assigns every allowed and blocked route, pattern and mount to a delivery owner', () => {
     const inventory = studioRouteParityInventory();
     expect(inventory.map((row) => row.key)).toEqual(MULTIUSER_ROUTE_CLASSIFICATION.map((entry) => entry.key));

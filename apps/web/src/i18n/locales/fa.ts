@@ -1,6 +1,18 @@
 import type { Dict } from '../types';
 
 export const fa: Dict = {
+  'studio.deployStatus': 'Refresh status',
+  'studio.deployCheckLink': 'Check link',
+  'studio.deployRedeploy': 'Redeploy',
+  'studio.deployDelete': 'Delete record',
+  'studio.deployTitle': 'Deploy',
+  'studio.deployHint': 'Deploy your own projects using your own provider token. Removing a token keeps external deployments.',
+  'studio.deployConfigured': 'Configured',
+  'studio.deployMissing': 'No token configured',
+  'studio.deployToken': 'Provider token',
+  'studio.deployClear': 'Clear token',
+  'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
+  'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "حافظه‌های ذخیره‌شده و اطلاعات پروفایل در اجراهای بعدی گنجانده می‌شوند. استخراج خودکار اختیاری است: پس از نوبت‌های OpenAI با منبع همان نوبت (استخر شرکت یا کلید خودتان) اجرا می‌شود و برای نوبت‌های شخصی Codex رد می‌شود.",
 
   "multiuser.companyOpenAI": "OpenAI company pool",

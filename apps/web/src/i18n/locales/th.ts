@@ -1,6 +1,18 @@
 import type { Dict } from '../types';
 
 export const th: Dict = {
+  'studio.deployStatus': 'Refresh status',
+  'studio.deployCheckLink': 'Check link',
+  'studio.deployRedeploy': 'Redeploy',
+  'studio.deployDelete': 'Delete record',
+  'studio.deployTitle': 'Deploy',
+  'studio.deployHint': 'Deploy your own projects using your own provider token. Removing a token keeps external deployments.',
+  'studio.deployConfigured': 'Configured',
+  'studio.deployMissing': 'No token configured',
+  'studio.deployToken': 'Provider token',
+  'studio.deployClear': 'Clear token',
+  'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
+  'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "หน่วยความจำที่บันทึกไว้และข้อมูลโปรไฟล์จะถูกใช้ในการรันครั้งถัดไป การดึงข้อมูลอัตโนมัติเป็นตัวเลือก: ทำงานหลังรอบ OpenAI โดยใช้แหล่งของรอบนั้นเอง (พูลของบริษัทหรือคีย์ของคุณ) และจะข้ามรอบ Codex ส่วนตัว",
 
   "studio.settingsReload": "Reload saved settings",

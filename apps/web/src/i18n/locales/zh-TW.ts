@@ -1,6 +1,18 @@
 import type { Dict } from "../types";
 
 export const zhTW: Dict = {
+  'studio.deployStatus': '重新整理狀態',
+  'studio.deployCheckLink': '檢查連結',
+  'studio.deployRedeploy': '重新部署',
+  'studio.deployDelete': '刪除紀錄',
+  'studio.deployTitle': '部署',
+  'studio.deployHint': '使用自己的供應商權杖部署自己的專案。清除權杖會保留外部部署。',
+  'studio.deployConfigured': '已設定',
+  'studio.deployMissing': '尚未設定權杖',
+  'studio.deployToken': '供應商權杖',
+  'studio.deployClear': '清除權杖',
+  'studio.deployFailed': '部署請求失敗。請重新載入設定或歷史紀錄後重試。',
+  'studio.deployProgress': '正在部署…',
   "studio.manualMemoryHint": "已儲存的記憶和個人資料會用於之後的執行。自動擷取需手動開啟：在 OpenAI 回合結束後使用該回合自身的來源（公司池或你自己的金鑰）執行，個人 Codex 回合會略過。",
 
   "studio.settingsReload": "重新載入設定",

@@ -1,6 +1,18 @@
 import type { Dict } from '../types';
 
 export const esES: Dict = {
+  'studio.deployStatus': 'Refresh status',
+  'studio.deployCheckLink': 'Check link',
+  'studio.deployRedeploy': 'Redeploy',
+  'studio.deployDelete': 'Delete record',
+  'studio.deployTitle': 'Deploy',
+  'studio.deployHint': 'Deploy your own projects using your own provider token. Removing a token keeps external deployments.',
+  'studio.deployConfigured': 'Configured',
+  'studio.deployMissing': 'No token configured',
+  'studio.deployToken': 'Provider token',
+  'studio.deployClear': 'Clear token',
+  'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
+  'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Las memorias guardadas y los datos del perfil se incluyen en las próximas ejecuciones. La extracción automática es opcional: se ejecuta tras los turnos de OpenAI con la fuente de ese turno (el grupo de la empresa o tu propia clave) y se omite en los turnos personales de Codex.",
 
   "studio.settingsReload": "Reload saved settings",

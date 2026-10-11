@@ -1,3 +1,4 @@
+import { StudioDeployMenu } from '../runtime/StudioDeploy';
 import { StudioLiveArtifactEditor } from './StudioLiveArtifactEditor';
 import { useStudioCapabilities, useStudioRequestAvailable } from '../runtime/studio-capabilities';
 import { registerStudioReset } from '../runtime/studio-resources';
@@ -15122,7 +15123,8 @@ function HtmlViewer({
   // A view-only Studio member reads the comments but cannot add any.
   const commentCreateAllowed = commentsUsable && collab.canComment !== false;
   const [archiveDownloading, setArchiveDownloading] = useState(false);
-  const rawCanShare = (studio.hostServices || canPublishPublic) && deliveryUsable && source !== null && isShareableArtifact;
+  const studioDeployUsable = !studio.hostServices && studioRequest('POST', `/api/projects/${projectId}/deploy`);
+  const rawCanShare = (studio.hostServices || canPublishPublic || studioDeployUsable) && deliveryUsable && source !== null && isShareableArtifact;
   const canRenderExports = rendererExports && deliveryUsable && source !== null && isShareableArtifact && !viewerOnly;
   const rawCanDownload = deliveryUsable && source !== null && (isShareableArtifact || isMarkdownArtifact);
   const canShare = rawCanShare && !viewerOnly;
@@ -17324,6 +17326,7 @@ function HtmlViewer({
                             {t('fileViewer.shareMenuPublishOnline')}
                           </div>
                           </> : null}
+                          {studioDeployUsable && <StudioDeployMenu projectId={projectId} fileName={file.name} owner={!collab.isSharedNonOwner} />}
                           {(studio.hostServices ? DEPLOY_PROVIDER_OPTIONS : []).map((option) => (
                             <button
                               key={option.id}

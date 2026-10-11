@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { StudioMcpRuntime } from './mcp-client/studio-runtime.js';
+import { registerStudioDeployRoutes } from './routes/studio-deploy.js';
 import { registerStudioMcpToolRoutes } from './routes/studio-mcp-tools.js';
 import { registerMultiUserStatic } from './http/multiuser-static.js';
 import { startEvidenceDelivery } from './services/evidence-delivery.js';
@@ -17728,6 +17729,11 @@ export async function startServer({
     ...(multiUserMode.testComposioFetch ? { fetch: multiUserMode.testComposioFetch } : {}),
     ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
   }) : null;
+  if (multiUserMode) registerStudioDeployRoutes(app, {
+    db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR,
+    sessionCurrent: (actor) => multiUserFront!.sessionCurrent(actor), accountActive: multiUserFront!.accountActive,
+    ...(multiUserMode.testDeployOutbound ? { outbound: multiUserMode.testDeployOutbound } : {}),
+  });
   // Account remote MCP servers (#62, S60; owner decision 2A): remote HTTP/SSE only, sealed per account.
   const studioMcp = multiUserMode ? registerStudioMcpRoutes(app, {
     db, dataRoot: RUNTIME_DATA_DIR, publicOrigin: multiUserMode.allowedOrigins[0]!,

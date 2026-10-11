@@ -1,6 +1,18 @@
 import type { Dict } from '../types';
 
 export const tr: Dict = {
+  'studio.deployStatus': 'Refresh status',
+  'studio.deployCheckLink': 'Check link',
+  'studio.deployRedeploy': 'Redeploy',
+  'studio.deployDelete': 'Delete record',
+  'studio.deployTitle': 'Deploy',
+  'studio.deployHint': 'Deploy your own projects using your own provider token. Removing a token keeps external deployments.',
+  'studio.deployConfigured': 'Configured',
+  'studio.deployMissing': 'No token configured',
+  'studio.deployToken': 'Provider token',
+  'studio.deployClear': 'Clear token',
+  'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
+  'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Kaydedilen anılar ve profil bilgileri sonraki çalıştırmalara eklenir. Otomatik çıkarım isteğe bağlıdır: OpenAI turlarından sonra o turun kendi kaynağında (şirket havuzu veya kendi anahtarınız) çalışır ve kişisel Codex turlarında atlanır.",
 
   "studio.settingsReload": "Reload saved settings",

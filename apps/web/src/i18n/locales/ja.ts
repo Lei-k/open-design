@@ -1,6 +1,18 @@
 import type { Dict } from '../types';
 
 export const ja: Dict = {
+  'studio.deployStatus': '状態を更新',
+  'studio.deployCheckLink': 'リンクを確認',
+  'studio.deployRedeploy': '再デプロイ',
+  'studio.deployDelete': '記録を削除',
+  'studio.deployTitle': 'デプロイ',
+  'studio.deployHint': '自分のプロバイダートークンで自分のプロジェクトをデプロイします。トークンを削除しても外部のデプロイは残ります。',
+  'studio.deployConfigured': '設定済み',
+  'studio.deployMissing': 'トークン未設定',
+  'studio.deployToken': 'プロバイダートークン',
+  'studio.deployClear': 'トークンを削除',
+  'studio.deployFailed': 'デプロイに失敗しました。設定または履歴を再読み込みして再試行してください。',
+  'studio.deployProgress': 'デプロイ中…',
   "studio.manualMemoryHint": "保存したメモリとプロフィール情報は今後の実行に含まれます。自動抽出はオプトインです。OpenAI のターン後に、そのターン自身のソース（会社のプールまたは自分のキー）で実行され、個人の Codex ターンではスキップされます。",
 
   "multiuser.companyOpenAI": "OpenAI 共有プール",

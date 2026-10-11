@@ -37,6 +37,7 @@ export function studioLaneForRoute(entry: Pick<MultiUserRouteClassification, 'me
   if (parts[0] === 'artifacts' || parts[0] === 'frames') return 'preview';
   if (parts[0] !== 'api') return null;
   const domain = parts[1];
+  if (/^\/api\/(?:multiuser\/)?deploy\/config$/.test(path)) return 'settings';
   if (domain === 'multiuser') {
     if (parts[2] === 'import') return 'home';
     if (parts[2] === 'settings' || parts[2] === 'connectors' || parts[2] === 'mcp') return 'settings';
@@ -45,7 +46,8 @@ export function studioLaneForRoute(entry: Pick<MultiUserRouteClassification, 'me
     if (parts[2] === 'plugin-preview') return 'catalogs';
     if (parts[2] === 'routines' || parts[2]?.startsWith('automation-')) return 'automations';
     if (parts[2] === 'research' || parts[2] === 'live-artifacts' || parts[2] === 'live-artifact-preview' || parts[2] === 'live-artifact-sources') return 'generation';
-    if (path.includes('/archive') || path.includes('/export/') || path.includes('/public-links') || parts[2] === 'public') return 'delivery';
+    if (path.includes('/archive') || path.includes('/export/') || path.includes('/public-links') || parts[2] === 'public'
+      || parts[2] === 'deploy' || /\/(?:deploy|deployments)(?:\/|$)/.test(path)) return 'delivery';
     if (/\/(?:shares|access|presence)(?:\/|$)/.test(path)) return 'collaboration';
     if (path.includes('/preview') || path.includes('/comments')) return 'preview';
     return parts[2] === 'projects' ? 'projects' : null;
@@ -102,7 +104,7 @@ export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
   preview: 'Pilot preview: opaque HTML/deck/media previews, manual edit, inspect, comments shared with project members and immutable artifact snapshots/thumbnails; renderer covers and complete browser acceptance are pending (#59).',
   files: 'Pilot files: owner file list, read, write, upload, rename, delete, folders, search and versions; public publish and resumable large uploads are pending (#58).',
   automations: 'Pilot automations: account-owned routines with schedules, manual runs, history and per-dispatch authority on personal Codex, the company pool or the account\'s own OpenAI key, bundled and private templates, source ingestion, reviewable proposals applied into the account\'s own memory, skills, design documents and templates, and crystallizing runs into private skill packages; owner connector and remote MCP grants rechecked per dispatch; plugin-declared MCP context, connector ingestion/event triggers and real-provider scheduled acceptance are pending (#64).',
-  delivery: 'Pilot delivery: owned project/folder/batch ZIP downloads and one-file HTML exports (current or historical version) from captured bytes with design handoff, server-rendered PDF/PPTX/PNG where the deployment configured a renderer, and deployment-local public links to captured files on the preview origin; cloud deploy is pending (#66).',
+  delivery: 'Pilot delivery: owned project/folder/batch ZIP downloads and one-file HTML exports (current or historical version) from captured bytes with design handoff, server-rendered PDF/PPTX/PNG where the deployment configured a renderer, deployment-local public links to captured files on the preview origin, and owner-only Vercel/Cloudflare Pages deployment on each account\'s own sealed token with digest-bound history; finalize/handoff, custom domains and real-provider acceptance are pending (#66).',
   home: 'Pilot Home: Prototype, Deck, Other, Image/Video/Audio on an OpenAI source, immutable saved templates, project copies and browser ZIP/directory imports; live artifacts, HyperFrames and Figma import are pending (#60).',
   settings: 'Pilot settings: account appearance/notification preferences, in-page pet (bundled catalog), instructions, manual memory and profile injection, and opt-in automatic memory (heuristics, extraction after OpenAI turns on the turn\'s own source, rule verification and history), and account connectors (a company Composio key only administrators set, rotate or clear; each account connects, lists and disconnects its own apps through its own OAuth); owner-bound read connector tools in all three run sources; account-owned remote HTTP/SSE MCP tools are available in all three run sources; stdio, shared MCP, plugin MCP context, Live Artifact MCP refresh, connector ingestion/events, library and memory from connected apps are pending (#62).',
   collaboration: 'Pilot collaboration: owner-managed view/comment/edit sharing with other accounts of this deployment, members, presence, shared comments with server-stamped authors and live read-only mirroring of other members\' conversations; revocation closes open streams and stops turns; owners share private skills and design documents with other accounts for use; a project\'s applied bundled plugin reaches its editors\' turns. Private plugin sharing and complete browser acceptance are pending (#65).',

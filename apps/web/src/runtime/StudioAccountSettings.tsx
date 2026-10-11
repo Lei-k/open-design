@@ -1,3 +1,4 @@
+import { StudioDeploySettings } from './StudioDeploy';
 import { AgentAccountsPage } from '../multiuser/AgentAccountsPage';
 import { Button } from '@open-design/components';
 import { useEffect, useState } from 'react';
@@ -24,7 +25,7 @@ import { StudioMcpServers } from './StudioMcpServers';
 
 /** Account sections, plus the desktop sections whose lane is still open: those
  * stay in the navigation with the server's reason instead of disappearing. */
-type StudioSettingsSection = 'agentAccounts' | 'skills' | 'general' | 'instructions' | 'memory' | 'media' | 'connectors' | 'mcpClient' | 'integrations' | 'privacy' | 'about';
+type StudioSettingsSection = 'agentAccounts' | 'skills' | 'general' | 'instructions' | 'memory' | 'media' | 'connectors' | 'mcpClient' | 'integrations' | 'privacy' | 'about' | 'deploy';
 const PENDING: Partial<Record<StudioSettingsSection, StudioParityLaneId>> = { media: 'generation' };
 
 function studioSection(section: SettingsSection): StudioSettingsSection {
@@ -89,6 +90,7 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
     mcpClient: { title: t('studio.mcp.navTitle'), subtitle: t('studio.mcp.navHint') },
     integrations: { title: t('settings.mcpServerTitle'), subtitle: t('settings.mcpServerHint') },
     privacy: { title: t('settings.privacy'), subtitle: t('settings.privacyHint') },
+    deploy: { title: t('studio.deployTitle'), subtitle: t('studio.deployHint') },
     about: { title: t('settings.about'), subtitle: t('settings.aboutHint') },
   };
   const item = (id: StudioSettingsSection, icon: Parameters<typeof SettingsNavItem>[0]['icon']) =>
@@ -112,10 +114,12 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
       {item('media', 'image')}
       {item('connectors', 'link')}
       {item('mcpClient', 'puzzle')}
+      {item('deploy', 'link')}
       {item('integrations', 'puzzle')}
       {item('privacy', 'eye')}
       {item('about', 'settings')}
     </>}>
+    {section === 'deploy' && (studio.available('settings') ? <StudioDeploySettings /> : <StudioUnavailable lane="settings" />)}
     {section === 'agentAccounts' && <>
       <AgentAccountsPage session={studio.session} generation={studio.generation} />
       <StudioProviderKeys />

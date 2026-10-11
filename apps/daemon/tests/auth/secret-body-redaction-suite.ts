@@ -20,6 +20,8 @@ const SENTINEL = `${MARK}_secret_key_material_0123456789`;
 interface Endpoint { name: string; path: string; as: 'admin' | 'user'; valid: Record<string, unknown>; method?: 'PUT' | 'POST' }
 const MCP_REMOTE = { transport: 'http', url: 'https://mcp.example.com/mcp', enabled: true };
 const ENDPOINTS: Endpoint[] = [
+  { name: 'account deploy token (standard alias)', path: '/api/deploy/config', as: 'user', valid: { providerId: 'vercel', revision: 0, token: SENTINEL } },
+  { name: 'account deploy token', path: '/api/multiuser/deploy/config', as: 'user', valid: { providerId: 'cloudflare-pages', revision: 0, token: SENTINEL } },
   { name: 'company Composio key (standard alias)', path: '/api/connectors/composio/config', as: 'admin', valid: { revision: 0, apiKey: SENTINEL } },
   { name: 'company Composio key', path: '/api/multiuser/connectors/company-key', as: 'admin', valid: { revision: 0, apiKey: SENTINEL } },
   { name: 'company OpenAI key', path: '/api/admin/pool/openai', as: 'admin', valid: { revision: 0, enabled: true, model: 'gpt-5', capacity: 1, apiKey: SENTINEL } },

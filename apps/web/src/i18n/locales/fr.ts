@@ -1,6 +1,18 @@
 import type { Dict } from '../types';
 
 export const fr: Dict = {
+  'studio.deployStatus': 'Refresh status',
+  'studio.deployCheckLink': 'Check link',
+  'studio.deployRedeploy': 'Redeploy',
+  'studio.deployDelete': 'Delete record',
+  'studio.deployTitle': 'Deploy',
+  'studio.deployHint': 'Deploy your own projects using your own provider token. Removing a token keeps external deployments.',
+  'studio.deployConfigured': 'Configured',
+  'studio.deployMissing': 'No token configured',
+  'studio.deployToken': 'Provider token',
+  'studio.deployClear': 'Clear token',
+  'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
+  'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Les mémoires enregistrées et les informations de profil sont incluses dans les prochaines exécutions. L’extraction automatique est facultative : elle s’exécute après les tours OpenAI sur la source de ce tour (le pool de l’entreprise ou votre propre clé) et est ignorée pour les tours Codex personnels.",
 
   "multiuser.companyOpenAI": "OpenAI company pool",

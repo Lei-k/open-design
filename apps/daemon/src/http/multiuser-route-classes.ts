@@ -46,7 +46,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'studio-memory-rules-suggest' | 'studio-memory-extract' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'catalog-share' | 'provider-key' | 'composio-config' | 'connector-prepare' | 'studio-mcp-server' | 'studio-mcp-import' | 'studio-mcp-oauth' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'studio-plugin-apply' | 'studio-live-artifact' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'studio-memory-rules-suggest' | 'studio-memory-extract' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'catalog-share' | 'deploy-config' | 'studio-deploy' | 'provider-key' | 'composio-config' | 'connector-prepare' | 'studio-mcp-server' | 'studio-mcp-import' | 'studio-mcp-oauth' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'studio-plugin-apply' | 'studio-live-artifact' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -362,14 +362,24 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'POST /api/projects/:id/browser-sessions',
     'DELETE /api/projects/:id/browser-sessions/:sessionId',
   ]),
-  ...blocked('deploy/finalize/handoff use host provider credentials', [
-    'GET /api/projects/:id/deployments',
-    'POST /api/projects/:id/deploy',
-    'POST /api/projects/:id/deploy/preflight',
-    'POST /api/projects/:id/finalize/:provider',
-    'POST /api/projects/:id/handoff',
-    'POST /api/projects/:id/deployments/:deploymentId/check-link',
-  ]),
+  ...group('blocked-in-multiuser', 'finalize and handoff synthesize with separate AI provider keys; they are not cloud deploy wrappers', [
+    'POST /api/projects/:id/finalize/:provider', 'POST /api/projects/:id/handoff',
+  ], { capabilityRefusal: 'deploy-synthesis' }),
+  ...group('blocked-in-multiuser', 'Cloudflare custom domains and zone discovery are unavailable on multi-user Web; use the provider-managed pages.dev link.', [
+    'GET /api/deploy/cloudflare-pages/zones',
+  ], { capabilityRefusal: 'deploy-domains' }),
+  ...group('actor-scoped', 'account deploy token summaries only', ['GET /api/deploy/config'], { rewriteTo: '/api/multiuser/deploy/config' }),
+  ...group('actor-scoped', 'account deploy token summaries only', ['GET /api/multiuser/deploy/config']),
+  ...group('actor-scoped', 'sealed write-only account deploy tokens; revision checked', ['PUT /api/deploy/config'], { rewriteTo: '/api/multiuser/deploy/config', bodyPolicy: 'deploy-config', maxBodyBytes: 8192 }),
+  ...group('actor-scoped', 'sealed write-only account deploy tokens; revision checked', ['PUT /api/multiuser/deploy/config'], { bodyPolicy: 'deploy-config', maxBodyBytes: 8192 }),
+  ...['GET deployments', 'GET deployments/:deploymentId', 'POST deploy', 'POST deploy/preflight',
+    'POST deployments/:deploymentId/status', 'POST deployments/:deploymentId/check-link', 'POST deployments/:deploymentId/redeploy', 'DELETE deployments/:deploymentId'].flatMap((route) => {
+      const [method, suffix] = route.split(' ');
+      const destination = `/api/multiuser/projects/:id/${suffix}`;
+      const options = { projectParam: 'id', ...(method === 'POST' ? { bodyPolicy: suffix === 'deploy' || suffix === 'deploy/preflight' ? 'studio-deploy' as const : 'empty' as const, maxBodyBytes: 8192 } : {}) };
+      return [...group('owner-scoped-project', 'only the owner may deploy or view deployment records', [`${method} /api/projects/:id/${suffix}`], { ...options, rewriteTo: destination }),
+        ...group('owner-scoped-project', 'only the owner may deploy or view deployment records', [`${method} ${destination}`], options)];
+    }),
   // S5 (#58): the owner's managed project files. Paths resolve inside the
   // project root with symlink-aware checks in the handlers; bytes served on
   // the app origin carry the untrusted-content policy; writes are bounded.
@@ -683,9 +693,6 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'POST /api/integrations/vela/analytics-entry',
     'POST /api/integrations/vela/analytics-profile',
     'POST /api/integrations/vela/logout',
-    'GET /api/deploy/config',
-    'PUT /api/deploy/config',
-    'GET /api/deploy/cloudflare-pages/zones',
     'GET /api/media/config',
     'PUT /api/media/config',
   ]),

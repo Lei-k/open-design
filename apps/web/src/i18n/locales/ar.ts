@@ -1,6 +1,18 @@
 import type { Dict } from '../types';
 
 export const ar: Dict = {
+  'studio.deployStatus': 'Refresh status',
+  'studio.deployCheckLink': 'Check link',
+  'studio.deployRedeploy': 'Redeploy',
+  'studio.deployDelete': 'Delete record',
+  'studio.deployTitle': 'Deploy',
+  'studio.deployHint': 'Deploy your own projects using your own provider token. Removing a token keeps external deployments.',
+  'studio.deployConfigured': 'Configured',
+  'studio.deployMissing': 'No token configured',
+  'studio.deployToken': 'Provider token',
+  'studio.deployClear': 'Clear token',
+  'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
+  'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "تُضمَّن الذكريات المحفوظة وحقائق الملف الشخصي في التشغيلات القادمة. الاستخراج التلقائي اختياري: يعمل بعد أدوار OpenAI على مصدر ذلك الدور نفسه (مجمّع الشركة أو مفتاحك الخاص) ويُتخطّى في أدوار Codex الشخصية.",
 
   "studio.settingsReload": "Reload saved settings",

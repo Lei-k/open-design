@@ -1,6 +1,18 @@
 import type { Dict } from "../types";
 
 export const zhCN: Dict = {
+  'studio.deployStatus': '刷新状态',
+  'studio.deployCheckLink': '检查链接',
+  'studio.deployRedeploy': '重新部署',
+  'studio.deployDelete': '删除记录',
+  'studio.deployTitle': '部署',
+  'studio.deployHint': '使用自己的提供商令牌部署自己的项目。清除令牌会保留外部部署。',
+  'studio.deployConfigured': '已配置',
+  'studio.deployMissing': '未配置令牌',
+  'studio.deployToken': '提供商令牌',
+  'studio.deployClear': '清除令牌',
+  'studio.deployFailed': '部署请求失败。请重新加载设置或历史记录后重试。',
+  'studio.deployProgress': '正在部署…',
   "studio.manualMemoryHint": "已保存的记忆和个人资料会用于之后的运行。自动提取需手动开启：在 OpenAI 回合结束后使用该回合自身的来源（公司池或你自己的密钥）运行，个人 Codex 回合会跳过。",
 
   "studio.settingsReload": "重新加载设置",

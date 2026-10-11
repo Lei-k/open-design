@@ -249,6 +249,11 @@ export const API_ERROR_CODES = [
   // PROVIDER_FAILED: the remote server or its authorization server failed or
   // answered unusably (its body is never echoed); LIMIT_REACHED: the account
   // already has the maximum number of servers.
+  'MULTIUSER_DEPLOY_TOKEN_MISSING',
+  'MULTIUSER_DEPLOY_AUTHORITY_CHANGED',
+  'MULTIUSER_DEPLOY_CAPTURE_REFUSED',
+  'MULTIUSER_DEPLOY_OUTBOUND_REFUSED',
+  'MULTIUSER_DEPLOY_PROVIDER_FAILED',
   'MULTIUSER_MCP_AUTHORITY_CHANGED',
   'MULTIUSER_MCP_AUTHORIZATION_INVALID',
   'MULTIUSER_MCP_OUTBOUND_REFUSED',

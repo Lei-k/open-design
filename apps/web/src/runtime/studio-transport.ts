@@ -147,6 +147,15 @@ export function studioRequestAvailable(method: string, path: string,
       return connector[2] === '/connection' ? method === 'DELETE' : connector[2] ? method === 'POST' : method === 'GET';
     }
   }
+  // S63: account deploy credentials and owner-only history/effects; daemon enforces ownership.
+  const deployPath = path.replace(/^\/api\/multiuser\/deploy(?=\/)/, '/api/deploy').replace(/^\/api\/multiuser\/projects(?=\/)/, '/api/projects');
+  if (usable('settings') && deployPath === '/api/deploy/config') return method === 'GET' || method === 'PUT';
+  if (usable('delivery')) {
+    if (/^\/api\/projects\/[^/]+\/deploy(?:\/preflight)?$/.test(deployPath)) return method === 'POST';
+    if (/^\/api\/projects\/[^/]+\/deployments$/.test(deployPath)) return method === 'GET';
+    if (/^\/api\/projects\/[^/]+\/deployments\/[^/]+$/.test(deployPath)) return method === 'GET' || method === 'DELETE';
+    if (/^\/api\/projects\/[^/]+\/deployments\/[^/]+\/(status|check-link|redeploy)$/.test(deployPath)) return method === 'POST';
+  }
   // Account remote MCP servers (#62, S60): the actor's own HTTP/SSE servers and their OAuth.
   // The OAuth callback is a navigation; stdio and the host Codex install are never opened.
   if (usable('settings') && mcpServers) {
