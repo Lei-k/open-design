@@ -893,10 +893,15 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
     useEffect(() => {
       if (studio.hostServices || !pinnedSnapshotId || pinnedRestrictions?.snapshotId === pinnedSnapshotId) return;
       let cancelled = false;
-      void fetchStudioAppliedPluginRestrictions(pinnedSnapshotId).then((restrictions) => {
-        if (!cancelled && restrictions) setPinnedRestrictions({ snapshotId: pinnedSnapshotId, restrictions });
-      });
-      return () => { cancelled = true; };
+      let retryTimer: ReturnType<typeof setTimeout> | undefined;
+      const read = async (attempt: number) => {
+        const restrictions = await fetchStudioAppliedPluginRestrictions(pinnedSnapshotId);
+        if (cancelled) return;
+        if (restrictions !== null) setPinnedRestrictions({ snapshotId: pinnedSnapshotId, restrictions });
+        else if (attempt < 3) retryTimer = setTimeout(() => void read(attempt + 1), 1000);
+      };
+      void read(1);
+      return () => { cancelled = true; clearTimeout(retryTimer); };
     }, [studio.hostServices, pinnedSnapshotId, pinnedRestrictions?.snapshotId]);
     const pluginsSectionRef = useRef<PluginsSectionHandle | null>(null);
     const inlineBackedPluginRef = useRef<{ id: string; label: string } | null>(null);
@@ -3528,7 +3533,7 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                       // S67: the application's own (pinned) source restrictions stay visible in context.
                       restrictions: pinnedRestrictions?.snapshotId === visibleAppliedPlugin.snapshotId
                         ? studioSourceRestrictionLabels(pinnedRestrictions.restrictions, t)
-                        : [],
+                        : studio.hostServices ? [] : [t('plugins.restrictionsUnknown')],
                     }
                   : null
               }
