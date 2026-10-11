@@ -61,6 +61,8 @@ export interface CritiqueSseBus {
 }
 
 export interface OrchestratorParams {
+  /** Studio effect boundary: live run, actor session, credential and project grant. */
+  authorized?: () => boolean;
   runId: string;
   projectId: string;
   conversationId: string | null;
@@ -123,7 +125,38 @@ export interface OrchestratorResult {
 export async function runOrchestrator(
   params: OrchestratorParams,
 ): Promise<OrchestratorResult> {
-  const { runId, projectId, conversationId, artifactDir, adapter, cfg, db, bus, stdout } = params;
+  const { runId, projectId, conversationId, artifactDir, adapter, cfg, db, stdout } = params;
+  const authorized = () => params.authorized?.() !== false;
+  const check = () => { if (!authorized()) throw new AbortError(); };
+  const committedTerminal: { status: CritiqueRunStatus | null } = { status: null };
+  const bus: CritiqueSseBus = { emit(event) {
+    if (!authorized() || committedTerminal.status !== null) return;
+    if (params.authorized) {
+      let status: CritiqueRunStatus | null = null;
+      if (event.event === 'critique.ship') {
+        if (!['shipped', 'below_threshold'].includes(event.data.status)) return;
+        status = event.data.status;
+      } else if (event.event === 'critique.interrupted') status = 'interrupted';
+      else if (event.event === 'critique.degraded') status = 'degraded';
+      else if (event.event === 'critique.failed') status = ['total_timeout', 'per_round_timeout'].includes(event.data.cause) ? 'timed_out' : 'failed';
+      if (status !== null) {
+        const terminalStatus = status;
+        // Row and replay share one terminal commit, including non-SHIP exits.
+        // A crash or later authority loss cannot resurrect a running Jury row.
+        if (!['shipped', 'below_threshold'].includes(terminalStatus)) artifactPath = null;
+        db.transaction(() => {
+          updateCritiqueRun(db, runId, { status: terminalStatus, score: 'composite' in event.data ? event.data.composite : finalComposite, artifactPath,
+            rounds: completedRounds.map((r) => ({ n: r.n, composite: r.composite, mustFix: r.mustFix,
+              decision: decideRound(r.composite, r.mustFix, cfg) as 'continue' | 'ship' })) });
+          params.bus.emit(event);
+        })();
+        committedTerminal.status = terminalStatus;
+        return;
+      }
+    }
+    params.bus.emit(event);
+  } };
+  check();
   const skill = params.skill ?? 'unknown';
   // Phase 12 round-duration histogram needs the wall-clock time the first
   // panelist_open landed for each round, so we can subtract at round_end.
@@ -198,6 +231,13 @@ export async function runOrchestrator(
   });
 
   const collectedEvents: PanelEvent[] = [];
+  const collectShip = (event: Extract<PanelEvent, { type: 'ship' }>) => {
+    // Studio keeps best-round scores on the row, but interruption/timeout is
+    // one lifecycle terminal, never a published artifact or a second SHIP.
+    if (params.authorized && !['shipped', 'below_threshold'].includes(event.status)) return;
+    collectedEvents.push(event);
+    bus.emit(panelEventToSse(event));
+  };
   const roundStates = new Map<number, RoundState>();
   const completedRounds: RoundState[] = [];
   let artifactPath: string | null = null;
@@ -275,6 +315,7 @@ export async function runOrchestrator(
     };
 
     for await (const event of parseCritiqueStream(timedSource, parserOpts)) {
+      check();
       // Ship events are buffered, not emitted raw. The normalized ship event
       // (with daemon-authoritative status/composite from decideRound(...))
       // is emitted after the loop so SSE clients and the transcript only
@@ -489,12 +530,14 @@ export async function runOrchestrator(
       if (captured !== null) {
         try {
           await fs.mkdir(artifactDir, { recursive: true });
+          check();
           const written = await writeShipArtifact(
             artifactDir,
             captured.body,
             captured.mime,
             { maxBytes: cfg.parserMaxBlockBytes },
           );
+          check();
           artifactPath = written.absPath;
           // Pin artifactPath on the row BEFORE we emit critique.ship,
           // so the GET /artifact endpoint sees the path the moment a
@@ -541,8 +584,8 @@ export async function runOrchestrator(
 
       // File is on disk, row knows about it. Now emit critique.ship so
       // SSE subscribers can fetch /artifact without racing the writer.
-      collectedEvents.push(normalizedShip);
-      bus.emit(panelEventToSse(normalizedShip));
+      check();
+      collectShip(normalizedShip);
     } else {
       // No SHIP arrived (or the agent SHIP was rejected as malformed above).
       // Apply fallback policy over the daemon's closed rounds.
@@ -561,8 +604,7 @@ export async function runOrchestrator(
           artifactRef: { projectId, artifactId: params.artifactId },
           summary: `Fallback: best round ${fallback.n} composite ${fallback.composite.toFixed(2)}`,
         };
-        collectedEvents.push(syntheticShip);
-        bus.emit(panelEventToSse(syntheticShip));
+        collectShip(syntheticShip);
       } else {
         finalStatus = 'failed';
         finalComposite = null;
@@ -579,6 +621,11 @@ export async function runOrchestrator(
     // All non-clean termination paths: SIGTERM the child.
     killChild();
 
+    // Studio uses an explicit Error abort reason for source/budget failures.
+    // Default user/authority aborts retain interruption semantics; desktop
+    // adapters keep their existing abort protocol.
+    if (err instanceof AbortError && params.authorized && authorized()
+      && signal?.reason instanceof Error && signal.reason.name !== 'AbortError') err = signal.reason;
     // Classify the error.
     if (err instanceof AbortError) {
       finalStatus = 'interrupted';
@@ -597,8 +644,7 @@ export async function runOrchestrator(
           artifactRef: { projectId, artifactId: params.artifactId },
           summary: `Interrupted after round ${fallback.n}, best composite ${fallback.composite.toFixed(2)}`,
         };
-        collectedEvents.push(syntheticShip);
-        bus.emit(panelEventToSse(syntheticShip));
+        collectShip(syntheticShip);
       }
       const interruptedEvent: Extract<PanelEvent, { type: 'interrupted' }> = {
         type: 'interrupted',
@@ -625,8 +671,7 @@ export async function runOrchestrator(
           artifactRef: { projectId, artifactId: params.artifactId },
           summary: `Timed out after round ${fallback.n}, best composite ${fallback.composite.toFixed(2)}`,
         };
-        collectedEvents.push(syntheticShip);
-        bus.emit(panelEventToSse(syntheticShip));
+        collectShip(syntheticShip);
       }
       const failedEvent: Extract<PanelEvent, { type: 'failed' }> = {
         type: 'failed',
@@ -666,8 +711,7 @@ export async function runOrchestrator(
           artifactRef: { projectId, artifactId: params.artifactId },
           summary: `Child terminated by signal ${err.signal} after round ${fallback.n}, best composite ${fallback.composite.toFixed(2)}`,
         };
-        collectedEvents.push(syntheticShip);
-        bus.emit(panelEventToSse(syntheticShip));
+        collectShip(syntheticShip);
       }
       const interruptedEvent: Extract<PanelEvent, { type: 'interrupted' }> = {
         type: 'interrupted',
@@ -710,7 +754,7 @@ export async function runOrchestrator(
   }
 
   // Write transcript for all non-trivially-failed runs.
-  if (finalStatus !== 'failed' || collectedEvents.length > 0) {
+  if (authorized() && (finalStatus !== 'failed' || collectedEvents.length > 0)) {
     try {
       const result = await writeTranscript(artifactDir, collectedEvents);
       transcriptPath = result.path;
@@ -719,6 +763,17 @@ export async function runOrchestrator(
       transcriptPath = null;
     }
   }
+
+  // Revocation wins over in-flight artifact/transcript I/O. Never publish a
+  // handle to bytes completed after the authority that admitted them expired.
+  if (!authorized() && committedTerminal.status === null) {
+    finalStatus = 'interrupted';
+    artifactPath = null;
+    transcriptPath = null;
+  }
+  if (committedTerminal.status !== null) finalStatus = committedTerminal.status;
+  // A transcript finishing after revocation is not a new published handle.
+  if (!authorized()) transcriptPath = null;
 
   // Build rounds summary for persistence.
   const roundsSummary = completedRounds.map((r) => ({

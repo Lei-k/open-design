@@ -73,6 +73,8 @@ export interface CodexAppServerSessionOptions {
   reasoning?: string | null;
   serviceTier?: string | null;
   sandboxMode: CodexSandboxMode;
+  /** Private Jury thread: no persisted conversation history or mutating native tools. */
+  ephemeral?: boolean;
   resumeSessionId?: string | null;
   /** Internal daemon policy; never infer ownership from a thread title. */
   manageThreadVisibility?: boolean;
@@ -291,7 +293,9 @@ export function attachCodexAppServerSession(
       sandbox: sandboxMode,
       approvalPolicy: APPROVAL_POLICY_NEVER,
       ...(dynamicToolsSupported ? { dynamicTools: opts.dynamicTools } : {}),
-      ...(patchStreaming ? { config: { 'features.apply_patch_streaming_events': true } } : {}),
+      ...(opts.ephemeral ? { ephemeral: true, config: { 'features.shell_tool': false, 'features.apply_patch_freeform': false,
+        'features.apply_patch_streaming_events': false, web_search: 'disabled', mcp_servers: {} } }
+        : patchStreaming ? { config: { 'features.apply_patch_streaming_events': true } } : {}),
     };
     const onThread = (result: JsonObject) => {
       const thread = isRecord(result.thread) ? result.thread : null;

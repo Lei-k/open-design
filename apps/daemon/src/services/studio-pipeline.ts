@@ -17,7 +17,7 @@ export async function runStudioPipeline<T>(input: {
   resumeStage?: unknown;
   check(): void;
   emit(event: PluginPipelineStageEvent): void;
-  runStage(directive: string): Promise<{ value: T; ok: boolean; text: string; tokensUsed?: number }>;
+  runStage(directive: string, onText?: (text: string) => void): Promise<{ value: T; ok: boolean; text: string; tokensUsed?: number }>;
 }): Promise<{ value: T; progress?: StudioPipelineProgress }> {
   input.check();
   const pipeline = input.snapshot?.pipeline;
