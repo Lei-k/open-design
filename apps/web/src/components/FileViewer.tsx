@@ -15145,8 +15145,8 @@ function HtmlViewer({
   const rendererExports = studio.hostServices || studioRenderedExports;
   const renderedState = useStudioCapabilityState('rendered-export');
   const renderedReasonId = useId();
-  const [archiveDownloadFailed, setArchiveDownloadFailed] = useState(false);
-  const downloadState = useStudioCapabilityState('download', { ...(archiveDownloadFailed ? { failure: 'download' } : {}) });
+  const [archiveDownloadFailure, setArchiveDownloadFailure] = useState<'download' | 'request' | null>(null);
+  const downloadState = useStudioCapabilityState('download', { ...(archiveDownloadFailure ? { failure: archiveDownloadFailure } : {}) });
   const shareClipboardState = useStudioCapabilityState('clipboard', { ...(shareClipboardFailed ? { failure: 'permission' } : {}) });
   // Preview comments are reviewed for Studio (#59) and shared with project members (#65).
   const commentsUsable = studioRequest('GET', `/api/projects/${projectId}/conversations/active/comments`);
@@ -16710,12 +16710,12 @@ function HtmlViewer({
                   title={downloadState.reasonKey ? t(downloadState.reasonKey) : undefined} aria-describedby={archiveAttempted ? archiveReasonId : undefined}
                   disabled={archiveDownloading} onClick={async () => {
                   setArchiveAttempted(true);
-                  setArchiveDownloadFailed(false);
+                  setArchiveDownloadFailure(null);
                   setArchiveDownloading(true);
                   try {
-                    const ok = await downloadProjectArchive({ projectId, fallbackTitle: exportTitle });
-                    setArchiveDownloadFailed(!ok);
-                    if (!ok)
+                    const result = await downloadProjectArchive({ projectId, fallbackTitle: exportTitle });
+                    setArchiveDownloadFailure(result === 'started' ? null : result === 'browser-blocked' ? 'download' : 'request');
+                    if (result !== 'started')
                       setExportToast({ message: t('fileViewer.exportFailed'), tone: 'error' });
                   } finally { setArchiveDownloading(false); }
                 }}>
@@ -17518,9 +17518,9 @@ function HtmlViewer({
                     title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
                     onClick={() => {
                       if (rendererExports) runExportFormat('zip');
-                      else void downloadProjectArchive({ projectId, fallbackTitle: exportTitle }).then((ok) => {
-                        setArchiveDownloadFailed(!ok);
-                        if (!ok) setExportToast({ message: t('fileViewer.exportFailed'), tone: 'error' });
+                      else void downloadProjectArchive({ projectId, fallbackTitle: exportTitle }).then((result) => {
+                        setArchiveDownloadFailure(result === 'started' ? null : result === 'browser-blocked' ? 'download' : 'request');
+                        if (result !== 'started') setExportToast({ message: t('fileViewer.exportFailed'), tone: 'error' });
                       });
                     }}
                   >

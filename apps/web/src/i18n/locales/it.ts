@@ -39,6 +39,7 @@ export const it: Dict = {
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
   "studio.deployRefreshBusy": "L’aggiornamento del deployment è occupato. Riprova tra poco.",
   "studio.deployAuthorityChanged": "L’account, la sessione, il token o l’accesso al progetto sono cambiati. Nessun risultato locale è stato salvato. Il provider potrebbe aver già creato un deployment remoto; controlla il tuo account del provider.",
+  "studio.deployAccessChanged": "L’accesso ad account, sessione, token o progetto è cambiato. Verifica i tuoi permessi e riprova.",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Le memorie salvate e i dati del profilo vengono inclusi nelle esecuzioni future. L’estrazione automatica è facoltativa: viene eseguita dopo i turni OpenAI sulla fonte di quel turno (il pool aziendale o la tua chiave) ed è saltata per i turni Codex personali.",
 

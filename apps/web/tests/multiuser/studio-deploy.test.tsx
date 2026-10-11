@@ -122,7 +122,7 @@ const history = [1, 2].map((n) => ({ id: `d${n}`, providerId: 'vercel', fileName
   status: 'ready', createdAt: 1, url: `https://site${n}.vercel.app` }));
 it.each([
   ['MULTIUSER_DEPLOY_REFRESH_BUSY', 'Deployment refresh is busy. Try again shortly.'],
-  ['MULTIUSER_DEPLOY_AUTHORITY_CHANGED', 'Account, session, token or project access changed. No local result was saved. The provider may already have created a remote deployment; check your provider account.'],
+  ['MULTIUSER_DEPLOY_AUTHORITY_CHANGED', 'Account, session, token or project access changed. Review your access and try again.'],
 ])('%s refresh errors have their own localized message, not provider text', async (code, message) => {
   await mount(<StudioDeployMenu projectId="p" fileName="index.html" owner />, true, history);
   await screen.findAllByRole('button', { name: 'Refresh status' });
@@ -138,4 +138,27 @@ it('deploy history groups multiple links under one popup advisory', async () => 
   await screen.findByRole('link', { name: 'https://site2.vercel.app' });
   expect(screen.getAllByRole('status').filter((node) => node.textContent?.includes('If a new tab does not open'))).toHaveLength(1);
   expect(screen.getAllByRole('link', { name: 'Open in this tab' })).toHaveLength(2);
+});
+
+it.each([['deploy', 'Vercel'], ['redeploy', 'Redeploy'], ['check-link', 'Check link']] as const)(
+  'authority disclosure for %s matches its side effects', async (action, label) => {
+    await mount(<StudioDeployMenu projectId="p" fileName="index.html" owner />, true, history);
+    await screen.findAllByRole('button', { name: label });
+    const original = fetch;
+    vi.stubGlobal('fetch', vi.fn(async (input, init) => String(input).endsWith(`/${action}`)
+      ? Response.json({ error: { code: 'MULTIUSER_DEPLOY_AUTHORITY_CHANGED' } }, { status: 409 }) : original(input, init)));
+    fireEvent.click(screen.getAllByRole('button', { name: label })[0]!);
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent?.includes('remote deployment')).toBe(action !== 'check-link');
+    expect(alert.textContent).toContain('access changed');
+  });
+it('settings authority changes disclose access without remote deployment claims', async () => {
+  await mount(<StudioDeploySettings />);
+  const input = (await screen.findAllByLabelText('Provider token'))[0]!;
+  const original = fetch;
+  vi.stubGlobal('fetch', vi.fn(async (url, init) => init?.method === 'PUT'
+    ? Response.json({ error: { code: 'MULTIUSER_DEPLOY_AUTHORITY_CHANGED' } }, { status: 409 }) : original(url, init)));
+  fireEvent.change(input, { target: { value: 'fixture-token-0123456789' } });
+  fireEvent.submit(input.closest('form')!);
+  expect((await screen.findByRole('alert')).textContent).toBe('Account, session, token or project access changed. Review your access and try again.');
 });

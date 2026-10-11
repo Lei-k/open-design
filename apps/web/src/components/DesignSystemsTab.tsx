@@ -1624,11 +1624,11 @@ function DesignSystemDetail({
           fallbackTitle: system.title,
           workspaceContext,
         }) || (projectId
-          ? await downloadProjectArchive({
+          ? (await downloadProjectArchive({
               projectId,
               fallbackTitle: system.title,
               workspaceContext,
-            })
+            })) === 'started'
           : false);
       setDownloadFailed(!ok);
       onActionFeedback(ok ? 'success' : 'error', ok ? t('ds.actionDone') : t('dsManager.downloadFailed'));
