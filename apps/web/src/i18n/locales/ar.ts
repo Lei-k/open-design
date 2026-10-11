@@ -1,6 +1,30 @@
 import type { Dict } from '../types';
 
 export const ar: Dict = {
+  'studio.deployMissingHint': "اضبط رمز مزودك الخاص في الإعدادات ← النشر.",
+  'studio.deployOwnerOnly': "مالك المشروع وحده يمكنه النشر أو إدارة سجلات النشر.",
+
+  'studio.capability.deployment': "لم يفعّل هذا النشر هذا الإجراء.",
+  'studio.capability.settings': "راجع الإعدادات أو أعد المحاولة عند توفر الخدمة.",
+  'studio.capability.notificationUnsupported': "هذا المتصفح لا يدعم إشعارات النظام.",
+  'studio.capability.activity': "تبقى النتائج والأنشطة ظاهرة في Studio.",
+  'studio.capability.notificationDenied': "الإشعارات محظورة. اسمح بها في إعدادات الموقع بالمتصفح.",
+  'studio.capability.notificationPrompt': "سيطلب المتصفح إذن الإشعارات عند تفعيل هذا التحكم.",
+  'studio.capability.directoryUnsupported': "هذا المتصفح لا يدعم اختيار المجلدات.",
+  'studio.capability.filesAlternative': "ارفع ملفات أو استخدم استيراد ZIP.",
+  'studio.capability.rendererDisabled': "هذا النشر لا يوفر تصديرًا مُصيّرًا.",
+  'studio.capability.htmlZipAlternative': "يبقى تنزيل HTML وZIP لمشاريعك متاحًا.",
+  'studio.capability.download': "إذا لم يظهر ملف، اسمح بتنزيلات الموقع وأعد المحاولة.",
+  'studio.capability.downloadAlternative': "راجع قائمة تنزيلات المتصفح؛ لا يمكن اكتشاف الاكتمال هنا.",
+  'studio.capability.clipboardDenied': "رُفض الوصول إلى الحافظة.",
+  'studio.capability.manualCopy': "حدد النص وانسخه يدويًا.",
+  'studio.capability.clipboardUnsupported': "هذا المتصفح لا يحتوي على Clipboard API.",
+  'studio.capability.popup': "إذا لم تُفتح علامة تبويب جديدة، اسمح بالنوافذ المنبثقة أو استخدم الرابط في هذه العلامة.",
+  'studio.capability.sameTab': "فتح في علامة التبويب هذه",
+  'studio.capability.storage': "حُظر الوصول إلى بيانات المتصفح.",
+  'studio.capability.signOutAlternative': "تسجيل الخروج يلغي جلستك رغم ذلك؛ أدر بيانات الموقع في إعدادات المتصفح.",
+  'studio.capability.narrow': "في الشاشة الصغيرة استخدم التمرير والتنقل بين اللوحات للوصول إلى الإجراءات.",
+
   'studio.deployStatus': 'Refresh status',
   'studio.deployCheckLink': 'Check link',
   'studio.deployRedeploy': 'Redeploy',
@@ -13,6 +37,8 @@ export const ar: Dict = {
   'studio.deployClear': 'Clear token',
   'studio.deployHistoryFull': 'سجل عمليات النشر ممتلئ (100 سجل). احذف سجل نشر قبل النشر مرة أخرى.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
+  "studio.deployRefreshBusy": "تحديث النشر مشغول. حاول مجددًا بعد قليل.",
+  "studio.deployAuthorityChanged": "تغيّر الحساب أو الجلسة أو الرمز أو الوصول إلى المشروع. لم تُحفظ نتيجة محلية. ربما أنشأ المزوّد نشرًا عن بُعد بالفعل؛ تحقق من حسابك لدى المزوّد.",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "تُضمَّن الذكريات المحفوظة وحقائق الملف الشخصي في التشغيلات القادمة. الاستخراج التلقائي اختياري: يعمل بعد أدوار OpenAI على مصدر ذلك الدور نفسه (مجمّع الشركة أو مفتاحك الخاص) ويُتخطّى في أدوار Codex الشخصية.",
 

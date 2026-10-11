@@ -1,3 +1,4 @@
+import { StudioCapabilityMessage, useStudioCapabilityState } from './StudioCapabilityState';
 import { StudioDeploySettings } from './StudioDeploy';
 import { AgentAccountsPage } from '../multiuser/AgentAccountsPage';
 import { Button } from '@open-design/components';
@@ -191,6 +192,9 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
 function StudioAbout({ loaded: provided }: { loaded: AppVersionInfo | null }) {
   const t = useT();
   const studio = useStudioCapabilities();
+  const aboutState = useStudioCapabilityState('about');
+  const [clearFailed, setClearFailed] = useState(false);
+  const clearState = useStudioCapabilityState('clear-data');
   const [clearing, setClearing] = useState(false);
   const loaded = provided ?? bootVersion();
   const [state, setState] = useState<{ status: 'idle' | 'checking' | 'current' | 'deployed' | 'failed'; version?: string }>({ status: 'idle' });
@@ -204,6 +208,7 @@ function StudioAbout({ loaded: provided }: { loaded: AppVersionInfo | null }) {
     } catch (error) { if (!(error instanceof DOMException && error.name === 'AbortError')) setState({ status: 'failed' }); }
   };
   return <section className="settings-section" data-testid="studio-about">
+    <StudioCapabilityMessage state={aboutState} />
     <dl className="settings-about-list">
       <div><dt>{t('settings.appVersion')}</dt><dd data-testid="studio-about-version">{loaded ? `${loaded.version} · ${loaded.channel}` : '—'}</dd></div>
     </dl>
@@ -216,9 +221,11 @@ function StudioAbout({ loaded: provided }: { loaded: AppVersionInfo | null }) {
     {state.status === 'deployed' ? <Button variant="primary" data-testid="studio-about-reload"
       onClick={() => window.location.reload()}>{t('studio.aboutReloadPage')}</Button> : null}
     <div className="settings-general-block">
+      <StudioCapabilityMessage state={clearState} />
+      {clearFailed ? <p role="alert" id="studio-clear-data-error">{t('studio.settingsError')}</p> : null}
       <p className="hint">{t('studio.aboutClearDataHint')}</p>
-      <Button variant="ghost" data-testid="studio-about-clear-data" disabled={clearing || !studio.session}
-        onClick={() => { if (!studio.session) return; setClearing(true); void clearStudioBrowserData(studio.session).finally(() => setClearing(false)); }}>
+      <Button variant="ghost" data-testid="studio-about-clear-data" aria-describedby={clearFailed ? "studio-clear-data-error" : undefined} disabled={clearing || !studio.session}
+        onClick={() => { if (!studio.session) return; setClearing(true); setClearFailed(false); void clearStudioBrowserData(studio.session).catch(() => setClearFailed(true)).finally(() => setClearing(false)); }}>
         {t('studio.aboutClearData')}</Button>
     </div>
   </section>;

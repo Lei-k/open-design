@@ -15,8 +15,8 @@ export async function clearStudioBrowserData(session: CookieSession,
     const store = scope.caches;
     if (store) await Promise.all((await store.keys()).map((key) => store.delete(key)));
   } catch { /* CacheStorage can be unavailable (insecure context, privacy mode). */ }
-  for (const storage of [scope.sessionStorage, scope.localStorage]) {
-    try { storage?.clear(); } catch { /* Blocked site data: nothing persisted to clear. */ }
+  for (const key of ['sessionStorage', 'localStorage'] as const) {
+    try { scope[key]?.clear(); } catch { /* Blocked site data: nothing persisted to clear. */ }
   }
   await session.logout();
 }

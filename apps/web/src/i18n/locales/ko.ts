@@ -1,6 +1,30 @@
 import type { Dict } from '../types';
 
 export const ko: Dict = {
+  'studio.deployMissingHint': "설정 → 배포에서 자신의 공급자 토큰을 설정하세요.",
+  'studio.deployOwnerOnly': "프로젝트 소유자만 배포와 배포 기록 작업을 할 수 있습니다.",
+
+  'studio.capability.deployment': "이 배포에서 이 작업이 활성화되지 않았습니다.",
+  'studio.capability.settings': "설정을 확인하거나 서비스가 가능할 때 다시 시도하세요.",
+  'studio.capability.notificationUnsupported': "이 브라우저는 시스템 알림을 지원하지 않습니다.",
+  'studio.capability.activity': "실행 결과와 활동은 Studio에서 볼 수 있습니다.",
+  'studio.capability.notificationDenied': "알림이 차단되었습니다. 브라우저 사이트 설정에서 허용하세요.",
+  'studio.capability.notificationPrompt': "활성화하면 브라우저가 알림 권한을 요청합니다.",
+  'studio.capability.directoryUnsupported': "이 브라우저는 폴더 선택을 지원하지 않습니다.",
+  'studio.capability.filesAlternative': "파일을 업로드하거나 ZIP 가져오기를 사용하세요.",
+  'studio.capability.rendererDisabled': "이 배포에는 렌더링 내보내기가 없습니다.",
+  'studio.capability.htmlZipAlternative': "HTML 및 소유 프로젝트 ZIP 다운로드는 가능합니다.",
+  'studio.capability.download': "파일이 나타나지 않으면 이 사이트의 다운로드를 허용하고 다시 시도하세요.",
+  'studio.capability.downloadAlternative': "브라우저 다운로드 목록을 확인하세요. 여기서는 완료를 감지할 수 없습니다.",
+  'studio.capability.clipboardDenied': "클립보드 접근이 거부되었습니다.",
+  'studio.capability.manualCopy': "텍스트를 선택하고 직접 복사하세요.",
+  'studio.capability.clipboardUnsupported': "이 브라우저에는 Clipboard API가 없습니다.",
+  'studio.capability.popup': "새 탭이 열리지 않으면 팝업을 허용하거나 같은 탭 링크를 사용하세요.",
+  'studio.capability.sameTab': "이 탭에서 열기",
+  'studio.capability.storage': "브라우저 데이터 접근이 차단되었습니다.",
+  'studio.capability.signOutAlternative': "로그아웃은 세션을 취소합니다. 사이트 데이터는 브라우저 설정에서 관리하세요.",
+  'studio.capability.narrow': "작은 화면에서는 스크롤과 패널 탐색으로 모든 작업에 접근하세요.",
+
   'studio.deployStatus': 'Refresh status',
   'studio.deployCheckLink': 'Check link',
   'studio.deployRedeploy': 'Redeploy',
@@ -13,6 +37,8 @@ export const ko: Dict = {
   'studio.deployClear': 'Clear token',
   'studio.deployHistoryFull': '배포 기록이 가득 찼습니다(100개). 다시 배포하기 전에 배포 기록을 삭제하세요.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
+  "studio.deployRefreshBusy": "배포 새로고침이 사용 중입니다. 잠시 후 다시 시도하세요.",
+  "studio.deployAuthorityChanged": "계정, 세션, 토큰 또는 프로젝트 접근 권한이 변경되었습니다. 로컬 결과가 저장되지 않았습니다. 공급자가 이미 원격 배포를 생성했을 수 있으니 공급자 계정을 확인하세요.",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "저장된 메모리와 프로필 정보는 이후 실행에 포함됩니다. 자동 추출은 선택 사항이며, OpenAI 턴이 끝난 뒤 해당 턴의 소스(회사 풀 또는 내 키)로 실행되고 개인 Codex 턴에서는 건너뜁니다.",
 

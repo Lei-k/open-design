@@ -1,6 +1,30 @@
 import type { Dict } from '../types';
 
 export const ja: Dict = {
+  'studio.deployMissingHint': "設定 → デプロイで自分のプロバイダートークンを設定してください。",
+  'studio.deployOwnerOnly': "プロジェクト所有者のみがデプロイと記録操作を行えます。",
+
+  'studio.capability.deployment': "この環境ではこの操作は有効になっていません。",
+  'studio.capability.settings': "設定を確認するか、サービス復旧後に再試行してください。",
+  'studio.capability.notificationUnsupported': "このブラウザーはシステム通知に対応していません。",
+  'studio.capability.activity': "実行結果とアクティビティは Studio で確認できます。",
+  'studio.capability.notificationDenied': "通知がブロックされています。ブラウザーのサイト設定で許可してください。",
+  'studio.capability.notificationPrompt': "有効にするとブラウザーが通知の許可を求めます。",
+  'studio.capability.directoryUnsupported': "このブラウザーはフォルダー選択に対応していません。",
+  'studio.capability.filesAlternative': "ファイルをアップロードするか ZIP インポートを使用してください。",
+  'studio.capability.rendererDisabled': "この環境ではレンダリング書き出しを利用できません。",
+  'studio.capability.htmlZipAlternative': "HTML と所有プロジェクトの ZIP はダウンロードできます。",
+  'studio.capability.download': "ファイルが表示されない場合、サイトのダウンロードを許可して再試行してください。",
+  'studio.capability.downloadAlternative': "ブラウザーのダウンロード一覧を確認してください。ここでは完了を検出できません。",
+  'studio.capability.clipboardDenied': "クリップボードへのアクセスが拒否されました。",
+  'studio.capability.manualCopy': "テキストを選択して手動でコピーしてください。",
+  'studio.capability.clipboardUnsupported': "このブラウザーには Clipboard API がありません。",
+  'studio.capability.popup': "新しいタブが開かない場合、ポップアップを許可するか同じタブのリンクを使用してください。",
+  'studio.capability.sameTab': "このタブで開く",
+  'studio.capability.storage': "ブラウザーデータへのアクセスがブロックされました。",
+  'studio.capability.signOutAlternative': "ログアウトはセッションを失効させます。サイトデータはブラウザー設定で管理してください。",
+  'studio.capability.narrow': "小さい画面ではスクロールとパネル移動で各操作を利用できます。",
+
   'studio.deployStatus': '状態を更新',
   'studio.deployCheckLink': 'リンクを確認',
   'studio.deployRedeploy': '再デプロイ',
@@ -13,6 +37,8 @@ export const ja: Dict = {
   'studio.deployClear': 'トークンを削除',
   'studio.deployHistoryFull': 'デプロイ履歴が上限（100件）に達しました。履歴を1件削除してから再度デプロイしてください。',
   'studio.deployFailed': 'デプロイに失敗しました。設定または履歴を再読み込みして再試行してください。',
+  "studio.deployRefreshBusy": "デプロイの更新が混み合っています。少し待ってから再試行してください。",
+  "studio.deployAuthorityChanged": "アカウント、セッション、トークン、またはプロジェクトへのアクセス権が変更されました。ローカルの結果は保存されていません。プロバイダー側ではすでにリモートデプロイが作成されている可能性があります。プロバイダーのアカウントを確認してください。",
   'studio.deployProgress': 'デプロイ中…',
   "studio.manualMemoryHint": "保存したメモリとプロフィール情報は今後の実行に含まれます。自動抽出はオプトインです。OpenAI のターン後に、そのターン自身のソース（会社のプールまたは自分のキー）で実行され、個人の Codex ターンではスキップされます。",
 

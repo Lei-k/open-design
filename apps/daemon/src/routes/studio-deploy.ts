@@ -18,7 +18,7 @@ import {
 } from '../storage/studio-deploy.js';
 import { captureStudioProject } from '../projects/studio-snapshot.js';
 import { buildDeployFilePlan, cloudflarePagesProjectNameForProject } from '../deploy.js';
-import { studioProvider, type StudioDeployOutboundInjection } from '../deploy/studio-provider.js';
+import { studioProvider, StudioDeployAuthorityRefused, type StudioDeployOutboundInjection } from '../deploy/studio-provider.js';
 import type { AuthActor } from '../services/auth-service.js';
 class AuthorityChanged extends Error {}
 class CaptureRefused extends Error {}
@@ -59,7 +59,7 @@ export function registerStudioDeployRoutes(app: Express, deps: RegisterStudioDep
   const failed = (res: Response, error: unknown) => {
     if (
       error instanceof StudioDeployRecordMissing ||
-      (error instanceof OutboundAuthorityRefused && error.cause instanceof StudioDeployRecordMissing)
+      ((error instanceof OutboundAuthorityRefused || error instanceof StudioDeployAuthorityRefused) && error.cause instanceof StudioDeployRecordMissing)
     )
       return notFound(res);
     if (error instanceof StudioDeployHistoryFull)
@@ -68,13 +68,13 @@ export function registerStudioDeployRoutes(app: Express, deps: RegisterStudioDep
       return sendApiError(res, 409, 'MULTIUSER_DEPLOY_TOKEN_MISSING', STUDIO_DEPLOY_MISSING_REASON);
     if (
       error instanceof AuthorityChanged ||
-      (error instanceof OutboundAuthorityRefused && error.cause instanceof AuthorityChanged)
+      ((error instanceof OutboundAuthorityRefused || error instanceof StudioDeployAuthorityRefused) && error.cause instanceof AuthorityChanged)
     )
       return sendApiError(
         res,
         409,
         'MULTIUSER_DEPLOY_AUTHORITY_CHANGED',
-        'Account, session, token or project authority changed; further deployment effects were refused.',
+        'Account, session, token or project authority changed; no local result was saved. The provider may already have created a remote deployment; check your provider account.',
       );
     if (error instanceof StudioDeployInputError)
       return sendApiError(
@@ -165,25 +165,42 @@ export function registerStudioDeployRoutes(app: Express, deps: RegisterStudioDep
     check(actor, project, config);
     return config;
   };
-  const remote = (actor: AuthActor, project: string, config: StudioDeployConfig, sourceId?: string) =>
-    studioProvider({
+  const remote = (actor: AuthActor, project: string, config: StudioDeployConfig, sourceId?: string, ceilingMs?: number) => {
+    const currentAuthority = () => {
+      check(actor, project, config);
+      if (sourceId && !store.get(actor.accountId, project, sourceId)) throw new StudioDeployRecordMissing();
+    };
+    return studioProvider({
       provider: config.providerId,
       config,
+      ...(ceilingMs === undefined ? {} : { ceilingMs }),
       ...(deps.outbound ? { outbound: deps.outbound } : {}),
+      checkAuthority: currentAuthority,
       authorize: () => {
-        if (sourceId && !store.get(actor.accountId, project, sourceId)) throw new StudioDeployRecordMissing();
-        check(actor, project, config);
+        currentAuthority();
         const token = store.token(actor.accountId, config.providerId);
         if (!token) throw new AuthorityChanged();
         return token;
       },
     });
+  };
   app.get(`${projectBase}/deployments`, (req, res) => {
     const target = owner(req, res);
     if (!target) return;
     res.setHeader('Cache-Control', 'no-store');
     res.json({ deployments: store.list(target.actor.accountId, target.project) });
   });
+  // Separate admission keeps cheap refreshes available while upload slots are full.
+  // Sets are bounded, remove accounts on every completion and never queue waiters.
+  const refreshing = new Set<string>();
+  const acquireRefresh = (account: string, res: Response): boolean => {
+    if (refreshing.has(account) || refreshing.size >= 4) {
+      sendApiError(res, 409, 'MULTIUSER_DEPLOY_REFRESH_BUSY', 'Deployment refresh slots are busy; try again shortly.');
+      return false;
+    }
+    refreshing.add(account);
+    return true;
+  };
   const running = new Set<string>();
   const acquireSlot = (account: string, res: Response): boolean => {
     if (running.has(account) || running.size >= 2) {
@@ -272,13 +289,13 @@ export function registerStudioDeployRoutes(app: Express, deps: RegisterStudioDep
       if (!target) return;
       const row = store.get(target.actor.accountId, target.project, String(req.params.deploymentId));
       if (!row) return notFound(res);
-      if (!acquireSlot(target.actor.accountId, res)) return;
+      if (!acquireRefresh(target.actor.accountId, res)) return;
       try {
         const config = {
           ...configuration(target.actor, target.project, row.providerId),
           ...store.locator(target.actor.accountId, target.project, row.id),
         };
-        const provider = remote(target.actor, target.project, config, row.id);
+        const provider = remote(target.actor, target.project, config, row.id, 5_000);
         const result =
           action === 'status'
             ? await provider.status(row.deploymentId)
@@ -290,7 +307,7 @@ export function registerStudioDeployRoutes(app: Express, deps: RegisterStudioDep
       } catch (error) {
         failed(res, error);
       } finally {
-        running.delete(target.actor.accountId);
+        refreshing.delete(target.actor.accountId);
       }
     });
   app.delete(`${projectBase}/deployments/:deploymentId`, (req, res) => {

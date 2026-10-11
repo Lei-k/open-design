@@ -1,6 +1,30 @@
 import type { Dict } from '../types';
 
 export const en: Dict = {
+  'studio.deployMissingHint': "Configure your own provider token in Settings → Deploy before deploying.",
+  'studio.deployOwnerOnly': "Only the project owner can deploy or operate deployment records.",
+
+  'studio.capability.deployment': "This deployment has not enabled this action.",
+  'studio.capability.settings': "Check Settings or retry after the service is available.",
+  'studio.capability.notificationUnsupported': "This browser does not support system notifications.",
+  'studio.capability.activity': "Run results and activity remain visible in Studio.",
+  'studio.capability.notificationDenied': "Notifications are blocked. Re-enable them in this site’s browser settings.",
+  'studio.capability.notificationPrompt': "Your browser will ask for notification permission when you enable this control.",
+  'studio.capability.directoryUnsupported': "This browser does not support folder selection.",
+  'studio.capability.filesAlternative': "Upload files instead, or use the ZIP import control.",
+  'studio.capability.rendererDisabled': "This deployment has no rendered exports.",
+  'studio.capability.htmlZipAlternative': "HTML and owned ZIP downloads remain available.",
+  'studio.capability.download': "If no file appears, allow downloads for this site and retry.",
+  'studio.capability.downloadAlternative': "Check your browser’s downloads list; completion cannot be detected here.",
+  'studio.capability.clipboardDenied': "Clipboard access was refused.",
+  'studio.capability.manualCopy': "Select the text and copy it manually.",
+  'studio.capability.clipboardUnsupported': "This browser has no Clipboard API.",
+  'studio.capability.popup': "If a new tab does not open, allow popups or use the same-tab link.",
+  'studio.capability.sameTab': "Open in this tab",
+  'studio.capability.storage': "Browser data access was blocked.",
+  'studio.capability.signOutAlternative': "Sign out still revokes your session; manage site data in browser settings.",
+  'studio.capability.narrow': "On a small screen, use scrolling and the panel navigation to reach all actions.",
+
   'studio.deployStatus': 'Refresh status',
   'studio.deployCheckLink': 'Check link',
   'studio.deployRedeploy': 'Redeploy',
@@ -13,6 +37,8 @@ export const en: Dict = {
   'studio.deployClear': 'Clear token',
   'studio.deployHistoryFull': 'Deployment history is full (100 records). Delete a deployment record before deploying again.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
+  "studio.deployRefreshBusy": "Deployment refresh is busy. Try again shortly.",
+  "studio.deployAuthorityChanged": "Account, session, token or project access changed. No local result was saved. The provider may already have created a remote deployment; check your provider account.",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Saved memories and profile facts are included in future runs. Automatic extraction is opt-in: it runs after OpenAI turns on that turn's own source (the company pool or your own key) and is skipped for personal Codex turns.",
 

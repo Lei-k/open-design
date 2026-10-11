@@ -1,3 +1,4 @@
+import { StudioCapabilityMessage, useStudioCapabilityState } from '../runtime/StudioCapabilityState';
 import { useStudioCapabilities, StudioUnavailable } from '../runtime/studio-capabilities';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -296,15 +297,30 @@ export function NewProjectPanel({
   initialTab = 'prototype',
 }: Props) {
   const studio = useStudioCapabilities();
+  const directoryState = useStudioCapabilityState('directory');
+  const directoryReasonId = useId();
   const t = useT();
   const { locale } = useI18n();
   const analytics = useAnalytics();
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const browserFilesInputRef = useRef<HTMLInputElement | null>(null);
   const browserDirectoryInputRef = useRef<HTMLInputElement | null>(null);
   const [importing, setImporting] = useState(false);
   const [importZipError, setImportZipError] = useState<
     { message: string; details?: string } | null
   >(null);
+  const importBrowserFiles = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = '';
+    if (!files.length || !onImportBrowserDirectory) return;
+    setImporting(true); setImportZipError(null);
+    try {
+      const result = await onImportBrowserDirectory(files);
+      if (!result.ok) setImportZipError({ message: result.message ?? 'Folder import failed', details: result.details });
+    } catch (error) {
+      setImportZipError({ message: error instanceof Error ? error.message : 'Folder import failed' });
+    } finally { setImporting(false); }
+  };
   const [workingDir, setWorkingDir] = useState<string | null>(null);
   const [workingDirToken, setWorkingDirToken] = useState<string | null>(null);
   const [workingDirPicking, setWorkingDirPicking] = useState(false);
@@ -1203,21 +1219,18 @@ export function NewProjectPanel({
         <>
           <input type="file" multiple hidden data-testid="browser-directory-input"
             ref={(element) => { browserDirectoryInputRef.current = element; element?.setAttribute('webkitdirectory', ''); }}
-            onChange={async (event) => {
-              const files = Array.from(event.target.files ?? []); event.target.value = '';
-              if (!files.length) return;
-              setImporting(true); setImportZipError(null);
-              try {
-                const result = await onImportBrowserDirectory(files);
-                if (!result.ok) setImportZipError({ message: result.message ?? 'Folder import failed', details: result.details });
-              }
-              catch (error) { setImportZipError({ message: error instanceof Error ? error.message : 'Folder import failed' }); }
-              finally { setImporting(false); }
-            }} />
-          <Button variant="ghost" data-testid="import-browser-directory" disabled={loading || importing}
+            onChange={importBrowserFiles} />
+          <input type="file" multiple hidden data-testid="browser-files-input" ref={browserFilesInputRef}
+            onChange={importBrowserFiles} />
+          <StudioCapabilityMessage state={directoryState} id={directoryReasonId} />
+
+          <Button variant="ghost" data-testid="import-browser-directory" disabled={loading || importing || !directoryState.usable}
+            aria-describedby={directoryState.reasonKey ? directoryReasonId : undefined} style={{ minHeight: 40 }}
             onClick={() => browserDirectoryInputRef.current?.click()}>
             <Icon name="folder" size={14} /> {importing ? t('newproj.openingFolder') : t('newproj.openFolder')}
           </Button>
+          <Button variant="ghost" data-testid="import-browser-files" disabled={loading || importing}
+            style={{ minHeight: 40 }} onClick={() => browserFilesInputRef.current?.click()}>{t('designFiles.upload')}</Button>
         </>
       ) : null}
       <div className="newproj-footer">{t('newproj.privacyFooter')}</div>
