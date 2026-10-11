@@ -45,6 +45,7 @@ import { runStudioPipeline } from '../services/studio-pipeline.js';
 import { createStudioChatInvalidation } from '../services/studio-chat-invalidation.js';
 import { observeStudioProjectDefaults, studioProjectDefaultsUnchanged, type StudioProjectDefaultsObservation } from '../services/studio-project-defaults.js';
 import { STUDIO_MEDIA_PROMPT } from '../runtimes/studio-media.js';
+import { detectStudioDesktopSteps, STUDIO_PLUGIN_PACKAGE_UNREADABLE, studioPluginPackageDocuments } from '../plugins/studio-desktop-steps.js';
 import { PersonalProviderKeyError, PersonalProviderKeyStore } from '../storage/personal-provider-keys.js';
 import { createStudioResearch, StudioResearchError, type StudioResearch } from '../research/studio-research.js';
 import { renderStudioResearchFindings } from '../prompts/research-contract.js';
@@ -574,9 +575,15 @@ export function registerMultiUserRunRoutes(app: Express, input: {
    */
   const refuseSourcePlugin = (res: Response, plugin: PluginSnapshot | null, source: StudioPluginExecutionSource): boolean => {
     if (!plugin) return false;
-    const requirements = plugin.requirements
+    const pinned = plugin.requirements
       ?? { atoms: [...new Set((plugin.pipeline?.stages ?? []).flatMap((stage) => stage.atoms ?? []))], capabilities: [] };
+    // S67 repair 1: the same desktop-step detector over the pinned package, so
+    // an application captured before a rule existed cannot run a dead core step.
+    const documents = studioPluginPackageDocuments(plugin.resourcePackage);
+    const requirements = { atoms: pinned.atoms, capabilities: [...new Set([...pinned.capabilities,
+      ...(documents ? detectStudioDesktopSteps(documents) : []).map((reason) => reason.subject!)])] };
     const reasons = studioPluginSourceReasons(requirements, source);
+    if (!documents) reasons.unshift(STUDIO_PLUGIN_PACKAGE_UNREADABLE);
     if (!input.liveArtifacts && requirements.atoms.includes('live-artifact')) reasons.unshift({ code: 'atom', subject: 'live-artifact' });
     if (!reasons.length) return false;
     const details: StudioPluginSourceRefusalDetails = { pluginId: plugin.pluginId, source, reasons };

@@ -27,6 +27,7 @@ import { isKnownAtom } from './atoms.js';
 import { deriveAutoAtomSurfaces } from './atoms/auto-surfaces.js';
 import { ensureCoreQualityStages } from './ensure-core-stages.js';
 import { isInternalBundledStrategyV2 } from './strategy-provenance.js';
+import { detectStudioDesktopSteps, STUDIO_PLUGIN_PACKAGE_UNREADABLE, type StudioPluginDocument } from './studio-desktop-steps.js';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -43,12 +44,20 @@ function declaredPipeline(od: Record<string, unknown>): PluginPipeline | undefin
   return valid ? od.pipeline as PluginPipeline : 'invalid';
 }
 
+/**
+ * `documents` is the plugin package's Markdown as `readStudioPluginDocuments`
+ * returns it (S67 repair 1): the desktop-step detector closes plugins whose
+ * captured instructions need a step no Studio turn performs, and `null` (an
+ * unreadable package) fails closed. Routes always pass it; omitting it checks
+ * declarations only, as pure unit fixtures without a package do.
+ */
 export function evaluateStudioPluginAvailability(
   plugin: InstalledPluginRecord,
   scenarios: ReadonlyArray<ScenarioRegistryEntry>,
   web: StudioWebPluginCapabilities = STUDIO_WEB_PLUGIN_CAPABILITIES,
+  documents?: readonly StudioPluginDocument[] | null,
 ): StudioPluginAvailability {
-  return evaluateStudioPlugin(plugin, scenarios, web).availability;
+  return evaluateStudioPlugin(plugin, scenarios, web, documents).availability;
 }
 
 /**
@@ -60,14 +69,16 @@ export function evaluateStudioPluginRequirements(
   plugin: InstalledPluginRecord,
   scenarios: ReadonlyArray<ScenarioRegistryEntry>,
   web: StudioWebPluginCapabilities = STUDIO_WEB_PLUGIN_CAPABILITIES,
+  documents?: readonly StudioPluginDocument[] | null,
 ): StudioPluginRequirements {
-  return evaluateStudioPlugin(plugin, scenarios, web).requirements;
+  return evaluateStudioPlugin(plugin, scenarios, web, documents).requirements;
 }
 
 function evaluateStudioPlugin(
   plugin: InstalledPluginRecord,
   scenarios: ReadonlyArray<ScenarioRegistryEntry>,
   web: StudioWebPluginCapabilities,
+  documents?: readonly StudioPluginDocument[] | null,
 ): { availability: StudioPluginAvailability; requirements: StudioPluginRequirements } {
   const neededAtoms = new Set<string>();
   const neededCapabilities = new Set<string>();
@@ -89,6 +100,13 @@ function evaluateStudioPlugin(
   // A declared image/video/audio surface dispatches the media contract (S67).
   const mediaAtom = studioPluginDeclaredMediaAtom(decl);
   if (mediaAtom) needAtom(mediaAtom);
+  // Desktop-only core steps in the captured package (S67 repair 1): typed
+  // `capability` reasons, pinned with the application like declared ones.
+  if (documents === null) add(STUDIO_PLUGIN_PACKAGE_UNREADABLE);
+  for (const step of documents ? detectStudioDesktopSteps(documents) : []) {
+    neededCapabilities.add(step.subject!);
+    if (!web.capabilities.includes(step.subject!)) add(step);
+  }
 
   if (!web.strategy && (decl.strategy !== undefined || isInternalBundledStrategyV2(plugin))) add({ code: 'strategy' });
 

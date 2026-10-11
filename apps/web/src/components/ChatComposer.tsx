@@ -52,6 +52,7 @@ import { fetchMcpServers } from "../state/mcp";
 import type { McpServerConfig, McpTemplate } from "../state/mcp";
 import { listPlugins } from "../state/projects";
 import { studioPluginOffered } from "../runtime/studio-plugins";
+import { PluginSourceRestrictions, studioPluginRestrictionLabels } from "./PluginWebAvailability";
 import type { AppConfig, ChatAttachment, ChatCommentAttachment, Project, ProjectFile, ProjectMetadata, SkillSummary } from "../types";
 import { DEFAULT_UNSELECTED_SCENARIO_PLUGIN_ID } from '@open-design/contracts';
 import type {
@@ -3499,6 +3500,9 @@ const EnabledChatComposer = forwardRef<ChatComposerHandle, Props>(
                   ? {
                       id: visibleAppliedPlugin.pluginId,
                       title: visibleAppliedPlugin.pluginTitle ?? visibleAppliedPlugin.pluginId,
+                      // S67: the applied plugin's source restrictions stay visible in context.
+                      restrictions: studioPluginRestrictionLabels(
+                        installedPlugins.find((plugin) => plugin.id === visibleAppliedPlugin.pluginId), t),
                     }
                   : null
               }
@@ -4337,7 +4341,7 @@ function StagedRunContexts({
   skills: SkillSummary[];
   mcpServers: McpServerConfig[];
   connectors: ConnectorDetail[];
-  pluginChip?: { id: string; title: string } | null;
+  pluginChip?: { id: string; title: string; restrictions?: string[] } | null;
   onRemoveWorkspace: (id: string) => void;
   onRemoveSkill: (id: string) => void;
   onRemoveMcp: (id: string) => void;
@@ -4368,13 +4372,16 @@ function StagedRunContexts({
             type="button"
             className="staged-context-open"
             onClick={() => onPluginDetails?.(pluginChip.id)}
-            title={pluginChip.title}
-            aria-label={pluginChip.title}
+            title={[pluginChip.title, ...(pluginChip.restrictions ?? [])].join(' — ')}
+            aria-label={[pluginChip.title, ...(pluginChip.restrictions ?? [])].join(' — ')}
           >
             <span className="staged-icon" aria-hidden>
               <Icon name="sparkles" size={12} />
             </span>
             <span className="staged-name">{pluginChip.title}</span>
+            {pluginChip.restrictions?.length ? (
+              <span className="staged-context-restriction">{pluginChip.restrictions.join('; ')}</span>
+            ) : null}
           </button>
           <button
             type="button"
@@ -4945,6 +4952,8 @@ function StandalonePluginsPane({
               >
                 <Icon name="sparkles" size={15} className="plus-menu__item-icon" />
                 <span>{localizePluginTitle(locale, plugin)}</span>
+                {/* S67: part of the item's accessible name, as on the Plugins page. */}
+                <PluginSourceRestrictions record={plugin} />
               </button>
             ))
           )}

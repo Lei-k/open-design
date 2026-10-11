@@ -242,3 +242,30 @@ describe('S67 Studio atoms with per-source availability', () => {
       .toEqual({ applicable: false, reasons: [{ code: 'atom', subject: 'critique-theater' }] });
   });
 });
+
+// S67 repair 1: the desktop-step detector's reasons join the declaration
+// reasons, are pinned in the requirements, and an unreadable package fails
+// closed. Admission refuses a pinned requirement no Studio turn runs at all.
+describe('S67 repair 1: captured-package desktop steps', () => {
+  const plain = record({ kind: 'scenario', capabilities: ['prompt:inject', 'fs:write'], pipeline: { stages: [{ id: 'render', atoms: ['file-write'] }] } });
+  it('closes a plugin whose package instructs a desktop-only core step and pins the step', () => {
+    const documents = [{ path: 'SKILL.md', text: 'Finish with `od plugin install --source generated-plugin`.' }];
+    expect(evaluateStudioPluginAvailability(plain, scenarios, undefined, documents))
+      .toEqual({ applicable: false, reasons: [{ code: 'capability', subject: 'desktop:od-cli' }] });
+    expect(evaluateStudioPluginRequirements(plain, scenarios, undefined, documents).capabilities).toContain('desktop:od-cli');
+    // A clean package and a declarations-only evaluation stay applicable.
+    expect(evaluateStudioPluginAvailability(plain, scenarios, undefined, [{ path: 'SKILL.md', text: 'Write the page.' }]))
+      .toEqual({ applicable: true, reasons: [] });
+    expect(evaluateStudioPluginAvailability(plain, scenarios)).toEqual({ applicable: true, reasons: [] });
+  });
+  it('fails closed when the package cannot be read', () => {
+    expect(evaluateStudioPluginAvailability(plain, scenarios, undefined, null))
+      .toEqual({ applicable: false, reasons: [{ code: 'context', subject: 'package' }] });
+  });
+  it('refuses a pinned requirement no Studio source runs on every source', () => {
+    for (const source of ['personal-codex', 'company-openai', 'account-openai'] as const) {
+      expect(studioPluginSourceReasons({ atoms: ['critique-theater', 'file-write'], capabilities: ['desktop:media-scaffold', 'fs:write'] }, source))
+        .toEqual([{ code: 'atom', subject: 'critique-theater' }, { code: 'capability', subject: 'desktop:media-scaffold' }]);
+    }
+  });
+});

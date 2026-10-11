@@ -152,7 +152,11 @@ export interface StudioPluginSourceRestriction {
   reasons: StudioPluginUnavailableReason[];
 }
 
-/** Typed reasons `source` cannot run these requirements; empty when it can. */
+/**
+ * Typed reasons `source` cannot run these requirements; empty when it can.
+ * A pinned requirement no Studio turn runs at all (an atom or capability the
+ * registry no longer lists, or a detected desktop-only step) refuses every source.
+ */
 export function studioPluginSourceReasons(
   requirements: StudioPluginRequirements,
   source: StudioPluginExecutionSource,
@@ -160,8 +164,9 @@ export function studioPluginSourceReasons(
 ): StudioPluginUnavailableReason[] {
   const gap = web.sourceGaps[source];
   return [
-    ...[...new Set(requirements.atoms)].filter((atom) => gap.atoms.includes(atom)).sort().map((subject) => ({ code: 'atom' as const, subject })),
-    ...[...new Set(requirements.capabilities)].filter((capability) => gap.capabilities.includes(capability)).sort()
+    ...[...new Set(requirements.atoms)].filter((atom) => !web.atoms.includes(atom) || gap.atoms.includes(atom)).sort()
+      .map((subject) => ({ code: 'atom' as const, subject })),
+    ...[...new Set(requirements.capabilities)].filter((capability) => !web.capabilities.includes(capability) || gap.capabilities.includes(capability)).sort()
       .map((subject) => ({ code: 'capability' as const, subject })),
   ];
 }
@@ -252,9 +257,13 @@ export function isStudioPluginDesignSystemReference(value: unknown): value is { 
  * - `strategy`: an OD Next strategy binding.
  * - `genui`: a declared or derived GenUI surface (`subject` = surface id).
  * - `connector` / `mcp`: a connector or MCP server (`subject` = id/name).
- * - `capability`: an `od.capabilities` entry (`subject` = capability).
+ * - `capability`: an `od.capabilities` entry (`subject` = capability), or a
+ *   desktop-only core step the captured package instructs (`subject` =
+ *   `desktop:media-scaffold`, `desktop:html-video-render`, `desktop:music-sfx-audio`,
+ *   `desktop:codex-tool`, `desktop:local-script` or `desktop:od-cli`; S67 repair 1).
  * - `context`: context the apply snapshot cannot capture yet
- *   (`assets`, `craft`, `design-system`, `skill-ref`, `claude-plugin`).
+ *   (`assets`, `craft`, `design-system`, `skill-ref`, `claude-plugin`), or a
+ *   plugin package whose documents cannot be read completely (`package`).
  * - `manifest`: a declaration that does not parse (`subject` = field). Fails closed.
  * - `source`: not a bundled plugin (`subject` = source kind).
  */

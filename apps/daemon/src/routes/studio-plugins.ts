@@ -17,6 +17,7 @@ import { getInstalledPlugin, listInstalledPlugins } from '../plugins/registry.js
 import { createSnapshot, linkSnapshotToProject } from '../plugins/snapshots.js';
 import { evaluateStudioPluginAvailability, evaluateStudioPluginRequirements } from '../plugins/studio-availability.js';
 import { captureStudioCraft } from '../plugins/studio-craft.js';
+import { readStudioPluginDocuments, type StudioPluginDocument } from '../plugins/studio-desktop-steps.js';
 import { captureStudioPluginResources, type StudioPluginResources } from '../plugins/studio-resources.js';
 import { readStudioSkillPackages, type StudioSkillPackage } from '../services/studio-skill-packages.js';
 import { captureStudioPluginDesignContext, type StudioPluginDesignContext } from '../plugins/studio-design-context.js';
@@ -167,8 +168,22 @@ export function registerStudioPluginRoutes(app: Express, input: {
     return role === 'owner' || (projectRoleAtLeast(role, 'view') && ownerActive(projectId));
   };
   const bundled = () => listInstalledPlugins(db).filter((record) => record.sourceKind === 'bundled');
+  /**
+   * The package Markdown the desktop-step detector reads (S67 repair 1). The
+   * catalog reuses a read per bundled row identity (folder, version, source
+   * digest, registration time); apply always reads afresh and pins its result.
+   */
+  const documentCache = new Map<string, StudioPluginDocument[] | null>();
+  const catalogDocuments = (record: InstalledPluginRecord) => {
+    const key = JSON.stringify([record.id, record.version, record.sourceDigest ?? null, record.updatedAt, record.fsPath]);
+    if (!documentCache.has(key)) {
+      if (documentCache.size > 2048) documentCache.clear();
+      documentCache.set(key, readStudioPluginDocuments(record.fsPath));
+    }
+    return documentCache.get(key)!;
+  };
   const catalogEntry = (record: InstalledPluginRecord, scenarios: ReturnType<typeof bundledScenarioRegistry>): StudioPluginRecord =>
-    ({ ...projectRecord(record), availability: evaluateStudioPluginAvailability(record, scenarios) });
+    ({ ...projectRecord(record), availability: evaluateStudioPluginAvailability(record, scenarios, undefined, catalogDocuments(record)) });
   const handle = (operation: (req: Request, res: Response, actor: string) => unknown) => async (req: Request, res: Response) => {
     const actor = multiUserActorOf(res)?.accountId;
     if (!actor) return sendApiError(res, 401, 'UNAUTHORIZED', 'authentication required');
@@ -201,13 +216,14 @@ export function registerStudioPluginRoutes(app: Express, input: {
     if (!record || record.sourceKind !== 'bundled') return sendApiError(res, 404, 'NOT_FOUND', 'plugin not found');
     const rows = bundled();
     const scenarios = bundledScenarioRegistry(rows);
-    const availability = evaluateStudioPluginAvailability(record, scenarios);
+    const documents = readStudioPluginDocuments(record.fsPath);
+    const availability = evaluateStudioPluginAvailability(record, scenarios, undefined, documents);
     if (!availability.applicable) {
       const details: StudioPluginApplyRefusalDetails = { pluginId, reasons: availability.reasons };
       return sendApiError(res, 403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'this plugin declares steps Studio turns do not run yet',
         { details: JSON.parse(JSON.stringify(details)) });
     }
-    const requirements = evaluateStudioPluginRequirements(record, scenarios);
+    const requirements = evaluateStudioPluginRequirements(record, scenarios, undefined, documents);
     const plugin = projectRecord(record);
     const skillIds = parseStudioPluginSkillReferences(record.manifest.od?.context?.skills ?? [])!
       .filter((ref) => ref.kind === 'catalog').map((ref) => ref.id);

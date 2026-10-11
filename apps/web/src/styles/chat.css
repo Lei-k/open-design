@@ -2696,6 +2696,16 @@ body:has(.manual-edit-workspace) .chat-composer-fixed-layer {
   max-width: 106px;
   line-height: 14px;
 }
+/* S67: applied plugin's execution-source restriction (Studio), shown beside its name. */
+.staged-context .staged-context-restriction {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--text-muted, var(--text));
+}
 .staged-context .staged-remove {
   width: 16px;
   height: 16px;

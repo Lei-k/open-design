@@ -22,17 +22,28 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts,
   startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
 import { PERSONAL_CODEX_MOCK, actorDir, codexHome, linkCodex, setTurnMode, until } from './personal-codex-helpers.js';
-import { FIXTURE_LIVE_ARTIFACT_PLUGIN_ID, FIXTURE_MEDIA_PLUGIN_ID, FIXTURE_PLUGIN_ID, FIXTURE_RESOURCE_MARKER, FIXTURE_SKILL_MARKER,
+import { FIXTURE_LIVE_ARTIFACT_PLUGIN_ID, FIXTURE_MEDIA_PLUGIN_ID, FIXTURE_PIPELINE_PLUGIN_ID, FIXTURE_PLUGIN_ID, FIXTURE_RESOURCE_MARKER, FIXTURE_SKILL_MARKER,
   PIPELINE_ONLY_PLUGIN_ID, installStudioAtomFixturePlugins, installStudioFixturePlugin } from './studio-plugin-fixture.js';
+import { buildStudioSkillPackage } from '../../src/services/studio-skill-packages.js';
 
 /** S67: bundled plugins whose every step (file-write, live-artifact, media surface) runs on Web. */
-const S67_BUNDLED_APPLICABLE = ['example-audio-jingle', 'example-frame-data-chart-nyt', 'example-frame-flowchart-sticky', 'example-frame-glitch-title',
-  'example-frame-light-leak-cinema', 'example-frame-liquid-bg-hero', 'example-frame-logo-outro', 'example-frame-macos-notification', 'example-hatch-pet',
-  'example-hyperframes', 'example-image-poster', 'example-vfx-text-cursor', 'example-video-hyperframes', 'example-video-shortform'];
+const S67_BUNDLED_APPLICABLE = ['example-frame-data-chart-nyt', 'example-frame-flowchart-sticky', 'example-frame-glitch-title',
+  'example-frame-light-leak-cinema', 'example-frame-liquid-bg-hero', 'example-frame-logo-outro', 'example-frame-macos-notification',
+  'example-image-poster', 'example-vfx-text-cursor', 'example-video-hyperframes'];
+/** S67 repair 1: bundled plugins whose captured package needs a desktop-only core step, with the detector's typed reasons. */
+const DEAD_CORE: ReadonlyArray<[string, string[]]> = [
+  ['example-audio-jingle', ['desktop:music-sfx-audio']],
+  ['example-hatch-pet', ['desktop:codex-tool', 'desktop:local-script']],
+  ['example-hyperframes', ['desktop:html-video-render', 'desktop:local-script', 'desktop:media-scaffold', 'desktop:od-cli']],
+  ['example-video-shortform', ['desktop:html-video-render']],
+  ['od-share-to-community', ['desktop:od-cli']],
+];
 /** Test-only no-pipeline plugin, isolating immutable captures and pin races. */
 const APPLICABLE = FIXTURE_PLUGIN_ID;
-/** Bundled plugin opened by the finite stage runner. */
+/** Bundled plugin opened by the finite stage runner, closed again by its desktop-only install step (S67 repair 1). */
 const PIPELINE_ONLY = PIPELINE_ONLY_PLUGIN_ID;
+/** Test-only copy of that finite pipeline with a benign skill. */
+const PIPELINE = FIXTURE_PIPELINE_PLUGIN_ID;
 const REPO_ROOT = path.resolve('../..');
 
 /**
@@ -263,7 +274,7 @@ describe('Studio bundled plugin catalog', () => {
 
   it.each(sources)('executes the captured ordered pipeline and replays the same timeline on $executionSource', async (source) => {
     const target = await project(a);
-    const applied = await apply(a, PIPELINE_ONLY, { projectId: target.projectId });
+    const applied = await apply(a, PIPELINE, { projectId: target.projectId });
     expect(applied.status, applied.text).toBe(200);
     const started = await turn(a, target, source);
     expect(started.status, started.text).toBe(202);
@@ -289,7 +300,7 @@ describe('Studio bundled plugin catalog', () => {
 
   it.each(sources)('pauses for a question and resumes the same captured stage on $executionSource', async (source) => {
     const target = await project(a);
-    expect((await apply(a, PIPELINE_ONLY, { projectId: target.projectId })).status).toBe(200);
+    expect((await apply(a, PIPELINE, { projectId: target.projectId })).status).toBe(200);
     if (source.executionSource === 'personal_subscription') setTurnMode(root, a, { reply: questionForm });
     try {
       const started = await turn(a, target, { ...source, message: '[pipeline-question]' });
@@ -325,11 +336,13 @@ describe('Studio bundled plugin catalog', () => {
     expect((await catalog(a, '/api/multiuser/catalog/plugins')).map((plugin) => plugin.id)).toEqual(listed.map((plugin) => plugin.id));
 
     const byId = new Map(listed.map((plugin) => [plugin.id, plugin]));
-    // Finite stages of Web atoms now execute on every source.
-    expect(byId.get(PIPELINE_ONLY)?.availability).toEqual({ applicable: true, reasons: [] });
-    // This bundled pipeline, the test fixtures and (S67) the bundled Live
-    // Artifact examples are applicable; no plugin is refused for live-artifact.
-    expect(listed.filter((plugin) => plugin.availability.applicable).map((plugin) => plugin.id).sort()).toEqual([PIPELINE_ONLY, APPLICABLE,
+    // Finite stages of Web atoms execute on every source, but this bundled
+    // pipeline's skill must run `od plugin validate|pack|install` (repair 1).
+    expect(byId.get(PIPELINE_ONLY)?.availability).toEqual({ applicable: false, reasons: [{ code: 'capability', subject: 'desktop:od-cli' }] });
+    expect(byId.get(PIPELINE)?.availability).toEqual({ applicable: true, reasons: [] });
+    // The test fixtures and (S67) the runnable bundled Live Artifact examples
+    // are applicable; no plugin is refused for live-artifact.
+    expect(listed.filter((plugin) => plugin.availability.applicable).map((plugin) => plugin.id).sort()).toEqual([PIPELINE, APPLICABLE,
       FIXTURE_LIVE_ARTIFACT_PLUGIN_ID, FIXTURE_MEDIA_PLUGIN_ID, ...S67_BUNDLED_APPLICABLE].sort());
     expect(byId.get(APPLICABLE)?.availability).toEqual({ applicable: true, reasons: [] });
     expect(listed.some((plugin) => plugin.availability.reasons.some((reason) => reason.subject === 'live-artifact'))).toBe(false);
@@ -662,5 +675,79 @@ describe('S67 plugin atoms on Studio execution sources', () => {
     } finally {
       expect((await request(a, 'DELETE', `/api/multiuser/projects/${target.projectId}/shares/${b.id}`)).status).toBe(200);
     }
+  });
+});
+
+// S67 repair 1 (review P2 ×2): no dead plugins. A bundled plugin whose captured
+// package instructs a desktop-only core step (media scaffold, HTML-to-video
+// rendering, music/SFX, Codex-only tools, local scripts, `od` commands with no
+// Studio function) is unavailable at catalog and apply with typed capability
+// reasons, and run admission re-detects over the pinned package, so an
+// application captured before the detector existed cannot start either.
+describe('S67 repair 1: desktop-only core steps close plugins at catalog, apply and admission', () => {
+  const designed = async () => {
+    const target = await project(a);
+    withDb((db) => db.prepare('UPDATE projects SET design_system_id = ? WHERE id = ?').run('airbnb', target.projectId));
+    return target;
+  };
+  it.each(DEAD_CORE)('closes %s in the catalog and refuses its apply with typed reasons', async (id, subjects) => {
+    const reasons = subjects.map((subject) => ({ code: 'capability', subject }));
+    const detail = await request(a, 'GET', `/api/plugins/${id}`);
+    expect(detail.status, detail.text).toBe(200);
+    expect(detail.json.availability.applicable).toBe(false);
+    expect(detail.json.availability.reasons).toEqual(expect.arrayContaining(reasons));
+    expect(detail.json.availability.sourceRestrictions).toBeUndefined();
+    const target = await designed();
+    const before = withDb((db) => (db.prepare('SELECT COUNT(*) AS n FROM studio_plugin_applications').get() as { n: number }).n);
+    const refused = await apply(a, id, { projectId: target.projectId });
+    expect(refused.status, refused.text).toBe(403);
+    expect(refused.json.error).toMatchObject({ code: 'MULTIUSER_CAPABILITY_UNAVAILABLE', details: { pluginId: id } });
+    expect(refused.json.error.details.reasons).toEqual(expect.arrayContaining(reasons));
+    expect(withDb((db) => (db.prepare('SELECT COUNT(*) AS n FROM studio_plugin_applications').get() as { n: number }).n)).toBe(before);
+    expect((await request(a, 'GET', `/api/projects/${target.projectId}`)).json.project.appliedPluginSnapshotId ?? null).toBeNull();
+  });
+
+  it('keeps the runnable bundled media examples applicable on the OpenAI sources', async () => {
+    for (const id of ['example-image-poster', 'example-frame-glitch-title', 'example-video-hyperframes']) {
+      const detail = await request(a, 'GET', `/api/plugins/${id}`);
+      expect(detail.json.availability, id).toMatchObject({ applicable: true, reasons: [] });
+      const target = await designed();
+      expect((await apply(a, id, { projectId: target.projectId })).status, id).toBe(200);
+    }
+  });
+
+  it.each([
+    { executionSource: 'personal_subscription', agentId: 'codex' },
+    { executionSource: 'company_pool', agentId: 'openai' },
+    { executionSource: 'personal_api_key', agentId: 'openai-byok' },
+  ])('refuses an application captured before the detector existed on $executionSource and writes nothing', async (source) => {
+    const target = await project(a);
+    const applied = await apply(a, APPLICABLE, { projectId: target.projectId });
+    expect(applied.status, applied.text).toBe(200);
+    // The pre-detector application of od-share-to-community: its own SKILL.md
+    // still tells the worker to install the generated plugin.
+    const legacyId = randomUUID();
+    const legacyPackage = buildStudioSkillPackage(`studio-plugin:${PIPELINE_ONLY}@0.1.0`, [{ path: 'SKILL.md', executable: false,
+      bytes: Buffer.from('# Share\n\nRun `od plugin validate`, then `od plugin pack`, then `od plugin install --source <folder>`.\n') }]);
+    withDb((db) => {
+      const row = db.prepare('SELECT * FROM studio_plugin_applications WHERE snapshot_id = ?').get(applied.json.snapshotId) as Record<string, unknown>;
+      const snapshot = { ...JSON.parse(String(row.snapshot_json)), snapshotId: legacyId, pluginId: PIPELINE_ONLY };
+      const base = db.prepare('SELECT * FROM applied_plugin_snapshots WHERE id = ?').get(applied.json.snapshotId) as Record<string, unknown>;
+      const copy: Record<string, unknown> = { ...base, id: legacyId, plugin_id: PIPELINE_ONLY };
+      const columns = Object.keys(copy);
+      db.prepare(`INSERT INTO applied_plugin_snapshots (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`).run(...columns.map((key) => copy[key]));
+      db.prepare(`INSERT INTO studio_plugin_applications (snapshot_id, owner_account_id, project_id, plugin_id, plugin_version, manifest_source_digest,
+          snapshot_json, prompt, prompt_sha256, resource_package_json, requirements_json, applied_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(legacyId, a.id, target.projectId, PIPELINE_ONLY, row.plugin_version, row.manifest_source_digest, JSON.stringify(snapshot),
+          row.prompt, row.prompt_sha256, JSON.stringify(legacyPackage),
+          JSON.stringify({ atoms: ['file-read', 'file-write'], capabilities: ['fs:read', 'fs:write', 'prompt:inject'] }), Date.now());
+      db.prepare('UPDATE projects SET applied_plugin_snapshot_id = ? WHERE id = ?').run(legacyId, target.projectId);
+    });
+    const refused = await turn(a, target, { ...source, message: 'Package and install this work' });
+    expect(refused.status, refused.text).toBe(409);
+    expect(refused.json.error).toMatchObject({ code: 'MULTIUSER_CAPABILITY_UNAVAILABLE', details: { pluginId: PIPELINE_ONLY,
+      reasons: [{ code: 'capability', subject: 'desktop:od-cli' }] } });
+    expect(withDb((db) => db.prepare('SELECT id FROM multiuser_runs WHERE conversation_id = ?').all(target.conversationId))).toEqual([]);
+    expect(withDb((db) => db.prepare('SELECT id FROM messages WHERE conversation_id = ?').all(target.conversationId))).toEqual([]);
   });
 });

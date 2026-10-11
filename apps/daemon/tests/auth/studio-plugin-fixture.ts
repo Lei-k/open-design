@@ -13,8 +13,14 @@ import Database from 'better-sqlite3';
 export const FIXTURE_PLUGIN_ID = 'studio-test-applicable-plugin';
 export const FIXTURE_SKILL_MARKER = 'FIXTURE_PLUGIN_SKILL_MARKER';
 export const FIXTURE_RESOURCE_MARKER = 'FIXTURE_PLUGIN_RESOURCE_MARKER';
-/** The bundled plugin the fixture is modelled on; its finite pipeline runs on Web since S42. */
+/**
+ * The bundled plugin the fixtures are modelled on. Its finite pipeline runs on
+ * Web since S42, but its captured skill requires `od plugin validate|pack|install`
+ * (S67 repair 1: `desktop:od-cli`), so it is no longer applicable itself.
+ */
 export const PIPELINE_ONLY_PLUGIN_ID = 'od-share-to-community';
+/** Test-only copy of that two-stage pipeline with a benign skill: the applicable pipeline fixture. */
+export const FIXTURE_PIPELINE_PLUGIN_ID = 'studio-test-pipeline-plugin';
 
 export function installStudioFixturePlugin(dataRoot: string): void {
   const folder = path.join(dataRoot, 'test-fixture-plugins', FIXTURE_PLUGIN_ID);
@@ -61,6 +67,8 @@ export function installStudioAtomFixturePlugins(dataRoot: string): void {
         pipeline: { stages: [{ id: 'render', atoms: ['file-write', 'live-artifact'] }] } }],
       [FIXTURE_MEDIA_PLUGIN_ID, { mode: 'image', surface: 'image', capabilities: ['prompt:inject', 'fs:write', 'media:image'],
         pipeline: { stages: [{ id: 'generate', atoms: ['media-image', 'live-artifact'] }] } }],
+      [FIXTURE_PIPELINE_PLUGIN_ID, { context: { ...manifest.od?.context, assets: undefined },
+        pipeline: { stages: [{ id: 'inspect-project', atoms: ['file-read'] }, { id: 'package-plugin', atoms: ['file-write'] }] } }],
     ];
     for (const [id, od] of fixtures) {
       const row: Record<string, unknown> = { ...base, id, title: id, manifest_json: JSON.stringify({ ...manifest, name: id, title: id,

@@ -12,6 +12,32 @@ const SOURCE_LABELS: Record<StudioPluginExecutionSource, keyof Dict> = {
 };
 
 /**
+ * One label per execution source whose turns cannot run an applicable plugin
+ * (S67), e.g. "Not on Codex · personal subscription · Needs: media-image".
+ * The Plugins page, the composer picker/preview and the applied-plugin chip all
+ * use these exact labels, as the CLI prints the same reasons.
+ */
+export function studioPluginRestrictionLabels(record: InstalledPluginRecord | null | undefined,
+  t: (key: keyof Dict, vars?: Record<string, string | number>) => string): string[] {
+  const availability = studioPluginAvailability(record);
+  if (!availability?.applicable) return [];
+  return (availability.sourceRestrictions ?? []).map((item) => t('pluginsView.webSourceRestricted', {
+    source: t(SOURCE_LABELS[item.source]), reasons: studioPluginReasonTokens(item.reasons).join(', ') }));
+}
+
+/** The restriction labels as inline text; nothing when every source runs the plugin. */
+export function PluginSourceRestrictions({ record }: { record: InstalledPluginRecord }) {
+  const { t } = useI18n();
+  const labels = studioPluginRestrictionLabels(record, t);
+  if (!labels.length) return null;
+  return (
+    <span className={styles.restrictions} data-testid={`plugin-source-restrictions-${record.id}`}>
+      {labels.map((label) => <span key={label} className={styles.reasons}>{label}</span>)}
+    </span>
+  );
+}
+
+/**
  * Whether a bundled plugin can be applied by a Web account, and why not (#61).
  * Renders nothing for desktop records, which carry no availability. Applicable
  * plugins are applied from a project's composer; the reasons of an unavailable
@@ -28,10 +54,7 @@ export function PluginWebAvailability({ record }: { record: InstalledPluginRecor
       <span className={`${styles.availability} ${styles.applicable}`} data-testid={`plugin-web-availability-${record.id}`} data-applicable="true"
         {...(restrictions.length ? { 'data-restricted-sources': restrictions.map((item) => item.source).join(' ') } : {})}>
         <span className={styles.badge}>{t('pluginsView.webApplyFromProject')}</span>
-        {restrictions.map((item) => (
-          <span key={item.source} className={styles.reasons}>{t('pluginsView.webSourceRestricted', { source: t(SOURCE_LABELS[item.source]),
-            reasons: studioPluginReasonTokens(item.reasons).join(', ') })}</span>
-        ))}
+        {studioPluginRestrictionLabels(record, t).map((label) => <span key={label} className={styles.reasons}>{label}</span>)}
       </span>
     );
   }
