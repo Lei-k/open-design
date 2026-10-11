@@ -5126,6 +5126,9 @@ export interface Dict {
   'sketch.textModalTitle': string;
   // Critique Theater (Phase 8 components; Phase 9 fills non-English locales)
   'critiqueTheater.userFacingName': string;
+  'critiqueTheater.studioStart': string;
+  'critiqueTheater.studioPrompt': string;
+  'critiqueTheater.studioArtifact': string;
   'critiqueTheater.roleDesigner': string;
   'critiqueTheater.roleCritic': string;
   'critiqueTheater.roleBrand': string;

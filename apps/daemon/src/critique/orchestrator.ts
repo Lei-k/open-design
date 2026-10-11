@@ -61,6 +61,8 @@ export interface CritiqueSseBus {
 }
 
 export interface OrchestratorParams {
+  /** Studio effect boundary: live run, actor session, credential and project grant. */
+  authorized?: () => boolean;
   runId: string;
   projectId: string;
   conversationId: string | null;
@@ -123,7 +125,11 @@ export interface OrchestratorResult {
 export async function runOrchestrator(
   params: OrchestratorParams,
 ): Promise<OrchestratorResult> {
-  const { runId, projectId, conversationId, artifactDir, adapter, cfg, db, bus, stdout } = params;
+  const { runId, projectId, conversationId, artifactDir, adapter, cfg, db, stdout } = params;
+  const authorized = () => params.authorized?.() !== false;
+  const check = () => { if (!authorized()) throw new AbortError(); };
+  const bus: CritiqueSseBus = { emit(event) { if (authorized()) params.bus.emit(event); } };
+  check();
   const skill = params.skill ?? 'unknown';
   // Phase 12 round-duration histogram needs the wall-clock time the first
   // panelist_open landed for each round, so we can subtract at round_end.
@@ -275,6 +281,7 @@ export async function runOrchestrator(
     };
 
     for await (const event of parseCritiqueStream(timedSource, parserOpts)) {
+      check();
       // Ship events are buffered, not emitted raw. The normalized ship event
       // (with daemon-authoritative status/composite from decideRound(...))
       // is emitted after the loop so SSE clients and the transcript only
@@ -489,12 +496,14 @@ export async function runOrchestrator(
       if (captured !== null) {
         try {
           await fs.mkdir(artifactDir, { recursive: true });
+          check();
           const written = await writeShipArtifact(
             artifactDir,
             captured.body,
             captured.mime,
             { maxBytes: cfg.parserMaxBlockBytes },
           );
+          check();
           artifactPath = written.absPath;
           // Pin artifactPath on the row BEFORE we emit critique.ship,
           // so the GET /artifact endpoint sees the path the moment a
@@ -541,6 +550,7 @@ export async function runOrchestrator(
 
       // File is on disk, row knows about it. Now emit critique.ship so
       // SSE subscribers can fetch /artifact without racing the writer.
+      check();
       collectedEvents.push(normalizedShip);
       bus.emit(panelEventToSse(normalizedShip));
     } else {
@@ -710,7 +720,7 @@ export async function runOrchestrator(
   }
 
   // Write transcript for all non-trivially-failed runs.
-  if (finalStatus !== 'failed' || collectedEvents.length > 0) {
+  if (authorized() && (finalStatus !== 'failed' || collectedEvents.length > 0)) {
     try {
       const result = await writeTranscript(artifactDir, collectedEvents);
       transcriptPath = result.path;
@@ -718,6 +728,14 @@ export async function runOrchestrator(
       // Transcript write failure must not mask the primary outcome.
       transcriptPath = null;
     }
+  }
+
+  // Revocation wins over in-flight artifact/transcript I/O. Never publish a
+  // handle to bytes completed after the authority that admitted them expired.
+  if (!authorized()) {
+    finalStatus = 'interrupted';
+    artifactPath = null;
+    transcriptPath = null;
   }
 
   // Build rounds summary for persistence.

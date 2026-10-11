@@ -516,6 +516,25 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     return [...group('actor-scoped', reason, [key], { ...extras, rewriteTo: alias.slice(alias.indexOf(' ') + 1) }),
       ...group('actor-scoped', 'account automation alias; same cookie authority and closed fields', [alias], extras)];
   }),
+  // S66: standalone Jury uses the same actor-owned run controls, never host adapters.
+  ...([
+    ['POST', '', 'owner-scoped-project'],
+    ['GET', '', 'owner-scoped-project'],
+    ['GET', '/:runId', 'owner-scoped-run'],
+    ['GET', '/:runId/events', 'owner-scoped-run'],
+    ['GET', '/:runId/transcript', 'owner-scoped-run'],
+    ['GET', '/:runId/artifact', 'owner-scoped-run'],
+    ['POST', '/:runId/interrupt', 'owner-scoped-run'],
+  ] as const).flatMap(([method, suffix, routeClass]) => {
+    const route = `/api/projects/:projectId/critique${suffix}`;
+    const alias = route.replace('/api/projects/', '/api/multiuser/projects/');
+    const extras = { ...(routeClass === 'owner-scoped-run' ? { runParam: 'runId' } : {}),
+      ...(routeClass === 'owner-scoped-project' ? { projectParam: 'projectId' } : {}),
+      ...(suffix === '/:runId/interrupt' ? { bodyPolicy: 'empty' as const } : {}),
+      ...(method === 'POST' && !suffix ? { maxBodyBytes: 128 * 1024 } : {}) };
+    return [...group(routeClass, 'actor-owned standalone Design Jury on the turn source', [`${method} ${route}`], { ...extras, rewriteTo: alias }),
+      ...group(routeClass, 'actor-owned standalone Design Jury alias', [`${method} ${alias}`], extras)];
+  }),
   ...blocked(R_RUNS, [
     'POST /api/projects/:id/media/hyperframes/scaffold',
     'POST /api/projects/:id/media/generate',
@@ -523,8 +542,6 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'GET /api/projects/:projectId/genui',
     'POST /api/projects/:projectId/genui/:surfaceId/revoke',
     'POST /api/projects/:projectId/genui/prefill',
-    'POST /api/projects/:projectId/critique/:runId/interrupt',
-    'GET /api/projects/:projectId/critique/:runId/artifact',
   ]),
   ...blocked(R_PLUGINS, [
     'GET /api/projects/:projectId/applied-plugins',
@@ -1123,6 +1140,10 @@ export const MULTIUSER_SHARED_PROJECT_ROLES: Readonly<Record<string, ProjectShar
     String.raw`POST ${PROJECT_FILE_RE}\/files\/(.+)\/versions$/u`,
     String.raw`POST ${PROJECT_FILE_RE}\/files\/(.+)\/versions\/([^/]+)\/restore$/u`,
   ].map((key) => [key, 'edit' as const])),
+  'POST /api/projects/:projectId/critique': 'edit',
+  'POST /api/multiuser/projects/:projectId/critique': 'edit',
+  'GET /api/projects/:projectId/critique': 'view',
+  'GET /api/multiuser/projects/:projectId/critique': 'view',
 };
 
 /**

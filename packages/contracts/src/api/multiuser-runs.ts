@@ -27,6 +27,8 @@ export interface MultiUserRun {
   executionSource?: RunExecutionSource;
 }
 export interface MultiUserRunRequest {
+  /** Standalone Design Jury on this turn's pinned execution source. */
+  critique?: boolean;
   projectId: string;
   conversationId: string;
   agentId: 'test-mock' | 'codex' | 'openai' | 'openai-byok';
@@ -78,7 +80,7 @@ export interface MultiUserRunRequest {
 export const MULTIUSER_PERSONAL_RUN_FIELD_POLICY = {
   honored: ['projectId', 'conversationId', 'agentId', 'executionSource', 'message', 'currentPrompt', 'userMessageId',
     'assistantMessageId', 'clientRequestId', 'skillId', 'skillIds', 'designSystemId', 'analyticsHints', 'attachments', 'context',
-    'model', 'reasoning', 'commentAttachments', 'research', 'appliedPluginSnapshotId'],
+    'model', 'reasoning', 'commentAttachments', 'research', 'appliedPluginSnapshotId', 'critique'],
   defaultOnly: ['serviceTier', 'sessionMode'],
   notApplied: ['priorTranscript', 'locale', 'titleGeneration', 'mediaExecution'],
 } as const;

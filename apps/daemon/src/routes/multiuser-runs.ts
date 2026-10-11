@@ -36,11 +36,13 @@ import { diffRunArtifacts, snapshotProjectArtifacts, snapshotProjectArtifactsAsy
 import { createChatArtifactBlobStore } from '../chat-artifacts/blob-store.js';
 import { captureRunChatArtifactSnapshots } from '../chat-artifacts/run-capture.js';
 import { codexResolvedSandboxMode } from '../runtimes/defs/codex.js';
-import { PROBLEM_ERRORS, PersonalAccountError, runPersonalCodexTurn, type PersonalCodexAccounts } from '../services/personal-codex-accounts.js';
+import { PROBLEM_ERRORS, PersonalAccountError, runPersonalCodexTurn, type PersonalCodexAccounts, type PersonalTurnResult } from '../services/personal-codex-accounts.js';
 import type { PersonalRunLaneControls } from './multiuser-agent-accounts.js';
 import type { MultiUserDesignRoutes } from './multiuser-design.js';
 import { CompanyOpenAIConfigError, CompanyOpenAIStore } from '../storage/company-openai.js';
 import { CompanyOpenAIWorker, runCompanyOpenAITurn } from '../runtimes/company-openai.js';
+import { registerStudioCritiqueRoutes } from './studio-critique.js';
+import { runStudioCritique } from '../critique/studio.js';
 import { runStudioPipeline } from '../services/studio-pipeline.js';
 import { createStudioChatInvalidation } from '../services/studio-chat-invalidation.js';
 import { observeStudioProjectDefaults, studioProjectDefaultsUnchanged, type StudioProjectDefaultsObservation } from '../services/studio-project-defaults.js';
@@ -110,6 +112,7 @@ function storedRequest(requestJson: string | null): Record<string, unknown> | nu
 type PersonalRunFields = {
   /** The turn text the native thread receives. */
   text: string;
+  critique: boolean;
   turnIds: { userMessageId: string; assistantMessageId: string } | null;
   clientRequestId: string | null;
   skillId: string | null;
@@ -160,6 +163,7 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
   if (unsupported.length) {
     return refuse(403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', `not available for personal Studio runs: ${unsupported.sort().join(', ')}`);
   }
+  if (body.critique !== undefined && typeof body.critique !== 'boolean') return refuse(400, 'BAD_REQUEST', 'invalid critique option');
   const text = typeof body.currentPrompt === 'string' ? body.currentPrompt : body.message;
   if (typeof text !== 'string' || text.length > 64_000 || (body.message !== undefined && typeof body.message !== 'string')
     || (body.priorTranscript !== undefined && typeof body.priorTranscript !== 'string')
@@ -266,7 +270,7 @@ export function parsePersonalRunFields(body: Record<string, unknown>, messageIdP
   const sourceRunId = (hints as Record<string, unknown> | undefined)?.sourceRunId;
   if (answer && typeof sourceRunId !== 'string') return refuse(400, 'BAD_REQUEST', 'invalid question answer');
   return {
-    text, clientRequestId: (body.clientRequestId as string | null | undefined) ?? null,
+    critique: body.critique === true, text, clientRequestId: (body.clientRequestId as string | null | undefined) ?? null,
     turnIds: userMessageId === null ? null : { userMessageId: userMessageId as string, assistantMessageId: assistantMessageId as string },
     skillId: (body.skillId as string | null | undefined) ?? null, designSystemId: (body.designSystemId as string | null | undefined) ?? null,
     skillIds: selectedSkillIds,
@@ -348,6 +352,7 @@ export function multiUserTerminalErrorCode(source: 'company_pool' | 'personal_su
 export function registerMultiUserRunRoutes(app: Express, input: {
   db: Database.Database;
   dataRoot: string;
+  sessionCurrent?: (actor: AuthActor) => boolean;
   projectsRoot: string;
   mockAgentScript?: string;
   companyFetch?: typeof fetch;
@@ -579,6 +584,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   };
 
   const artifactBlobs = createChatArtifactBlobStore({ dataDir: dataRoot });
+  /** Jury effects retain the live session that admitted this turn. */
+  const critiqueSessionCurrent = (request: Record<string, unknown> | null) => request?.critique !== true
+    || Boolean(request.liveArtifactActor && input.sessionCurrent?.(request.liveArtifactActor as AuthActor));
   /**
    * The admitting account session of an interactive turn (S62). An agent may refresh a
    * connector/MCP Live Artifact source only within its run owner's authority AND that
@@ -896,8 +904,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   });
   input.mcp?.setRunLiveness((id) => !storesClosed && !cancelPending.has(id) && row(id)?.status === 'active');
   const actor = (res: Response) => multiUserActorOf(res)?.accountId ?? '';
-  const owned = (req: Request, res: Response): RunRow | null => {
-    const id = String(req.params.id ?? '');
+  const owned = (req: Request, res: Response, id = String(req.params.id ?? '')): RunRow | null => {
     const found = row(id);
     // An account keeps reading (and may cancel) its own runs while it can still read the project (#65).
     if (!found || found.owner_account_id !== actor(res) || !projects.canView(found.project_id, actor(res))) {
@@ -1036,11 +1043,13 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (!['active', 'queued'].includes(row(id)?.status ?? '')) { done(); return; }
     settleWaiters.set(id, [...(settleWaiters.get(id) ?? []), done]);
   };
+  let critiqueRoutes: ReturnType<typeof registerStudioCritiqueRoutes> | undefined;
   const finish = (id: string, status: 'succeeded' | 'failed' | 'canceled', output?: unknown) => {
     revokeConnectorGrant(id);
     if (storesClosed) return;
     const existing = row(id);
     if (!existing || (existing.status !== 'active' && existing.status !== 'queued')) return;
+    critiqueRoutes?.finish(id, status);
     if (existing.status === 'active' && isCompany(existing)) closeLedgerSpan(existing, status);
     const projection = projections.get(id);
     projection?.flush();
@@ -1202,7 +1211,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
               if (storesClosed) return false;
               return !storesClosed && !shuttingDown && !cancelPending.has(next.id) && row(next.id)?.status === 'active'
                 && accounts.getAccountById(next.owner_account_id)?.active === true && projects.canWrite(next.project_id, next.owner_account_id)
-                && key.current();
+                && key.current() && critiqueSessionCurrent(request);
             };
             const usage = { inputTokens: 0, outputTokens: 0 };
             const mediaUsage = { images: 0, speechCharacters: 0, videoSeconds: 0 };
@@ -1210,10 +1219,13 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             const mcpTools = mcpToolsFor(next, authorized);
             let stageHistory = history;
             let stageCount = 0;
-            void runStudioPipeline({ db, runId: next.id, snapshot: pluginSnapshotOf(request), resumeStage: request.pipelineResumeStage,
+            const execute = request.critique === true ? (args: Parameters<typeof runStudioPipeline<Awaited<ReturnType<typeof runCompanyOpenAITurn>>>>[0]) =>
+              runStudioCritique({ db, dataRoot, owner: next.owner_account_id, projectId: next.project_id, conversationId: next.conversation_id, runId: next.id,
+                authorized, cancel: () => { worker.kill('SIGTERM'); }, emit: (event) => critiqueRoutes!.emit(next.id, event), runStage: args.runStage }) : runStudioPipeline;
+            void execute({ db, runId: next.id, snapshot: pluginSnapshotOf(request), resumeStage: request.pipelineResumeStage,
               check: () => { worker.abort.signal.throwIfAborted(); if (!authorized()) throw new Error('company_authority_changed'); },
               emit: (stage) => { projection.flush(); emit(next.id, 'agent', { type: 'pipeline_stage', stage }); },
-              runStage: async (directive) => {
+              runStage: async (directive, onText) => {
                 if (stageCount++) { projection.accept({ type: 'text_delta', delta: '\n\n' }); projection.flush(); }
                 let text = '';
                 const result = await runCompanyOpenAITurn({ apiKey: key.apiKey, model: key.model,
@@ -1228,7 +1240,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                     packages: skillPackages, skillRoot, runHome, cwd: realCwd }) } : {}),
                   onAgentEvent: (event) => {
                     if (event.type === 'text_delta' && typeof event.delta === 'string') text += event.delta;
-                    projection.accept(event);
+                    if (request.critique === true) { if (event.type === 'text_delta' && typeof event.delta === 'string') onText?.(event.delta); }
+                    else projection.accept(event);
                   }, ...(input.companyFetch ? { fetch: input.companyFetch } : {}),
                 });
                 stageHistory = result.input;
@@ -1259,7 +1272,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 ...(mediaUsage.images || mediaUsage.speechCharacters || mediaUsage.videoSeconds ? { media: mediaUsage } : {}) });
             }).catch((error: unknown) => {
               const cause = error instanceof Error ? error.message : '';
-              finish(next.id, cancelPending.has(next.id) || shuttingDown ? 'canceled' : 'failed', { reason: failurePending.has(next.id) ? 'MULTIUSER_QUOTA_EXHAUSTED'
+              finish(next.id, cancelPending.has(next.id) || shuttingDown || request.critique === true && !authorized() ? 'canceled' : 'failed', { reason: failurePending.has(next.id) ? 'MULTIUSER_QUOTA_EXHAUSTED'
                 : isByok(next) && cause === 'provider_auth_rejected' ? 'MULTIUSER_PROVIDER_KEY_REJECTED'
                 : isByok(next) && cause === 'provider_rate_limited' ? 'MULTIUSER_PROVIDER_RATE_LIMITED' : 'MULTIUSER_RUN_FAILED' });
             })
@@ -1431,16 +1444,19 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             const allowed = () => !storesClosed && !shuttingDown && !cancelPending.has(runId)
               && row(runId)?.status === 'active' && accounts.getAccountById(owner)?.active === true
               && projects.canWrite(next.project_id, owner) && personal.usableAccount(owner)?.id === accountId
-              && personal.usableAccount(owner)?.credentialVersion === next.credential_version;
+              && personal.usableAccount(owner)?.credentialVersion === next.credential_version && critiqueSessionCurrent(request);
             const liveArtifacts = artifactToolsFor(next, allowed, (event) => projection.accept(event));
             const connectorTools = connectorToolsFor(next, allowed);
             const mcpTools = mcpToolsFor(next, allowed);
             let resumeThreadId = session.thread_id;
             let stageCount = 0;
-            void runStudioPipeline({ db, runId, snapshot: pluginSnapshotOf(request), resumeStage: request?.pipelineResumeStage,
+            const execute = request?.critique === true ? (args: Parameters<typeof runStudioPipeline<PersonalTurnResult>>[0]) =>
+              runStudioCritique({ db, dataRoot, owner, projectId: next.project_id, conversationId: next.conversation_id, runId, authorized: allowed,
+                cancel: () => { interrupts.get(runId)?.(); children.get(runId)?.kill('SIGTERM'); }, emit: (event) => critiqueRoutes!.emit(runId, event), runStage: args.runStage }) : runStudioPipeline;
+            void execute({ db, runId, snapshot: pluginSnapshotOf(request), resumeStage: request?.pipelineResumeStage,
               check: () => { if (!allowed()) throw new Error('personal_authority_changed'); },
               emit: (stage) => { projection.flush(); emit(runId, 'agent', { type: 'pipeline_stage', stage }); },
-              runStage: async (directive) => {
+              runStage: async (directive, onText) => {
                 if (stageCount++) { projection.accept({ type: 'text_delta', delta: '\n\n' }); projection.flush(); }
                 const turn = await runPersonalCodexTurn({
                   reportToolStartupFailures: true,
@@ -1470,7 +1486,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                   sandboxMode: launch.sandbox ? 'danger-full-access' : codexResolvedSandboxMode(),
                   onThread: (threadId) => { if (allowed()) db.prepare(`UPDATE multiuser_personal_sessions SET thread_id = ?, updated_at = ?
                     WHERE conversation_id = ? AND personal_account_id = ?`).run(threadId, now(), next.conversation_id, accountId); },
-                  onAgentEvent: (event) => { if (allowed()) projection.accept(event); },
+                  onAgentEvent: (event) => { if (allowed()) {
+                    if (request?.critique === true) { if (event.type === 'text_delta' && typeof event.delta === 'string') onText?.(event.delta); }
+                    else projection.accept(event);
+                  } },
                 });
                 children.set(runId, turn.child);
                 interrupts.set(runId, turn.interrupt);
@@ -1786,6 +1805,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (sourceId !== undefined && (!source || source.owner_account_id !== owner || source.project_id !== target.projectId || source.conversation_id !== target.conversationId)) {
       return sendApiError(res, 404, 'NOT_FOUND', 'not found');
     }
+    if (inputBody.critique === true && !interactiveActor(res).liveArtifactActor) return sendApiError(res, 403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'critique requires a live account session');
     const fields = parsePersonalRunFields(inputBody, studioMessageIdPrefix(owner));
     if ('code' in fields) return sendApiError(res, fields.status, fields.code, fields.message, fields.details ? { details: fields.details } : {});
     if (!personal?.enabled) return sendApiError(res, 403, 'MULTIUSER_PERSONAL_DISABLED', 'personal subscriptions are not enabled on this server');
@@ -1890,7 +1910,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (mcpGrant === false) return;
     const connectorGrant = captureConnectors(fields, res);
     if (connectorGrant === false) return;
-    const request = JSON.stringify({ ...(mcpGrant ? { mcpGrant, mcpServerIds: fields.mcpServerIds } : {}), ...(connectorGrant ? { connectorGrant, connectorIds: fields.connectorIds } : {}), ...interactiveActor(res), message: fields.text, ...(instruction ? { instruction } : {}), ...(fields.attachments.length ? { attachments: fields.attachments } : {}),
+    const request = JSON.stringify({ ...(mcpGrant ? { mcpGrant, mcpServerIds: fields.mcpServerIds } : {}), ...(connectorGrant ? { connectorGrant, connectorIds: fields.connectorIds } : {}), ...interactiveActor(res), ...(fields.critique ? { critique: true } : {}), message: fields.text, ...(instruction ? { instruction } : {}), ...(fields.attachments.length ? { attachments: fields.attachments } : {}),
       ...(inheritsSkills || withFixedSkill(fixedCapture?.skill, selectedSkills).length ? { skillIds: inheritsSkills ? inheritedSkillIds : fields.skillIds, skillSnapshots } : {}),
       ...(fields.workspaceItems.length ? { workspaceItems: fields.workspaceItems } : {}),
       ...(fields.commentAttachments.length ? { commentAttachments: fields.commentAttachments } : {}),
@@ -1982,6 +2002,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (sourceId !== undefined && (!source || source.owner_account_id !== owner || source.project_id !== target.projectId || source.conversation_id !== target.conversationId)) {
       return sendApiError(res, 404, 'NOT_FOUND', 'not found');
     }
+    if (inputBody.critique === true && !interactiveActor(res).liveArtifactActor) return sendApiError(res, 403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'critique requires a live account session');
     const fields = parsePersonalRunFields({ ...inputBody, agentId: 'codex', executionSource: 'personal_subscription' }, studioMessageIdPrefix(owner));
     if ('code' in fields) return sendApiError(res, fields.status, fields.code, fields.message, fields.details ? { details: fields.details } : {});
     // The company model is admin-owned; a per-turn choice applies only to personal Codex.
@@ -2087,7 +2108,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (mcpGrant === false) return;
     const connectorGrant = captureConnectors(fields, res);
     if (connectorGrant === false) return;
-    const request = JSON.stringify({ ...(mcpGrant ? { mcpGrant, mcpServerIds: fields.mcpServerIds } : {}), ...(connectorGrant ? { connectorGrant, connectorIds: fields.connectorIds } : {}), ...interactiveActor(res), message: fields.text, ...(instruction ? { instruction } : {}),
+    const request = JSON.stringify({ ...(mcpGrant ? { mcpGrant, mcpServerIds: fields.mcpServerIds } : {}), ...(connectorGrant ? { connectorGrant, connectorIds: fields.connectorIds } : {}), ...interactiveActor(res), ...(fields.critique ? { critique: true } : {}), message: fields.text, ...(instruction ? { instruction } : {}),
       ...(findings ? { research: { provider: 'tavily' } } : {}),
       ...(own ? { personalProvider: 'openai', personalModel: currentKey!.model, personalCredentialRevision: currentKey!.credentialRevision }
         : { companyProvider: 'openai', companyModel: config.model, companyCredentialRevision: config.credentialRevision }), stablePrompt: prompt, stablePromptHash: createHash('sha256').update(prompt).digest('hex'),
@@ -2116,8 +2137,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     }).immediate();
     publishEvent(id, frame); dispatch(); res.status(202).json({ runId: id, run: body(row(id)!) });
   };
-  app.post('/api/runs', async (req, res) => {
-    const inputBody = req.body as Record<string, unknown> | null;
+  const admitRun = async (inputBody: Record<string, unknown> | null, res: Response) => {
     if (!inputBody || typeof inputBody !== 'object' || Array.isArray(inputBody)) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid run request');
     const source = inputBody.executionSource;
     if (source !== undefined && source !== 'company_pool' && source !== 'personal_subscription' && source !== 'personal_api_key') {
@@ -2167,7 +2187,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     emit(id, 'queued', { runId: id });
     dispatch();
     res.status(202).json({ runId: id, run: body(row(id)!) });
-  });
+  };
+  app.post('/api/runs', (req, res) => admitRun(req.body, res));
   /**
    * Owner-only: the conversation is pinned to a personal account that is no
    * longer the owner's linked account. Re-authorization keeps the account row,
@@ -2248,9 +2269,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     listeners.set(run.id, set);
     res.on('close', () => { set.delete(res); if (set.size === 0) listeners.delete(run.id); });
   });
-  app.post('/api/runs/:id/cancel', (req, res) => {
-    const run = owned(req, res);
-    if (!run) return;
+  const interruptRun = (run: Pick<RunRow, 'id' | 'status'>, res: Response) => {
+    if (critiqueRoutes?.terminal(run.id)) return sendApiError(res, 409, 'CONFLICT', 'critique is already terminal');
     if (run.status === 'active') {
       const child = children.get(run.id);
       if (child && running(child)) {
@@ -2270,7 +2290,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     }
     finish(run.id, 'canceled');
     res.json(body(row(run.id)!));
-  });
+  };
+  app.post('/api/runs/:id/cancel', (req, res) => { const run = owned(req, res); if (run) interruptRun(run, res); });
+  critiqueRoutes = registerStudioCritiqueRoutes(app, { db, dataRoot, owned, canView: (projectId, owner) => projects.canView(projectId, owner),
+    start: admitRun, interrupt: interruptRun });
   app.post('/api/runs/:id/steer', (req, res) => {
     const run = owned(req, res);
     if (!run) return;

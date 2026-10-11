@@ -45,6 +45,7 @@ export function studioLaneForRoute(entry: Pick<MultiUserRouteClassification, 'me
     if (parts[2] === 'design-catalog') return 'catalogs';
     if (parts[2] === 'plugin-preview') return 'catalogs';
     if (parts[2] === 'routines' || parts[2]?.startsWith('automation-')) return 'automations';
+    if (parts[2] === 'projects' && parts.includes('critique')) return 'generation';
     if (parts[2] === 'research' || parts[2] === 'live-artifacts' || parts[2] === 'live-artifact-preview' || parts[2] === 'live-artifact-sources') return 'generation';
     if (path.includes('/archive') || path.includes('/export/') || path.includes('/public-links') || parts[2] === 'public'
       || parts[2] === 'deploy' || /\/(?:deploy|deployments)(?:\/|$)/.test(path)) return 'delivery';
@@ -108,7 +109,7 @@ export const STUDIO_PILOT_LANES: Partial<Record<StudioParityLaneId, string>> = {
   home: 'Pilot Home: Prototype, Deck, Other, Image/Video/Audio on an OpenAI source, immutable saved templates, project copies and browser ZIP/directory imports; live artifacts, HyperFrames and Figma import are pending (#60).',
   settings: 'Pilot settings: account appearance/notification preferences, in-page pet (bundled catalog), instructions, manual memory and profile injection, and opt-in automatic memory (heuristics, extraction after OpenAI turns on the turn\'s own source, rule verification and history), and account connectors (a company Composio key only administrators set, rotate or clear; each account connects, lists and disconnects its own apps through its own OAuth); owner-bound read connector tools in all three run sources; account-owned remote HTTP/SSE MCP tools are available in all three run sources; stdio, shared MCP, plugin MCP context, Live Artifact MCP refresh, connector ingestion/events, library and memory from connected apps are pending (#62).',
   collaboration: 'Pilot collaboration: owner-managed view/comment/edit sharing with other accounts of this deployment, members, presence, shared comments with server-stamped authors and live read-only mirroring of other members\' conversations; revocation closes open streams and stops turns; owners share private skills and design documents with other accounts for use; a project\'s applied bundled plugin reaches its editors\' turns. Private plugin sharing and complete browser acceptance are pending (#65).',
-  generation: 'Pilot generation: image (gpt-image-1), narration (gpt-4o-mini-tts) and short video (sora-2) inside OpenAI turns, billed to the turn\'s own source (company pool or the account\'s key) and saved in the project, research search on each account\'s own Tavily key, and project-authorized HTML Live Artifacts with manual project-JSON refresh, bounded history and isolated previews; connector/MCP-backed refresh (requires asynchronous refreshing-actor grants beyond canonical synchronous refresh), GenUI, critique and real-provider acceptance are pending (#63).',
+  generation: 'Pilot generation: image (gpt-image-1), narration (gpt-4o-mini-tts) and short video (sora-2) inside OpenAI turns, billed to the turn\'s own source (company pool or the account\'s key) and saved in the project, research search on each account\'s own Tavily key, and project-authorized HTML Live Artifacts with manual project-JSON refresh, bounded history and isolated previews, and actor-owned Design Jury runs on each turn\'s pinned source with rounds, replay, interrupt and protected SHIP artifacts; connector/MCP-backed refresh (requires asynchronous refreshing-actor grants beyond canonical synchronous refresh), GenUI and real-provider acceptance are pending (#63).',
   catalogs: 'Pilot catalogs: bundled templates/craft, account text and folder skills, captured skill packages with company script/binary tools, versioned design documents, and team catalogs (owner-managed use grants on private skills and design documents to other accounts of this deployment, captured at admission), the bundled plugin catalog with availability computed from the Web capability registry (unavailable plugins listed with typed reasons) and owner-only apply of applicable plugins as immutable project snapshots; finite ordered stages run on the turn\'s pinned provider and render in its transcript, pausing for questions; design generation/asset packages, plugin previews, devloops and plugins whose atoms or strategies Studio turns do not run yet are pending, and third-party installs, marketplace fetch, doctor and trust stay refused (#61).',
 };
 
@@ -129,9 +130,9 @@ export function multiUserStudioCapabilities(studioPilot = false, policy: { perso
     const pilot = studioPilot ? STUDIO_PILOT_LANES[lane.id] : undefined;
     if (!pilot) return [lane.id, unavailable(lane.issue)];
     if ((lane.id === 'execution' || lane.id === 'composer') && !policy.personalEnabled && !policy.companyEnabled && !policy.personalKeysEnabled) return [lane.id, executionOff];
-    // Media runs on an OpenAI source only; personal Codex has no media functions.
-    if (lane.id === 'generation' && !policy.companyEnabled && !policy.personalKeysEnabled) return [lane.id, { status: 'admin-disabled',
-      reason: 'Media generation needs the company OpenAI pool or accounts\' own OpenAI keys; neither is enabled on this server.' }];
+    // Jury runs on every account source; media still needs an OpenAI source.
+    if (lane.id === 'generation' && !policy.companyEnabled && !policy.personalKeysEnabled && !policy.personalEnabled) return [lane.id, { status: 'admin-disabled',
+      reason: 'Design Jury needs an account execution source; none is enabled on this server.' }];
     return [lane.id, { status: 'pilot', reason: pilot }];
   })) as StudioRuntimeCapabilities['features'];
   return { schemaVersion: 1, shell: studioPilot ? 'studio' : 'legacy-multiuser', features,

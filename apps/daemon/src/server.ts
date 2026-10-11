@@ -17701,6 +17701,7 @@ export async function startServer({
     ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
   }) : null;
   const multiUserRuns = multiUserMode ? registerMultiUserRunRoutes(app, {
+    sessionCurrent: multiUserFront?.sessionCurrent,
     ...(studioConnectorRuntime ? { connectors: studioConnectorRuntime } : {}),
     ...(studioMcpRuntime ? { mcp: studioMcpRuntime } : {}),
     db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
