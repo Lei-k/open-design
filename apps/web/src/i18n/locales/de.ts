@@ -1,6 +1,30 @@
 import type { Dict } from '../types';
 
 export const de: Dict = {
+  'studio.deployMissingHint': "Konfiguriere deinen eigenen Anbieter-Token unter Einstellungen → Bereitstellung.",
+  'studio.deployOwnerOnly': "Nur der Projektbesitzer kann bereitstellen oder Bereitstellungsdatensätze verwalten.",
+
+  'studio.capability.deployment': "Diese Bereitstellung hat diese Aktion nicht aktiviert.",
+  'studio.capability.settings': "Prüfe die Einstellungen oder versuche es später erneut.",
+  'studio.capability.notificationUnsupported': "Dieser Browser unterstützt keine Systembenachrichtigungen.",
+  'studio.capability.activity': "Ergebnisse und Aktivitäten bleiben in Studio sichtbar.",
+  'studio.capability.notificationDenied': "Benachrichtigungen sind blockiert. Erlaube sie in den Website-Einstellungen des Browsers.",
+  'studio.capability.notificationPrompt': "Beim Aktivieren fragt der Browser nach der Benachrichtigungsberechtigung.",
+  'studio.capability.directoryUnsupported': "Dieser Browser unterstützt keine Ordnerauswahl.",
+  'studio.capability.filesAlternative': "Lade stattdessen Dateien hoch oder nutze den ZIP-Import.",
+  'studio.capability.rendererDisabled': "Diese Bereitstellung bietet keine gerenderten Exporte.",
+  'studio.capability.htmlZipAlternative': "HTML und eigene Projekt-ZIPs können weiterhin heruntergeladen werden.",
+  'studio.capability.download': "Falls keine Datei erscheint, erlaube Downloads für diese Website und versuche es erneut.",
+  'studio.capability.downloadAlternative': "Prüfe die Downloadliste des Browsers; der Abschluss ist hier nicht erkennbar.",
+  'studio.capability.clipboardDenied': "Der Zugriff auf die Zwischenablage wurde verweigert.",
+  'studio.capability.manualCopy': "Markiere den Text und kopiere ihn manuell.",
+  'studio.capability.clipboardUnsupported': "Dieser Browser hat keine Clipboard API.",
+  'studio.capability.popup': "Falls sich kein neuer Tab öffnet, erlaube Pop-ups oder nutze den Link im selben Tab.",
+  'studio.capability.sameTab': "In diesem Tab öffnen",
+  'studio.capability.storage': "Der Zugriff auf Browserdaten wurde blockiert.",
+  'studio.capability.signOutAlternative': "Abmelden widerruft weiterhin die Sitzung; verwalte Website-Daten in den Browsereinstellungen.",
+  'studio.capability.narrow': "Auf kleinen Bildschirmen erreichst du alle Aktionen durch Scrollen und Panelnavigation.",
+
   'studio.deployStatus': 'Refresh status',
   'studio.deployCheckLink': 'Check link',
   'studio.deployRedeploy': 'Redeploy',

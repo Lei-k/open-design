@@ -1,3 +1,5 @@
+import { StudioCapabilityMessage, useStudioCapabilityState } from '../runtime/StudioCapabilityState';
+import { StudioExternalLink } from '../runtime/StudioExternalLink';
 import { StudioDeployMenu } from '../runtime/StudioDeploy';
 import { StudioLiveArtifactEditor } from './StudioLiveArtifactEditor';
 import { useStudioCapabilities, useStudioRequestAvailable } from '../runtime/studio-capabilities';
@@ -3468,6 +3470,8 @@ function FileVersionManagerModal({
   const [search, setSearch] = useState('');
   const [confirmRestore, setConfirmRestore] = useState(false);
   const restorePopoverId = useId();
+  const versionRenderState = useStudioCapabilityState('rendered-export');
+  const versionRenderReasonId = useId();
   const [downloadMenuVersionId, setDownloadMenuVersionId] = useState<string | null>(null);
   const [versionExportToast, setVersionExportToast] = useState<ExportToastState | null>(null);
   const [versionImageExportVersionId, setVersionImageExportVersionId] = useState<string | null>(null);
@@ -4267,10 +4271,14 @@ function FileVersionManagerModal({
             className="artifact-version-panel__popover share-menu-popover file-version-download-menu"
             role="menu"
           >
+            <StudioCapabilityMessage state={versionRenderState} id={versionRenderReasonId} />
             <button
               type="button"
               className="share-menu-item"
               role="menuitem"
+              disabled={!versionRenderState.usable}
+              style={versionRenderState.status === 'available' ? undefined : { minHeight: 40 }}
+              aria-describedby={versionRenderState.reasonKey ? versionRenderReasonId : undefined}
               onClick={() => {
                 void exportVersionPdf(selectedVersion);
               }}
@@ -4282,6 +4290,9 @@ function FileVersionManagerModal({
               type="button"
               className="share-menu-item"
               role="menuitem"
+              disabled={!versionRenderState.usable}
+              style={versionRenderState.status === 'available' ? undefined : { minHeight: 40 }}
+              aria-describedby={versionRenderState.reasonKey ? versionRenderReasonId : undefined}
               onClick={() => {
                 openVersionImageExport(selectedVersion);
               }}
@@ -6472,6 +6483,7 @@ function ReactComponentViewer({
   viewerOnly?: boolean;
   workspaceActive?: boolean;
 }) {
+  const studio = useStudioCapabilities();
   const t = useT();
   const analytics = useAnalytics();
   // `FileWorkspace` keeps a non-active viewer mounted, so an in-flight publish
@@ -6495,6 +6507,8 @@ function ReactComponentViewer({
   const [publishedFileSlug, setPublishedFileSlug] = useState('');
   const [publishingPublicFile, setPublishingPublicFile] = useState(false);
   const [publishLinkFeedback, setPublishLinkFeedback] = useState<'copied' | 'failed' | null>(null);
+  const [publishedClipboardFailed, setPublishedClipboardFailed] = useState(false);
+  const publishedClipboardState = useStudioCapabilityState('clipboard', { ...(publishedClipboardFailed ? { failure: 'permission' } : {}) });
   // Why a publish/unpublish attempt failed, as a message key. `publishLinkFeedback`
   // only renders inside the already-published branch, so a failed FIRST publish
   // used to leave no trace on screen at all — the button simply returned to idle.
@@ -6813,15 +6827,17 @@ function ReactComponentViewer({
   async function copyPublishedFileLink() {
     firePublishFlowClick('copy_publish_link');
     let ok = false;
-    try {
-      if (publishedFileUrl && typeof navigator !== 'undefined' && navigator.clipboard) {
-        await navigator.clipboard.writeText(publishedFileUrl);
-        ok = true;
-      }
-    } catch {
-      ok = false;
+    if (!studio.hostServices) ok = !!publishedFileUrl && await copyToClipboard(publishedFileUrl);
+    else {
+      try {
+        if (publishedFileUrl && typeof navigator !== 'undefined' && navigator.clipboard) {
+          await navigator.clipboard.writeText(publishedFileUrl);
+          ok = true;
+        }
+      } catch { ok = false; }
     }
     const feedback = ok ? 'copied' : 'failed';
+    setPublishedClipboardFailed(!ok);
     setPublishLinkFeedback(feedback);
     studioWindowSetTimeout(() => {
       setPublishLinkFeedback((current) => (current === feedback ? null : current));
@@ -7100,6 +7116,9 @@ function ReactComponentViewer({
                         </div>
                         {filePublished ? (
                           <div className="chrome-publish-plain">
+                            <StudioCapabilityMessage state={publishedClipboardState} />
+                            {!studio.hostServices && !publishedClipboardState.usable ? <input readOnly style={{ minHeight: 40 }} value={publishedFileUrl}
+                              aria-label={t('studio.capability.manualCopy')} onFocus={(event) => event.currentTarget.select()} /> : null}
                             <div className="chrome-publish-url" title={publishedFileUrl}>
                                 {publishedFileUrl}
                               </div>
@@ -7941,6 +7960,8 @@ function HtmlViewer({
   const [publishedFileSlug, setPublishedFileSlug] = useState('');
   const [publishingPublicFile, setPublishingPublicFile] = useState(false);
   const [publishLinkFeedback, setPublishLinkFeedback] = useState<'copied' | 'failed' | null>(null);
+  const [publishedClipboardFailed, setPublishedClipboardFailed] = useState(false);
+  const publishedClipboardState = useStudioCapabilityState('clipboard', { ...(publishedClipboardFailed ? { failure: 'permission' } : {}) });
   // Why a publish/unpublish attempt failed, as a message key. `publishLinkFeedback`
   // only renders inside the already-published branch, so a failed FIRST publish
   // used to leave no trace on screen at all — the button simply returned to idle.
@@ -8269,15 +8290,17 @@ function HtmlViewer({
   async function copyPublishedFileLink() {
     firePublishFlowClick('copy_publish_link');
     let ok = false;
-    try {
-      if (publishedFileUrl && typeof navigator !== 'undefined' && navigator.clipboard) {
-        await navigator.clipboard.writeText(publishedFileUrl);
-        ok = true;
-      }
-    } catch {
-      ok = false;
+    if (!studio.hostServices) ok = !!publishedFileUrl && await copyToClipboard(publishedFileUrl);
+    else {
+      try {
+        if (publishedFileUrl && typeof navigator !== 'undefined' && navigator.clipboard) {
+          await navigator.clipboard.writeText(publishedFileUrl);
+          ok = true;
+        }
+      } catch { ok = false; }
     }
     const feedback = ok ? 'copied' : 'failed';
+    setPublishedClipboardFailed(!ok);
     setPublishLinkFeedback(feedback);
     studioWindowSetTimeout(() => {
       setPublishLinkFeedback((current) => (current === feedback ? null : current));
@@ -9296,6 +9319,7 @@ function HtmlViewer({
   const suppressLiveReloadUntilRef = useRef(0);
   const [exportToast, setExportToast] = useState<ExportToastState | null>(null);
   const [shareLinkFeedback, setShareLinkFeedback] = useState<'copied' | 'failed' | null>(null);
+  const [shareClipboardFailed, setShareClipboardFailed] = useState(false);
   const [shareGuideToast, setShareGuideToast] = useState<string | null>(null);
   const [selectedSideCommentIds, setSelectedSideCommentIds] = useState<Set<string>>(() => new Set());
   const [commentSidePanelCollapsed, setCommentSidePanelCollapsed] = useState(false);
@@ -14592,6 +14616,7 @@ function HtmlViewer({
     }
     const ok = await copyToClipboard(safeUrl);
     const feedback = ok ? 'copied' : 'failed';
+    setShareClipboardFailed(!ok);
     setShareLinkFeedback(feedback);
     if (!ok) setExportToast({ message: t('useEverywhere.copyFailed'), tone: 'error' });
     studioWindowSetTimeout(() => {
@@ -15118,11 +15143,17 @@ function HtmlViewer({
   const deliveryUsable = studio.hostServices || studioRequest('POST', `/api/projects/${projectId}/export/html`);
   const studioRenderedExports = !studio.hostServices && studioRequest('POST', `/api/projects/${projectId}/export/pptx`);
   const rendererExports = studio.hostServices || studioRenderedExports;
+  const renderedState = useStudioCapabilityState('rendered-export');
+  const renderedReasonId = useId();
+  const downloadState = useStudioCapabilityState('download');
+  const shareClipboardState = useStudioCapabilityState('clipboard', { ...(shareClipboardFailed ? { failure: 'permission' } : {}) });
   // Preview comments are reviewed for Studio (#59) and shared with project members (#65).
   const commentsUsable = studioRequest('GET', `/api/projects/${projectId}/conversations/active/comments`);
   // A view-only Studio member reads the comments but cannot add any.
   const commentCreateAllowed = commentsUsable && collab.canComment !== false;
   const [archiveDownloading, setArchiveDownloading] = useState(false);
+  const [archiveAttempted, setArchiveAttempted] = useState(false);
+  const archiveReasonId = useId();
   const studioDeployUsable = !studio.hostServices && studioRequest('POST', `/api/projects/${projectId}/deploy`);
   const rawCanShare = (studio.hostServices || canPublishPublic || studioDeployUsable) && deliveryUsable && source !== null && isShareableArtifact;
   const canRenderExports = rendererExports && deliveryUsable && source !== null && isShareableArtifact && !viewerOnly;
@@ -16673,7 +16704,11 @@ function HtmlViewer({
           {showPreviewToolbarControls ? (
             <div className="viewer-toolbar-inline-actions">
               {!studio.hostServices && studioRequest('GET', `/api/projects/${projectId}/archive`) && source !== null && !viewerOnly ? (
-                <Button variant="ghost" data-testid="download-project-archive" disabled={archiveDownloading} onClick={async () => {
+                <>
+                <Button variant="ghost" data-testid="download-project-archive" style={{ minHeight: 40 }}
+                  title={t('studio.capability.download')} aria-describedby={archiveAttempted ? archiveReasonId : undefined}
+                  disabled={archiveDownloading} onClick={async () => {
+                  setArchiveAttempted(true);
                   setArchiveDownloading(true);
                   try {
                     if (!await downloadProjectArchive({ projectId, fallbackTitle: exportTitle }))
@@ -16682,6 +16717,9 @@ function HtmlViewer({
                 }}>
                   {t('fileViewer.exportZip')}
                 </Button>
+                {archiveAttempted ? <StudioCapabilityMessage id={archiveReasonId} state={{ ...downloadState,
+                  reasonKey: 'studio.capability.download', alternativeKey: 'studio.capability.downloadAlternative' }} /> : null}
+                </>
               ) : null}
               {!studio.hostServices && studioRequest('POST', '/api/templates') && source !== null && !viewerOnly ? (
                 <Button variant="ghost" data-testid="save-project-template" onClick={openSaveAsTemplateModal}>
@@ -17249,7 +17287,10 @@ function HtmlViewer({
                       </div>
                       {filePublished ? (
                         <div className="chrome-publish-plain">
-                          <div className="chrome-publish-url" title={publishedFileUrl}>
+                          <StudioCapabilityMessage state={publishedClipboardState} />
+                            {!studio.hostServices && !publishedClipboardState.usable ? <input readOnly style={{ minHeight: 40 }} value={publishedFileUrl}
+                              aria-label={t('studio.capability.manualCopy')} onFocus={(event) => event.currentTarget.select()} /> : null}
+                            <div className="chrome-publish-url" title={publishedFileUrl}>
                               {publishedFileUrl}
                             </div>
                             <div className="chrome-publish-actions">
@@ -17392,6 +17433,12 @@ function HtmlViewer({
                               </button>
                             </>
                           ) : null}
+                          {!studio.hostServices && sharePageUrl ? <>
+                            <StudioExternalLink href={sharePageUrl}>{t('fileViewer.openSharePage')}</StudioExternalLink>
+                            <StudioCapabilityMessage state={shareClipboardState} />
+                            {!shareClipboardState.usable ? <input readOnly style={{ minHeight: 40 }} value={sharePageUrl} aria-label={t('studio.capability.manualCopy')}
+                              onFocus={(event) => event.currentTarget.select()} /> : null}
+                          </> : null}
                           {sharePageUrl && (shareLinkStatusHint || shareUnavailableHint) ? (
                             <div className="share-menu-section-label" role="presentation">
                               {shareLinkStatusHint || shareUnavailableHint}
@@ -17403,6 +17450,13 @@ function HtmlViewer({
                     ) : null}
                     {unifiedActionTab === 'export' && rawCanDownload ? (
                       <div className="chrome-unified-panel">
+                  {!studio.hostServices && !rendererExports ? <>
+                    {(['fileViewer.exportPdf', 'fileViewer.exportPptx', 'fileViewer.exportImage'] as const)
+                      .filter((key) => key !== 'fileViewer.exportPptx' || deckExportSignal).map((key) =>
+                      <Button key={key} role="menuitem" style={{ minHeight: 40 }} disabled aria-describedby={renderedReasonId}>{t(key)}</Button>)}
+                    <StudioCapabilityMessage id={renderedReasonId} state={renderedState} />
+                  </> : null}
+                  {!studio.hostServices ? <StudioCapabilityMessage state={{ ...downloadState, reasonKey: 'studio.capability.download', alternativeKey: 'studio.capability.downloadAlternative' }} /> : null}
                   {rendererExports ? (
                   <button
                     type="button"
@@ -17452,14 +17506,19 @@ function HtmlViewer({
                       "produce a file/link out of this artifact" menu; a capture
                       that only lands on the clipboard is a different job and the
                       toolbar's screenshot-to-chat already leads with it. */}
-                  {rendererExports ? (
+                  {rendererExports || !studio.hostServices ? (
                   <button
                     type="button"
                     className="share-menu-item"
                     role="menuitem"
                     disabled={viewerOnly}
                     title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
-                    onClick={() => runExportFormat('zip')}
+                    onClick={() => {
+                      if (rendererExports) runExportFormat('zip');
+                      else void downloadProjectArchive({ projectId, fallbackTitle: exportTitle }).then((ok) => {
+                        if (!ok) setExportToast({ message: t('fileViewer.exportFailed'), tone: 'error' });
+                      });
+                    }}
                   >
                     <span className="share-menu-icon"><RemixIcon name="file-zip-line" size={15} /></span>
                     <span>{t('fileViewer.exportZip')}</span>

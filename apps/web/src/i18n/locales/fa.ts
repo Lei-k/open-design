@@ -1,6 +1,30 @@
 import type { Dict } from '../types';
 
 export const fa: Dict = {
+  'studio.deployMissingHint': "توکن ارائه‌دهنده خود را در تنظیمات ← استقرار تنظیم کنید.",
+  'studio.deployOwnerOnly': "فقط مالک پروژه می‌تواند استقرار دهد یا رکوردها را مدیریت کند.",
+
+  'studio.capability.deployment': "این استقرار این عملیات را فعال نکرده است.",
+  'studio.capability.settings': "تنظیمات را بررسی کنید یا پس از دسترسی به سرویس دوباره تلاش کنید.",
+  'studio.capability.notificationUnsupported': "این مرورگر از اعلان‌های سیستم پشتیبانی نمی‌کند.",
+  'studio.capability.activity': "نتایج و فعالیت‌ها همچنان در Studio دیده می‌شوند.",
+  'studio.capability.notificationDenied': "اعلان‌ها مسدودند. در تنظیمات سایت مرورگر اجازه دهید.",
+  'studio.capability.notificationPrompt': "با فعال‌سازی این کنترل، مرورگر اجازه اعلان می‌خواهد.",
+  'studio.capability.directoryUnsupported': "این مرورگر انتخاب پوشه را پشتیبانی نمی‌کند.",
+  'studio.capability.filesAlternative': "فایل بارگذاری کنید یا از واردکردن ZIP استفاده کنید.",
+  'studio.capability.rendererDisabled': "این استقرار خروجی رندرشده ندارد.",
+  'studio.capability.htmlZipAlternative': "دانلود HTML و ZIP پروژه‌های شما همچنان ممکن است.",
+  'studio.capability.download': "اگر فایلی ظاهر نشد، دانلود سایت را مجاز کنید و دوباره تلاش کنید.",
+  'studio.capability.downloadAlternative': "فهرست دانلود مرورگر را بررسی کنید؛ پایان دانلود اینجا قابل تشخیص نیست.",
+  'studio.capability.clipboardDenied': "دسترسی به کلیپ‌بورد رد شد.",
+  'studio.capability.manualCopy': "متن را انتخاب و دستی کپی کنید.",
+  'studio.capability.clipboardUnsupported': "این مرورگر Clipboard API ندارد.",
+  'studio.capability.popup': "اگر زبانه جدید باز نشد، پنجره بازشو را مجاز کنید یا پیوند همین زبانه را به کار ببرید.",
+  'studio.capability.sameTab': "بازکردن در همین زبانه",
+  'studio.capability.storage': "دسترسی به داده مرورگر مسدود شد.",
+  'studio.capability.signOutAlternative': "خروج همچنان نشست را لغو می‌کند؛ داده سایت را در تنظیمات مرورگر مدیریت کنید.",
+  'studio.capability.narrow': "در صفحه کوچک با پیمایش و جابه‌جایی پنل به همه عملیات دسترسی دارید.",
+
   'studio.deployStatus': 'Refresh status',
   'studio.deployCheckLink': 'Check link',
   'studio.deployRedeploy': 'Redeploy',

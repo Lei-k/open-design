@@ -19,8 +19,9 @@ const studio: StudioRuntimeCapabilities = { schemaVersion: 1, shell: 'studio', f
 const account = { id: 'A', username: 'pilot-A', role: 'user', active: true, passwordState: 'set', createdAt: 1, updatedAt: 1 };
 const project = { id: 'owned-project', name: 'Owned project', createdAt: 1, updatedAt: 1, metadata: { kind: 'prototype' } };
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-it('renders the existing App without attempting unavailable service requests, including failure diagnostics', async () => {
-  vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }));
+it.each([1024, 390])('renders the existing App at %s px without unavailable service requests, including failure diagnostics', async (width) => {
+  vi.stubGlobal('innerWidth', width); vi.stubGlobal('innerHeight', 844);
+  vi.stubGlobal('matchMedia', () => ({ matches: width <= 600, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }));
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal('IntersectionObserver', class { observe() {} unobserve() {} disconnect() {} });
   const requests: Array<{ source: string; method: string; path: string }> = [];

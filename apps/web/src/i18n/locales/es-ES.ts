@@ -1,6 +1,30 @@
 import type { Dict } from '../types';
 
 export const esES: Dict = {
+  'studio.deployMissingHint': "Configura tu propio token del proveedor en Ajustes → Despliegue.",
+  'studio.deployOwnerOnly': "Solo el propietario del proyecto puede desplegar o gestionar los registros.",
+
+  'studio.capability.deployment': "Este despliegue no ha activado esta acción.",
+  'studio.capability.settings': "Revisa los ajustes o inténtalo cuando el servicio esté disponible.",
+  'studio.capability.notificationUnsupported': "Este navegador no admite notificaciones del sistema.",
+  'studio.capability.activity': "Los resultados y la actividad siguen visibles en Studio.",
+  'studio.capability.notificationDenied': "Las notificaciones están bloqueadas. Permítelas en los ajustes del sitio del navegador.",
+  'studio.capability.notificationPrompt': "El navegador pedirá permiso al activar este control.",
+  'studio.capability.directoryUnsupported': "Este navegador no admite la selección de carpetas.",
+  'studio.capability.filesAlternative': "Sube archivos o utiliza la importación ZIP.",
+  'studio.capability.rendererDisabled': "Este despliegue no tiene exportaciones renderizadas.",
+  'studio.capability.htmlZipAlternative': "Las descargas HTML y ZIP de tus proyectos siguen disponibles.",
+  'studio.capability.download': "Si no aparece el archivo, permite descargas de este sitio e inténtalo de nuevo.",
+  'studio.capability.downloadAlternative': "Revisa la lista de descargas del navegador; aquí no se puede detectar la finalización.",
+  'studio.capability.clipboardDenied': "Se denegó el acceso al portapapeles.",
+  'studio.capability.manualCopy': "Selecciona el texto y cópialo manualmente.",
+  'studio.capability.clipboardUnsupported': "Este navegador no tiene la API Clipboard.",
+  'studio.capability.popup': "Si no se abre una pestaña, permite ventanas emergentes o usa el enlace en esta pestaña.",
+  'studio.capability.sameTab': "Abrir en esta pestaña",
+  'studio.capability.storage': "Se bloqueó el acceso a los datos del navegador.",
+  'studio.capability.signOutAlternative': "Cerrar sesión sigue revocando la sesión; gestiona los datos del sitio en los ajustes del navegador.",
+  'studio.capability.narrow': "En pantallas pequeñas, desplázate y usa la navegación de paneles para acceder a las acciones.",
+
   'studio.deployStatus': 'Refresh status',
   'studio.deployCheckLink': 'Check link',
   'studio.deployRedeploy': 'Redeploy',

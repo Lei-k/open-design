@@ -22,6 +22,7 @@ let root: string;
 let a: Principal;
 let b: Principal;
 let admin: Principal;
+let refreshUsers: Principal[];
 const token = 'S63-account-A-private-token-9234';
 const cfToken = 'S63-cloudflare-account-token-7832';
 const bToken = 'S63-account-B-private-token-6172';
@@ -149,9 +150,10 @@ beforeAll(async () => {
       },
     }),
   );
-  const users = await provisionAccounts(daemon, ['deploy-a', 'deploy-b']);
+  const users = await provisionAccounts(daemon, ['deploy-a', 'deploy-b', 'refresh-a', 'refresh-b', 'refresh-c', 'refresh-d', 'refresh-e']);
   [a, b] = users.users as [Principal, Principal];
   admin = users.admin;
+  refreshUsers = users.users.slice(2);
 }, 120_000);
 beforeEach(() => {
   holdDns = false;
@@ -310,8 +312,8 @@ it.each(['clear', 'replace', 'logout', 'disable', 'revoke', 'reset'])(
     else if (action === 'disable') await call(admin, 'PATCH', `/api/auth/users/${a.id}`, { active: false });
     else if (action === 'revoke') await call(admin, 'POST', `/api/auth/users/${a.id}/sessions/revoke`, {});
     else await call(admin, 'POST', `/api/auth/users/${a.id}/password`, { password: a.password });
-    release();
     const res = await pending;
+    release();
     expect(res.json.error.code, res.text).toBe('MULTIUSER_DEPLOY_AUTHORITY_CHANGED');
     expect(requests.length).toBe(count);
     if (action === 'disable') await call(admin, 'PATCH', `/api/auth/users/${a.id}`, { active: true });
@@ -319,6 +321,35 @@ it.each(['clear', 'replace', 'logout', 'disable', 'revoke', 'reset'])(
     expect(
       (await call(a, 'GET', `/api/projects/${id}/deployments`)).json.deployments.map((row: { id: string }) => row.id),
     ).toEqual([existing.json.id]);
+  },
+);
+// Port of reviewer P-A; the provider never replies until after cancellation is observed.
+it.each(['clear', 'replace', 'logout', 'disable', 'revoke', 'reset', 'project-delete'])(
+  'P-A: Vercel %s during inline upload aborts in flight with no record or further request', async (action) => {
+    a.cookie = await login(daemon, a.username, a.password);
+    await setToken();
+    const id = await project();
+    holdPath = '/v13/deployments';
+    const reached = new Promise<void>((resolve) => { held = resolve; });
+    const pending = deploy(id);
+    await reached;
+    const count = requests.length;
+    try {
+      if (action === 'clear' || action === 'replace') await setToken(a, 'vercel', action === 'clear' ? null : token + 'new');
+      else if (action === 'logout') await call(a, 'POST', '/api/auth/logout', {});
+      else if (action === 'disable') await call(admin, 'PATCH', `/api/auth/users/${a.id}`, { active: false });
+      else if (action === 'revoke') await call(admin, 'POST', `/api/auth/users/${a.id}/sessions/revoke`, {});
+      else if (action === 'reset') await call(admin, 'POST', `/api/auth/users/${a.id}/password`, { password: a.password });
+      else await call(a, 'DELETE', `/api/projects/${id}`);
+      const res = await pending;
+      expect(res.status, res.text).toBe(409);
+      expect(res.json.error.code).toBe('MULTIUSER_DEPLOY_AUTHORITY_CHANGED');
+      expect(requests.length).toBe(count);
+    } finally { release();
+      if (action === 'disable') await call(admin, 'PATCH', `/api/auth/users/${a.id}`, { active: true });
+      a.cookie = await login(daemon, a.username, a.password);
+    }
+    if (action !== 'project-delete') expect((await call(a, 'GET', `/api/projects/${id}/deployments`)).json.deployments).toEqual([]);
   },
 );
 it('token clear while DNS resolves opens no provider socket', async () => {
@@ -523,7 +554,7 @@ it('the 100-record history cap has a specific typed actionable error before prov
   expect((await call(a, 'DELETE', `/api/projects/${id}/deployments/${deployed.json.id}`)).status).toBe(200);
   expect((await deploy(id)).status).toBe(200);
 });
-it.each(['status', 'check-link'])('%s holds the same account outbound slot as deploy', async (action) => {
+it.each(['status', 'check-link'])('%s uses a separate bounded refresh pool and releases on success/failure', async (action) => {
   await setToken();
   const id = await project();
   const deployed = await deploy(id);
@@ -532,42 +563,62 @@ it.each(['status', 'check-link'])('%s holds the same account outbound slot as de
   const reached = new Promise<void>((resolve) => { held = resolve; });
   const pending = call(a, 'POST', `${base}/${action}`, {});
   await reached;
-  const count = requests.length;
   try {
-    for (const suffix of ['/status', '/check-link', '/redeploy'])
-      expect((await call(a, 'POST', base + suffix, {})).status).toBe(409);
-    expect((await deploy(id)).status).toBe(409);
-    expect(requests.length).toBe(count);
+    for (let i = 0; i < 8; i++) {
+      const busy = await call(a, 'POST', base + '/status', {});
+      expect(busy.status).toBe(409);
+      expect(busy.json.error.code).toBe('MULTIUSER_DEPLOY_REFRESH_BUSY');
+    }
+    expect((await deploy(id)).status).toBe(200);
   } finally { release(); }
   expect((await pending).status).toBe(200);
   holdPath = null;
+  failure = true;
+  expect((await call(a, 'POST', base + '/status', {})).status).toBe(502);
+  failure = false;
   expect((await call(a, 'POST', base + '/status', {})).status).toBe(200);
 });
-it('status and check-link together fill the two daemon outbound slots across accounts', async () => {
-  await setToken();
-  await setToken(b, 'vercel', bToken);
-  await setToken(admin, 'vercel', token);
-  const idA = await project();
-  const idB = await project(b);
-  const idC = await project(admin);
-  const deployedA = await deploy(idA);
-  const deployedB = await deploy(idB, b);
-  holdPath = '/';
+it('two long uploads cannot starve a third account status/check-link refresh', async () => {
+  await setToken(); await setToken(b, 'vercel', bToken); await setToken(admin, 'vercel', token);
+  const idA = await project(); const idB = await project(b); const idC = await project(admin);
+  const deployedC = await deploy(idC, admin);
+  holdPath = '/v13/deployments';
   const reachedA = new Promise<void>((resolve) => { held = resolve; });
-  const pendingA = call(a, 'POST', `/api/projects/${idA}/deployments/${deployedA.json.id}/status`, {});
-  await reachedA;
+  const pendingA = deploy(idA); await reachedA;
   const reachedB = new Promise<void>((resolve) => { held = resolve; });
-  const pendingB = call(b, 'POST', `/api/projects/${idB}/deployments/${deployedB.json.id}/check-link`, {});
-  await reachedB;
-  const count = requests.length;
+  const pendingB = deploy(idB, b); await reachedB;
+  holdPath = null;
   try {
     expect((await deploy(idC, admin)).status).toBe(409);
-    expect(requests.length).toBe(count);
+    for (const action of ['status', 'check-link'])
+      expect((await call(admin, 'POST', `/api/projects/${idC}/deployments/${deployedC.json.id}/${action}`, {})).status).toBe(200);
   } finally { for (const resolve of heldReleases) resolve(); }
-  expect((await pendingA).status).toBe(200);
-  expect((await pendingB).status).toBe(200);
+  expect((await pendingA).status).toBe(200); expect((await pendingB).status).toBe(200);
+});
+it('refresh pool has four daemon slots, typed immediate refusal and no retained admission after cancellation', async () => {
+  const users = refreshUsers;
+  const bases: string[] = [];
+  for (const user of users) {
+    await setToken(user);
+    const id = await project(user); const row = await deploy(id, user);
+    bases.push(`/api/projects/${id}/deployments/${row.json.id}`);
+  }
+  const pending = [];
+  holdPath = '/v13/deployments/deployment-1';
+  for (let i = 0; i < 4; i++) {
+    const reached = new Promise<void>((resolve) => { held = resolve; });
+    pending.push(call(users[i]!, 'POST', bases[i] + '/status', {})); await reached;
+  }
+  try {
+    for (let i = 0; i < 8; i++) {
+      const busy = await call(users[4]!, 'POST', bases[4] + '/check-link', {});
+      expect(busy.status).toBe(409); expect(busy.json.error.code).toBe('MULTIUSER_DEPLOY_REFRESH_BUSY');
+    }
+    for (let i = 0; i < 4; i++) await setToken(users[i]!, 'vercel', null);
+    for (const result of await Promise.all(pending)) expect(result.json.error.code).toBe('MULTIUSER_DEPLOY_AUTHORITY_CHANGED');
+  } finally { for (const resolve of heldReleases) resolve(); }
   holdPath = null;
-  expect((await deploy(idC, admin)).status).toBe(200);
+  expect((await call(users[4]!, 'POST', bases[4] + '/status', {})).status).toBe(200);
 });
 it('every stored column, SQLite/WAL, response and log is free of raw and encoded sentinels', () => {
   const db = new Database(path.join(root, 'app.sqlite'), { readonly: true });

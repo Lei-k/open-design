@@ -8,6 +8,7 @@ import {
 } from '../deploy.js';
 import {
   createSafeOutboundFetch,
+  type SafeOutboundInit,
   OutboundRequestRefused,
   type SafeOutboundOptions,
 } from '../http/safe-outbound-fetch.js';
@@ -24,6 +25,12 @@ export class StudioDeployProviderError extends Error {
   constructor() {
     super('The deployment provider did not complete the request.');
   }
+}
+/** Scheduled poll spacing; event-loop stalls can delay detection. */
+export const STUDIO_DEPLOY_AUTHORITY_POLL_MS = 250;
+/** An in-flight abort may follow bytes already received by the provider. */
+export class StudioDeployAuthorityRefused extends Error {
+  constructor(readonly cause: unknown) { super('Deployment authority changed.'); }
 }
 type ObjectValue = Record<string, unknown>;
 const object = (v: unknown): ObjectValue => (v && typeof v === 'object' && !Array.isArray(v) ? (v as ObjectValue) : {});
@@ -75,6 +82,10 @@ export function studioProvider(input: {
   provider: StudioDeployProvider;
   config: StudioDeployConfig;
   authorize: () => string;
+  /** Poll without decrypting credentials; supplied by the account route. */
+  checkAuthority?: () => void;
+  /** Refresh operations have a shorter total ceiling than upload pipelines. */
+  ceilingMs?: number;
   outbound?: StudioDeployOutboundInjection;
 }) {
   const safe = createSafeOutboundFetch({
@@ -89,6 +100,34 @@ export function studioProvider(input: {
   let secrets = knownSecrets([]);
   let uploadToken: string | null = null;
   const start = Date.now();
+  const ceilingMs = input.ceilingMs ?? 120_000;
+  const checkAuthority = input.checkAuthority ?? (() => { input.authorize(); });
+  /** Keep one timer/controller per admitted request, through DNS, upload and
+   * response-body reads. Preserve the authority cause after transport abort. */
+  const authorizedRequest = async (url: string, init: SafeOutboundInit) => {
+    const controller = new AbortController();
+    let refused: StudioDeployAuthorityRefused | undefined;
+    checkAuthority();
+    const timer = setInterval(() => {
+      try { checkAuthority(); }
+      catch (cause) {
+        refused = new StudioDeployAuthorityRefused(cause);
+        controller.abort(refused);
+      }
+    }, STUDIO_DEPLOY_AUTHORITY_POLL_MS);
+    timer.unref();
+    try {
+      const response = await safe(url, { ...init, signal: controller.signal });
+      if (refused) throw refused;
+      checkAuthority();
+      return response;
+    } catch (error) {
+      if (refused) throw refused;
+      // A socket/deadline refusal may settle between authority ticks.
+      checkAuthority();
+      throw error;
+    } finally { clearInterval(timer); }
+  };
   const api = input.provider === 'vercel' ? 'https://api.vercel.com' : 'https://api.cloudflare.com/client/v4';
   const request = async (
     suffix: string,
@@ -99,7 +138,7 @@ export function studioProvider(input: {
     allow404 = false,
     requestCeilingMs = 10_000,
   ) => {
-    if (Date.now() - start > 120_000) throw new OutboundRequestRefused('timeout');
+    if (Date.now() - start >= ceilingMs) throw new OutboundRequestRefused('timeout');
     // Captured locators may predate current config validation; refuse them before URL normalization or DNS.
     if (input.provider === 'cloudflare-pages' &&
       (!/^[a-f0-9]{32}$/i.test(input.config.accountId ?? '') ||
@@ -112,11 +151,11 @@ export function studioProvider(input: {
       ? `${input.outbound.apiOrigin}${canonical.pathname}${canonical.search}`
       : canonical.toString();
     const expected = new URL(url).origin;
-    const response = await safe(url, {
+    const response = await authorizedRequest(url, {
       method,
       ...(body !== undefined ? { body } : {}),
       headers: { 'Content-Type': contentType },
-      timeoutMs: Math.max(1, Math.min(requestCeilingMs, 120_000 - (Date.now() - start))),
+      timeoutMs: Math.max(1, Math.min(requestCeilingMs, ceilingMs - (Date.now() - start))),
       beforeConnect: (hop) => {
         if (hop.url.origin !== expected || hop.hop !== 0) throw new OutboundRequestRefused('host');
         // Account token is decrypted only after the synchronous live authority check, at dispatch and socket.
@@ -244,9 +283,9 @@ export function studioProvider(input: {
       if (!checked.url) throw new OutboundRequestRefused('host');
       const destination = input.outbound?.apiOrigin ? `${input.outbound.apiOrigin}/link` : checked.url;
       const expected = new URL(destination).origin;
-      const response = await safe(destination, {
+      const response = await authorizedRequest(destination, {
         method: 'HEAD',
-        timeoutMs: Math.max(1, Math.min(10_000, 120_000 - (Date.now() - start))),
+        timeoutMs: Math.max(1, Math.min(10_000, ceilingMs - (Date.now() - start))),
         beforeConnect: (hop) => {
           if (hop.url.origin !== expected || hop.hop) throw new OutboundRequestRefused('host');
           input.authorize();

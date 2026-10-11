@@ -1,6 +1,30 @@
 import type { Dict } from '../types';
 
 export const id: Dict = {
+  'studio.deployMissingHint': "Atur token penyedia Anda di Pengaturan → Deploy.",
+  'studio.deployOwnerOnly': "Hanya pemilik proyek dapat melakukan deploy atau mengelola catatannya.",
+
+  'studio.capability.deployment': "Deployment ini belum mengaktifkan tindakan ini.",
+  'studio.capability.settings': "Periksa Pengaturan atau coba lagi saat layanan tersedia.",
+  'studio.capability.notificationUnsupported': "Browser ini tidak mendukung notifikasi sistem.",
+  'studio.capability.activity': "Hasil dan aktivitas tetap terlihat di Studio.",
+  'studio.capability.notificationDenied': "Notifikasi diblokir. Izinkan kembali di pengaturan situs browser.",
+  'studio.capability.notificationPrompt': "Browser akan meminta izin saat kontrol ini diaktifkan.",
+  'studio.capability.directoryUnsupported': "Browser ini tidak mendukung pemilihan folder.",
+  'studio.capability.filesAlternative': "Unggah file atau gunakan impor ZIP.",
+  'studio.capability.rendererDisabled': "Deployment ini tidak memiliki ekspor hasil render.",
+  'studio.capability.htmlZipAlternative': "Unduhan HTML dan ZIP proyek milik Anda tetap tersedia.",
+  'studio.capability.download': "Jika file tidak muncul, izinkan unduhan situs ini dan coba lagi.",
+  'studio.capability.downloadAlternative': "Periksa daftar unduhan browser; penyelesaian tidak dapat dideteksi di sini.",
+  'studio.capability.clipboardDenied': "Akses papan klip ditolak.",
+  'studio.capability.manualCopy': "Pilih teks dan salin secara manual.",
+  'studio.capability.clipboardUnsupported': "Browser ini tidak memiliki Clipboard API.",
+  'studio.capability.popup': "Jika tab baru tidak terbuka, izinkan popup atau gunakan tautan di tab yang sama.",
+  'studio.capability.sameTab': "Buka di tab ini",
+  'studio.capability.storage': "Akses data browser diblokir.",
+  'studio.capability.signOutAlternative': "Keluar tetap mencabut sesi Anda; kelola data situs di pengaturan browser.",
+  'studio.capability.narrow': "Di layar kecil, gunakan gulir dan navigasi panel untuk menjangkau semua tindakan.",
+
   'studio.deployStatus': 'Refresh status',
   'studio.deployCheckLink': 'Check link',
   'studio.deployRedeploy': 'Redeploy',

@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { StudioCapabilityMessage, useStudioCapabilityState } from './StudioCapabilityState';
+import { StudioExternalLink } from './StudioExternalLink';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Button } from '@open-design/components';
 import type { StudioDeployConfig, StudioDeployProvider, StudioDeployment } from '@open-design/contracts';
-import { STUDIO_DEPLOY_MISSING_REASON, STUDIO_DEPLOY_OWNER_REASON } from '@open-design/contracts';
 import { useT } from '../i18n';
 import { studioFetch } from './studio-transport';
 import styles from './StudioDeploy.module.css';
@@ -139,6 +140,8 @@ export function StudioDeployMenu({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const loadGeneration = useRef(0);
+  const deployState = useStudioCapabilityState('deploy', { permissionGranted: owner });
+  const configReasonId = useId();
   const load = async () => {
     if (!owner) return;
     const generation = ++loadGeneration.current;
@@ -192,16 +195,17 @@ export function StudioDeployMenu({
   return (
     <section className={styles.panel} data-testid="studio-deploy-menu">
       <strong>{t('studio.deployTitle')}</strong>
+      <StudioCapabilityMessage state={deployState} />
       {!owner ? (
-        <p>{STUDIO_DEPLOY_OWNER_REASON}</p>
+        deployState.reasonKey ? null : <p role="status">{t('studio.deployOwnerOnly')}</p>
       ) : (
         <>
           {configs.map((config) => (
             <div key={config.providerId}>
-              <Button disabled={busy || !config.configured} onClick={() => void deploy(config.providerId)}>
+              <Button aria-describedby={!config.configured ? `${configReasonId}-${config.providerId}` : undefined} disabled={busy || !config.configured} onClick={() => void deploy(config.providerId)}>
                 {config.providerId === 'vercel' ? 'Vercel' : 'Cloudflare Pages'}
               </Button>
-              {!config.configured && <p>{STUDIO_DEPLOY_MISSING_REASON}</p>}
+              {!config.configured && <p role="status" id={`${configReasonId}-${config.providerId}`}>{t('studio.deployMissingHint')}</p>}
             </div>
           ))}
           {busy && <p role="status">{t('studio.deployProgress')}</p>}
@@ -214,13 +218,12 @@ export function StudioDeployMenu({
                   {row.providerId} · {row.status} · {new Date(row.createdAt).toLocaleString()}
                 </span>
                 {row.url && (
-                  <a href={row.url} target="_blank" rel="noopener noreferrer">
-                    {row.url}
-                  </a>
+                  <StudioExternalLink href={row.url}>{row.url}</StudioExternalLink>
                 )}
                 {(['status', 'check-link', 'redeploy', 'delete'] as const).map((action) => (
                   <Button
                     key={action}
+                    aria-describedby={action !== 'delete' && !configs.find((c) => c.providerId === row.providerId)?.configured ? `${configReasonId}-${row.providerId}` : undefined}
                     disabled={
                       busy || (action !== 'delete' && !configs.find((c) => c.providerId === row.providerId)?.configured)
                     }

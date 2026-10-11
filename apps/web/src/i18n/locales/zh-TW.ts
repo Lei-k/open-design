@@ -1,6 +1,30 @@
 import type { Dict } from "../types";
 
 export const zhTW: Dict = {
+  'studio.deployMissingHint': "請先在設定 → 部署中設定自己的供應商 token。",
+  'studio.deployOwnerOnly': "只有專案擁有者可以部署或操作部署記錄。",
+
+  'studio.capability.deployment': "此部署尚未啟用此操作。",
+  'studio.capability.settings': "請查看設定，或待服務可用後重試。",
+  'studio.capability.notificationUnsupported': "此瀏覽器不支援系統通知。",
+  'studio.capability.activity': "執行結果與活動仍可在 Studio 查看。",
+  'studio.capability.notificationDenied': "通知已封鎖。請在瀏覽器的網站設定中重新允許。",
+  'studio.capability.notificationPrompt': "啟用此控制項時，瀏覽器會詢問通知權限。",
+  'studio.capability.directoryUnsupported': "此瀏覽器不支援選取資料夾。",
+  'studio.capability.filesAlternative': "請改為上傳檔案，或使用 ZIP 匯入。",
+  'studio.capability.rendererDisabled': "此部署沒有渲染匯出功能。",
+  'studio.capability.htmlZipAlternative': "仍可下載 HTML 與自有專案 ZIP。",
+  'studio.capability.download': "若未出現檔案，請允許此網站下載後重試。",
+  'studio.capability.downloadAlternative': "請查看瀏覽器的下載清單；此處無法偵測下載完成。",
+  'studio.capability.clipboardDenied': "剪貼簿存取遭拒。",
+  'studio.capability.manualCopy': "請選取文字並手動複製。",
+  'studio.capability.clipboardUnsupported': "此瀏覽器沒有剪貼簿 API。",
+  'studio.capability.popup': "若新分頁未開啟，請允許彈出視窗或使用同分頁連結。",
+  'studio.capability.sameTab': "在此分頁開啟",
+  'studio.capability.storage': "瀏覽器資料存取遭封鎖。",
+  'studio.capability.signOutAlternative': "登出仍會撤銷工作階段；請在瀏覽器設定中管理網站資料。",
+  'studio.capability.narrow': "小螢幕可透過捲動與面板導覽使用所有操作。",
+
   'studio.deployStatus': '重新整理狀態',
   'studio.deployCheckLink': '檢查連結',
   'studio.deployRedeploy': '重新部署',

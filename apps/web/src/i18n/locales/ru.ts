@@ -1,6 +1,30 @@
 import type { Dict } from '../types';
 
 export const ru: Dict = {
+  'studio.deployMissingHint': "Настройте свой токен провайдера в Настройки → Развёртывание.",
+  'studio.deployOwnerOnly': "Только владелец проекта может развёртывать и управлять записями.",
+
+  'studio.capability.deployment': "В этом развёртывании действие не включено.",
+  'studio.capability.settings': "Проверьте настройки или повторите, когда сервис будет доступен.",
+  'studio.capability.notificationUnsupported': "Этот браузер не поддерживает системные уведомления.",
+  'studio.capability.activity': "Результаты и активность остаются видны в Studio.",
+  'studio.capability.notificationDenied': "Уведомления заблокированы. Разрешите их в настройках сайта в браузере.",
+  'studio.capability.notificationPrompt': "При включении браузер запросит разрешение на уведомления.",
+  'studio.capability.directoryUnsupported': "Этот браузер не поддерживает выбор папок.",
+  'studio.capability.filesAlternative': "Загрузите файлы или используйте импорт ZIP.",
+  'studio.capability.rendererDisabled': "В этом развёртывании нет экспорта с рендерингом.",
+  'studio.capability.htmlZipAlternative': "HTML и ZIP ваших проектов по-прежнему доступны.",
+  'studio.capability.download': "Если файл не появился, разрешите загрузки для сайта и повторите.",
+  'studio.capability.downloadAlternative': "Проверьте список загрузок браузера; здесь завершение не определяется.",
+  'studio.capability.clipboardDenied': "Доступ к буферу обмена запрещён.",
+  'studio.capability.manualCopy': "Выделите текст и скопируйте вручную.",
+  'studio.capability.clipboardUnsupported': "В этом браузере нет Clipboard API.",
+  'studio.capability.popup': "Если новая вкладка не открылась, разрешите всплывающие окна или откройте ссылку в этой вкладке.",
+  'studio.capability.sameTab': "Открыть в этой вкладке",
+  'studio.capability.storage': "Доступ к данным браузера заблокирован.",
+  'studio.capability.signOutAlternative': "Выход всё равно отзывает сеанс; управляйте данными сайта в настройках браузера.",
+  'studio.capability.narrow': "На небольшом экране используйте прокрутку и навигацию панелей для доступа к действиям.",
+
   'studio.deployStatus': 'Refresh status',
   'studio.deployCheckLink': 'Check link',
   'studio.deployRedeploy': 'Redeploy',

@@ -1,4 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
+import { StudioCapabilityMessage, useStudioCapabilityState } from '../runtime/StudioCapabilityState';
+import { StudioExternalLink } from '../runtime/StudioExternalLink';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { SocialSharePlatform, SocialShareResponse } from '@open-design/contracts';
 import { useT } from '../i18n';
 import { copyToClipboard } from '../lib/copy-to-clipboard';
@@ -53,6 +56,10 @@ interface Props {
 
 export function SocialShareGrid({ share, className, onShare, onAfterShare }: Props) {
   const t = useT();
+  const studio = useStudioCapabilities();
+  const copyReasonId = useId();
+  const [copyFailed, setCopyFailed] = useState(false);
+  const clipboardState = useStudioCapabilityState('clipboard', { ...(copyFailed ? { failure: 'permission' } : {}) });
   const [feedbackPlatform, setFeedbackPlatform] = useState<SocialSharePlatform | null>(null);
   const feedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
@@ -89,6 +96,26 @@ export function SocialShareGrid({ share, className, onShare, onAfterShare }: Pro
     }
     onAfterShare?.();
   };
+
+  if (!studio.hostServices) return <div className={`social-share-grid${className ? ` ${className}` : ''}`}>
+    {!clipboardState.usable ? <textarea readOnly style={{ minHeight: 40 }} value={share.copyText} aria-label={t('studio.capability.manualCopy')}
+      onFocus={(event) => event.currentTarget.select()} /> : null}
+    {platforms.map((target) => <div key={target.platform}>
+      {target.mode === 'intent' && target.shareUrl
+        ? <StudioExternalLink href={target.shareUrl}>{t(PLATFORM_LABEL_KEY[target.platform])}</StudioExternalLink>
+        : <>
+          <button type="button" className={`social-share-button social-share-button--${target.platform}`}
+            disabled={!clipboardState.usable} aria-describedby={clipboardState.reasonKey ? copyReasonId : undefined} style={{ minHeight: 40 }}
+            onClick={async () => {
+              onShare?.(target.platform);
+              const ok = await copyToClipboard(share.copyText); setCopyFailed(!ok);
+              if (ok) { setFeedbackPlatform(target.platform); onAfterShare?.(); }
+            }}>{feedbackPlatform === target.platform ? t('socialShare.copied') : t(PLATFORM_LABEL_KEY[target.platform])}</button>
+          {target.entryUrl ? <StudioExternalLink href={target.entryUrl}>{t(PLATFORM_LABEL_KEY[target.platform])}</StudioExternalLink> : null}
+        </>}
+    </div>)}
+    <StudioCapabilityMessage state={clipboardState} id={copyReasonId} />
+  </div>;
 
   return (
     <div className={`social-share-grid${className ? ` ${className}` : ''}`}>

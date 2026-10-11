@@ -1,6 +1,30 @@
 import type { Dict } from "../types";
 
 export const zhCN: Dict = {
+  'studio.deployMissingHint': "请先在设置 → 部署中配置自己的供应商 token。",
+  'studio.deployOwnerOnly': "只有项目所有者可以部署或操作部署记录。",
+
+  'studio.capability.deployment': "此部署尚未启用此操作。",
+  'studio.capability.settings': "请查看设置，或待服务可用后重试。",
+  'studio.capability.notificationUnsupported': "此浏览器不支持系统通知。",
+  'studio.capability.activity': "运行结果与活动仍可在 Studio 查看。",
+  'studio.capability.notificationDenied': "通知已被阻止。请在浏览器的网站设置中重新允许。",
+  'studio.capability.notificationPrompt': "启用此控件时，浏览器会询问通知权限。",
+  'studio.capability.directoryUnsupported': "此浏览器不支持选择文件夹。",
+  'studio.capability.filesAlternative': "请改为上传文件，或使用 ZIP 导入。",
+  'studio.capability.rendererDisabled': "此部署没有渲染导出功能。",
+  'studio.capability.htmlZipAlternative': "仍可下载 HTML 与自有项目 ZIP。",
+  'studio.capability.download': "若未出现文件，请允许此网站下载后重试。",
+  'studio.capability.downloadAlternative': "请查看浏览器的下载列表；此处无法检测下载完成。",
+  'studio.capability.clipboardDenied': "剪贴板访问被拒绝。",
+  'studio.capability.manualCopy': "请选择文本并手动复制。",
+  'studio.capability.clipboardUnsupported': "此浏览器没有剪贴板 API。",
+  'studio.capability.popup': "若新标签页未打开，请允许弹出窗口或使用同标签页链接。",
+  'studio.capability.sameTab': "在此标签页打开",
+  'studio.capability.storage': "浏览器数据访问被阻止。",
+  'studio.capability.signOutAlternative': "退出登录仍会撤销会话；请在浏览器设置中管理网站数据。",
+  'studio.capability.narrow': "小屏幕可通过滚动与面板导航使用所有操作。",
+
   'studio.deployStatus': '刷新状态',
   'studio.deployCheckLink': '检查链接',
   'studio.deployRedeploy': '重新部署',

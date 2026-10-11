@@ -95,6 +95,7 @@ it('Share menu exposes missing-token reason with disabled deploy controls', asyn
 it('edit grantees get owner-only reason and issue no deploy/history requests', async () => {
   const { calls } = await mount(<StudioDeployMenu projectId="p" fileName="index.html" owner={false} />);
   expect(screen.getByText(/Only the project owner/)).toBeTruthy();
+  expect(screen.getByRole('status').getAttribute('data-capability-state')).toBe('permission-denied');
   expect(calls.filter((c) => c.url.includes('/deploy'))).toEqual([]);
 });
 it('configured owners can deploy and see bounded progress', async () => {

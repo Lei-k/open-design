@@ -1,0 +1,12 @@
+.studio { min-width: 0; max-width: 100%; }
+@media (max-width: 600px) {
+  .studio :global(.settings-content) { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+  .studio :global(.settings-sidebar) { min-width: 0; max-width: 100%; }
+  .studio :global(.settings-notify-card-header) { flex-wrap: wrap; }
+  .studio :global(.seg-control) { max-width: 100%; grid-template-columns: repeat(auto-fit, minmax(60px, 1fr)); }
+  .studio :global(.settings-about-list) { min-width: 0; overflow-wrap: anywhere; }
+  .studio button, .studio input, .studio select { min-height: 40px; max-width: 100%; }
+  .studio :global(.pet-grid) { max-width: 100%; }
+  .studio :global(.pet-tabs-top-row) { flex-wrap: wrap; }
+  .studio :global(.pet-wake-controls) { max-width: 100%; }
+}

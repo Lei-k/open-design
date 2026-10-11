@@ -1,6 +1,30 @@
 import type { Dict } from '../types';
 
 export const tr: Dict = {
+  'studio.deployMissingHint': "Ayarlar → Dağıtım bölümünde kendi sağlayıcı tokeninizi yapılandırın.",
+  'studio.deployOwnerOnly': "Yalnızca proje sahibi dağıtabilir veya dağıtım kayıtlarını yönetebilir.",
+
+  'studio.capability.deployment': "Bu dağıtım bu işlemi etkinleştirmedi.",
+  'studio.capability.settings': "Ayarları kontrol edin veya hizmet kullanılabilir olduğunda yeniden deneyin.",
+  'studio.capability.notificationUnsupported': "Bu tarayıcı sistem bildirimlerini desteklemiyor.",
+  'studio.capability.activity': "Sonuçlar ve etkinlikler Studio’da görünür kalır.",
+  'studio.capability.notificationDenied': "Bildirimler engellendi. Tarayıcının site ayarlarından izin verin.",
+  'studio.capability.notificationPrompt': "Bu denetimi etkinleştirince tarayıcı bildirim izni ister.",
+  'studio.capability.directoryUnsupported': "Bu tarayıcı klasör seçimini desteklemiyor.",
+  'studio.capability.filesAlternative': "Dosya yükleyin veya ZIP içe aktarmayı kullanın.",
+  'studio.capability.rendererDisabled': "Bu dağıtımda işlenmiş dışa aktarma yok.",
+  'studio.capability.htmlZipAlternative': "Kendi projelerinizin HTML ve ZIP indirmeleri kullanılabilir.",
+  'studio.capability.download': "Dosya görünmezse bu sitenin indirmelerine izin verip yeniden deneyin.",
+  'studio.capability.downloadAlternative': "Tarayıcının indirme listesini kontrol edin; tamamlanma burada algılanamaz.",
+  'studio.capability.clipboardDenied': "Pano erişimi reddedildi.",
+  'studio.capability.manualCopy': "Metni seçip elle kopyalayın.",
+  'studio.capability.clipboardUnsupported': "Bu tarayıcıda Clipboard API yok.",
+  'studio.capability.popup': "Yeni sekme açılmazsa açılır pencerelere izin verin veya aynı sekme bağlantısını kullanın.",
+  'studio.capability.sameTab': "Bu sekmede aç",
+  'studio.capability.storage': "Tarayıcı verilerine erişim engellendi.",
+  'studio.capability.signOutAlternative': "Çıkış yine oturumu iptal eder; site verilerini tarayıcı ayarlarında yönetin.",
+  'studio.capability.narrow': "Küçük ekranda tüm işlemler için kaydırmayı ve panel gezinmesini kullanın.",
+
   'studio.deployStatus': 'Refresh status',
   'studio.deployCheckLink': 'Check link',
   'studio.deployRedeploy': 'Redeploy',

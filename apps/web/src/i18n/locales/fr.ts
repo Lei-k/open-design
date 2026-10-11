@@ -1,6 +1,30 @@
 import type { Dict } from '../types';
 
 export const fr: Dict = {
+  'studio.deployMissingHint': "Configurez votre jeton fournisseur dans Paramètres → Déploiement.",
+  'studio.deployOwnerOnly': "Seul le propriétaire du projet peut déployer ou gérer les enregistrements.",
+
+  'studio.capability.deployment': "Cette instance n’a pas activé cette action.",
+  'studio.capability.settings': "Consultez les paramètres ou réessayez lorsque le service est disponible.",
+  'studio.capability.notificationUnsupported': "Ce navigateur ne prend pas en charge les notifications système.",
+  'studio.capability.activity': "Les résultats et l’activité restent visibles dans Studio.",
+  'studio.capability.notificationDenied': "Les notifications sont bloquées. Autorisez-les dans les paramètres du site du navigateur.",
+  'studio.capability.notificationPrompt': "Le navigateur demandera l’autorisation lors de l’activation.",
+  'studio.capability.directoryUnsupported': "Ce navigateur ne permet pas de sélectionner un dossier.",
+  'studio.capability.filesAlternative': "Importez des fichiers ou utilisez l’import ZIP.",
+  'studio.capability.rendererDisabled': "Cette instance ne propose pas d’exports rendus.",
+  'studio.capability.htmlZipAlternative': "Les téléchargements HTML et ZIP de vos projets restent disponibles.",
+  'studio.capability.download': "Si aucun fichier n’apparaît, autorisez les téléchargements du site et réessayez.",
+  'studio.capability.downloadAlternative': "Consultez les téléchargements du navigateur ; la fin ne peut pas être détectée ici.",
+  'studio.capability.clipboardDenied': "L’accès au presse-papiers a été refusé.",
+  'studio.capability.manualCopy': "Sélectionnez le texte et copiez-le manuellement.",
+  'studio.capability.clipboardUnsupported': "Ce navigateur n’a pas d’API Clipboard.",
+  'studio.capability.popup': "Si aucun nouvel onglet ne s’ouvre, autorisez les fenêtres contextuelles ou utilisez le lien dans cet onglet.",
+  'studio.capability.sameTab': "Ouvrir dans cet onglet",
+  'studio.capability.storage': "L’accès aux données du navigateur a été bloqué.",
+  'studio.capability.signOutAlternative': "La déconnexion révoque toujours la session ; gérez les données du site dans les paramètres du navigateur.",
+  'studio.capability.narrow': "Sur petit écran, utilisez le défilement et la navigation des panneaux pour accéder aux actions.",
+
   'studio.deployStatus': 'Refresh status',
   'studio.deployCheckLink': 'Check link',
   'studio.deployRedeploy': 'Redeploy',

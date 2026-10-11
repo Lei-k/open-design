@@ -1,6 +1,30 @@
 import type { Dict } from '../types';
 
 export const pl: Dict = {
+  'studio.deployMissingHint': "Skonfiguruj własny token dostawcy w Ustawienia → Wdrożenie.",
+  'studio.deployOwnerOnly': "Tylko właściciel projektu może wdrażać i zarządzać rekordami.",
+
+  'studio.capability.deployment': "To wdrożenie nie włączyło tej czynności.",
+  'studio.capability.settings': "Sprawdź ustawienia lub spróbuj, gdy usługa będzie dostępna.",
+  'studio.capability.notificationUnsupported': "Ta przeglądarka nie obsługuje powiadomień systemowych.",
+  'studio.capability.activity': "Wyniki i aktywność pozostają widoczne w Studio.",
+  'studio.capability.notificationDenied': "Powiadomienia są zablokowane. Zezwól w ustawieniach witryny w przeglądarce.",
+  'studio.capability.notificationPrompt': "Po włączeniu przeglądarka poprosi o zgodę na powiadomienia.",
+  'studio.capability.directoryUnsupported': "Ta przeglądarka nie obsługuje wyboru folderów.",
+  'studio.capability.filesAlternative': "Prześlij pliki lub użyj importu ZIP.",
+  'studio.capability.rendererDisabled': "To wdrożenie nie ma eksportów renderowanych.",
+  'studio.capability.htmlZipAlternative': "Pobieranie HTML i ZIP własnych projektów pozostaje dostępne.",
+  'studio.capability.download': "Jeśli plik się nie pojawi, zezwól na pobieranie z witryny i spróbuj ponownie.",
+  'studio.capability.downloadAlternative': "Sprawdź listę pobrań przeglądarki; tutaj nie da się wykryć ukończenia.",
+  'studio.capability.clipboardDenied': "Odmówiono dostępu do schowka.",
+  'studio.capability.manualCopy': "Zaznacz tekst i skopiuj ręcznie.",
+  'studio.capability.clipboardUnsupported': "Ta przeglądarka nie ma Clipboard API.",
+  'studio.capability.popup': "Jeśli nowa karta się nie otworzy, zezwól na wyskakujące okna lub użyj odnośnika w tej karcie.",
+  'studio.capability.sameTab': "Otwórz w tej karcie",
+  'studio.capability.storage': "Dostęp do danych przeglądarki jest zablokowany.",
+  'studio.capability.signOutAlternative': "Wylogowanie nadal unieważnia sesję; zarządzaj danymi witryny w ustawieniach przeglądarki.",
+  'studio.capability.narrow': "Na małym ekranie przewijaj i korzystaj z nawigacji paneli, aby dotrzeć do czynności.",
+
   'studio.deployStatus': 'Refresh status',
   'studio.deployCheckLink': 'Check link',
   'studio.deployRedeploy': 'Redeploy',

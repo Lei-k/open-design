@@ -8,8 +8,8 @@
  * file contains no logic.
  */
 
-export { STUDIO_HOST_PARITY } from './studio-parity.js';
-export type { StudioHostAction, StudioHostParityDecision } from './studio-parity.js';
+export { STUDIO_HOST_PARITY, STUDIO_WEB_CONDITIONS, STUDIO_WEB_ACTION_CONDITIONS, STUDIO_WEB_CONDITION_DECISIONS } from './studio-parity.js';
+export type { StudioHostAction, StudioHostParityDecision, StudioWebAction, StudioWebCondition } from './studio-parity.js';
 
 // --- protocol: constant registries + wire types ---
 export {

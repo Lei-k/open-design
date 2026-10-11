@@ -30,4 +30,12 @@ describe('clearStudioBrowserData (#67)', () => {
     await clearStudioBrowserData({ logout } as unknown as CookieSession, { caches, localStorage: throwing, sessionStorage: throwing });
     expect(logout).toHaveBeenCalledOnce();
   });
+  it('still revokes the session when browser storage getters themselves are denied', async () => {
+    const logout = vi.fn(async () => {});
+    const scope = { get localStorage(): Storage { throw new DOMException('blocked', 'SecurityError'); },
+      get sessionStorage(): Storage { throw new DOMException('blocked', 'SecurityError'); } };
+    await clearStudioBrowserData({ logout } as unknown as CookieSession, scope);
+    expect(logout).toHaveBeenCalledOnce();
+  });
+
 });

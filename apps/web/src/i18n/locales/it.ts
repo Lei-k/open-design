@@ -1,6 +1,30 @@
 import type { Dict } from '../types';
 
 export const it: Dict = {
+  'studio.deployMissingHint': "Configura il tuo token del fornitore in Impostazioni → Distribuzione.",
+  'studio.deployOwnerOnly': "Solo il proprietario del progetto può distribuire o gestire i record.",
+
+  'studio.capability.deployment': "Questa distribuzione non ha attivato questa azione.",
+  'studio.capability.settings': "Controlla le impostazioni o riprova quando il servizio è disponibile.",
+  'studio.capability.notificationUnsupported': "Questo browser non supporta le notifiche di sistema.",
+  'studio.capability.activity': "Risultati e attività restano visibili in Studio.",
+  'studio.capability.notificationDenied': "Le notifiche sono bloccate. Consenti nelle impostazioni del sito nel browser.",
+  'studio.capability.notificationPrompt': "Il browser chiederà il permesso quando attivi il controllo.",
+  'studio.capability.directoryUnsupported': "Questo browser non supporta la selezione di cartelle.",
+  'studio.capability.filesAlternative': "Carica file o usa l’importazione ZIP.",
+  'studio.capability.rendererDisabled': "Questa distribuzione non dispone di esportazioni renderizzate.",
+  'studio.capability.htmlZipAlternative': "I download HTML e ZIP dei tuoi progetti restano disponibili.",
+  'studio.capability.download': "Se non compare un file, consenti i download del sito e riprova.",
+  'studio.capability.downloadAlternative': "Controlla l’elenco dei download del browser; qui non si rileva il completamento.",
+  'studio.capability.clipboardDenied': "L’accesso agli appunti è stato negato.",
+  'studio.capability.manualCopy': "Seleziona il testo e copialo manualmente.",
+  'studio.capability.clipboardUnsupported': "Questo browser non ha l’API Clipboard.",
+  'studio.capability.popup': "Se non si apre una scheda, consenti i popup o usa il link nella stessa scheda.",
+  'studio.capability.sameTab': "Apri in questa scheda",
+  'studio.capability.storage': "L’accesso ai dati del browser è bloccato.",
+  'studio.capability.signOutAlternative': "La disconnessione revoca comunque la sessione; gestisci i dati del sito nelle impostazioni del browser.",
+  'studio.capability.narrow': "Su schermi piccoli usa scorrimento e navigazione dei pannelli per tutte le azioni.",
+
   'studio.deployStatus': 'Refresh status',
   'studio.deployCheckLink': 'Check link',
   'studio.deployRedeploy': 'Redeploy',
