@@ -34,7 +34,7 @@ function cli(args: string[], input = ''): Promise<{ code: number | null; stdout:
     const env = { ...process.env };
     delete env.NODE_OPTIONS;
     delete env.OD_DAEMON_URL;
-    const child = spawn(process.execPath, [path.resolve('../..', 'node_modules/tsx/dist/cli.mjs'), path.resolve('src/cli.ts'), ...args], {
+    const child = spawn(process.execPath, [path.resolve('dist/cli.js'), ...args], {
       env, stdio: ['pipe', 'pipe', 'pipe'], timeout: 15_000,
     });
     let stdout = '';
@@ -705,3 +705,30 @@ it('creates, edits, reads and deletes private DESIGN.md through stdin on the sta
   expect(success(await cli(['design-systems', 'delete', id, '--session-file', first, '--json']))).toEqual({ ok: true });
   expect((await cli(['design-systems', 'show', id, '--session-file', first, '--json'])).code).not.toBe(0);
 }, 40_000);
+
+it('exposes the admin Settings actions through the real pinned-session CLI with A/B refusals', async () => {
+  const file = path.join(root, 's68-admin-session');
+  success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', admin.username, '--password-file', '-', '--session-file', file, '--json'], admin.password));
+  const created = success(await cli(['admin', 'users', 'create', 's68-cli-account', '--role', 'user', '--session-file', file, '--json']));
+  const id = created.account.id;
+  expect(created.setup.token).toBeTruthy();
+  const accounts = success(await cli(['admin', 'users', 'list', '--q', 's68-cli', '--session-file', file, '--json']));
+  expect(accounts.accounts).toHaveLength(1);
+  const revision = accounts.accounts[0].updatedAt;
+  expect(success(await cli(['admin', 'users', 'update', id, '--role', 'admin', '--revision', String(revision), '--session-file', file, '--json'])).account.role).toBe('admin');
+  expect((await cli(['admin', 'users', 'update', id, '--active', 'false', '--revision', String(revision), '--session-file', file, '--json'])).code).not.toBe(0);
+  expect(success(await cli(['admin', 'users', 'reset', id, '--session-file', file, '--json'])).setup.token).toBeTruthy();
+  expect(success(await cli(['admin', 'users', 'revoke', id, '--session-file', file, '--json'])).revoked).toBe(0);
+  expect(success(await cli(['admin', 'audit', '--session-file', file, '--json'])).events.length).toBeGreaterThan(0);
+  expect(success(await cli(['admin', 'pool', 'get', '--session-file', file, '--json'])).providers.openai).toBeTruthy();
+  expect(success(await cli(['admin', 'pool', 'quota', id, '--minutes', '0', '--session-file', file, '--json'])).budgetMinutes).toBe(0);
+  expect(success(await cli(['admin', 'pool', 'provider', 'test-mock', '--capacity', '0', '--session-file', file, '--json'])).capacity).toBe(0);
+  expect(success(await cli(['admin', 'personal', 'get', '--session-file', file, '--json'])).personalWorkerCapacity).toBeGreaterThanOrEqual(0);
+  expect(success(await cli(['admin', 'personal', 'set', '--capacity', '0', '--session-file', file, '--json'])).capacity).toBe(0);
+  expect(success(await cli(['admin', 'health', '--session-file', file, '--json'])).ok).toBe(true);
+  for (const user of [alice, bob]) {
+    const other = path.join(root, `s68-${user.username}`);
+    success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', user.username, '--password-file', '-', '--session-file', other, '--json'], user.password));
+    for (const action of [['users', 'list'], ['audit'], ['pool', 'get'], ['personal', 'get']]) expect((await cli(['admin', ...action, '--session-file', other, '--json'])).code).not.toBe(0);
+  }
+}, 120000);

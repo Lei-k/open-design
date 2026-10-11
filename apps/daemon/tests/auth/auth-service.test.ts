@@ -326,9 +326,9 @@ describe('auth service — admin-only management', () => {
     await expectAuthError(() => service.updateAccount(admin, admin.accountId, { role: 'user' }), 'LAST_ADMIN');
     await expectAuthError(() => service.updateAccount(admin, admin.accountId, { active: false }), 'LAST_ADMIN');
     service.updateAccount(admin, alice.id, { role: 'admin' });
-    // With a second admin the first may step down.
-    service.updateAccount(admin, admin.accountId, { role: 'user' });
+    await expectAuthError(() => service.updateAccount(admin, admin.accountId, { role: 'user' }), 'FORBIDDEN');
     const aliceAdmin = (await loginActor('alice', ALICE_PW)).actor;
+    service.updateAccount(aliceAdmin, admin.accountId, { role: 'user' });
     await expectAuthError(() => service.updateAccount(aliceAdmin, alice.id, { active: false }), 'LAST_ADMIN');
     await expectAuthError(() => service.updateAccount(aliceAdmin, alice.id, { role: 'user' }), 'LAST_ADMIN');
   });

@@ -205,9 +205,15 @@ export async function runSessionCli(args: string[], sessionFile: string | null):
 
 /** Explicit optimistic write; never silently read/retry a conflicting mutation. */
 export async function runStudioPilotCli(args: string[], sessionFile: string | null): Promise<void> {
+  if (['users', 'audit', 'personal', 'health'].includes(args[0] ?? '') || (args[0] === 'pool' && args[1] !== 'openai')) {
+    const { runAdminMetadataCli } = await import('./admin-cli.js');
+    return runAdminMetadataCli(args, sessionFile);
+  }
   if (args[0] === 'pool') return runCompanyOpenAICli(args.slice(1), sessionFile);
   if (args[0] === 'connectors') return runCompanyComposioCli(args.slice(1), sessionFile);
   if (args.includes('--help')) {
+    const { runAdminMetadataCli } = await import('./admin-cli.js');
+    await runAdminMetadataCli(['--help'], sessionFile);
     process.stdout.write('Usage: od admin pool openai get|set --help\n       od admin connectors composio get|set|clear --help\n       od admin studio-pilot get <account-id> --session-file <path> [--json]\n       od admin studio-pilot set <account-id> --enabled true|false --revision <integer> --session-file <path> [--json]\n');
     return;
   }

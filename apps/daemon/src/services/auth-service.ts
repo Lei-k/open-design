@@ -102,7 +102,7 @@ export type AuthErrorCode =
   | 'CONFLICT';
 
 const AUTH_ERROR_MESSAGES: Record<AuthErrorCode, string> = {
-  CONFLICT: 'pilot revision changed; read the current state and retry',
+  CONFLICT: 'revision changed; read the current state and retry',
   VALIDATION: 'invalid request',
   USERNAME_TAKEN: 'username is already taken',
   BOOTSTRAP_CLOSED: 'bootstrap has already completed',
@@ -180,6 +180,8 @@ export interface AuditListInput {
 }
 
 export interface UpdateAccountPatch {
+  /** Optional only for trusted internal callers; HTTP requires it. */
+  revision?: number;
   role?: AuthRole;
   active?: boolean;
 }
@@ -628,6 +630,7 @@ export class AuthService {
       const issuer = this.requireAdmin(actor);
       const target = this.store.getAccountById(accountId);
       if (!target) throw new AuthError('NOT_FOUND');
+      if (normalized.revision !== undefined && normalized.revision !== target.updatedAt) throw new AuthError('CONFLICT');
       const nextRole = normalized.role ?? target.role;
       const nextActive = normalized.active ?? target.active;
       const hasPassword = target.passwordState === 'set';
@@ -636,11 +639,13 @@ export class AuthService {
       if (wasUsableAdmin && !staysUsableAdmin && this.store.countUsableAdmins() <= 1) {
         throw new AuthError('LAST_ADMIN');
       }
+      if (issuer.id === target.id && (nextRole !== target.role || !nextActive)) throw new AuthError('FORBIDDEN', 'ask another administrator to change your own access');
       const roleChanged = nextRole !== target.role;
       const activeChanged = nextActive !== target.active;
       if (!roleChanged && !activeChanged) return toView(target);
       const at = this.now();
-      this.store.updateAccountFlags(target.id, { role: nextRole, active: nextActive }, at);
+      const updatedAt = Math.max(at, target.updatedAt + 1);
+      this.store.updateAccountFlags(target.id, { role: nextRole, active: nextActive }, updatedAt);
       // Any authority change invalidates existing sessions; the account must
       // sign in again to pick up its new role. A deactivated account keeps no
       // outstanding setup/reset credential.
@@ -648,7 +653,7 @@ export class AuthService {
       if (!nextActive) this.store.deleteSetupCredentialsForAccount(target.id);
       this.audit(issuer.id, target.id, 'account_update',
         { fromRole: target.role, toRole: nextRole, fromActive: target.active, toActive: nextActive }, at);
-      return toView({ ...target, role: nextRole, active: nextActive, updatedAt: at });
+      return toView({ ...target, role: nextRole, active: nextActive, updatedAt });
     });
   }
 
@@ -771,13 +776,17 @@ function normalizePatch(patch: unknown): UpdateAccountPatch {
   if (entries.length === 0) throw new AuthError('VALIDATION', 'patch must set role and/or active');
   const out: UpdateAccountPatch = {};
   for (const [key, value] of entries) {
-    if (key === 'role') out.role = requireRole(value);
+    if (key === 'revision') {
+      if (!Number.isSafeInteger(value) || Number(value) < 0) throw new AuthError('VALIDATION');
+      out.revision = Number(value);
+    } else if (key === 'role') out.role = requireRole(value);
     else if (key === 'active') {
       if (typeof value !== 'boolean') throw new AuthError('VALIDATION', 'active must be a boolean');
       out.active = value;
     } else {
-      throw new AuthError('VALIDATION', 'only role and active can be changed');
+      throw new AuthError('VALIDATION', 'only revision, role and active can be changed');
     }
   }
+  if (out.role === undefined && out.active === undefined) throw new AuthError('VALIDATION');
   return out;
 }

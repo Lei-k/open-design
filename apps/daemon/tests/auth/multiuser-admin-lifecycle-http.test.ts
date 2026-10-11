@@ -1,3 +1,4 @@
+import { currentAccountRevision } from './helpers.js';
 // Issue #10 — admin-user lifecycle through the REAL multi-user daemon.
 //
 // `startServer` with the test-only multi-user option: the gate, the auth
@@ -52,11 +53,21 @@ const running = (user: Principal, id: string) => until(() => detail(user, id), (
  * `canceled` only when the child exits, after the admin response; the event
  * stream ends exactly then (it replays and ends at once if already finished).
  */
-async function expectCanceled(user: Principal, id: string) {
+async function expectCanceled(user: Principal, id: string, started = false) {
   const stream = await daemon.request({ path: `/api/runs/${id}/events`, cookie: user.cookie });
   expect(stream.status, id).toBe(200);
   expect(stream.text, id).toMatch(/event: end\ndata: \{"status":"canceled"/);
-  expect(stream.text, id).not.toContain('event: agent');
+  // A newly authenticated owner may replay initialization statuses emitted
+  // before reset. Active mocks must never reach assistant/tool content, and
+  // queued mocks must never start at all. Old cookies are refused separately.
+  const agentFrames = stream.text.split('\n\n').filter((frame) => frame.includes('\nevent: agent\n'));
+  if (!started) expect(agentFrames, id).toEqual([]);
+  for (const frame of agentFrames) {
+    const event = JSON.parse(frame.split('\ndata: ')[1]!);
+    expect(event.type, id).toBe('status');
+    expect(['initializing', 'thinking'], id).toContain(event.label);
+    expect(Object.keys(event).every((key) => ['type', 'label', 'sessionId'].includes(key)), id).toBe(true);
+  }
   expect((await detail(user, id)).status, id).toBe('canceled');
 }
 
@@ -149,7 +160,8 @@ describe('admin lifecycle actions cancel the target owner\'s work only', () => {
     const redeemed = await daemon.request({ method: 'POST', path: '/api/auth/setup', body: { token: reset.json.setup.token, password: alice.password } });
     expect(redeemed.status, redeemed.text).toBe(200);
     alice.cookie = await login(daemon, alice.username, alice.password);
-    for (const id of [companyActive, companyQueued, personalActive, personalQueued]) await expectCanceled(alice, id);
+    for (const id of [companyActive, personalActive]) await expectCanceled(alice, id, true);
+    for (const id of [companyQueued, personalQueued]) await expectCanceled(alice, id);
   });
 
   it('a role change invalidates the session on the next request and cancels the target\'s active company and personal work', async () => {
@@ -158,15 +170,43 @@ describe('admin lifecycle actions cancel the target owner\'s work only', () => {
     const bobRun = await company(bob, 'bob-role-keeps', 600);
     await running(alice, companyActive);
     await running(alice, personalActive);
-    const promoted = await daemon.request({ method: 'PATCH', path: `/api/auth/users/${alice.id}`, cookie: admin.cookie, body: { role: 'admin' } });
+    const promoted = await daemon.request({ method: 'PATCH', path: `/api/auth/users/${alice.id}`, cookie: admin.cookie, body: { revision: await currentAccountRevision(daemon.request, alice.id, admin.cookie),  role: 'admin' } });
     expect(promoted.status, promoted.text).toBe(200);
     expect((await daemon.request({ path: '/api/auth/me', cookie: alice.cookie })).status).toBe(401);
     alice.cookie = await login(daemon, alice.username, alice.password);
-    await expectCanceled(alice, companyActive);
-    await expectCanceled(alice, personalActive);
+    await expectCanceled(alice, companyActive, true);
+    await expectCanceled(alice, personalActive, true);
     await daemon.request({ path: `/api/runs/${bobRun}/events`, cookie: bob.cookie });
     expect((await detail(bob, bobRun)).status).toBe('succeeded');
-    const demoted = await daemon.request({ method: 'PATCH', path: `/api/auth/users/${alice.id}`, cookie: admin.cookie, body: { role: 'user' } });
+    const demoted = await daemon.request({ method: 'PATCH', path: `/api/auth/users/${alice.id}`, cookie: admin.cookie, body: { revision: await currentAccountRevision(daemon.request, alice.id, admin.cookie),  role: 'user' } });
     expect(demoted.status).toBe(200);
   });
 });
+
+it('withdraws a demoted administrator\'s open SSE and refuses all cached admin operations without a private-content bypass', async () => {
+  const created = await daemon.request({ method: 'POST', path: '/api/auth/users', cookie: admin.cookie,
+    body: { username: 's68-open-admin', role: 'admin', password: 'fixture-password-open-admin' } });
+  expect(created.status).toBe(201);
+  const second: Principal = { id: created.json.account.id, username: 's68-open-admin', password: 'fixture-password-open-admin',
+    cookie: await login(daemon, 's68-open-admin', 'fixture-password-open-admin') };
+  const project = await newProject(second);
+  // Admin authority never grants access to the other administrator's private content.
+  expect((await daemon.request({ path: `/api/projects/${project.projectId}`, cookie: admin.cookie })).status).toBe(404);
+  const abort = new AbortController();
+  try {
+    const response = await fetch(`${daemon.baseUrl}/api/projects/${project.projectId}/events`, { headers: { cookie: second.cookie }, signal: abort.signal });
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    expect((await reader.read()).done).toBe(false);
+    const demoted = await daemon.request({ method: 'PATCH', path: `/api/auth/users/${second.id}`, cookie: admin.cookie,
+      body: { role: 'user', revision: created.json.account.updatedAt } });
+    expect(demoted.status).toBe(200);
+    // The real gate's idle authority witness closes the already-open owner stream.
+    while (!(await reader.read()).done) { /* drain committed frames */ }
+    for (const url of ['/api/auth/users', '/api/auth/audit', '/api/admin/pool', '/api/admin/agent-accounts']) {
+      expect((await daemon.request({ path: url, cookie: second.cookie })).status, url).toBe(401);
+      const live = await login(daemon, second.username, second.password);
+      expect((await daemon.request({ path: url, cookie: live })).status, url).toBe(403);
+    }
+  } finally { abort.abort(); }
+}, 10000);

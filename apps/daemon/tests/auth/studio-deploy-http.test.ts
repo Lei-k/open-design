@@ -1,3 +1,4 @@
+import { currentAccountRevision } from './helpers.js';
 import { spawn } from 'node:child_process';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
@@ -307,14 +308,14 @@ it.each(['clear', 'replace', 'logout', 'disable', 'revoke', 'reset'])(
     if (action === 'clear' || action === 'replace')
       await setToken(a, 'cloudflare-pages', action === 'clear' ? null : cfToken + 'new');
     else if (action === 'logout') await call(a, 'POST', '/api/auth/logout', {});
-    else if (action === 'disable') await call(admin, 'PATCH', `/api/auth/users/${a.id}`, { active: false });
+    else if (action === 'disable') await call(admin, 'PATCH', `/api/auth/users/${a.id}`, { revision: await currentAccountRevision(daemon.request, a.id, admin.cookie), active: false });
     else if (action === 'revoke') await call(admin, 'POST', `/api/auth/users/${a.id}/sessions/revoke`, {});
     else await call(admin, 'POST', `/api/auth/users/${a.id}/password`, { password: a.password });
     release();
     const res = await pending;
     expect(res.json.error.code, res.text).toBe('MULTIUSER_DEPLOY_AUTHORITY_CHANGED');
     expect(requests.length).toBe(count);
-    if (action === 'disable') await call(admin, 'PATCH', `/api/auth/users/${a.id}`, { active: true });
+    if (action === 'disable') await call(admin, 'PATCH', `/api/auth/users/${a.id}`, { revision: await currentAccountRevision(daemon.request, a.id, admin.cookie), active: true });
     a.cookie = await login(daemon, a.username, a.password);
     expect(
       (await call(a, 'GET', `/api/projects/${id}/deployments`)).json.deployments.map((row: { id: string }) => row.id),

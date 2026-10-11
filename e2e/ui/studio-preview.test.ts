@@ -553,7 +553,7 @@ test('[P1] Studio deck navigation and manual edits survive reload under owner co
 
 
 test('[P1] admin configures the company pool and Studio runs and reloads on its pinned OpenAI source', async ({ page, studio }, info) => {
-  await page.goto(`${studio.origin}/admin/users`);
+  await page.goto(`${studio.origin}/settings?section=company`);
   await page.locator('input[name="username"]').fill(studio.admin.username);
   await page.locator('input[name="password"]').fill(studio.admin.password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
@@ -594,7 +594,7 @@ test('[P1] admin configures the company pool and Studio runs and reloads on its 
   expect((await studio.request('GET', fileUrl, studio.a.cookie)).text).toContain('Company browser design');
   expect((await studio.request('GET', fileUrl, studio.b.cookie)).status).toBe(404);
   await page.reload();
-  await expect(page.locator('body')).toContainText('Write company design', { timeout: T.long });
+  await expect(page.locator('body')).toContainText('Company browser design complete.', { timeout: T.long });
   await expect(source).toContainText('OpenAI · company pool');
   await expect(page.getByTestId('assistant-role').first()).toContainText('OpenAI');
   await expect(source.locator('select')).toHaveCount(0);
@@ -783,10 +783,34 @@ test('[P1] Studio account control lives in the shared rail, workspace chrome and
   await page.locator('input[name="username"]').fill(studio.admin.username);
   await page.locator('input[name="password"]').fill(studio.admin.password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await expect(page.getByTestId('company-openai-settings')).toBeVisible({ timeout: T.long });
+  await expect(page.getByRole('button', { name: 'Create account' })).toBeVisible({ timeout: T.long });
+  await expect(page.getByTestId('company-openai-settings')).toHaveCount(0);
   await page.getByTestId('studio-account-trigger').click();
   await expect(page.getByRole('menuitem', { name: 'Audit' })).toBeVisible();
   await page.screenshot({ path: info.outputPath('studio-account-admin.png'), animations: 'disabled' });
+  await page.keyboard.press('Escape');
+  await page.setViewportSize({ width: 390, height: 844 });
+  // The shared section sidebar remains reachable by keyboard at phone width.
+  const sidebar = page.getByRole('button', { name: /settings sidebar$/ });
+  await sidebar.focus(); await page.keyboard.press('Enter');
+  if (await page.getByTestId('studio-settings-nav-company').isHidden()) await sidebar.click();
+  await page.getByTestId('studio-settings-nav-company').click();
+  await expect(page.getByTestId('company-openai-settings')).toBeVisible();
+  const navBounds = await page.getByTestId('studio-settings-nav-company').boundingBox();
+  expect(navBounds).not.toBeNull();
+  const labelBounds = await page.getByTestId('studio-settings-nav-company').locator('strong').boundingBox();
+  expect(labelBounds).not.toBeNull();
+  expect(labelBounds!.x + labelBounds!.width).toBeLessThanOrEqual(navBounds!.x + navBounds!.width);
+  expect(await page.getByTestId('studio-settings-nav-company').locator('strong').evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
+  expect(navBounds!.height).toBeGreaterThanOrEqual(44);
+  for (const control of [sidebar, page.getByTestId('studio-account-trigger')]) {
+    const bounds = await control.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(navBounds!.y);
+  }
+  await page.screenshot({ path: info.outputPath('studio-admin-company-phone.png'), animations: 'disabled' });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
 });
 
 test('[P1] Studio account automations create, run as the owner and stay private', async ({ page, studio }, info) => {

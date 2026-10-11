@@ -1,3 +1,4 @@
+import { currentAccountRevision } from './helpers.js';
 // S58 (#62): account connectors control plane. A company Composio key only
 // administrators set, rotate or clear; each account connects its own apps with
 // its own server-derived Composio entity; OAuth callbacks bind identity from a
@@ -314,7 +315,7 @@ describe('OAuth callback binding', () => {
       headers: { origin: MU_TEST_ORIGIN }, body: {} })).status).toBe(200);
     if (change === 'admin session revoke') expect((await asAdmin('POST', `/api/auth/users/${user.id}/sessions/revoke`, {})).status).toBe(200);
     if (change === 'password reset') expect((await asAdmin('POST', `/api/auth/users/${user.id}/password`, { password: `${password}-reset` })).status).toBe(204);
-    if (change === 'account disabled') expect((await asAdmin('PATCH', `/api/auth/users/${user.id}`, { active: false })).status).toBe(200);
+    if (change === 'account disabled') expect((await asAdmin('PATCH', `/api/auth/users/${user.id}`, { revision: await currentAccountRevision(daemon.request, user.id, admin.cookie), active: false })).status).toBe(200);
     if (change === 'pilot change') {
       const pilot = await asAdmin('GET', `/api/admin/users/${user.id}/studio-pilot`);
       expect((await asAdmin('PUT', `/api/admin/users/${user.id}/studio-pilot`, { studioPilot: false, revision: pilot.json.revision })).status).toBe(200);
@@ -371,11 +372,11 @@ describe('lifecycle', () => {
     expect((await callback(a)).status).toBe(200);
     const pending = await start(user, 'slack');
     authorize(pending.providerId);
-    expect((await daemon.request({ method: 'PATCH', path: `/api/auth/users/${user.id}`, cookie: admin.cookie, headers: { origin: MU_TEST_ORIGIN }, body: { active: false } })).status).toBe(200);
+    expect((await daemon.request({ method: 'PATCH', path: `/api/auth/users/${user.id}`, cookie: admin.cookie, headers: { origin: MU_TEST_ORIGIN }, body: { revision: await currentAccountRevision(daemon.request, user.id, admin.cookie),  active: false } })).status).toBe(200);
     expect((await detail(user)).status).toBe(401);
     expect((await callback(pending)).json.error.code).toBe('MULTIUSER_CONNECTOR_AUTHORIZATION_INVALID');
     expect(connections().filter((row: any) => row.owner_account_id === user.id)).toEqual([{ owner_account_id: user.id, connector_id: 'github', status: 'connected' }]);
-    expect((await daemon.request({ method: 'PATCH', path: `/api/auth/users/${user.id}`, cookie: admin.cookie, headers: { origin: MU_TEST_ORIGIN }, body: { active: true } })).status).toBe(200);
+    expect((await daemon.request({ method: 'PATCH', path: `/api/auth/users/${user.id}`, cookie: admin.cookie, headers: { origin: MU_TEST_ORIGIN }, body: { revision: await currentAccountRevision(daemon.request, user.id, admin.cookie),  active: true } })).status).toBe(200);
     user.cookie = await login(daemon, username, password);
     expect((await detail(user)).json.connector.status).toBe('connected');
     expect((await detail(user, 'slack')).json.connector.status).toBe('available');

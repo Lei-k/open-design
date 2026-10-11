@@ -532,6 +532,8 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
     // Authorization first (non-admins get 403 regardless of body), then the
     // service validates the patch shape.
     const prior = auth.listAccounts(actor).find((entry) => entry.id === String(req.params.id));
+    if (!prior) throw new AuthError('NOT_FOUND');
+    if (!Number.isSafeInteger(body?.revision) || Number(body?.revision) < 0) throw new AuthError('VALIDATION');
     const account = auth.updateAccount(actor, String(req.params.id), (body ?? []) as UpdateAccountPatch);
     if (prior && (prior.role !== account.role || (prior.active && !account.active))) {
       deps.onAccountSessionsRevoked?.(String(req.params.id));

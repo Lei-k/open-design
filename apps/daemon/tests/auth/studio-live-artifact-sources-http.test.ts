@@ -1,3 +1,4 @@
+import { currentAccountRevision } from './helpers.js';
 // S62 Part B (#63): Live Artifact refresh from the REFRESHING account's own
 // connectors and remote MCP servers — actor-only, read-only source. Fixtures are
 // programmatic loopback/fake providers only (testComposioFetch, testMcpOutbound,
@@ -181,7 +182,7 @@ it.each(['logout', 'account-disable', 'disconnect', 'project-access', 'key-rotat
   composio.holdExecute = true; const pending = refresh(who, artifact.id);
   await until(() => composio.releases.length, (n) => n > 0, 'execute held');
   if (kind === 'logout') await call(who, 'POST', '/api/auth/logout', {});
-  if (kind === 'account-disable') await call(admin, 'PATCH', `/api/auth/users/${who.id}`, { active: false });
+  if (kind === 'account-disable') await call(admin, 'PATCH', `/api/auth/users/${who.id}`, { revision: await currentAccountRevision(daemon.request, who.id, admin.cookie), active: false });
   if (kind === 'disconnect') connections.markDisconnected(who.id, 'github');
   if (kind === 'project-access') expect((await call(owner, 'DELETE', `/api/multiuser/projects/${projectId}/shares/${who.id}`)).status).toBe(200);
   if (kind === 'key-rotate') company.update(admin.id, { revision: company.read().revision, apiKey: `${KEY}-rotated` });
@@ -262,7 +263,7 @@ it.each(['logout', 'account-disable', 'server-disable', 'header-change', 'projec
   fixture.state.holdDiscovery = true; const pending = refresh(who, artifact.id);
   await until(() => fixture.requests.some((request) => request.body.includes('tools/list')), Boolean, 'discovery held');
   if (kind === 'logout') await call(who, 'POST', '/api/auth/logout', {});
-  if (kind === 'account-disable') await call(admin, 'PATCH', `/api/auth/users/${who.id}`, { active: false });
+  if (kind === 'account-disable') await call(admin, 'PATCH', `/api/auth/users/${who.id}`, { revision: await currentAccountRevision(daemon.request, who.id, admin.cookie), active: false });
   if (kind === 'server-disable' || kind === 'header-change') {
     const row = (await call(who, 'GET', '/api/multiuser/mcp/servers')).json.servers.find((item: { id: string }) => item.id === 'mine');
     await call(who, 'PATCH', '/api/multiuser/mcp/servers/mine', { revision: row.revision, ...(kind === 'server-disable' ? { enabled: false } : { headers: { 'X-Api-Key': 'changed-S62-value-0123' } }) });
@@ -372,7 +373,7 @@ it.each(['logout', 'account-disable', 'project-access', 'project-access-restored
     composio.holdExecute = true; const pending = refresh(who, artifact.id);
     await until(async () => composio.releases.length, Boolean, 'execute held');
     if (change === 'logout') expect((await call(who, 'POST', '/api/auth/logout', {})).status).toBeLessThan(300);
-    if (change === 'account-disable') expect((await call(admin, 'PATCH', `/api/auth/users/${who.id}`, { active: false })).status).toBe(200);
+    if (change === 'account-disable') expect((await call(admin, 'PATCH', `/api/auth/users/${who.id}`, { revision: await currentAccountRevision(daemon.request, who.id, admin.cookie), active: false })).status).toBe(200);
     if (change.startsWith('project-access')) expect((await call(owner, 'DELETE', `/api/multiuser/projects/${projectId}/shares/${who.id}`)).status).toBe(200);
     if (change === 'project-access-restored') {
       // Lost for a moment, then restored before the deadline: still lost for this refresh.

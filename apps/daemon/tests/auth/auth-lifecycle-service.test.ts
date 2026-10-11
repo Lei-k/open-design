@@ -374,7 +374,9 @@ describe('U05 — privilege guard and the usable-admin invariant', () => {
     expect(setup.token).not.toBe(reissued.token);
     await service.completePasswordSetup({ token: reissued.token, password: 'p-admin-password-1' });
     // Now usable: the first admin may step down.
-    expect(service.updateAccount(admin, admin.accountId, { role: 'user' }).role).toBe('user');
+    await expectAuthError(() => service.updateAccount(admin, admin.accountId, { role: 'user' }), 'FORBIDDEN');
+    const second = service.resolveSession((await service.login({ username: 'p-admin', password: 'p-admin-password-1' })).session.token)!;
+    expect(service.updateAccount(second, admin.accountId, { role: 'user' }).role).toBe('user');
   });
 
   it('a reset on an admin is refused when it would leave no usable admin', async () => {

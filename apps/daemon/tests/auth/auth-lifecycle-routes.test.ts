@@ -1,3 +1,4 @@
+import { currentAccountRevision } from './helpers.js';
 // Issue #10 — admin-user lifecycle over the auth registrar's real HTTP seam.
 //
 // Recipient onboarding (`POST /api/auth/users` without a password), the
@@ -222,10 +223,10 @@ describe('U07 — bounded admin search with strict query validation', () => {
     const { admin, alice, aliceId } = await seed();
     expect((await call({ path: '/api/auth/users?q=a' })).status).toBe(401);
     expect((await call({ path: '/api/auth/users?q=a', cookie: alice, headers: { 'x-od-role': 'admin', authorization: `Bearer ${BOOTSTRAP_SECRET}` } })).status).toBe(403);
-    await call({ method: 'PATCH', path: `/api/auth/users/${aliceId}`, cookie: admin, body: { role: 'admin' } });
+    await call({ method: 'PATCH', path: `/api/auth/users/${aliceId}`, cookie: admin, body: { revision: await currentAccountRevision(call, aliceId, admin),  role: 'admin' } });
     const aliceAdmin = await login('alice', ALICE_PW);
     expect((await call({ path: '/api/auth/users', cookie: aliceAdmin })).status).toBe(200);
-    await call({ method: 'PATCH', path: `/api/auth/users/${aliceId}`, cookie: admin, body: { role: 'user' } });
+    await call({ method: 'PATCH', path: `/api/auth/users/${aliceId}`, cookie: admin, body: { revision: await currentAccountRevision(call, aliceId, admin),  role: 'user' } });
     expect((await call({ path: '/api/auth/users', cookie: aliceAdmin })).status).toBe(401);
     expect((await call({ path: '/api/auth/audit', cookie: aliceAdmin })).status).toBe(401);
   });
