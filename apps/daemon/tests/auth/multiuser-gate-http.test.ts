@@ -9,6 +9,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { currentAccountRevision } from './helpers.js';
 import {
   MULTIUSER_ROUTE_CLASSIFICATION,
   findPrecedenceOrderViolations,
@@ -995,7 +996,7 @@ describe('session lifecycle takes effect immediately', () => {
       method: 'PATCH',
       path: `/api/auth/users/${carolId}`,
       cookie: admin.cookie,
-      body: { active: false },
+      body: { active: false, revision: await currentAccountRevision(daemon.request, carolId, admin.cookie) },
     });
     expect(disable.status).toBe(200);
     expect((await daemon.request({ path: '/api/projects', cookie: carol })).status).toBe(401);

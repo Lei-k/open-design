@@ -46,6 +46,7 @@ it.each([1024, 390])('renders the existing App at %s px without unavailable serv
     record('fetch', input, init);
     const path = new URL(String(input), location.origin).pathname;
     if (path === '/api/auth/me') return Response.json({ account: currentAccount, studio: effective, studioRevision: revision });
+    if (path === '/api/auth/users') return Response.json({ accounts: [currentAccount], page: { total: 1, limit: 20, offset: 0 } });
     if (path === '/api/projects') return Response.json({ projects: [currentProject] });
     if (path === '/api/projects/owned-project') return Response.json({ project: currentProject });
     if (path.endsWith('/conversations')) return Response.json({ conversations: [{ id: 'conv', title: 'Conversation', studioCanWrite: true, createdAt: 1, updatedAt: 1 }] });
@@ -113,6 +114,21 @@ it.each([1024, 390])('renders the existing App at %s px without unavailable serv
     // Admin entries live in the shell's account menu.
     fireEvent.click(await screen.findByTestId('studio-account-trigger'));
     await screen.findByRole('menuitem', { name: 'Users' }); capture();
+    await act(async () => { window.history.pushState({}, '', '/admin/users'); window.dispatchEvent(new PopStateEvent('popstate')); });
+    await screen.findByTestId('studio-settings-nav-users');
+    await screen.findByRole('button', { name: 'Create account' });
+    const openAdminPage = screen.getByRole('button', { name: 'Create account' });
+    currentAccount = { ...currentAccount, role: 'user' };
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    await screen.findByRole('alert');
+    expect(openAdminPage.isConnected).toBe(false);
+    expect(screen.queryByRole('button', { name: 'Create account' })).toBeNull();
+    currentAccount = { ...currentAccount, role: 'admin' };
+    await act(async () => { window.dispatchEvent(new Event('focus')); });
+    await screen.findByRole('button', { name: 'Create account' });
+    await act(async () => navigate({ kind: 'project', projectId: project.id, conversationId: 'conv', fileName: null }));
+    await screen.findByTestId('chat-composer');
+
     const adminShell = document.querySelector('[data-studio-pilot]')!;
     // Revision alone must also replace the private tree, even with unchanged capabilities.
     revision++;

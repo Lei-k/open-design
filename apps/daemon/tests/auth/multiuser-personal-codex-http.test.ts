@@ -333,6 +333,8 @@ describe('personal Codex linking', () => {
     expect((await daemon.request({ path: '/api/admin/agent-accounts', cookie: alice.cookie })).status).toBe(403);
     const view = await daemon.request({ path: '/api/admin/agent-accounts', cookie: admin.cookie });
     expect(view.status).toBe(200);
+    expect(view.json.users[alice.id].username).toBe(alice.username);
+    expect(Object.keys(view.json.users[alice.id]).sort()).toEqual(['codex', 'personalWorkerMs', 'username']);
     expect(view.json.users[alice.id].codex).toMatchObject({ linked: true, status: 'connected' });
     expect(view.json.users[carol.id].codex).toMatchObject({ linked: false, status: null });
     const text = view.text;

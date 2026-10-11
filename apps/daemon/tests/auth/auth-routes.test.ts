@@ -1,3 +1,4 @@
+import { currentAccountRevision } from './helpers.js';
 // Issue #2 — route-level negative tests for the isolated auth registrar.
 //
 // The registrar is exercised through a local Express harness only; it is
@@ -326,7 +327,7 @@ describe('auth routes — admin management', () => {
   it('role change and deactivation revoke the target sessions (stale cookie → 401)', async () => {
     await start();
     const { admin, alice, bob, aliceId, bobId } = await seed();
-    const promote = await call({ method: 'PATCH', path: `/api/auth/users/${aliceId}`, cookie: admin, body: { role: 'admin' } });
+    const promote = await call({ method: 'PATCH', path: `/api/auth/users/${aliceId}`, cookie: admin, body: { revision: await currentAccountRevision(call, aliceId, admin),  role: 'admin' } });
     expect(promote.status).toBe(200);
     expect(promote.json.account).toMatchObject({ role: 'admin' });
     const stale = await call({ path: '/api/auth/me', cookie: alice });
@@ -334,7 +335,7 @@ describe('auth routes — admin management', () => {
     expect(stale.setCookies.join(';')).toContain('Max-Age=0');
     expect((await call({ path: '/api/auth/me', cookie: bob })).status).toBe(200);
 
-    const deactivate = await call({ method: 'PATCH', path: `/api/auth/users/${bobId}`, cookie: admin, body: { active: false } });
+    const deactivate = await call({ method: 'PATCH', path: `/api/auth/users/${bobId}`, cookie: admin, body: { revision: await currentAccountRevision(call, bobId, admin),  active: false } });
     expect(deactivate.status).toBe(200);
     expect((await call({ path: '/api/auth/me', cookie: bob })).status).toBe(401);
     const relogin = await call({ method: 'POST', path: '/api/auth/login', body: { username: 'bob', password: BOB_PW } });
@@ -355,7 +356,7 @@ describe('auth routes — admin management', () => {
     await start();
     const { admin, adminId } = await seed();
     for (const body of [{ role: 'user' }, { active: false }]) {
-      const res = await call({ method: 'PATCH', path: `/api/auth/users/${adminId}`, cookie: admin, body });
+      const res = await call({ method: 'PATCH', path: `/api/auth/users/${adminId}`, cookie: admin, body: { ...body, revision: await currentAccountRevision(call, adminId, admin) } });
       expect(res.status).toBe(409);
     }
     expect((await call({ path: '/api/auth/me', cookie: admin })).json.account.role).toBe('admin');
@@ -367,7 +368,7 @@ describe('auth routes — admin management', () => {
     const unknown = await call({ method: 'PATCH', path: '/api/auth/users/nope', cookie: admin, body: { active: false } });
     expect(unknown.status).toBe(404);
     for (const body of [{}, { role: 'owner' }, { active: 'no' }, { username: 'renamed' }]) {
-      const res = await call({ method: 'PATCH', path: `/api/auth/users/${aliceId}`, cookie: admin, body });
+      const res = await call({ method: 'PATCH', path: `/api/auth/users/${aliceId}`, cookie: admin, body: { ...body, revision: await currentAccountRevision(call, aliceId, admin) } });
       expect(res.status, JSON.stringify(body)).toBe(400);
     }
   });
@@ -375,10 +376,10 @@ describe('auth routes — admin management', () => {
   it('a demoted admin loses admin access immediately', async () => {
     await start();
     const { admin, aliceId } = await seed();
-    await call({ method: 'PATCH', path: `/api/auth/users/${aliceId}`, cookie: admin, body: { role: 'admin' } });
+    await call({ method: 'PATCH', path: `/api/auth/users/${aliceId}`, cookie: admin, body: { revision: await currentAccountRevision(call, aliceId, admin),  role: 'admin' } });
     const aliceAdmin = await login('alice', ALICE_PW);
     expect((await call({ path: '/api/auth/users', cookie: aliceAdmin })).status).toBe(200);
-    await call({ method: 'PATCH', path: `/api/auth/users/${aliceId}`, cookie: admin, body: { role: 'user' } });
+    await call({ method: 'PATCH', path: `/api/auth/users/${aliceId}`, cookie: admin, body: { revision: await currentAccountRevision(call, aliceId, admin),  role: 'user' } });
     expect((await call({ path: '/api/auth/users', cookie: aliceAdmin })).status).toBe(401);
     const aliceUser = await login('alice', ALICE_PW);
     expect((await call({ path: '/api/auth/users', cookie: aliceUser })).status).toBe(403);

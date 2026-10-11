@@ -1,3 +1,4 @@
+import { currentAccountRevision } from './helpers.js';
 // S60 Part A (#62/#63/#64): promoted from the immutable S59 reviewer reproducer
 // (`s59-cancel-window.test.ts`) plus the grant-lifetime and parallel-limit
 // follow-ups. A grant revoked, or a run cancelled, while tool discovery is in
@@ -203,7 +204,7 @@ it.each([['account disabled'], ['connection replaced'], ['grant revoked']])(
     const g = toolTokenRegistry.mint({ runId: randomUUID(), projectId: 'p', studioConnectors: bound! });
     const pending = execute(g.token, { connectorId: 'hubspot', toolName: 'hubspot.hubspot_get_contact', input: { id: 'x' } });
     await until(() => releaseMetadata, (r) => !!r, 'metadata entered');
-    if (change === 'account disabled') expect((await mutate(admin, 'PATCH', `/api/auth/users/${a.id}`, { active: false })).status).toBe(200);
+    if (change === 'account disabled') expect((await mutate(admin, 'PATCH', `/api/auth/users/${a.id}`, { revision: await currentAccountRevision(daemon.request, a.id, admin.cookie), active: false })).status).toBe(200);
     if (change === 'connection replaced') store.saveConnection(a.id, 'hubspot', { providerConnectionId: `ca_other_${a.id}`, accountLabel: 'A', credentialRevision: company.read().credentialRevision });
     if (change === 'grant revoked') toolTokenRegistry.revokeToken(g.token);
     releaseMetadata!();

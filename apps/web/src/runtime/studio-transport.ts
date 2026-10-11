@@ -56,6 +56,19 @@ export function studioRequestAvailable(method: string, path: string,
   if (/^\/api\/(?:version|health)$/.test(path)) return method === 'GET';
   // Public, no-store deployment version (About → check for a newer deployment).
   if (path === '/api/version') return method === 'GET';
+  // S68: existing administrative metadata only; the cookie-backed daemon
+  // independently requires the current admin role on every action.
+  if (usable('admin')) {
+    if (path === '/api/auth/users') return method === 'GET' || method === 'POST';
+    if (path === '/api/auth/audit') return method === 'GET';
+    if (/^\/api\/auth\/users\/[^/]+$/.test(path)) return method === 'PATCH';
+    if (/^\/api\/auth\/users\/[^/]+\/(?:password|sessions\/revoke)$/.test(path)) return method === 'POST';
+    if (path === '/api/admin/pool' || path === '/api/admin/agent-accounts') return method === 'GET';
+    if (path === '/api/admin/pool/openai') return method === 'GET' || method === 'PUT';
+    if (/^\/api\/admin\/users\/[^/]+\/studio-pilot$/.test(path)) return method === 'GET' || method === 'PUT';
+    if (/^\/api\/admin\/pool\/(?:providers\/[^/]+|users\/[^/]+\/quota)$/.test(path)
+      || path === '/api/admin/agent-accounts/personal-capacity') return method === 'PUT';
+  }
   if (path === '/api/active') return method === 'GET' || method === 'POST';
   if (path === '/api/projects') return method === 'GET' || method === 'POST';
   if (/^\/api\/projects\/[^/]+$/.test(path)) return ['GET', 'PATCH', 'DELETE'].includes(method);

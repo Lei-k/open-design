@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -15,6 +15,13 @@ let root: string;
 let aFile: string;
 let bFile: string;
 beforeAll(async () => {
+  // This suite exercises the compiled entry point. Build contracts and daemon
+  // before starting the fixture so a direct Vitest run cannot reuse stale dist.
+  const compiler = path.resolve('../..', 'node_modules/typescript/bin/tsc');
+  const contractsRoot = path.resolve('../..', 'packages/contracts');
+  execFileSync(process.execPath, ['esbuild.config.mjs'], { cwd: contractsRoot, timeout: 180_000, stdio: 'pipe' });
+  execFileSync(process.execPath, [compiler, '-p', 'tsconfig.json', '--emitDeclarationOnly'], { cwd: contractsRoot, timeout: 180_000, stdio: 'pipe' });
+  execFileSync(process.execPath, [compiler, '-p', 'tsconfig.json'], { timeout: 180_000, stdio: 'pipe' });
   ({ dataRoot: root } = await loadIsolatedServerModule());
   daemon = await startMultiUserDaemon(multiUserOptions({ testMockAgentScript: path.resolve('../..', 'mocks/run-isolation-agent.ts'), testPersonalCodexAppServer: PERSONAL_CODEX_MOCK, studioRenderer: { assetHosts: [] },
     testCompanyOpenAIFetch: async () => new Response('data: ' + JSON.stringify({ type: 'response.output_text.delta', delta: 'CLI company completed.\n' })
@@ -26,7 +33,7 @@ beforeAll(async () => {
   [alice, bob] = accounts.users as [Principal, Principal];
   aFile = path.join(root, 'cli-a-session');
   bFile = path.join(root, 'cli-b-session');
-}, 120_000);
+}, 240_000);
 afterAll(async () => { await daemon?.close(); cleanupIsolatedDataRoot(); });
 
 function cli(args: string[], input = ''): Promise<{ code: number | null; stdout: string; stderr: string }> {
@@ -34,7 +41,7 @@ function cli(args: string[], input = ''): Promise<{ code: number | null; stdout:
     const env = { ...process.env };
     delete env.NODE_OPTIONS;
     delete env.OD_DAEMON_URL;
-    const child = spawn(process.execPath, [path.resolve('../..', 'node_modules/tsx/dist/cli.mjs'), path.resolve('src/cli.ts'), ...args], {
+    const child = spawn(process.execPath, [path.resolve('dist/cli.js'), ...args], {
       env, stdio: ['pipe', 'pipe', 'pipe'], timeout: 15_000,
     });
     let stdout = '';
@@ -705,3 +712,44 @@ it('creates, edits, reads and deletes private DESIGN.md through stdin on the sta
   expect(success(await cli(['design-systems', 'delete', id, '--session-file', first, '--json']))).toEqual({ ok: true });
   expect((await cli(['design-systems', 'show', id, '--session-file', first, '--json'])).code).not.toBe(0);
 }, 40_000);
+
+it('exposes the admin Settings actions through the real pinned-session CLI with A/B refusals', async () => {
+  const file = path.join(root, 's68-admin-session');
+  success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', admin.username, '--password-file', '-', '--session-file', file, '--json'], admin.password));
+  const created = success(await cli(['admin', 'users', 'create', 's68-cli-account', '--role', 'user', '--session-file', file, '--json']));
+  const id = created.account.id;
+  expect(created.setup.token).toBeTruthy();
+  const duplicate = await cli(['admin', 'users', 'create', 's68-cli-account', '--role', 'user', '--session-file', file, '--json']);
+  expect(JSON.parse(duplicate.stderr).error.code).toBe('USERNAME_TAKEN');
+  expect(duplicate.code).not.toBe(0); expect(duplicate.stderr).not.toContain('token');
+  const accounts = success(await cli(['admin', 'users', 'list', '--q', 's68-cli', '--session-file', file, '--json']));
+  expect(accounts.accounts).toHaveLength(1);
+  const revision = accounts.accounts[0].updatedAt;
+  const changed = success(await cli(['admin', 'users', 'update', id, '--role', 'admin', '--revision', String(revision), '--session-file', file, '--json']));
+  expect(changed.account.role).toBe('admin');
+  const stale = await cli(['admin', 'users', 'update', id, '--active', 'false', '--revision', String(revision), '--session-file', file, '--json']);
+  expect(stale.code).not.toBe(0); expect(JSON.parse(stale.stderr).error.code).toBe('CONFLICT');
+  const initialOwn = success(await cli(['admin', 'users', 'list', '--q', admin.username, '--session-file', file, '--json'])).accounts.find((account: { id: string }) => account.id === admin.id);
+  const lastAdmin = await cli(['admin', 'users', 'update', admin.id, '--role', 'user', '--revision', String(initialOwn.updatedAt), '--session-file', file, '--json']);
+  expect(lastAdmin.code).not.toBe(0); expect(JSON.parse(lastAdmin.stderr).error.code).toBe('LAST_ADMIN');
+  const issued = success(await cli(['admin', 'users', 'reset', id, '--revision', String(changed.account.updatedAt), '--session-file', file, '--json']));
+  expect(issued.setup.token).toBeTruthy();
+  expect((await daemon.request({ method: 'POST', path: '/api/auth/setup', body: { token: issued.setup.token, password: 's68-fixture-new-admin-password' } })).status).toBe(200);
+  const own = success(await cli(['admin', 'users', 'list', '--q', admin.username, '--session-file', file, '--json'])).accounts.find((account: { id: string }) => account.id === admin.id);
+  const refusedOwn = await cli(['admin', 'users', 'reset', admin.id, '--revision', String(own.updatedAt), '--session-file', file, '--json']);
+  expect(refusedOwn.code).not.toBe(0); expect(JSON.parse(refusedOwn.stderr).error.code).toBe('FORBIDDEN');
+  expect(refusedOwn.stderr).not.toContain('token');
+  expect(success(await cli(['admin', 'users', 'revoke', id, '--session-file', file, '--json'])).revoked).toBe(0);
+  expect(success(await cli(['admin', 'audit', '--session-file', file, '--json'])).events.length).toBeGreaterThan(0);
+  expect(success(await cli(['admin', 'pool', 'get', '--session-file', file, '--json'])).providers.openai).toBeTruthy();
+  expect(success(await cli(['admin', 'pool', 'quota', id, '--minutes', '0', '--session-file', file, '--json'])).budgetMinutes).toBe(0);
+  expect(success(await cli(['admin', 'pool', 'provider', 'test-mock', '--capacity', '0', '--session-file', file, '--json'])).capacity).toBe(0);
+  expect(success(await cli(['admin', 'personal', 'get', '--session-file', file, '--json'])).personalWorkerCapacity).toBeGreaterThanOrEqual(0);
+  expect(success(await cli(['admin', 'personal', 'set', '--capacity', '0', '--session-file', file, '--json'])).capacity).toBe(0);
+  expect(success(await cli(['admin', 'health', '--session-file', file, '--json'])).ok).toBe(true);
+  for (const user of [alice, bob]) {
+    const other = path.join(root, `s68-${user.username}`);
+    success(await cli(['session', 'login', '--daemon-url', daemon.baseUrl, '--username', user.username, '--password-file', '-', '--session-file', other, '--json'], user.password));
+    for (const action of [['users', 'list'], ['audit'], ['pool', 'get'], ['personal', 'get']]) expect((await cli(['admin', ...action, '--session-file', other, '--json'])).code).not.toBe(0);
+  }
+}, 120000);

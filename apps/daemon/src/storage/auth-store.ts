@@ -380,7 +380,7 @@ export class AuthStore {
 
   updatePassword(id: string, patch: { passwordHash: string; passwordState: AuthPasswordState }, updatedAt: number): void {
     this.db
-      .prepare('UPDATE auth_accounts SET password_hash = ?, password_state = ?, updated_at = ? WHERE id = ?')
+      .prepare('UPDATE auth_accounts SET password_hash = ?, password_state = ?, updated_at = MAX(updated_at + 1, ?) WHERE id = ?')
       .run(patch.passwordHash, patch.passwordState, updatedAt, id);
   }
 

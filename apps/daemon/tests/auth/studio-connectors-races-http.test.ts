@@ -1,3 +1,4 @@
+import { currentAccountRevision } from './helpers.js';
 // S58 repair 1 (#62): connectors authority is re-established immediately
 // before every provider-side or local binding effect, and a successful cancel
 // means the authorization can never complete. Each case holds the Composio fake
@@ -175,7 +176,7 @@ describe('disconnect re-establishes authority before the provider DELETE and bef
     const pending = mutate(user, 'DELETE', '/api/connectors/github/connection');
     await reached(held, pending);
     if (change === 'session revoke') expect((await mutate(admin, 'POST', `/api/auth/users/${user.id}/sessions/revoke`, {})).status).toBe(200);
-    if (change === 'account disable') expect((await mutate(admin, 'PATCH', `/api/auth/users/${user.id}`, { active: false })).status).toBe(200);
+    if (change === 'account disable') expect((await mutate(admin, 'PATCH', `/api/auth/users/${user.id}`, { revision: await currentAccountRevision(daemon.request, user.id, admin.cookie), active: false })).status).toBe(200);
     if (change === 'key clear') await setKey(null);
     if (change === 'key rotate') await setKey(KEY_TWO);
     const before = calls.length;

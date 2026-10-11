@@ -315,7 +315,7 @@ it('opens the account provider key only with a usable execution lane and never a
     expect(matchMultiUserRoute(method, path).every(({ entry }) => entry.routeClass === 'actor-scoped'), path).toBe(true);
   }
   for (const [method, path] of [['PUT', '/api/multiuser/settings/provider-keys/anthropic'], ['DELETE', '/api/multiuser/settings/provider-keys/openai'],
-    ['GET', '/api/multiuser/settings/provider-keys/openai'], ['GET', '/api/admin/pool/openai'], ['PUT', '/api/media/config'], ['GET', '/api/provider/models']] as const) {
+    ['GET', '/api/multiuser/settings/provider-keys/openai'], ['PUT', '/api/media/config'], ['GET', '/api/provider/models']] as const) {
     expect(studioRequestAvailable(method, path, () => true), `${method} ${path}`).toBe(false);
   }
 });
@@ -542,4 +542,23 @@ it('S63 opens account deploy settings and owner delivery only, with explicit cla
   for(const [method,path] of [['GET','/api/deploy/cloudflare-pages/zones'],['POST','/api/projects/p/finalize/openai'],['POST','/api/projects/p/handoff']] as const) {
     expect(studioRequestAvailable(method,path,()=>true)).toBe(false);expect(matchMultiUserRoute(method,path).every(m=>m.entry.routeClass==='blocked-in-multiuser')).toBe(true);
   }
+});
+
+it('allows exactly the existing administrative metadata/actions through the frontend boundary without opening private content', () => {
+  for (const [method, path] of [
+    ['GET', '/api/auth/users'], ['POST', '/api/auth/users'], ['PATCH', '/api/auth/users/a'],
+    ['POST', '/api/auth/users/a/password'], ['POST', '/api/auth/users/a/sessions/revoke'], ['GET', '/api/auth/audit'],
+    ['GET', '/api/admin/pool'], ['GET', '/api/admin/pool/openai'], ['PUT', '/api/admin/pool/openai'],
+    ['PUT', '/api/admin/pool/providers/test-mock'], ['PUT', '/api/admin/pool/users/a/quota'],
+    ['GET', '/api/admin/agent-accounts'], ['PUT', '/api/admin/agent-accounts/personal-capacity'],
+    ['GET', '/api/admin/users/a/studio-pilot'], ['PUT', '/api/admin/users/a/studio-pilot'],
+  ]) {
+    expect(studioRequestAvailable(method!, path!, (lane) => lane === 'admin'), `${method} ${path}`).toBe(true);
+    const matches = matchMultiUserRoute(method!, path!);
+    expect(matches.length).toBeGreaterThan(0);
+    expect(matches.filter(({ entry }) => entry.method !== 'USE').every(({ entry }) => entry.routeClass === (path!.startsWith('/api/auth/') ? 'auth' : 'admin-only')), path).toBe(true);
+  }
+  expect(studioRequestAvailable('GET', '/api/admin/projects/a', () => true)).toBe(false);
+  expect(studioRequestAvailable('GET', '/api/admin/agent-accounts/a/token', () => true)).toBe(false);
+  expect(studioRequestAvailable('GET', '/api/admin/pool', () => false)).toBe(false);
 });

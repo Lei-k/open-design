@@ -388,7 +388,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
 }): { cancelAccountRuns(accountId: string): void; isRunOwner(runId: string, accountId: string): boolean;
   /** `accountId: null` stops every account's runs in the project. */
   cancelProjectRuns(accountId: string | null, projectId: string, conversationId?: string): Promise<() => void>;
-  cancelPersonalRuns(accountId: string): Promise<void>; forgetNativeSessions(accountId: string): void; personalLane: PersonalRunLaneControls; listAccountIds(): string[];
+  cancelPersonalRuns(accountId: string): Promise<void>; forgetNativeSessions(accountId: string): void; personalLane: PersonalRunLaneControls; listAccounts(): Array<{ id: string; username: string }>;
   /** Admit a run for a background actor through the same policy as POST /api/runs. */
   admitInternal(actor: AuthActor, request: Record<string, unknown>, allowed: () => boolean, instruction?: string): Promise<InternalMultiUserResult>;
   runState(runId: string, accountId: string): { status: string; text: string | null; reason: string | null } | null;
@@ -1637,10 +1637,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   app.get('/api/admin/pool', (_req, res) => {
     const rows = db.prepare(`SELECT * FROM ${table} WHERE status IN ('active', 'queued') AND ${company}`).all() as RunRow[];
     const counts = (openai: boolean, status: string) => rows.filter((run) => isOpenAI(run) === openai && run.status === status).length;
-    const users: Record<string, { usedMs: number; budgetMs: number; remainingMs: number }> = {};
+    const users: import('@open-design/contracts').AdminPoolResponse['users'] = {};
     for (const account of accounts.listAccounts()) {
       const balance = ledger.balance(account.id);
-      users[account.id] = { usedMs: balance.usedMs, budgetMs: balance.budgetMs,
+      users[account.id] = { username: account.username, usedMs: balance.usedMs, budgetMs: balance.budgetMs,
         remainingMs: balance.remainingMs };
     }
     res.json({ providers: { 'test-mock': { capacity: capacity(), active: counts(false, 'active'), queued: counts(false, 'queued') },
@@ -2475,7 +2475,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       db.prepare('UPDATE multiuser_personal_sessions SET thread_id = NULL, updated_at = ? WHERE owner_account_id = ?').run(now(), accountId);
     },
     personalLane,
-    listAccountIds: () => accounts.listAccounts().map((account) => account.id),
+    listAccounts: () => accounts.listAccounts().map(({ id, username }) => ({ id, username })),
     beginShutdown,
     shutdown,
     get openaiPoolAvailable() { return companyOpenAI.enabled(); },

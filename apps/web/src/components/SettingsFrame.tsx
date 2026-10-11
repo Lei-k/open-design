@@ -11,7 +11,7 @@ import { Icon, type IconName } from './Icon';
  * scrolling content column. It owns presentation only; each host decides which
  * sections exist and what they persist.
  */
-export function SettingsFrame({ presentation, header, nav, children, onClose, statusLayer, contentRef, overlay }: {
+export function SettingsFrame({ presentation, header, nav, children, onClose, statusLayer, contentRef, overlay, accountControl }: {
   presentation: 'modal' | 'page';
   /** Content of the `.modal-head` header. */
   header: ReactNode;
@@ -24,18 +24,20 @@ export function SettingsFrame({ presentation, header, nav, children, onClose, st
   contentRef?: Ref<HTMLDivElement>;
   /** Dialogs layered above the surface. */
   overlay?: ReactNode;
+  /** Studio identity in the page chrome. */
+  accountControl?: ReactNode;
 }) {
   const studio = useStudioCapabilities();
   const t = useT();
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof window !== 'undefined' && window.matchMedia?.('(max-width: 640px)').matches === true);
   const [fullscreen, setFullscreen] = useState(true);
   const pageMode = presentation === 'page';
-  const sidebarToggleLabel = sidebarCollapsed ? 'Expand settings sidebar' : 'Collapse settings sidebar';
+  const sidebarToggleLabel = t(sidebarCollapsed ? 'studio.admin.expandSidebar' : 'studio.admin.collapseSidebar');
   const fullscreenLabel = fullscreen ? t('common.exitFullscreen') : t('common.fullscreen');
   const surface = (
     <div
       className={
-        'modal modal-settings' + (!studio.hostServices ? ` ${styles.studio}` : '') +
+        styles.surface + ' modal modal-settings' + (!studio.hostServices ? ` ${styles.studio}` : '') +
         (pageMode ? ' settings-page-surface' : '') +
         (sidebarCollapsed ? ' settings-sidebar-collapsed' : '') +
         (!pageMode && fullscreen ? ' settings-fullscreen' : '')
@@ -46,6 +48,7 @@ export function SettingsFrame({ presentation, header, nav, children, onClose, st
       onClick={pageMode ? undefined : (e) => e.stopPropagation()}
     >
       {statusLayer}
+      {accountControl && <div className={styles.accountControl}>{accountControl}</div>}
       {/* Top-right chrome strip — anchored to the modal corner so the
           close and fullscreen controls stay at a stable optical location
           regardless of the header copy. */}
@@ -88,7 +91,8 @@ export function SettingsFrame({ presentation, header, nav, children, onClose, st
         <aside
           id="settings-sidebar"
           className="settings-sidebar"
-          aria-label="Settings sections"
+          aria-label={t('studio.admin.sections')}
+          ref={(node) => { node?.toggleAttribute('inert', sidebarCollapsed); }}
           aria-hidden={sidebarCollapsed ? true : undefined}
         >
           {pageMode ? (
@@ -115,6 +119,7 @@ export function SettingsNavItem({ active, onClick, icon, title, hint, testId }: 
   return (
     <button
       type="button"
+      aria-current={active ? 'page' : undefined}
       className={`settings-nav-item${active ? ' active' : ''}`}
       onClick={onClick}
       {...(testId ? { 'data-testid': testId } : {})}

@@ -1,3 +1,4 @@
+import { currentAccountRevision } from './helpers.js';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { writeFileSync, symlinkSync, unlinkSync, promises as fs } from 'node:fs';
@@ -257,7 +258,7 @@ it.each(['logout', 'deactivate', 'delete-project'] as const)('%s stops a live Ju
   const run = await heldRun(user, projectId, project.json.conversationId);
   try {
     const result = action === 'logout' ? await daemon.request({ method: 'POST', path: '/api/auth/logout', cookie: user.cookie, body: {} })
-      : action === 'deactivate' ? await daemon.request({ method: 'PATCH', path: `/api/auth/users/${user.id}`, cookie: admin.cookie, body: { active: false } })
+      : action === 'deactivate' ? await daemon.request({ method: 'PATCH', path: `/api/auth/users/${user.id}`, cookie: admin.cookie, body: { revision: await currentAccountRevision(daemon.request, user.id, admin.cookie), active: false } })
         : await daemon.request({ method: 'DELETE', path: `/api/projects/${projectId}`, cookie: user.cookie });
     expect(result.status).toBeLessThan(300);
     let remaining = ''; for (;;) { const next = await run.reader.read(); if (next.done) break; remaining += new TextDecoder().decode(next.value); }

@@ -6117,4 +6117,20 @@ export interface Dict {
   'agentAccounts.outcomeFailed': string;
   'agentAccounts.failureWorkspace': string;
   'agentAccounts.actionFailed': string;
+  'studio.admin.personal': string;
+  'studio.admin.operationsHelp': string;
+  'studio.admin.budget': string;
+  'studio.admin.used': string;
+  'studio.admin.remaining': string;
+  'studio.admin.health': string;
+  'studio.admin.auditFilter': string;
+  'studio.admin.roleWarning': string;
+  'studio.admin.activeWarning': string;
+  'studio.admin.expandSidebar': string;
+  'studio.admin.collapseSidebar': string;
+  'studio.admin.sections': string;
+  'studio.admin.capacityWarning': string;
+  'studio.admin.accountChanged': string;
+  'studio.admin.lastAdmin': string;
+  'studio.admin.usernameTaken': string;
 }

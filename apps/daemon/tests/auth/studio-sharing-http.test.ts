@@ -1,3 +1,4 @@
+import { currentAccountRevision } from './helpers.js';
 import http from 'node:http';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -85,7 +86,7 @@ describe('project sharing between accounts', () => {
     expect((await share(t.id, owner.username, 'view')).text).toBe(unknown.text);
     const inactive = await daemon.request({ method: 'POST', path: '/api/auth/users', cookie: admin.cookie, body: { username: 'share-gone', password: 'share-gone-password-battery', role: 'user' } });
     expect(inactive.status).toBe(201);
-    const deactivated = await daemon.request({ method: 'PATCH', path: `/api/auth/users/${inactive.json.account.id}`, cookie: admin.cookie, body: { active: false } });
+    const deactivated = await daemon.request({ method: 'PATCH', path: `/api/auth/users/${inactive.json.account.id}`, cookie: admin.cookie, body: { revision: await currentAccountRevision(daemon.request, inactive.json.account.id, admin.cookie),  active: false } });
     expect(deactivated.status, deactivated.text).toBe(200);
     expect((await share(t.id, 'share-gone', 'view')).text).toBe(unknown.text);
     for (const body of [{ username: 'share-viewer', role: 'owner' }, { username: 'share-viewer', role: 'view', accountId: viewer.id }, { username: 'share-viewer' }]) {
@@ -305,7 +306,7 @@ describe('project sharing between accounts', () => {
       request.on('error', reject); request.end();
     })));
     const closed = streams.map((stream) => new Promise<void>((resolve) => stream.once('close', resolve)));
-    const patch = (active: boolean) => daemon.request({ method: 'PATCH', path: `/api/auth/users/${owner.id}`, cookie: admin.cookie, body: { active } });
+    const patch = async (active: boolean) => daemon.request({ method: 'PATCH', path: `/api/auth/users/${owner.id}`, cookie: admin.cookie, body: { revision: await currentAccountRevision(daemon.request, owner.id, admin.cookie),  active } });
     try {
       expect((await patch(false)).status).toBe(200);
       await Promise.all(closed);
