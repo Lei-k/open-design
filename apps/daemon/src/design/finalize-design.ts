@@ -42,6 +42,8 @@ import {
 } from '../projects.js';
 import { exportProjectTranscript } from '../transcript-export.js';
 import { googleGenerateContentUrl } from '../integrations/google-models.js';
+import { buildOpenAIChatTokenParam } from '../integrations/openai-chat-token-params.js';
+import { assertStudioChatCompletion } from '../services/studio-synthesis.js';
 
 // Re-export the request/response types so existing daemon-internal
 // imports (and the route handler) keep their referenced names. The
@@ -389,6 +391,7 @@ export async function finalizeDesignPackage(
         ? AbortSignal.any([options.signal, timeoutController.signal])
         : timeoutController.signal;
       if (options.fetchImpl) callParams.fetchImpl = options.fetchImpl;
+      if (options.studio && protocol === 'openai') callParams.studioOpenAI = true;
       try {
         response = await callFinalizeProviderWithRetry(callParams);
       } catch (err: unknown) {
@@ -422,6 +425,7 @@ export async function finalizeDesignPackage(
         `upstream ${providerLabel(protocol)} returned non-JSON body: ${message}`,
       );
     }
+    if (options.studio && protocol === 'openai') assertStudioChatCompletion(payload);
     const designMd = extractDesignMd(payload, protocol);
     const { inputTokens, outputTokens } = extractTokenUsage(payload, protocol);
 
@@ -510,6 +514,8 @@ export interface FinalizeProviderCallParams {
   apiVersion?: string;
   signal?: AbortSignal;
   fetchImpl?: typeof globalThis.fetch;
+  /** Studio OpenAI uses model-compatible caps and exactly one paid request. */
+  studioOpenAI?: true;
   /** Test-only: skip the inter-attempt sleep so retries are instant. */
   _sleepMs?: (ms: number) => Promise<void>;
 }
@@ -583,7 +589,7 @@ function buildFinalizeProviderRequest(params: FinalizeProviderCallParams): Final
       body: {
         model: params.model,
         messages: payloadMessages,
-        max_tokens: params.maxTokens,
+        ...(params.studioOpenAI ? buildOpenAIChatTokenParam(params.model, params.maxTokens) : { max_tokens: params.maxTokens }),
         stream: false,
       },
     };
@@ -671,6 +677,7 @@ function providerLabel(protocol: FinalizeProviderProtocol): string {
  * "standard exponential backoff" answer was directional and a single
  * retry matches the existing daemon's posture (transcript export and
  * connectionTest do zero retries).
+ * Studio's admitted OpenAI jobs make one request, with no retry or fallback.
  */
 export async function callFinalizeProviderWithRetry(
   params: FinalizeProviderCallParams,
@@ -680,7 +687,8 @@ export async function callFinalizeProviderWithRetry(
   const request = buildFinalizeProviderRequest(params);
   const body = JSON.stringify(request.body);
 
-  for (let attempt = 0; attempt <= 1; attempt += 1) {
+  const retries = params.studioOpenAI ? 0 : 1;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
     const init: RequestInit = {
       method: 'POST',
       headers: request.headers,
@@ -692,7 +700,7 @@ export async function callFinalizeProviderWithRetry(
     if (response.ok) return response;
 
     const transient = response.status === 429 || response.status >= 500;
-    if (!transient || attempt === 1) {
+    if (!transient || attempt === retries) {
       const text = await response.text().catch(() => '');
       throw new FinalizeUpstreamError(
         response.status,

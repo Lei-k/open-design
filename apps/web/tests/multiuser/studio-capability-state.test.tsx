@@ -35,6 +35,7 @@ beforeEach(() => {
     if (url === '/api/codex-pets') return Response.json({ pets: [] });
     if (url.startsWith('/api/deploy/config')) return Response.json({ providerId: url.includes('cloudflare') ? 'cloudflare-pages' : 'vercel', configured: false, revision: 0 });
     if (url.endsWith('/deployments')) return Response.json({ deployments: [] });
+    if (url.endsWith('/synthesis')) return Response.json({ digest: 'a'.repeat(64), defaultSource: null, sources: [], results: {} });
     if (url === '/api/version') return Response.json({ version: { version: 'test', channel: 'test' } });
     return Response.json({});
   }));

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { STUDIO_PARITY_LANES, type Brand, type AuthAccount, type StudioRuntimeCapabilities } from '@open-design/contracts';
 import { CookieSession } from '../../src/multiuser/session';
 import { StudioCapabilitiesProvider } from '../../src/runtime/studio-capabilities';
@@ -238,12 +238,13 @@ vi.mock('../../src/components/FileWorkspace', () => ({
     filesRefreshKey?: number;
     filesGeneration?: number;
     files?: ProjectFile[];
+    headerActions?: ReactNode;
     onRefreshFiles?: (options?: { fresh?: boolean }) => Promise<{
       acceptedGeneration: number | null;
     }>;
   }) => {
     fileWorkspaceSpy(props);
-    return <div data-testid="file-workspace" />;
+    return <div data-testid="file-workspace"><div data-testid="workspace-header-actions">{props.headerActions}</div></div>;
   },
 }));
 
@@ -1780,7 +1781,7 @@ describe('ProjectView pending prompt seeding', () => {
       if (url === '/api/auth/me') return Response.json({account,studio:capabilities,studioRevision:1,studioMessageIdPrefix:'mua_0123456789abcdef01234567_'});
       if (url.endsWith('/synthesis')) return Response.json({digest:'a'.repeat(64),defaultSource:'personal_api_key',sources:[{executionSource:'personal_api_key',available:true,reason:null}],results:{}});
       if (url.endsWith('/access')) { const member={accountId:'A',username:'A',role:'owner'}; return Response.json({projectId:'s71-project',role:'owner',shared:false,self:member,owner:member,members:[member]}); }
-      return Response.json({runs:[],questions:[],files:[],presence:[],comments:[]});
+      return Response.json({runs:[],questions:[],files:[],present:[],comments:[]});
     }));
     const session = new CookieSession(); await session.verify(); const snapshot = session.snapshot();
     render(<StudioCapabilitiesProvider session={session} generation={snapshot.generation} actor={account} capabilities={snapshot.studio!}>
@@ -1788,6 +1789,35 @@ describe('ProjectView pending prompt seeding', () => {
     </StudioCapabilitiesProvider>);
     await waitFor(() => expect((screen.getByRole('button',{name:'studio.synthesis.finalize'}) as HTMLButtonElement).disabled).toBe(false));
     expect(await screen.findByRole('button',{name:'studio.synthesis.handoff'})).toBeTruthy();
+  });
+
+  it.each(['openai-byok','openai','codex'])('C: shared editor viewing owner %s pin must explicitly select a synthesis source', async (agentId) => {
+    const account: AuthAccount = {id:'editor',username:'editor',role:'user',active:true,passwordState:'set',createdAt:1,updatedAt:1};
+    const capabilities = {schemaVersion:1,shell:'studio',executionSources:[{agentId:'openai-byok',source:'personal_api_key'},{agentId:'openai',source:'company_pool'}],
+      features:Object.fromEntries(STUDIO_PARITY_LANES.map(({id}) => [id,{status:'pilot',reason:'Pilot'}]))} as StudioRuntimeCapabilities;
+    const ownerMessage: ChatMessage = {id:'owner-message',role:'assistant',content:'Owner pinned conversation',createdAt:1,agentId,runId:'owner-run'};
+    mockedListMessages.mockResolvedValue([ownerMessage]);
+    const posts: Array<Record<string,unknown>> = [];
+    vi.stubGlobal('fetch',vi.fn(async (input,init) => {
+      const url=String(input);
+      if(url==='/api/auth/me') return Response.json({account,studio:capabilities,studioRevision:1,studioMessageIdPrefix:'mua_0123456789abcdef01234567_'});
+      if(url.endsWith('/synthesis')) return Response.json({digest:'a'.repeat(64),defaultSource:null,sources:[{executionSource:'personal_api_key',available:true,reason:null},{executionSource:'company_pool',available:true,reason:null},{executionSource:'personal_subscription',available:false,reason:'personal-codex'}],results:{}});
+      if(url.endsWith('/access')) {const self={accountId:'editor',username:'editor',role:'edit'},owner={accountId:'owner',username:'owner',role:'owner'};return Response.json({projectId:'s71-editor',role:'edit',shared:true,self,owner,members:[self,owner]});}
+      if(url.endsWith('/finalize/openai')&&init?.method==='POST') {posts.push(JSON.parse(String(init.body)));return Response.json({error:{code:'MULTIUSER_SYNTHESIS_STALE'}},{status:409});}
+      return Response.json({runs:[],questions:[],files:[],present:[],comments:[]});
+    }));
+    const session=new CookieSession();await session.verify();const snapshot=session.snapshot();
+    render(<StudioCapabilitiesProvider session={session} generation={snapshot.generation} actor={account} capabilities={snapshot.studio!}>
+      {projectViewElement(project('s71-editor'))}
+    </StudioCapabilitiesProvider>);
+    await waitFor(() => expect(latestChatPaneProps().messages).toContainEqual(expect.objectContaining({id:'owner-message'})));
+    const actions=within(screen.getByTestId('workspace-header-actions')).getByTestId('studio-synthesis-actions');
+    const finalize=within(actions).getByRole('button',{name:'studio.synthesis.finalize'}) as HTMLButtonElement;
+    await waitFor(() => expect(actions.querySelector('[data-refusal]')?.getAttribute('data-refusal')).toBe('source-required'));
+    expect(finalize.disabled).toBe(true);fireEvent.click(finalize);expect(posts).toEqual([]);
+    fireEvent.change(within(actions).getByRole('combobox'),{target:{value:'company_pool'}});
+    await waitFor(() => expect(finalize.disabled).toBe(false));fireEvent.click(finalize);
+    await waitFor(() => expect(posts).toEqual([{executionSource:'company_pool',digest:'a'.repeat(64)}]));
   });
 
 

@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { StudioSynthesisState } from '@open-design/contracts';
 import { StudioSynthesisActions } from '../../src/components/StudioSynthesisActions';
-const mock = vi.hoisted(() => ({ fetch: vi.fn(), generation: 1, host: false, available: true, tick: () => {} }));
+const mock = vi.hoisted(() => ({ fetch: vi.fn(), actor: 'A', generation: 1, host: false, available: true, tick: () => {} }));
 vi.mock('../../src/runtime/studio-capabilities', () => ({ useStudioCapabilities: () => ({ hostServices: mock.host,
-  actor: { id: 'A' }, generation: mock.generation, available: () => mock.available, reason: () => 'Delivery disabled' }) }));
+  actor: { id: mock.actor }, generation: mock.generation, available: () => mock.available, reason: () => 'Delivery disabled' }) }));
 vi.mock('../../src/runtime/studio-transport', () => ({ studioFetch: mock.fetch,
   studioSetInterval: (callback: () => void) => { mock.tick = callback; return 0; } }));
 const digest = 'a'.repeat(64);
@@ -16,7 +16,7 @@ const state = (): StudioSynthesisState => ({ digest, defaultSource: 'personal_ap
 ], results: {} });
 let snapshot: StudioSynthesisState;
 beforeEach(() => {
-  snapshot = state(); mock.host = false; mock.generation = 1; mock.available = true; mock.fetch.mockReset();
+  snapshot = state(); mock.actor = 'A'; mock.host = false; mock.generation = 1; mock.available = true; mock.fetch.mockReset();
   mock.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
     if (init?.method === 'POST') {
       const action = url.endsWith('/handoff') ? 'handoff' : 'finalize';
@@ -30,7 +30,8 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 it.each(['company_pool', 'personal_api_key'] as const)('sends credential-free finalize and handoff requests on %s', async (source) => {
-  render(<StudioSynthesisActions projectId="p" conversationId="c" executionSource={source} />);
+  snapshot.defaultSource = source;
+  render(<StudioSynthesisActions projectId="p" conversationId="c" />);
   await waitFor(() => expect((screen.getByRole('button', { name: 'Finalize with AI' }) as HTMLButtonElement).disabled).toBe(false));
   for (const name of ['Finalize with AI', 'Create handoff prompt']) {
     fireEvent.click(screen.getByRole('button', { name }));
@@ -41,7 +42,8 @@ it.each(['company_pool', 'personal_api_key'] as const)('sends credential-free fi
   expect(bodies).toEqual([{ executionSource: source, digest }, { executionSource: source, digest, conversationId: 'c' }]);
 });
 it('shows the typed Codex refusal and lets the actor choose an OpenAI source', async () => {
-  render(<StudioSynthesisActions projectId="p" executionSource="personal_subscription" />);
+  snapshot.defaultSource = 'personal_subscription';
+  render(<StudioSynthesisActions projectId="p" />);
   await waitFor(() => expect(screen.getByRole('status').getAttribute('data-refusal')).toBe('personal-codex'));
   expect((screen.getByRole('button') as HTMLButtonElement).disabled).toBe(true);
   fireEvent.change(screen.getByRole('combobox'), { target: { value: 'company_pool' } });
@@ -49,7 +51,8 @@ it('shows the typed Codex refusal and lets the actor choose an OpenAI source', a
 });
 it('fails closed with a typed source reason when the selected source is absent', async () => {
   snapshot.sources = [];
-  render(<StudioSynthesisActions projectId="p" executionSource="company_pool" />);
+  snapshot.defaultSource = 'company_pool';
+  render(<StudioSynthesisActions projectId="p" />);
   await waitFor(() => expect(screen.getByRole('status').getAttribute('data-refusal')).toBe('provider-disabled'));
   expect((screen.getByRole('button') as HTMLButtonElement).disabled).toBe(true);
 });
@@ -97,4 +100,54 @@ it('shows a stale saved document after reload without presenting it as current',
   render(<StudioSynthesisActions projectId="p" />);
   await waitFor(() => expect(screen.getByText(/DESIGN.md:/).textContent).toContain('The project changed. Run synthesis again.'));
   expect(screen.queryByText('Saved for the current project version.')).toBeNull();
+});
+it('C: never borrows a caller conversation pin when the actor server default is null', async () => {
+  snapshot.defaultSource = null;
+  // An obsolete caller prop must not become a source of spend authority.
+  const foreignPin = { executionSource: 'personal_api_key' as const };
+  render(<StudioSynthesisActions {...foreignPin} projectId="p" conversationId="owner-conversation" />);
+  await waitFor(() => expect(screen.getByRole('status').getAttribute('data-refusal')).toBe('source-required'));
+  for (const button of screen.getAllByRole('button')) { expect((button as HTMLButtonElement).disabled).toBe(true); fireEvent.click(button); }
+  expect(mock.fetch.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(0);
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'company_pool' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Create handoff prompt' }));
+  await waitFor(() => expect(mock.fetch.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(1));
+  expect(JSON.parse(mock.fetch.mock.calls.find((call) => call[1]?.method === 'POST')![1].body)).toEqual({ executionSource:'company_pool',digest,conversationId:'owner-conversation' });
+});
+it('C: a pre-action poll cannot overwrite the newer receipt or hide its prompt', async () => {
+  let release!: (value: Response) => void;
+  render(<StudioSynthesisActions projectId="p" conversationId="c" />);
+  await waitFor(() => expect((screen.getByRole('button',{name:'Create handoff prompt'}) as HTMLButtonElement).disabled).toBe(false));
+  const old = structuredClone(snapshot);
+  mock.fetch.mockImplementationOnce(() => new Promise<Response>((resolve) => { release = resolve; }));
+  act(() => mock.tick());
+  const result = {id:'new-job',projectId:'p',action:'handoff' as const,conversationId:'c',executionSource:'personal_api_key' as const,
+    fileName:'HANDOFF.md' as const,digest,current:true,createdAt:1,model:'fixture',inputTokens:1,outputTokens:2,transcriptMessageCount:1};
+  mock.fetch.mockImplementation(async (_url: string, init?: RequestInit) => {
+    if (init?.method === 'POST') { snapshot.results.handoff = result; return Response.json({...result,prompt:'New private prompt'}); }
+    return Response.json(snapshot);
+  });
+  fireEvent.click(screen.getByRole('button',{name:'Create handoff prompt'}));
+  expect(await screen.findByDisplayValue('New private prompt')).toBeTruthy();
+  await act(async () => release(Response.json(old)));
+  expect(screen.getByDisplayValue('New private prompt')).toBeTruthy();
+  expect(screen.getByText(/HANDOFF.md:/).getAttribute('data-current')).toBe('true');
+});
+it.each(['actor','source','project'])('C: %s transition discards a private handoff prompt', async (change) => {
+  const result={id:'private-job',projectId:'p',action:'handoff' as const,conversationId:'c',executionSource:'personal_api_key' as const,
+    fileName:'HANDOFF.md' as const,digest,current:true,createdAt:1,model:'fixture',inputTokens:1,outputTokens:2,transcriptMessageCount:1};
+  mock.fetch.mockImplementation(async (_url: string,init?: RequestInit)=>{
+    if(init?.method==='POST'){snapshot.results.handoff=result;return Response.json({...result,prompt:'Private actor prompt'});}
+    return Response.json(snapshot);
+  });
+  const view=render(<StudioSynthesisActions projectId="p" conversationId="c" />);
+  await waitFor(()=>expect((screen.getByRole('button',{name:'Create handoff prompt'}) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByRole('button',{name:'Create handoff prompt'}));
+  expect(await screen.findByDisplayValue('Private actor prompt')).toBeTruthy();
+  if(change==='source'){snapshot.defaultSource='company_pool';act(()=>mock.tick());}
+  else {
+    if(change==='actor')mock.actor='B';
+    view.rerender(<StudioSynthesisActions projectId={change==='project'?'other':'p'} conversationId="c" />);
+  }
+  await waitFor(()=>expect(screen.queryByDisplayValue('Private actor prompt')).toBeNull());
 });

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
@@ -15,6 +16,8 @@ import { registerMultiUserRunRoutes } from '../../src/routes/multiuser-runs.js';
 import { registerStudioSynthesisRoutes } from '../../src/routes/studio-synthesis.js';
 import { StudioDesignSystems } from '../../src/storage/studio-design-systems.js';
 import { StudioCatalogGrants } from '../../src/storage/studio-catalog-grants.js';
+import { StudioSynthesisStore } from '../../src/storage/studio-synthesis.js';
+import { callFinalizeProviderWithRetry } from '../../src/design/finalize-design.js';
 
 let root: string; let db: Database.Database; let accounts: AuthStore;
 let pool: ReturnType<typeof registerMultiUserRunRoutes>;
@@ -48,7 +51,7 @@ beforeEach(() => {
   keys.update('A', 'openai', { revision: 0, apiKey: key, model: 'gpt-own-s71' });
   keys.update('B', 'openai', { revision: 0, apiKey: keyB, model: 'gpt-editor-s71' });
   new CompanyOpenAIStore(db, root).update('admin', { revision: 0, enabled: true, apiKey: companyKey, model: 'gpt-company-s71', capacity: 2 });
-  fetcher = vi.fn(async () => Response.json({ choices: [{ message: { content: '# Design\nContinue here.' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } }));
+  fetcher = vi.fn(async () => Response.json({ choices: [{ finish_reason: 'stop', message: { content: '# Design\nContinue here.' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } }));
   registerStudioSynthesisRoutes(app, { db, projectsRoot, designSystemsRoot: root, pool, sessionCurrent: () => live,
     accountActive: (id) => accounts.getAccountById(id)?.active === true, fetch: fetcher as typeof fetch,
     designCatalog: { readSystem: async (_actor, id) => new StudioDesignSystems(db).readLive(id)?.document ?? null,
@@ -114,7 +117,7 @@ it.each(['finalize','handoff'])('%s refuses deactivated actors and changed sessi
   fetcher.mockImplementationOnce(async () => { live = false; return Response.json({}); });
   expect(await invoke(action,request())).toMatchObject({ status: 409, body: { error: { code: 'MULTIUSER_SYNTHESIS_AUTHORITY_CHANGED' } } });
   live = true;
-  fetcher.mockImplementationOnce(async () => { fs.writeFileSync(path.join(root,'projects/p/index.html'),'changed'); return Response.json({ choices:[{ message:{ content:'stale' } }] }); });
+  fetcher.mockImplementationOnce(async () => { fs.writeFileSync(path.join(root,'projects/p/index.html'),'changed'); return Response.json({ choices:[{ finish_reason:'stop', message:{ content:'stale' } }] }); });
   expect(await invoke(action,request())).toMatchObject({ status: 409, body: { error: { code: 'MULTIUSER_SYNTHESIS_STALE' } } });
   expect(fs.existsSync(path.join(root,'projects/p',action === 'finalize' ? 'DESIGN.md' : 'HANDOFF.md'))).toBe(false);
 });
@@ -123,7 +126,7 @@ it.each(['finalize','handoff'])('%s redacts errors and successful credential ech
   fetcher.mockImplementationOnce(async () => { throw new Error(`${key} ${Buffer.from(key).toString('base64')}`); });
   const response = await invoke(action,request());
   expect(response.status).toBe(502); expect(JSON.stringify(response)).not.toContain(key); expect(errorLog).not.toHaveBeenCalled();
-  fetcher.mockImplementationOnce(async () => Response.json({ choices:[{ message:{ content:`Context ${key} ${Buffer.from(key).toString('base64')}` } }] }));
+  fetcher.mockImplementationOnce(async () => Response.json({ choices:[{ finish_reason:'stop', message:{ content:`Context ${key} ${Buffer.from(key).toString('base64')}` } }] }));
   const success = await invoke(action,request()); expect(success.status).toBe(200);
   const written = fs.readFileSync(path.join(root,'projects/p',success.body.fileName),'utf8');
   expect(written).not.toContain(key); expect(written).not.toContain(Buffer.from(key).toString('base64'));
@@ -138,7 +141,7 @@ it.each(['revision', 'grant', 'owner'])('refuses changed design-system %s after 
     if (change === 'revision') designs.update('B', design.id, { body: 'New spacing' });
     if (change === 'grant') grants.remove('design-system', design.id, 'A');
     if (change === 'owner') accounts.updateAccountFlags('B', { role: 'user', active: false }, 2);
-    return Response.json({ choices: [{ message: { content: '# Stale design' } }] });
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content: '# Stale design' } }] });
   });
   expect((await invoke('finalize', request())).status).toBe(409);
   expect(fs.existsSync(path.join(root, 'projects/p/DESIGN.md'))).toBe(false);
@@ -185,4 +188,152 @@ it('finalizes the captured active artifact rather than the first HTML file', asy
   expect((await invoke('finalize', request())).status).toBe(200);
   const outbound = fetcher.mock.calls[0] as unknown as [string, RequestInit];
   expect(String(outbound[1].body)).toContain('ACTIVE_ARTIFACT_WITNESS');
+});
+
+const actions = ['finalize', 'handoff'] as const;
+const openaiSources = ['personal_api_key', 'company_pool'] as const;
+const modelFamilies = [
+  ['gpt-5.1', 'max_completion_tokens'], ['o1', 'max_completion_tokens'],
+  ['o3-mini', 'max_completion_tokens'], ['o4-mini', 'max_completion_tokens'], ['gpt-4o', 'max_tokens'],
+] as const;
+it('A: legacy desktop OpenAI requests and transient retry remain unchanged', async () => {
+  const legacy = { choices: [{ message: { content: 'Legacy response without finish metadata' } }] };
+  const http = vi.fn().mockResolvedValueOnce(new Response('transient', {status:500})).mockResolvedValueOnce(Response.json(legacy));
+  const response = await callFinalizeProviderWithRetry({protocol:'openai',apiKey:key,baseUrl:'https://api.openai.com',model:'gpt-5.1',
+    maxTokens:37,systemPrompt:'System',userPrompt:'User',fetchImpl:http,_sleepMs:async()=>{}});
+  expect(http).toHaveBeenCalledTimes(2);
+  expect(JSON.parse(String(http.mock.calls[0]![1].body))).toEqual({model:'gpt-5.1',max_tokens:37,stream:false,messages:[{role:'system',content:'System'},{role:'user',content:'User'}]});
+  expect(await response.json()).toEqual(legacy);
+});
+it.each(actions.flatMap((action) => openaiSources.flatMap((source) => modelFamilies.map(([model, field]) =>
+  ({ action, source, model, field })))))('A: $action on $source/$model uses the compatible exact token cap', async ({ action, source, model, field }) => {
+  new PersonalProviderKeyStore(db, root).update('A', 'openai', { revision: 1, model });
+  new CompanyOpenAIStore(db, root).update('admin', { revision: 1, enabled: true, capacity: 2, model });
+  fetcher.mockImplementation(async (_url: unknown, init: RequestInit) => {
+    const body = JSON.parse(String(init.body));
+    if (field === 'max_completion_tokens' && 'max_tokens' in body) return Response.json({ error: {
+      message: "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.",
+      type: 'invalid_request_error', param: 'max_tokens', code: 'unsupported_parameter',
+    } }, { status: 400 });
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content: `# ${action} ${model}` } }],
+      usage: { prompt_tokens: 11, completion_tokens: 7 } });
+  });
+  const response = await invoke(action, { ...request(source), maxTokens: 37 });
+  expect(response).toMatchObject({ status: 200, body: { model, inputTokens: 11, outputTokens: 7, current: true } });
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit];
+  expect(url).toBe('https://api.openai.com/v1/chat/completions');
+  expect(init.redirect).toBe('error'); expect(init.signal).toBeInstanceOf(AbortSignal);
+  const body = JSON.parse(String(init.body));
+  expect(body).toEqual({ model, stream: false, messages: [{ role: 'system', content: expect.any(String) },
+    { role: 'user', content: expect.any(String) }], [field]: 37 });
+  expect(new Headers(init.headers).get('authorization')).toBe(`Bearer ${source === 'company_pool' ? companyKey : key}`);
+  expect(fs.readFileSync(path.join(root, 'projects/p', action === 'finalize' ? 'DESIGN.md' : 'HANDOFF.md'), 'utf8')).toBe(`# ${action} ${model}`);
+});
+it.each(actions.flatMap((action) => openaiSources.map((source) => ({ action, source }))))('A: $action/$source retains its default GPT-5 budget', async ({ action, source }) => {
+  new PersonalProviderKeyStore(db, root).update('A', 'openai', { revision: 1, model: 'gpt-5.1' });
+  new CompanyOpenAIStore(db, root).update('admin', { revision: 1, enabled: true, capacity: 2, model: 'gpt-5.1' });
+  expect((await invoke(action, request(source))).status).toBe(200);
+  expect(JSON.parse(String(fetcher.mock.calls[0]![1].body))).toMatchObject({ model: 'gpt-5.1', max_completion_tokens: action === 'finalize' ? 16000 : 4096 });
+});
+it.each(actions.flatMap((action) => ['blank', 'reasoning-only', 'length', 'content_filter', 'missing-finish', 'refusal', 'error'].map((kind) => ({ action, kind }))))('A: $action refuses $kind provider results without a successful document', async ({ action, kind }) => {
+  fetcher.mockResolvedValueOnce(Response.json(kind === 'error' ? { error: { message: key } } : { choices: [{
+    ...(kind === 'missing-finish' ? {} : { finish_reason: ['length', 'content_filter'].includes(kind) ? kind : 'stop' }),
+    message: { content: kind === 'reasoning-only' ? null : kind === 'blank' ? '  \n' : 'Incomplete output', ...(kind === 'refusal' ? { refusal: 'Refused' } : {}) },
+  }], usage: { prompt_tokens: 11, completion_tokens: 7 } }));
+  expect(await invoke(action, request())).toMatchObject({ status: 502, body: { error: { code: 'MULTIUSER_SYNTHESIS_PROVIDER_FAILED' } } });
+  expect(fs.existsSync(path.join(root, 'projects/p', action === 'finalize' ? 'DESIGN.md' : 'HANDOFF.md'))).toBe(false);
+  expect(db.prepare("SELECT 1 FROM studio_synthesis_jobs WHERE status = 'succeeded'").get()).toBeUndefined();
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});
+it.each(actions)('A: %s makes no automatic retry on an upstream transient failure', async (action) => {
+  fetcher.mockResolvedValue(Response.json({ error: { message: key } }, { status: 500 }));
+  expect((await invoke(action, request())).status).toBe(502);
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});
+it('A: editor handoff does not read an unshared owner design system; finalize still denies it', async () => {
+  const design = new StudioDesignSystems(db).create('A', { title: 'Private design', body: 'PRIVATE_DESIGN_BODY' });
+  db.prepare('UPDATE projects SET design_system_id = ? WHERE id = ?').run(design.id, 'p');
+  access.setGrant('p', 'B', 'edit', 1);
+  const read = vi.spyOn(StudioDesignSystems.prototype, 'readLive');
+  expect((await invoke('handoff', request(), 'B')).status).toBe(200);
+  expect(String(fetcher.mock.calls[0]![1].body)).not.toContain('PRIVATE_DESIGN_BODY');
+  expect(read).not.toHaveBeenCalled();
+  fetcher.mockClear();
+  expect((await invoke('finalize', request(), 'B')).status).toBe(409);
+  expect(fetcher).not.toHaveBeenCalled();
+});
+it.each([['finalize','handoff'], ['handoff','finalize']] as const)('B: %s then %s keeps distinct outputs current through reload and regeneration', async (first, second) => {
+  let serial = 0;
+  fetcher.mockImplementation(async () => Response.json({ choices: [{ finish_reason: 'stop', message: { content: `# Distinct output ${++serial}` } }], usage: { prompt_tokens: 11, completion_tokens: 7 } }));
+  const initial = (await invoke('synthesis')).body.digest;
+  for (const action of [first, second, first, second]) {
+    const response = await invoke(action, { ...request(), digest: initial });
+    expect(response.status).toBe(200); expect(response.body.digest).toBe(initial);
+    const state = (await invoke('synthesis')).body;
+    expect(state.digest).toBe(initial);
+    for (const result of Object.values(state.results) as Array<{ current: boolean }>) expect(result.current).toBe(true);
+  }
+  // Reopen the receipt owner against the existing DB (startup/migration path).
+  const reloaded = new StudioSynthesisStore(db).results('p', initial, {
+    'DESIGN.md': createHash('sha256').update(fs.readFileSync(path.join(root,'projects/p/DESIGN.md'))).digest('hex'),
+    'HANDOFF.md': createHash('sha256').update(fs.readFileSync(path.join(root,'projects/p/HANDOFF.md'))).digest('hex'),
+  });
+  expect(reloaded.finalize?.current).toBe(true); expect(reloaded.handoff?.current).toBe(true);
+  expect(fs.readFileSync(path.join(root,'projects/p/DESIGN.md'),'utf8')).not.toBe(fs.readFileSync(path.join(root,'projects/p/HANDOFF.md'),'utf8'));
+  expect(fetcher).toHaveBeenCalledTimes(4);
+});
+it.each(actions.flatMap((action) => ['edit','delete'].map((change) => ({ action, change }))))('B: $change of $action output stales only that receipt without changing inputs or spending', async ({ action, change }) => {
+  for (const item of actions) expect((await invoke(item, request())).status).toBe(200);
+  const before = (await invoke('synthesis')).body;
+  const file = path.join(root,'projects/p',action === 'finalize' ? 'DESIGN.md' : 'HANDOFF.md');
+  if (change === 'edit') fs.writeFileSync(file, 'Corrupted manually'); else fs.unlinkSync(file);
+  const after = (await invoke('synthesis')).body;
+  expect(after.digest).toBe(before.digest);
+  expect(after.results[action].current).toBe(false);
+  expect(after.results[action === 'finalize' ? 'handoff' : 'finalize'].current).toBe(true);
+  expect(fetcher).toHaveBeenCalledTimes(2);
+});
+it('B: legacy receipts without output integrity fail closed on reload', async () => {
+  expect((await invoke('finalize', request())).status).toBe(200);
+  const columns = db.prepare('PRAGMA table_info(studio_synthesis_jobs)').all() as Array<{name:string}>;
+  if (columns.some((column) => column.name === 'output_sha256')) db.exec('ALTER TABLE studio_synthesis_jobs DROP COLUMN output_sha256');
+  new StudioSynthesisStore(db);
+  expect(db.prepare('SELECT status,output_sha256 FROM studio_synthesis_jobs').get()).toEqual({status:'succeeded',output_sha256:null});
+  expect((await invoke('synthesis')).body.results.finalize.current).toBe(false);
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});
+it.each(['index.html','conversation','defaults','design','artifact'])('B: genuine %s input edits stale both receipts without spending', async (change) => {
+  for (const action of actions) expect((await invoke(action, request())).status).toBe(200);
+  if (change === 'index.html') fs.writeFileSync(path.join(root,'projects/p/index.html'),'changed');
+  if (change === 'conversation') db.prepare("UPDATE messages SET content = 'changed' WHERE id = 'm'").run();
+  if (change === 'defaults') db.prepare("UPDATE projects SET metadata_json = '{\"kind\":\"slides\"}' WHERE id = 'p'").run();
+  if (change === 'design') {
+    const design = new StudioDesignSystems(db).create('A', { title: 'Changed design', body: 'Changed' });
+    db.prepare('UPDATE projects SET design_system_id = ? WHERE id = ?').run(design.id,'p');
+  }
+  if (change === 'artifact') db.prepare('INSERT INTO tabs (project_id,name,position,is_active) VALUES (?,?,?,?)').run('p','index.html',0,1);
+  const state = (await invoke('synthesis')).body;
+  expect(state.results.finalize.current).toBe(false); expect(state.results.handoff.current).toBe(false);
+  expect(fetcher).toHaveBeenCalledTimes(2);
+});
+it.each(actions)('B: %s refuses an input edit while provider I/O is held', async (action) => {
+  let started!: () => void; let release!: () => void;
+  const pending = new Promise<void>((resolve) => { started = resolve; });
+  fetcher.mockImplementationOnce(async () => {
+    started(); await new Promise<void>((resolve) => { release = resolve; });
+    return Response.json({ choices: [{ finish_reason: 'stop', message: { content: '# Paid stale document' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } });
+  });
+  const job = invoke(action, request()); await pending;
+  fs.writeFileSync(path.join(root,'projects/p/index.html'),'Changed during provider I/O'); release();
+  expect(await job).toMatchObject({ status: 409, body: { error: { code: 'MULTIUSER_SYNTHESIS_STALE' } } });
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(fs.existsSync(path.join(root,'projects/p',action === 'finalize' ? 'DESIGN.md' : 'HANDOFF.md'))).toBe(false);
+  expect(db.prepare('SELECT status,input_tokens,output_tokens FROM studio_synthesis_jobs').get()).toEqual({status:'failed',input_tokens:11,output_tokens:7});
+});
+it.each(['DESIGN.md','HANDOFF.md'].flatMap((name) => ['symlink','hardlink'].map((kind) => ({name,kind}))))('B: excluded $name $kind still refuses capture before spend', async ({ name, kind }) => {
+  const outside = path.join(root,'secret'); fs.writeFileSync(outside,'Outside');
+  if (kind === 'symlink') fs.symlinkSync(outside,path.join(root,'projects/p',name)); else fs.linkSync(outside,path.join(root,'projects/p',name));
+  expect((await invoke('handoff',request())).status).toBe(409); expect(fetcher).not.toHaveBeenCalled();
+  expect(fs.readFileSync(outside,'utf8')).toBe('Outside');
 });

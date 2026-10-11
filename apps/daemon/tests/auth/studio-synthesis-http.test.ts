@@ -13,15 +13,22 @@ let a: Principal; let b: Principal; let admin: Principal;
 const ownKey = 'sk-s71-own-key-private-0123456789';
 const companyKey = 'sk-s71-company-key-private-9876543210';
 const calls: Array<{ authorization: string; model: string; url: string }> = [];
+const providerBodies: Array<Record<string, unknown>> = [];
+let distinctOutputs = false;
 let fail = false;
 let pause: (() => Promise<void>) | null = null;
 const provider: typeof fetch = async (url, init) => {
   const body = JSON.parse(String(init?.body));
+  providerBodies.push(body);
   calls.push({ authorization: new Headers(init?.headers).get('authorization') ?? '', model: body.model, url: String(url) });
   if (pause) await pause();
   init?.signal?.throwIfAborted();
   if (fail) return new Response(`${ownKey} ${companyKey}`, { status: 401 });
-  return Response.json({ choices: [{ message: { content: '# Design\n\n## Context\nContinue the design.' } }],
+  if (/^(gpt-5(?:[.-]|$)|o[134](?:[.-]|$))/.test(body.model) && 'max_tokens' in body) return Response.json({ error: {
+    message: "Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.",
+    type: 'invalid_request_error', param: 'max_tokens', code: 'unsupported_parameter',
+  } }, { status: 400 });
+  return Response.json({ choices: [{ finish_reason: 'stop', message: { content: distinctOutputs ? `# Distinct output ${providerBodies.length}` : '# Design\n\n## Context\nContinue the design.' } }],
     usage: { prompt_tokens: 11, completion_tokens: 7 } });
 };
 const call = (user: Principal, method: string, route: string, body?: unknown) =>
@@ -61,7 +68,7 @@ beforeAll(async () => {
   }
   expect((await call(admin, 'PUT', '/api/admin/pool/openai', { revision: 0, enabled: true, capacity: 2, model: 'gpt-company-s71', apiKey: companyKey })).status).toBe(200);
 }, 120_000);
-beforeEach(() => { calls.length = 0; fail = false; pause = null; });
+beforeEach(() => { calls.length = 0; providerBodies.length = 0; distinctOutputs = false; fail = false; pause = null; });
 afterAll(async () => { await daemon?.close(); cleanupIsolatedDataRoot(); });
 
 it.each(['finalize', 'handoff'].flatMap((action) => ['personal_api_key', 'company_pool'].map((source) => [action, source])))('%s on %s records digest-bound output and usage', async (action, source) => {
@@ -158,4 +165,41 @@ it.each(['finalize', 'handoff'])('%s stops an admitted job after source revocati
     expect(response.status, response.text).toBe(409); expect(response.json.error.code).toBe('MULTIUSER_SYNTHESIS_AUTHORITY_CHANGED');
     expect(existsSync(path.join(root, 'projects', project.id, action === 'finalize' ? 'DESIGN.md' : 'HANDOFF.md'))).toBe(false);
   } finally { await call(a, 'PUT', '/api/multiuser/settings/provider-keys/openai', { revision: current.revision + 1, apiKey: ownKey }); }
+});
+it.each(['finalize','handoff'].flatMap((action) => ['personal_api_key','company_pool'].map((source) => ({action,source}))))('A HTTP: $action/$source uses the pinned GPT-5 model and exact completion cap', async ({action,source}) => {
+  const keys = await call(a,'GET','/api/multiuser/settings/provider-keys'); expect(keys.status,keys.text).toBe(200);
+  const own = keys.json.keys.find((item: {provider:string}) => item.provider==='openai');
+  const company = await call(admin,'GET','/api/admin/pool/openai'); expect(company.status,company.text).toBe(200);
+  expect((await call(a,'PUT','/api/multiuser/settings/provider-keys/openai',{revision:own.revision,model:'gpt-5.1'})).status).toBe(200);
+  expect((await call(admin,'PUT','/api/admin/pool/openai',{revision:company.json.provider.revision,enabled:true,capacity:2,model:'gpt-5.1'})).status).toBe(200);
+  try {
+    const project = await target();
+    const response = await run(action,project,source,a,{maxTokens:37});
+    expect(response.status,response.text).toBe(200);
+    expect(response.json).toMatchObject({model:'gpt-5.1',executionSource:source,inputTokens:11,outputTokens:7,current:true});
+    expect(providerBodies).toEqual([{model:'gpt-5.1',max_completion_tokens:37,stream:false,messages:[
+      {role:'system',content:expect.any(String)},{role:'user',content:expect.any(String)},
+    ]}]);
+    expect(calls).toEqual([{authorization:`Bearer ${source==='company_pool'?companyKey:ownKey}`,model:'gpt-5.1',url:'https://api.openai.com/v1/chat/completions'}]);
+    expect(readFileSync(path.join(root,'projects',project.id,action==='finalize'?'DESIGN.md':'HANDOFF.md'),'utf8')).toContain('Continue the design');
+  } finally {
+    expect((await call(a,'PUT','/api/multiuser/settings/provider-keys/openai',{revision:own.revision+1,model:own.model})).status).toBe(200);
+    expect((await call(admin,'PUT','/api/admin/pool/openai',{revision:company.json.provider.revision+1,enabled:company.json.provider.enabled,capacity:company.json.provider.capacity,model:company.json.provider.model})).status).toBe(200);
+  }
+});
+it.each([['finalize','handoff'],['handoff','finalize']])('B HTTP: %s then %s keeps both distinct document receipts current across fresh reads', async (first,second) => {
+  const project=await target(); distinctOutputs=true;
+  const initial=await call(a,'GET',`/api/projects/${project.id}/synthesis`); expect(initial.status,initial.text).toBe(200);
+  for(const action of [first,second,first,second]) {
+    const response=await run(action,project,'personal_api_key',a,{digest:initial.json.digest});
+    expect(response.status,response.text).toBe(200);
+  }
+  const current=await call(a,'GET',`/api/projects/${project.id}/synthesis`); expect(current.status,current.text).toBe(200);
+  expect(current.json.digest).toBe(initial.json.digest);
+  expect(current.json.results.finalize.current).toBe(true); expect(current.json.results.handoff.current).toBe(true);
+  expect(readFileSync(path.join(root,'projects',project.id,'DESIGN.md'),'utf8')).not.toBe(readFileSync(path.join(root,'projects',project.id,'HANDOFF.md'),'utf8'));
+  expect((await call(a,'POST',`/api/projects/${project.id}/files`,{name:'DESIGN.md',content:'Manual edit'})).status).toBe(200);
+  const edited=await call(a,'GET',`/api/projects/${project.id}/synthesis`); expect(edited.status,edited.text).toBe(200);
+  expect(edited.json.digest).toBe(initial.json.digest); expect(edited.json.results.finalize.current).toBe(false);
+  expect(edited.json.results.handoff.current).toBe(true); expect(calls).toHaveLength(4);
 });

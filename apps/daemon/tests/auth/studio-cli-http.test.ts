@@ -25,7 +25,7 @@ beforeAll(async () => {
   ({ dataRoot: root } = await loadIsolatedServerModule());
   daemon = await startMultiUserDaemon(multiUserOptions({ testMockAgentScript: path.resolve('../..', 'mocks/run-isolation-agent.ts'), testPersonalCodexAppServer: PERSONAL_CODEX_MOCK, studioRenderer: { assetHosts: [] },
     testCompanyOpenAIFetch: async (url) => String(url).endsWith('/chat/completions')
-      ? Response.json({ choices: [{ message: { content: '# CLI design\nContinue the Studio design.' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } })
+      ? Response.json({ choices: [{ finish_reason: 'stop', message: { content: '# CLI design\nContinue the Studio design.' } }], usage: { prompt_tokens: 11, completion_tokens: 7 } })
       : new Response('data: ' + JSON.stringify({ type: 'response.output_text.delta', delta: 'CLI company completed.\n' })
       + '\n\ndata: ' + JSON.stringify({ type: 'response.completed', response: { output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'CLI company completed.' }] }] } }) + '\n\n',
       { headers: { 'content-type': 'text/event-stream' } }),
@@ -835,7 +835,9 @@ it('S71 finalizes and hands off with Studio OpenAI sources through the compiled 
     expect(finalized.stdout + finalized.stderr).not.toContain(ownKey);
     const handoff = success(await cli(['project','handoff',pid,'--prompt-file','-','--session-file',session,'--json'], JSON.stringify({ conversationId: cid, executionSource })));
     expect(handoff).toMatchObject({ current: true, executionSource, fileName: 'HANDOFF.md', prompt: expect.stringContaining('Continue the Studio design') });
-    expect(success(await cli(['project','synthesis',pid,'--session-file',session,'--json'])).results.handoff.current).toBe(true);
+    const state=success(await cli(['project','synthesis',pid,'--session-file',session,'--json']));
+    expect(state.results.handoff.current).toBe(true);
+    expect(state.results.finalize.current).toBe(true);
   }
   const codex = await cli(['project','finalize',pid,'--execution-source','personal_subscription','--session-file',session,'--json']);
   expect(codex.code).toBe(1); expect(codex.stderr).toContain('MULTIUSER_CAPABILITY_UNAVAILABLE');

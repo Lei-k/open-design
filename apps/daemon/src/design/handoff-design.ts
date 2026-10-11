@@ -39,6 +39,7 @@ import {
   type AnthropicCallParams,
 } from './finalize-design.js';
 import { exportProjectTranscript } from '../transcript-export.js';
+import { assertStudioChatCompletion } from '../services/studio-synthesis.js';
 
 // Re-export the request/response types so the route handler and other
 // daemon-internal consumers reference the canonical contracts shape via
@@ -222,7 +223,7 @@ export async function synthesizeHandoffPrompt(
     let response: Response;
     try {
       response = options.protocol === 'openai'
-        ? await callFinalizeProviderWithRetry({ ...callParams, protocol: 'openai' })
+        ? await callFinalizeProviderWithRetry({ ...callParams, protocol: 'openai', ...(options.studioTranscript ? { studioOpenAI: true } : {}) })
         : await callAnthropicWithRetry(callParams);
     } catch (err: unknown) {
       if (err instanceof FinalizeUpstreamError) throw err;
@@ -257,6 +258,7 @@ export async function synthesizeHandoffPrompt(
       );
     }
 
+    if (options.studioTranscript && options.protocol === 'openai') assertStudioChatCompletion(payload);
     const prompt = extractDesignMd(payload, options.protocol ?? 'anthropic');
     if (options.protocol === 'openai') return { prompt, model: options.model,
       ...extractTokenUsage(payload, 'openai'), transcriptMessageCount: transcriptResult.messageCount };

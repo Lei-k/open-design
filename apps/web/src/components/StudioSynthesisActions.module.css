@@ -1,0 +1,19 @@
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.source {
+  min-height: 40px;
+  min-width: 0;
+  max-width: 100%;
+}
+.button { min-height: 40px; }
+.prompt {
+  width: 100%;
+  min-height: 100px;
+}

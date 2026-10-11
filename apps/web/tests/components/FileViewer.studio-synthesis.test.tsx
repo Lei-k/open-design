@@ -7,7 +7,7 @@ import { CookieSession } from '../../src/multiuser/session';
 import { StudioCapabilitiesProvider } from '../../src/runtime/studio-capabilities';
 const account: AuthAccount = { id:'A', username:'A', role:'user', active:true, passwordState:'set', createdAt:1, updatedAt:1 };
 const capabilities = { schemaVersion:1, shell:'studio', features:Object.fromEntries(STUDIO_PARITY_LANES.map(({id}) => [id,{status:'pilot',reason:'Pilot'}])) } as StudioRuntimeCapabilities;
-async function mount(source: 'personal_api_key' | 'personal_subscription', viewerOnly = false) {
+async function mount(source: 'personal_api_key' | 'personal_subscription' | null, viewerOnly = false) {
   const state: StudioSynthesisState = { digest:'a'.repeat(64), defaultSource:source, sources:[
     { executionSource:'personal_api_key',available:true,reason:null },
     { executionSource:'company_pool',available:true,reason:null },
@@ -34,6 +34,17 @@ async function mount(source: 'personal_api_key' | 'personal_subscription', viewe
   return calls;
 }
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+it('C: FileViewer with no actor pin requires explicit source selection before any spend', async () => {
+  const calls=await mount(null);
+  const actions=within(await screen.findByTestId('studio-synthesis-actions'));
+  await waitFor(() => expect(actions.getByRole('status').getAttribute('data-refusal')).toBe('source-required'));
+  const finalize=actions.getByRole('button',{name:'Finalize with AI'}) as HTMLButtonElement;
+  expect(finalize.disabled).toBe(true);fireEvent.click(finalize);
+  expect(calls.filter((call)=>call.url.endsWith('/finalize/openai'))).toEqual([]);
+  fireEvent.change(actions.getByRole('combobox'),{target:{value:'personal_api_key'}});fireEvent.click(finalize);
+  await waitFor(() => expect(calls.filter((call)=>call.url.endsWith('/finalize/openai'))).toHaveLength(1));
+  expect(calls.find((call)=>call.url.endsWith('/finalize/openai'))!.body.executionSource).toBe('personal_api_key');
+});
 it('FileViewer exposes Studio AI finalize using the account source and shared contract', async () => {
   const calls=await mount('personal_api_key');
   const actions=within(await screen.findByTestId('studio-synthesis-actions'));

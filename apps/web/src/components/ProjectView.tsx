@@ -13740,9 +13740,6 @@ export function ProjectView({
         enabled={critiqueTheaterEnabled}
         workspaceContext={projectRunWorkspaceContext}
       />}
-      {!studio.hostServices && <StudioSynthesisActions projectId={project.id} conversationId={activeConversationId}
-        canWrite={!projectMutationReadOnly}
-        executionSource={executionAgentId === 'openai' ? 'company_pool' : executionAgentId === 'openai-byok' ? 'personal_api_key' : executionAgentId === 'codex' ? 'personal_subscription' : null} />}
       {/* ProjectActionsToolbar removed per 00efdcba — hide finalize-design
           toolbar from project header. Restore from cf1cd9bb if product
           wants the Finalize + Continue-in-CLI buttons back in the chrome. */}
@@ -14222,8 +14219,10 @@ export function ProjectView({
           ) : null}
           // Studio sharing (#65) is project-level, not tied to the open file's
           // public-share state, so it sits with the project actions.
-          headerActions={studioSharing.access ? (
+          headerActions={!studio.hostServices || studioSharing.access ? (
             <>
+              {!studio.hostServices && <StudioSynthesisActions projectId={project.id} conversationId={activeConversationId}
+                canWrite={!projectMutationReadOnly} />}
               {projectCollab.enabled ? (
                 <PresenceBar
                   members={projectCollab.present}
@@ -14232,7 +14231,7 @@ export function ProjectView({
                   {...(projectCollab.member ? { selfMemberId: projectCollab.member.memberId } : {})}
                 />
               ) : null}
-              <StudioShareButton sharing={studioSharing} onLeft={onBack} />
+              {studioSharing.access && <StudioShareButton sharing={studioSharing} onLeft={onBack} />}
             </>
           ) : undefined}
           chatConfig={config}

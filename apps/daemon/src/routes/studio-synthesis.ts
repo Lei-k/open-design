@@ -52,7 +52,15 @@ export function registerStudioSynthesisRoutes(app: Express, deps: RegisterStudio
   };
   const capture = (id: string) => {
     try {
-      const files = captureStudioProject(deps.projectsRoot, id);
+      // Validate/capture every file before excluding generated root documents
+      // from generation inputs. Their bytes still own receipt integrity.
+      const allFiles = captureStudioProject(deps.projectsRoot, id);
+      const outputDigests: Record<string, string> = {};
+      const files = allFiles.filter((file) => {
+        if (file.name !== 'DESIGN.md' && file.name !== 'HANDOFF.md') return true;
+        outputDigests[file.name] = createHash('sha256').update(file.bytes).digest('hex');
+        return false;
+      });
       const hash = createHash('sha256');
       for (const file of [...files].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
         hash.update(JSON.stringify([file.name, file.bytes.length])).update(file.bytes);
@@ -65,12 +73,14 @@ export function registerStudioSynthesisRoutes(app: Express, deps: RegisterStudio
       hash.update(JSON.stringify([project.designSystemId, project.metadata]));
       hash.update(JSON.stringify(activeArtifact));
       if (project.designSystemId?.startsWith('user:')) {
-        hash.update(JSON.stringify(deps.db.prepare('SELECT document_json,revision,deleted_at FROM studio_design_systems WHERE id = ?').get(project.designSystemId) ?? null));
+        // Read version metadata only. Private body reads require finalize's
+        // catalog grant; transcript-only handoff never loads that body.
+        hash.update(JSON.stringify(deps.db.prepare('SELECT revision,deleted_at FROM studio_design_systems WHERE id = ?').get(project.designSystemId) ?? null));
       } else if (project.designSystemId) {
         for (const file of captureStudioResource(deps.designSystemsRoot, path.join(deps.designSystemsRoot, project.designSystemId)))
           hash.update(JSON.stringify([file.name, file.bytes.length])).update(file.bytes);
       }
-      return { files, activeArtifact, digest: hash.digest('hex') };
+      return { files, activeArtifact, outputDigests, digest: hash.digest('hex') };
     } catch { throw new StudioSynthesisError(409, 'MULTIUSER_SYNTHESIS_CAPTURE_REFUSED'); }
   };
   const defaultSource = (accountId: string, id: string): RunExecutionSource | null => {
@@ -101,7 +111,7 @@ export function registerStudioSynthesisRoutes(app: Express, deps: RegisterStudio
       const canEdit = access.canWrite(found.id, found.actor.accountId);
       const state: StudioSynthesisState = { digest: captured.digest, defaultSource: defaultSource(found.actor.accountId, found.id),
         sources: sources.map((source) => canEdit ? deps.pool.synthesisSource(found.actor.accountId, source)
-          : { executionSource: source, available: false, reason: 'project-read-only' }), results: store.results(found.id, captured.digest) };
+          : { executionSource: source, available: false, reason: 'project-read-only' }), results: store.results(found.id, captured.digest, captured.outputDigests) };
       res.setHeader('Cache-Control', 'no-store'); res.json(state);
     } catch (error) { failure(res, error); }
   };
@@ -147,7 +157,7 @@ export function registerStudioSynthesisRoutes(app: Express, deps: RegisterStudio
         if (realpathSync(heldDirectory) !== expected) throw new StudioSynthesisError(409, 'MULTIUSER_SYNTHESIS_AUTHORITY_CHANGED');
         if (action === 'handoff' && getConversation(deps.db, body.conversationId)?.projectId !== found.id)
           throw new StudioSynthesisError(409, 'MULTIUSER_SYNTHESIS_AUTHORITY_CHANGED');
-        if (designId?.startsWith('user:') && !designGrants.roleOf('design-system', designId, found.actor.accountId))
+        if (action === 'finalize' && designId?.startsWith('user:') && !designGrants.roleOf('design-system', designId, found.actor.accountId))
           throw new StudioSynthesisError(409, 'MULTIUSER_SYNTHESIS_AUTHORITY_CHANGED');
       };
       const transcriptResult = exportProjectTranscript(deps.db, deps.projectsRoot, found.id, {
@@ -155,8 +165,8 @@ export function registerStudioSynthesisRoutes(app: Express, deps: RegisterStudio
       });
       if (action === 'handoff' && transcriptResult.messageCount === 0) throw new EmptyTranscriptError('empty');
       const transcript = { jsonl: transcriptResult.jsonl!, messageCount: transcriptResult.messageCount };
-      const design = designId ? await deps.designCatalog?.readSystem(found.actor.accountId, designId) : null;
-      if (designId && !design) throw new StudioSynthesisError(409, 'MULTIUSER_SYNTHESIS_CAPTURE_REFUSED');
+      const design = action === 'finalize' && designId ? await deps.designCatalog?.readSystem(found.actor.accountId, designId) : null;
+      if (action === 'finalize' && designId && !design) throw new StudioSynthesisError(409, 'MULTIUSER_SYNTHESIS_CAPTURE_REFUSED');
       check();
       if (capture(found.id).digest !== captured.digest) throw new StudioSynthesisError(409, 'MULTIUSER_SYNTHESIS_STALE');
       lease = deps.pool.beginSynthesis(found.actor.accountId, found.id, source, check);
@@ -193,9 +203,9 @@ export function registerStudioSynthesisRoutes(app: Express, deps: RegisterStudio
         writeCompanyProjectDocument(deps.projectsRoot, found.id, fileName, safeText);
         lease!.check();
         result = { id: jobId!, projectId: found.id, action, conversationId: conversation?.id ?? null, executionSource: source,
-          fileName, digest: capture(found.id).digest, current: true, createdAt: Date.now(), model: lease!.model,
+          fileName, digest: captured.digest, current: true, createdAt: Date.now(), model: lease!.model,
           inputTokens, outputTokens, transcriptMessageCount: transcript.messageCount };
-        store.settle(jobId!, result);
+        store.settle(jobId!, result, createHash('sha256').update(safeText, 'utf8').digest('hex'));
         if (action === 'handoff') result = { ...result, prompt: safeText };
       };
       const options = { apiKey: lease.apiKey, baseUrl: 'https://api.openai.com', model: lease.model,
