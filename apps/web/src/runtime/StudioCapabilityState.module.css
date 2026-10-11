@@ -1,0 +1,2 @@
+.message { max-width: 100%; min-width: 0; overflow-wrap: anywhere; padding: 8px; font-size: 13px; line-height: 1.5; }
+.message a, .message button { display: inline-flex; align-items: center; min-height: 40px; padding: 0 8px; }

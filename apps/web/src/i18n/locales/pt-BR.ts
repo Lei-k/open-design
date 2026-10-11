@@ -1,6 +1,30 @@
 import type { Dict } from '../types';
 
 export const ptBR: Dict = {
+  'studio.deployMissingHint': "Configure seu próprio token do provedor em Configurações → Deploy.",
+  'studio.deployOwnerOnly': "Somente o proprietário do projeto pode fazer deploy ou gerenciar os registros.",
+
+  'studio.capability.deployment': "Esta implantação não ativou esta ação.",
+  'studio.capability.settings': "Verifique as configurações ou tente quando o serviço estiver disponível.",
+  'studio.capability.notificationUnsupported': "Este navegador não oferece notificações do sistema.",
+  'studio.capability.activity': "Resultados e atividades continuam visíveis no Studio.",
+  'studio.capability.notificationDenied': "As notificações estão bloqueadas. Permita nas configurações do site no navegador.",
+  'studio.capability.notificationPrompt': "O navegador pedirá permissão ao ativar este controle.",
+  'studio.capability.directoryUnsupported': "Este navegador não permite selecionar pastas.",
+  'studio.capability.filesAlternative': "Envie arquivos ou use a importação ZIP.",
+  'studio.capability.rendererDisabled': "Esta implantação não tem exportações renderizadas.",
+  'studio.capability.htmlZipAlternative': "Downloads HTML e ZIP dos seus projetos continuam disponíveis.",
+  'studio.capability.download': "Se nenhum arquivo aparecer, permita downloads deste site e tente novamente.",
+  'studio.capability.downloadAlternative': "Confira a lista de downloads do navegador; não é possível detectar a conclusão aqui.",
+  'studio.capability.clipboardDenied': "O acesso à área de transferência foi negado.",
+  'studio.capability.manualCopy': "Selecione o texto e copie manualmente.",
+  'studio.capability.clipboardUnsupported': "Este navegador não tem a API Clipboard.",
+  'studio.capability.popup': "Se uma nova aba não abrir, permita pop-ups ou use o link na mesma aba.",
+  'studio.capability.sameTab': "Abrir nesta aba",
+  'studio.capability.storage': "O acesso aos dados do navegador foi bloqueado.",
+  'studio.capability.signOutAlternative': "Sair ainda revoga sua sessão; gerencie os dados do site nas configurações do navegador.",
+  'studio.capability.narrow': "Em telas pequenas, role e use a navegação dos painéis para acessar todas as ações.",
+
   'studio.deployStatus': 'Refresh status',
   'studio.deployCheckLink': 'Check link',
   'studio.deployRedeploy': 'Redeploy',
@@ -13,6 +37,8 @@ export const ptBR: Dict = {
   'studio.deployClear': 'Clear token',
   'studio.deployHistoryFull': 'O histórico de implantações está cheio (100 registros). Exclua um registro antes de implantar novamente.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
+  "studio.deployRefreshBusy": "A atualização da implantação está ocupada. Tente novamente em breve.",
+  "studio.deployAuthorityChanged": "A conta, a sessão, o token ou o acesso ao projeto mudou. Nenhum resultado local foi salvo. O provedor pode já ter criado uma implantação remota; confira sua conta no provedor.",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Memórias salvas e dados do perfil são incluídos nas próximas execuções. A extração automática é opcional: ela roda após turnos da OpenAI na fonte do próprio turno (o pool da empresa ou sua chave) e é ignorada em turnos pessoais do Codex.",
 

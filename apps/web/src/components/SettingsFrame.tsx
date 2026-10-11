@@ -1,3 +1,5 @@
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
+import styles from './SettingsFrame.module.css';
 import { useState } from 'react';
 import type { ReactNode, Ref } from 'react';
 import { useT } from '../i18n';
@@ -23,6 +25,7 @@ export function SettingsFrame({ presentation, header, nav, children, onClose, st
   /** Dialogs layered above the surface. */
   overlay?: ReactNode;
 }) {
+  const studio = useStudioCapabilities();
   const t = useT();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [fullscreen, setFullscreen] = useState(true);
@@ -32,7 +35,7 @@ export function SettingsFrame({ presentation, header, nav, children, onClose, st
   const surface = (
     <div
       className={
-        'modal modal-settings' +
+        'modal modal-settings' + (!studio.hostServices ? ` ${styles.studio}` : '') +
         (pageMode ? ' settings-page-surface' : '') +
         (sidebarCollapsed ? ' settings-sidebar-collapsed' : '') +
         (!pageMode && fullscreen ? ' settings-fullscreen' : '')
