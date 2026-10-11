@@ -25,6 +25,14 @@ function turn(fetcher: typeof fetch, extra = {}) {
   return runCompanyOpenAITurn({ apiKey: 'fixture-private', model: 'fixture-model', systemPrompt: 'core', prompt: 'design', history: [],
     projectsRoot: root, projectId: 'owner', worker: new CompanyOpenAIWorker(), authorized: () => true, onAgentEvent: () => {}, fetch: fetcher, ...extra });
 }
+it('retains reported usage when authority is lost after a completed frame and before stream end', async () => {
+  let allowed = true; const usage: unknown[] = [];
+  const fetcher: typeof fetch = async () => new Response(`data: ${JSON.stringify({ type: 'response.completed', response: {
+    output: [], usage: { input_tokens: 17, output_tokens: 23 } } })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+  await expect(turn(fetcher, { authorized: () => allowed, onUsage: (delta: unknown) => { usage.push(delta); allowed = false; } }))
+    .rejects.toThrow('company_authority_changed');
+  expect(usage).toEqual([{ inputTokens: 17, outputTokens: 23 }]);
+});
 it('refuses traversal, external symlinks and unknown tools while preserving valid project files', async () => {
   await writeFile(path.join(root, 'foreign.txt'), 'FOREIGN_PRIVATE_BYTES');
   await mkdir(path.join(root, 'foreign-directory'));

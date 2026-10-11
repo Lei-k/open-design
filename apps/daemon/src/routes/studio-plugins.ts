@@ -199,7 +199,7 @@ export function registerStudioPluginRoutes(app: Express, input: {
     return documentCache.get(key)!;
   };
   const catalogEntry = (record: InstalledPluginRecord, scenarios: ReturnType<typeof bundledScenarioRegistry>): StudioPluginRecord =>
-    ({ ...projectRecord(record), availability: evaluateStudioPluginAvailability(record, scenarios, undefined, catalogDocuments(record)) });
+    ({ ...projectRecord(record), availability: evaluateStudioPluginAvailability(record, scenarios, undefined, catalogDocuments(record), input.craftRoot) });
   const handle = (operation: (req: Request, res: Response, actor: string) => unknown) => async (req: Request, res: Response) => {
     const actor = multiUserActorOf(res)?.accountId;
     if (!actor) return sendApiError(res, 401, 'UNAUTHORIZED', 'authentication required');
@@ -233,13 +233,13 @@ export function registerStudioPluginRoutes(app: Express, input: {
     const rows = bundled();
     const scenarios = bundledScenarioRegistry(rows);
     const documents = readStudioPluginDocuments(record.fsPath);
-    const availability = evaluateStudioPluginAvailability(record, scenarios, undefined, documents);
+    const availability = evaluateStudioPluginAvailability(record, scenarios, undefined, documents, input.craftRoot);
     if (!availability.applicable) {
       const details: StudioPluginApplyRefusalDetails = { pluginId, reasons: availability.reasons };
       return sendApiError(res, 403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'this plugin declares steps Studio turns do not run yet',
         { details: JSON.parse(JSON.stringify(details)) });
     }
-    const requirements = evaluateStudioPluginRequirements(record, scenarios, undefined, documents);
+    const requirements = evaluateStudioPluginRequirements(record, scenarios, undefined, documents, input.craftRoot);
     const plugin = projectRecord(record);
     const skillIds = parseStudioPluginSkillReferences(record.manifest.od?.context?.skills ?? [])!
       .filter((ref) => ref.kind === 'catalog').map((ref) => ref.id);
@@ -281,7 +281,8 @@ export function registerStudioPluginRoutes(app: Express, input: {
     }
     let craft: ReturnType<typeof captureStudioCraft>;
     try { craft = captureStudioCraft(input.craftRoot, record.manifest.od?.context?.craft ?? []); }
-    catch { return sendApiError(res, 409, 'CONFLICT', 'plugin craft content is unavailable'); }
+    catch { return sendApiError(res, 403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'plugin craft content is unavailable',
+      { details: { pluginId, reasons: [{ code: 'context', subject: 'craft' }] } }); }
     let computed: ReturnType<typeof applyPlugin>;
     try {
       computed = applyPlugin({ plugin, inputs: body.inputs ?? {}, locale: body.locale ?? undefined, registry: {

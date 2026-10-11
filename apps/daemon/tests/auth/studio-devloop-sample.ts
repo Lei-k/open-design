@@ -20,6 +20,8 @@ export const S70_DEVLOOP_SAMPLE: Array<{
   expectedFiles: string[];
   inputs?: Record<string, string>; media?: boolean; ceiling?: boolean;
 }> = [
+  { id: 'design-system-apple', category: 'review neighbor / bundled design package', projectDesign: false, sources: allSources, expectedFiles: ['index.html'] },
+  { id: 'example-simple-deck', category: 'review neighbor / deck with inherited brand', projectDesign: true, sources: allSources, expectedFiles: ['index.html'] },
   { id: 'example-article-magazine', category: 'article / skill brand opt-out', projectDesign: false, sources: allSources, expectedFiles: ['index.html'] },
   { id: 'example-dashboard', category: 'dashboard / inherited brand and craft', projectDesign: true, sources: allSources, expectedFiles: ['index.html'] },
   { id: 'example-ve-terminal-mono', category: 'deck / discovery and former false desktop detection', projectDesign: false, sources: allSources, expectedFiles: ['index.html'] },

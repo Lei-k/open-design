@@ -22,24 +22,31 @@ it('recounts the bundled catalog through the catalog evaluator and opens only th
       atoms: STUDIO_WEB_PLUGIN_CAPABILITIES.atoms.filter((atom) => atom !== 'critique-theater') };
     const rows = registered.map((plugin) => {
       const documents = readStudioPluginDocuments(plugin.fsPath);
-      return { id: plugin.id, before: evaluateStudioPluginAvailability(plugin, scenarios, baseCapabilities, documents),
-        after: evaluateStudioPluginAvailability(plugin, scenarios, undefined, documents) };
+      return { id: plugin.id, before: evaluateStudioPluginAvailability(plugin, scenarios, baseCapabilities, documents, path.resolve('../../craft')),
+        after: evaluateStudioPluginAvailability(plugin, scenarios, undefined, documents, path.resolve('../../craft')) };
     });
     const before = studioPluginReasonSummary(rows.map((row) => row.before));
     const after = studioPluginReasonSummary(rows.map((row) => row.after));
     const opened = rows.filter((row) => !row.before.applicable && row.after.applicable);
     expect(before).toMatchObject({ total: 460, applicable: 10, unavailable: 450 });
-    expect(after).toMatchObject({ total: 460, applicable: 315, unavailable: 145 });
-    expect(opened).toHaveLength(305);
+    expect(after).toMatchObject({ total: 460, applicable: 309, unavailable: 151 });
+    expect(after.byReason).toMatchObject({ 'context:craft': 6, 'capability:desktop:local-script': 7 });
+    expect(opened).toHaveLength(299);
+    for (const id of ['example-kami-deck', 'example-kami-landing', 'example-open-design-homepage', 'example-live-dashboard']) {
+      expect(rows.find((row) => row.id === id)!.after, id).toMatchObject({ applicable: false, reasons: expect.arrayContaining([{ code: 'context', subject: 'craft' }]) });
+    }
+    for (const id of ['example-pptx-html-fidelity-audit', 'example-last30days']) {
+      expect(rows.find((row) => row.id === id)!.after, id).toMatchObject({ applicable: false, reasons: expect.arrayContaining([{ code: 'capability', subject: 'desktop:local-script' }]) });
+    }
     expect(opened.every((row) => row.before.reasons.every((reason) => reason.code === 'pipeline-devloop'
       || reason.code === 'atom' && reason.subject === 'critique-theater'))).toBe(true);
-    expect(S70_DEVLOOP_SAMPLE).toHaveLength(8);
+    expect(S70_DEVLOOP_SAMPLE).toHaveLength(10);
     for (const sample of S70_DEVLOOP_SAMPLE) {
       expect(opened.some((row) => row.id === sample.id), sample.id).toBe(true);
       const plugin = registered.find((plugin) => plugin.id === sample.id)!;
       const reference = plugin.manifest.od?.context?.designSystem;
       expect(Boolean(reference && !reference.ref), sample.id).toBe(sample.projectDesign);
-      const requirements = evaluateStudioPluginRequirements(plugin, scenarios, undefined, readStudioPluginDocuments(plugin.fsPath));
+      const requirements = evaluateStudioPluginRequirements(plugin, scenarios, undefined, readStudioPluginDocuments(plugin.fsPath), path.resolve('../../craft'));
       expect(STUDIO_PLUGIN_EXECUTION_SOURCES.filter((source) => !studioPluginSourceReasons(requirements, source).length), sample.id).toEqual(sample.sources);
       const computed = applyPlugin({ plugin, inputs: sample.inputs ?? {}, activeProjectDesignSystem: { id: 'user:s70-brand' },
         registry: { skills: [], designSystems: [{ id: reference?.ref ?? 'user:s70-brand' }], craft: [], atoms: [], scenarios } });

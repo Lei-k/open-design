@@ -24,6 +24,7 @@ import { isStudioPluginAssetReferences, isStudioPluginCraftReferences, isStudioP
   STUDIO_PLUGIN_EXECUTION_SOURCES, STUDIO_WEB_PLUGIN_CAPABILITIES, studioPluginDeclaredMediaAtom, studioPluginSourceRestrictions } from '@open-design/contracts';
 import { resolveAppliedPipeline, type ScenarioRegistryEntry } from '@open-design/plugin-runtime';
 import { studioDevloop } from './studio-devloop.js';
+import { captureStudioCraft } from './studio-craft.js';
 import { isKnownAtom } from './atoms.js';
 import { deriveAutoAtomSurfaces } from './atoms/auto-surfaces.js';
 import { ensureCoreQualityStages } from './ensure-core-stages.js';
@@ -57,8 +58,9 @@ export function evaluateStudioPluginAvailability(
   scenarios: ReadonlyArray<ScenarioRegistryEntry>,
   web: StudioWebPluginCapabilities = STUDIO_WEB_PLUGIN_CAPABILITIES,
   documents?: readonly StudioPluginDocument[] | null,
+  craftRoot?: string,
 ): StudioPluginAvailability {
-  return evaluateStudioPlugin(plugin, scenarios, web, documents).availability;
+  return evaluateStudioPlugin(plugin, scenarios, web, documents, craftRoot).availability;
 }
 
 /**
@@ -71,8 +73,9 @@ export function evaluateStudioPluginRequirements(
   scenarios: ReadonlyArray<ScenarioRegistryEntry>,
   web: StudioWebPluginCapabilities = STUDIO_WEB_PLUGIN_CAPABILITIES,
   documents?: readonly StudioPluginDocument[] | null,
+  craftRoot?: string,
 ): StudioPluginRequirements {
-  return evaluateStudioPlugin(plugin, scenarios, web, documents).requirements;
+  return evaluateStudioPlugin(plugin, scenarios, web, documents, craftRoot).requirements;
 }
 
 function evaluateStudioPlugin(
@@ -80,6 +83,7 @@ function evaluateStudioPlugin(
   scenarios: ReadonlyArray<ScenarioRegistryEntry>,
   web: StudioWebPluginCapabilities,
   documents?: readonly StudioPluginDocument[] | null,
+  craftRoot?: string,
 ): { availability: StudioPluginAvailability; requirements: StudioPluginRequirements } {
   const neededAtoms = new Set<string>();
   const neededCapabilities = new Set<string>();
@@ -138,6 +142,12 @@ function evaluateStudioPlugin(
       if (assets && !isStudioPluginAssetReferences(assets)) add({ code: 'manifest', subject: 'context.assets' });
       if (craft?.length && !web.context.craft) add({ code: 'context', subject: 'craft' });
       if (craft && !isStudioPluginCraftReferences(craft)) add({ code: 'manifest', subject: 'context.craft' });
+      // Production package evaluation must prove the same bounded rulebook
+      // capture apply uses. Declaration-only fixtures omit `documents`.
+      if (documents !== undefined && isStudioPluginCraftReferences(craft) && craft.length) {
+        try { captureStudioCraft(craftRoot, craft); }
+        catch { add({ code: 'context', subject: 'craft' }); }
+      }
       if (claudePlugins?.length && !web.context.claudePlugins) add({ code: 'context', subject: 'claude-plugin' });
       if (context.designSystem !== undefined && !web.context.designSystem) add({ code: 'context', subject: 'design-system' });
       if (context.designSystem !== undefined && !isStudioPluginDesignSystemReference(context.designSystem)) add({ code: 'manifest', subject: 'context.designSystem' });

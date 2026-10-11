@@ -75,6 +75,8 @@ export async function runCompanyOpenAITurn(input: {
   runSkillScript?: StudioSkillScriptRunner;
   authorized: () => boolean; onAgentEvent: (event: Json) => void;
   fetch?: typeof fetch;
+  /** Parsed provider usage is retained even if a later tool/authority check fails. */
+  onUsage?: (delta: { inputTokens: number; outputTokens: number }) => void;
   /** Image, speech and video functions on the same key and bill as the turn (#63). */
   media?: boolean;
   /** Jury profile: project context reads only, including forged tool calls. */
@@ -113,7 +115,7 @@ export async function runCompanyOpenAITurn(input: {
         : response.status === 429 ? 'provider_rate_limited' : 'company_provider_failed');
     }
     const reader = response.body.getReader(); const decoder = new TextDecoder();
-    let bytes = 0; let buffer = ''; let completed: Json | null = null;
+    let bytes = 0; let buffer = ''; let completed: Json | null = null; let usageRecorded = false;
     try {
       for (;;) {
         const chunk = await reader.read(); check(); if (chunk.done) break;
@@ -128,16 +130,24 @@ export async function runCompanyOpenAITurn(input: {
           if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') emit({ type: 'text_delta', delta: event.delta });
           if (event.type === 'response.reasoning_summary_text.delta' && typeof event.delta === 'string') emit({ type: 'thinking_delta', delta: event.delta });
           if (event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete') throw new Error('company_provider_failed');
-          if (event.type === 'response.completed' && event.response && typeof event.response === 'object') completed = event.response as Json;
+          if (event.type === 'response.completed' && event.response && typeof event.response === 'object') {
+            completed = event.response as Json;
+            if (!usageRecorded) {
+              usageRecorded = true;
+              const delta = { inputTokens: 0, outputTokens: 0 };
+              const reported = completed.usage as Json | undefined;
+              if (reported) for (const [wire, key] of [['input_tokens', 'inputTokens'], ['output_tokens', 'outputTokens']] as const) {
+                const value = reported[wire];
+                if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) { usage[key] += value; delta[key] = value; }
+              }
+              input.onUsage?.(delta);
+            }
+          }
         }
       }
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
     if (!completed || !Array.isArray(completed.output)) throw new Error('company_response_incomplete');
     const output = completed.output as Json[];
-    const reported = completed.usage as Json | undefined;
-    if (reported) for (const [wire, key] of [['input_tokens', 'inputTokens'], ['output_tokens', 'outputTokens']] as const) {
-      const value = reported[wire]; if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) usage[key] += value;
-    }
     history.push(...output);
     const calls = output.filter((item) => item.type === 'function_call');
     if (calls.length === 0) return { ok: true, input: history, files: [...files], usage, media };

@@ -55,7 +55,10 @@ const ANYWHERE: ReadonlyArray<[StudioDesktopStepSubject, RegExp]> = [
 ];
 // Command shapes, matched within one command (see `commandsOf`): whitespace
 // between words is horizontal only, so no rule reaches into another line.
-const SCRIPT = /(?:^|[\s(;|&"'])(?:python3?|bash|sh|zsh|node|deno|bun|ruby|perl|tsx|ts-node)[ \t]+(?:-[\w-]+[ \t]+)*["']?(?:\$\{?\w+\}?\/|~\/|\.{0,2}\/|[\w.-]+\/)?[\w.${}/-]*\.(?:py|sh|bash|zsh|js|mjs|cjs|ts|rb|pl)\b|(?:^|[\s(;|&"'])\.\/[\w./-]+\.(?:py|sh|bash)\b/;
+const SCRIPT = /(?:^|[\s(;|&"'])(?:python(?:\d+(?:\.\d+)*)?|bash|sh|zsh|node|deno|bun|ruby|perl|tsx|ts-node)["']?[ \t]+(?:-[\w-]+[ \t]+)*(?:"[^"\n]+\.(?:py|sh|bash|zsh|js|mjs|cjs|ts|rb|pl)"|'[^'\n]+\.(?:py|sh|bash|zsh|js|mjs|cjs|ts|rb|pl)'|[\w.${}~/-]+\.(?:py|sh|bash|zsh|js|mjs|cjs|ts|rb|pl)\b)|(?:^|[\s(;|&"'])\.\/[\w./-]+\.(?:py|sh|bash)\b/;
+// A bare path is a command only at the command head and with arguments or a
+// redirect. A lone filename span, or `cat/echo path`, is still a reference.
+const BARE_SCRIPT = /(?:^|[;|&])[ \t]*(?:\$[ \t]+)?(?:"[^"\n]*\/[^"\n]+\.(?:py|sh|bash|zsh|js|mjs|cjs|ts|rb|pl)"|'[^'\n]*\/[^'\n]+\.(?:py|sh|bash|zsh|js|mjs|cjs|ts|rb|pl)'|[\w.${}~/-]+\/[\w.-]+\.(?:py|sh|bash|zsh|js|mjs|cjs|ts|rb|pl))(?=[ \t]+\S|[<>|&;])/;
 const OD_COMMAND = /(?:^|[\s(;|&"'])(?:od|\$\{?OD_BIN\}?)["']?[ \t]+([a-z][\w-]*)(?:[ \t]+([a-z][\w-]*))?/g;
 const OD_MAPPED = new Set(['media generate', 'tools live-artifacts']);
 const RENDER_CLI = /\bnpx[ \t]+(?:-y[ \t]+)?(?:hyperframes|remotion)\b|\b(?:hyperframes|remotion)[ \t]+render\b/i;
@@ -78,7 +81,7 @@ export function detectStudioDesktopSteps(documents: readonly StudioPluginDocumen
   for (const document of documents) {
     for (const [subject, pattern] of ANYWHERE) if (pattern.test(document.text)) found.add(subject);
     for (const command of commandsOf(document.text)) {
-      if (SCRIPT.test(command)) found.add('desktop:local-script');
+      if (SCRIPT.test(command) || BARE_SCRIPT.test(command)) found.add('desktop:local-script');
       if (RENDER_CLI.test(command)) found.add('desktop:html-video-render');
       for (const match of command.matchAll(OD_COMMAND)) {
         if (!OD_MAPPED.has(`${match[1]} ${match[2] ?? ''}`.trim())) found.add('desktop:od-cli');

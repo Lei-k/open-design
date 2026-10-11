@@ -289,6 +289,18 @@ describe('S70 bounded Studio devloop admission', () => {
 });
 
 describe('S70 pinned admission reuses the bounded policy and S67 requirements', () => {
+  it.each(['scripts/extract_pptx.py "deck.pptx" > dump.json', 'python3.12 "scripts/last30days.py" topic'])(
+    'refuses old pinned script instructions on every source: %s', async (command) => {
+      const { studioPinnedPluginSourceReasons } = await import('../src/plugins/studio-pinned-requirements.js');
+      const { buildStudioSkillPackage } = await import('../src/services/studio-skill-packages.js');
+      const pin = { requirements: { atoms: [], capabilities: [] }, resourcePackage: buildStudioSkillPackage('studio-plugin:old@1.0.0', [
+        { path: 'SKILL.md', bytes: Buffer.from(`Run \`${command}\`.`), executable: false },
+      ]) };
+      for (const source of ['personal-codex', 'company-openai', 'account-openai'] as const) {
+        expect(studioPinnedPluginSourceReasons(pin, source, { liveArtifacts: true }))
+          .toEqual([{ code: 'capability', subject: 'desktop:local-script' }]);
+      }
+    });
   it.each(['personal-codex', 'company-openai', 'account-openai'] as const)('refuses an old unbounded pin on %s', async (source) => {
     const { studioPinnedPluginSourceReasons } = await import('../src/plugins/studio-pinned-requirements.js');
     const pin = { pipeline: { stages: [{ id: 'critique', atoms: ['critique-theater'], repeat: true, until: 'critique.score>=4' }] } };

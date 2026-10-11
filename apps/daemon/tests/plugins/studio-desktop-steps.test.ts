@@ -26,6 +26,28 @@ const tree = (files: Record<string, string | Buffer>) => {
 };
 
 describe('detectStudioDesktopSteps', () => {
+  it.each([
+    '`scripts/extract_pptx.py <path-to.pptx> > pptx_dump.json`',
+    '`"scripts/verify_layout.py" "deck with spaces.pptx"`',
+    "`'scripts/check.py' --mode strict`",
+    '`python3.12 scripts/last30days.py topic`',
+    '`"python3.12" -u "scripts/check.py" --input deck.pptx`',
+    '```sh\nscripts/check.py --input x\n```',
+    '```bash\npython3.12 \\\n  scripts/check.py --input x\n```',
+    'If needed, run `scripts/check.py --input x`.',
+  ])('closes unsupported script commands without combining spans: %s', (text) => {
+    expect(subjects(text)).toEqual(['desktop:local-script']);
+  });
+  it.each([
+    'The file `scripts/check.py` contains the extraction logic.',
+    'Scripts: `scripts/check.py` and `scripts/verify.py`.',
+    'Interpreter `python3.12`; file `scripts/check.py`; arguments `--input x`.',
+    '```text\npython3.12\nscripts/check.py\n```',
+    '`cat scripts/check.py`', '`echo scripts/check.py --input x`',
+    'See scripts/check.py for documentation.',
+  ])('keeps filename references and unrelated code spans open: %s', (text) => {
+    expect(subjects(text)).toEqual([]);
+  });
   it('names each desktop-only core step with its typed reason', () => {
     // `od media scaffold` is also an `od` subcommand with no Studio function.
     expect(subjects('Run `"$OD_BIN" media scaffold --project "$OD_PROJECT_ID"` first.')).toEqual(['desktop:media-scaffold', 'desktop:od-cli']);
@@ -116,6 +138,8 @@ describe('plugin package documents', () => {
 describe('the bundled catalog', () => {
   // Every plugin S67 made applicable, plus the S42 pipeline plugin, against the shipped packages.
   const expected: Record<string, string[]> = {
+    'example-pptx-html-fidelity-audit': ['desktop:local-script'],
+    'example-last30days': ['desktop:local-script'],
     'example-audio-jingle': ['desktop:music-sfx-audio'],
     'example-hatch-pet': ['desktop:codex-tool', 'desktop:local-script'],
     'example-hyperframes': ['desktop:html-video-render', 'desktop:local-script', 'desktop:media-scaffold', 'desktop:od-cli'],

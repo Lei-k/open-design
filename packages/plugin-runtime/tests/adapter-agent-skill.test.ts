@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { adaptAgentSkill } from '../src/adapters/agent-skill';
 import { parseManifestObject } from '../src/parsers/manifest';
 import { mergeManifests } from '../src/merge';
+import { resolveContext } from '../src/resolve';
 
 const SAMPLE_SKILL = `---
 name: blog-post
@@ -36,6 +37,10 @@ describe('adaptAgentSkill', () => {
     // An explicit manifest dependency still wins: the adapter cannot erase it.
     expect(mergeManifests({ sidecar, adapters: [skill] }).od?.context?.designSystem).toEqual({ ref: 'apple', primary: true });
     expect(parseManifestObject(skill).ok).toBe(true);
+    const registry = { skills: [], craft: [], atoms: [], designSystems: [{ id: 'apple' }], activeProjectDesignSystem: { id: 'active-brand' } };
+    expect(resolveContext(mergeManifests({ adapters: [skill] }), { registry }).context.items).toEqual([]);
+    expect(resolveContext(mergeManifests({ sidecar, adapters: [skill] }), { registry }).context.items)
+      .toEqual([{ kind: 'design-system', id: 'apple', label: 'apple', primary: true }]);
   });
 
   it.each(['requires: true', 'requires: false\n    ref: apple', 'requires: false\n    primary: true'])(

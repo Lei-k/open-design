@@ -1094,7 +1094,12 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       else if (ship?.status === 'interrupted') status = 'canceled';
       else if (ship?.status === 'timed_out') status = 'failed';
     }
+    const quotaFailure = status === 'failed' && output && typeof output === 'object'
+      && (output as { reason?: unknown }).reason === 'MULTIUSER_QUOTA_EXHAUSTED';
     status = critiqueRoutes?.finish(id, status) ?? status;
+    // A Jury worker interrupted by quota is still a failed paid turn. Keep
+    // durable SHIP precedence, and keep real user/authority cancellation.
+    if (quotaFailure && status === 'canceled') status = 'failed';
     if ((existing.status === 'active' || recoveringCritique) && isCompany(existing)) closeLedgerSpan(existing, status);
     const projection = projections.get(id);
     projection?.flush();
@@ -1243,6 +1248,30 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           }, 1000);
           quotaWatch.unref();
           worker.once('close', () => clearInterval(quotaWatch));
+          const usage = { inputTokens: 0, outputTokens: 0 };
+          const authorityCurrent = () => !storesClosed && !shuttingDown && !cancelPending.has(next.id) && row(next.id)?.status === 'active'
+            && accounts.getAccountById(next.owner_account_id)?.active === true && projects.canWrite(next.project_id, next.owner_account_id)
+            && key.current() && critiqueSessionCurrent(request);
+          const quotaCurrent = () => {
+            if (storesClosed) return false;
+            if (!isCompany(next) || ledger.balance(next.owner_account_id).remainingMs > 0) return true;
+            failurePending.add(next.id); return false;
+          };
+          const authorized = () => authorityCurrent() && quotaCurrent();
+          // Explicit interruption/revocation retains priority over quota. A
+          // quota refusal is a failed paid turn even before the watchdog fires.
+          const stopResult = (authorityLossCancels = true) => {
+            if (storesClosed || shuttingDown || cancelPending.has(next.id) || authorityLossCancels && !authorityCurrent()) {
+              return { status: 'canceled' as const, reason: 'MULTIUSER_RUN_FAILED' };
+            }
+            if (!quotaCurrent() || failurePending.has(next.id)) return { status: 'failed' as const, reason: 'MULTIUSER_QUOTA_EXHAUSTED' };
+            return null;
+          };
+          const finishStopped = () => {
+            const stopped = stopResult();
+            if (!stopped) return false;
+            finish(next.id, stopped.status, { reason: stopped.reason, usage }); return true;
+          };
           try {
             const history = JSON.parse(request.critique === true ? '[]' : key.history) as Record<string, unknown>[];
             if (!Array.isArray(history)) throw new Error('invalid company history');
@@ -1255,13 +1284,6 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             const skillPackages = studioRunResourcePackages(request);
             const skillRoot = input.scriptSandbox && request?.critique !== true ? stageStudioSkillPackages(runHome, skillPackages) : undefined;
             artifactBaselines.set(next.id, { cwd: realCwd, before: snapshotProjectArtifacts(realCwd) });
-            const authorized = () => {
-              if (storesClosed) return false;
-              return !storesClosed && !shuttingDown && !cancelPending.has(next.id) && row(next.id)?.status === 'active'
-                && accounts.getAccountById(next.owner_account_id)?.active === true && projects.canWrite(next.project_id, next.owner_account_id)
-                && key.current() && critiqueSessionCurrent(request) && (!isCompany(next) || ledger.balance(next.owner_account_id).remainingMs > 0);
-            };
-            const usage = { inputTokens: 0, outputTokens: 0 };
             const mediaUsage = { images: 0, speechCharacters: 0, videoSeconds: 0 };
             const connectorTools = request.critique === true ? null : connectorToolsFor(next, authorized);
             const mcpTools = request.critique === true ? null : mcpToolsFor(next, authorized);
@@ -1280,6 +1302,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 ...(input.liveArtifacts && !isJury ? { liveArtifacts: artifactToolsFor(next, authorized, (event) => projection.accept(event))! } : {}),
                 prompt: `${userPrompt}${attached}${renderCommentAttachmentHint(normalizeCommentAttachments(Array.isArray(request.commentAttachments) ? request.commentAttachments : []))}${focused}${directive}`,
                 history: jury ? [] : stageHistory, skillPackages, projectsRoot, projectId: next.project_id, worker, authorized,
+                onUsage: (delta) => { usage.inputTokens += delta.inputTokens; usage.outputTokens += delta.outputTokens; },
                 ...(skillRoot && input.scriptSandbox && !isJury ? { runSkillScript: createStudioSkillScriptRunner({ sandbox: input.scriptSandbox,
                   packages: skillPackages, skillRoot, runHome, cwd: realCwd }) } : {}),
                 onAgentEvent: (event) => {
@@ -1289,7 +1312,6 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 }, ...(input.companyFetch ? { fetch: input.companyFetch } : {}),
               });
               if (!jury) stageHistory = result.input;
-              usage.inputTokens += result.usage.inputTokens; usage.outputTokens += result.usage.outputTokens;
               mediaUsage.images += result.media.images; mediaUsage.speechCharacters += result.media.speechCharacters;
               mediaUsage.videoSeconds += result.media.videoSeconds;
               return { value: result, ok: result.ok, text, tokensUsed: result.usage.inputTokens + result.usage.outputTokens };
@@ -1311,10 +1333,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 return result;
               },
             }).then(async ({ value: result, progress }) => {
-              if (!authorized()) { finish(next.id, 'canceled', { usage }); return; }
+              if (finishStopped()) return;
               if (!result.ok) { finish(next.id, 'failed', { usage, reason: 'MULTIUSER_RUN_FAILED' }); return; }
               const after = await snapshotProjectArtifactsAsync(realCwd);
-              if (!authorized()) { finish(next.id, 'canceled', { usage }); return; }
+              if (finishStopped()) return;
               const files = diffRunArtifacts(artifactBaselines.get(next.id)!.before, after).touchedPaths
                 .map((file) => path.relative(realCwd, file).replaceAll('\\', '/')).filter((file) => file && !file.startsWith('../')).slice(0, 128);
               const producedFiles = files.flatMap((name) => {
@@ -1324,7 +1346,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
               const messageId = studioMessages.ids(next.id).assistantMessageId;
               if (getMessage(db, messageId)?.runId === next.id) await captureRunChatArtifactSnapshots({ db, blobs: artifactBlobs },
                 { projectId: next.project_id, messageId, runId: next.id, projectRoot: realCwd, touchedPaths: files.map((file) => path.join(realCwd, file)) });
-              if (!authorized()) { finish(next.id, 'canceled', { usage }); return; }
+              if (finishStopped()) return;
               if (request.critique !== true) key.saveHistory(JSON.stringify(stageHistory));
               if (workspaceToolsUnavailable(projection.toolStartupFailed, files.length, projection.artifactCount)) {
                 finish(next.id, 'failed', { reason: 'MULTIUSER_RUN_TOOLS_UNAVAILABLE', files, producedFiles, usage }); return;
@@ -1333,12 +1355,18 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 ...(mediaUsage.images || mediaUsage.speechCharacters || mediaUsage.videoSeconds ? { media: mediaUsage } : {}) });
             }).catch((error: unknown) => {
               const cause = error instanceof Error ? error.message : '';
-              finish(next.id, cancelPending.has(next.id) || shuttingDown || (request.critique === true || request.pluginSnapshot) && !authorized() ? 'canceled' : 'failed', { reason: failurePending.has(next.id) ? 'MULTIUSER_QUOTA_EXHAUSTED'
-                : isByok(next) && cause === 'provider_auth_rejected' ? 'MULTIUSER_PROVIDER_KEY_REJECTED'
-                : isByok(next) && cause === 'provider_rate_limited' ? 'MULTIUSER_PROVIDER_RATE_LIMITED' : 'MULTIUSER_RUN_FAILED', usage });
+              const stopped = stopResult(Boolean(request.critique === true || request.pluginSnapshot));
+              finish(next.id, stopped?.status ?? 'failed', { reason: stopped?.reason
+                ?? (isByok(next) && cause === 'provider_auth_rejected' ? 'MULTIUSER_PROVIDER_KEY_REJECTED'
+                : isByok(next) && cause === 'provider_rate_limited' ? 'MULTIUSER_PROVIDER_RATE_LIMITED' : 'MULTIUSER_RUN_FAILED'), usage });
             })
               .finally(() => worker.close(!storesClosed && row(next.id)?.status === 'succeeded'));
-          } catch (error) { finish(next.id, cancelPending.has(next.id) ? 'canceled' : 'failed', { reason: (error instanceof StudioConnectorRuntimeError || error instanceof StudioMcpRuntimeError) ? error.code : 'MULTIUSER_RUN_START_FAILED' }); worker.close(false); }
+          } catch (error) {
+            const stopped = stopResult(Boolean(request.critique === true || request.pluginSnapshot));
+            finish(next.id, stopped?.status ?? 'failed', { usage, reason: stopped?.reason
+              ?? ((error instanceof StudioConnectorRuntimeError || error instanceof StudioMcpRuntimeError) ? error.code : 'MULTIUSER_RUN_START_FAILED') });
+            worker.close(false);
+          }
           continue;
         }
         if (!mockAgentScript) { closeLedgerSpan(next, 'failed'); finish(next.id, 'failed', { reason: 'MULTIUSER_PROVIDER_DISABLED' }); continue; }
