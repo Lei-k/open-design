@@ -39,12 +39,14 @@ import type {
   ProjectScenarioTaskProfile,
   ProjectVisibility,
   ProjectWorkspaceScopeResponse,
+  StudioPluginSourceRestriction,
   TerminalSession,
   WorkspaceCollabContext,
   WorkspaceProjectSummary,
   WorkspaceProjectsResponse,
 } from '@open-design/contracts';
 import { randomUUID } from '../utils/uuid';
+import { studioAppliedPluginRestrictions } from '../runtime/studio-plugins';
 import { markProjectDisplaySnapshotsDirty } from './project-display-cache';
 import {
   workspaceIdentityCacheKey,
@@ -2901,6 +2903,21 @@ export async function fetchAppliedPluginSnapshot(
     );
     if (!resp.ok) return null;
     return (await resp.json()) as AppliedPluginSnapshot;
+  } catch {
+    return null;
+  }
+}
+
+// S67 repair 2: the sources whose turns refuse a Studio application, derived
+// by the daemon from the application's pin (what run admission enforces), not
+// from the plugin's current catalog row. Null when the read fails.
+export async function fetchStudioAppliedPluginRestrictions(
+  snapshotId: string,
+): Promise<StudioPluginSourceRestriction[] | null> {
+  try {
+    const resp = await fetch(`/api/applied-plugins/${encodeURIComponent(snapshotId)}`);
+    if (!resp.ok) return null;
+    return studioAppliedPluginRestrictions(await resp.json());
   } catch {
     return null;
   }

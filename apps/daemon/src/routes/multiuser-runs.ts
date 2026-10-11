@@ -20,7 +20,7 @@ import { formatProjectAttachmentHint, normalizeCommentAttachments, renderComment
 import { renderRunContextPrompt } from '../runtimes/chat-run-context.js';
 import { classifyRunSteering } from '../runtimes/run-steering.js';
 import { RESTART_ERROR_CODE } from '../runtimes/run-restart-recovery.js';
-import type { MultiUserRun, MultiUserRunEvent, MultiUserRunStatus, MultiUserRunsResponse, StudioCatalogAccessRole, StudioCatalogShareKind, StudioProviderKeyResponse, StudioProviderKeysResponse, UpdateStudioProviderKeyRequest } from '@open-design/contracts';
+import type { MultiUserRun, MultiUserRunEvent, MultiUserRunStatus, MultiUserRunsResponse, StudioCatalogAccessRole, StudioCatalogShareKind, StudioProviderKeyResponse, StudioProviderKeysResponse, UpdateStudioProviderKeyRequest, StudioPluginExecutionSource, StudioPluginRequirements, StudioPluginSourceRefusalDetails } from '@open-design/contracts';
 import { getConversation, getMessage, getProject, updateProject } from '../db.js';
 import { sendApiError } from '../http/api-errors.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
@@ -47,6 +47,7 @@ import { runStudioPipeline } from '../services/studio-pipeline.js';
 import { createStudioChatInvalidation } from '../services/studio-chat-invalidation.js';
 import { observeStudioProjectDefaults, studioProjectDefaultsUnchanged, type StudioProjectDefaultsObservation } from '../services/studio-project-defaults.js';
 import { STUDIO_MEDIA_PROMPT } from '../runtimes/studio-media.js';
+import { studioPinnedPluginSourceReasons } from '../plugins/studio-pinned-requirements.js';
 import { PersonalProviderKeyError, PersonalProviderKeyStore } from '../storage/personal-provider-keys.js';
 import { createStudioResearch, StudioResearchError, type StudioResearch } from '../research/studio-research.js';
 import { renderStudioResearchFindings } from '../prompts/research-contract.js';
@@ -535,7 +536,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
    * (or with a stale) plugin. A conversation's own captured plugin and a
    * question's inherited one do not depend on the project pin.
    */
-  type PluginSnapshot = Omit<StudioPluginCapture, 'projectId'>;
+  // Pins captured before S67 carry no requirements; they predate Web media atoms.
+  type PluginSnapshot = Omit<StudioPluginCapture, 'projectId' | 'requirements'> & { requirements?: StudioPluginRequirements };
   const pluginSnapshotOf = (request: Record<string, unknown> | null): PluginSnapshot | null => {
     const value = request?.pluginSnapshot as PluginSnapshot | undefined;
     return value && typeof value.snapshotId === 'string' && typeof value.prompt === 'string' && typeof value.pluginId === 'string' ? value : null;
@@ -556,7 +558,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const project = input.plugins?.projectPin(target.projectId, owner) ?? null;
     const current = project ? { snapshotId: project.snapshotId, pluginId: project.pluginId, pluginVersion: project.pluginVersion,
       manifestSourceDigest: project.manifestSourceDigest, prompt: project.prompt, promptSha256: project.promptSha256,
-      ...(project.pipeline ? { pipeline: project.pipeline } : {}), ...(project.resourcePackage ? { resourcePackage: project.resourcePackage } : {}) } : null;
+      ...(project.pipeline ? { pipeline: project.pipeline } : {}), ...(project.resourcePackage ? { resourcePackage: project.resourcePackage } : {}),
+      requirements: project.requirements } : null;
     const chosen = fields.appliedPluginSnapshotId !== null && current?.snapshotId === fields.appliedPluginSnapshotId ? current : pinned ?? current;
     if (!matches(chosen)) return false;
     // `chosen === current` also holds when both are null: no conversation pin, no project pin.
@@ -570,6 +573,25 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   const pluginStillPinned = (owner: string, projectId: string, selection: PluginSelection) =>
     !selection.projectPin || (input.plugins?.projectPin(projectId, owner)?.snapshotId ?? null) === selection.projectPin.snapshotId;
   const refusePlugin = (res: Response) => sendApiError(res, 409, 'CONFLICT', 'the plugin does not match this project\'s applied plugin');
+  /**
+   * S67: the turn's execution source must run every atom and capability the
+   * applied plugin pinned. Personal Codex has no media function, and Live
+   * Artifacts need the canonical Studio registrar. Decided before anything is
+   * written, for the selected plugin whether it came from the project pin, the
+   * conversation's capture or a question's source turn. True when refused.
+   */
+  const refuseSourcePlugin = (res: Response, plugin: PluginSnapshot | null, source: StudioPluginExecutionSource): boolean => {
+    if (!plugin) return false;
+    // One derivation with the restrictions the application discloses (S67
+    // repair 2): pinned requirements plus the desktop-step detector over the
+    // pinned package (repair 1), so a capture predating a rule cannot run it.
+    const reasons = studioPinnedPluginSourceReasons(plugin, source, { liveArtifacts: Boolean(input.liveArtifacts) });
+    if (!reasons.length) return false;
+    const details: StudioPluginSourceRefusalDetails = { pluginId: plugin.pluginId, source, reasons };
+    sendApiError(res, 409, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'the applied plugin needs steps this execution source does not run',
+      { details: JSON.parse(JSON.stringify(details)) });
+    return true;
+  };
   const pipelineContinuation = (question: RunRow | undefined, plugin: PluginSnapshot | null): { pipelineResumeStage?: number } | false => {
     if (!question || !plugin?.pipeline?.stages.length) return {};
     const progress = (storedJson(question.output) as { pipeline?: import('@open-design/contracts').StudioPipelineProgress } | null)?.pipeline;
@@ -1860,6 +1882,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const pluginSelection = selectPlugin(owner, target, fields, question);
     if (!pluginSelection) return refusePlugin(res);
     const plugin = pluginSelection.plugin;
+    if (refuseSourcePlugin(res, plugin, 'personal-codex')) return;
     const continuation = pipelineContinuation(question, plugin);
     if (!continuation) return sendApiError(res, 409, 'CONFLICT', 'question pipeline continuation is stale');
     const freshShared: FreshSharedCapture[] = [];
@@ -2070,6 +2093,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     const pluginSelection = selectPlugin(owner, target, fields, question);
     if (!pluginSelection) return refusePlugin(res);
     const plugin = pluginSelection.plugin;
+    if (refuseSourcePlugin(res, plugin, own ? 'account-openai' : 'company-openai')) return;
     const continuation = pipelineContinuation(question, plugin);
     if (!continuation) return sendApiError(res, 409, 'CONFLICT', 'question pipeline continuation is stale');
     const freshShared: FreshSharedCapture[] = [];

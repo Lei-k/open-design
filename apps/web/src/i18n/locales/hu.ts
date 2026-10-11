@@ -1676,6 +1676,7 @@ export const hu: Dict = {
   "pluginsView.webUnavailable": "A weben nem érhető el",
   "pluginsView.webUnavailableNeeds": "Szükséges: {reasons}",
   "pluginsView.webApplyFromProject": "Alkalmazd egy projekt beviteli mezőjében",
+  "pluginsView.webSourceRestricted": "Nem érhető el ezzel: {source} · Szükséges: {reasons}",
   "pluginsView.uninstall": "Uninstall",
   "pluginsView.uninstalling": "Uninstalling…",
   "pluginsView.uninstallConfirm": "Uninstall {title}?",

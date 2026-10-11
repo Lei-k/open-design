@@ -1676,6 +1676,7 @@ export const id: Dict = {
   "pluginsView.webUnavailable": "Tidak tersedia di Web",
   "pluginsView.webUnavailableNeeds": "Membutuhkan: {reasons}",
   "pluginsView.webApplyFromProject": "Terapkan dari kolom pesan proyek",
+  "pluginsView.webSourceRestricted": "Tidak tersedia di {source} · Membutuhkan: {reasons}",
   "pluginsView.uninstall": "Uninstall",
   "pluginsView.uninstalling": "Uninstalling…",
   "pluginsView.uninstallConfirm": "Uninstall {title}?",

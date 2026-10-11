@@ -28,3 +28,13 @@
 .reasons {
   overflow-wrap: anywhere;
 }
+
+/* S67: source restrictions repeated in the composer picker, preview and applied chip. */
+.restrictions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted, var(--text));
+}

@@ -12,6 +12,7 @@
 // and the localization helpers so the copy follows the active locale.
 
 import { useMemo } from 'react';
+import { PluginSourceRestrictions } from './PluginWebAvailability';
 import type {
   InstalledPluginRecord,
   WorkspaceCollabContext,
@@ -107,6 +108,7 @@ export function ComposerPluginPreview({
         {description ? (
           <p className="plus-menu__preview-desc">{description}</p>
         ) : null}
+        <PluginSourceRestrictions record={record} />
       </div>
       <div className="plus-menu__preview-hero">
         {/* `eager` mounts media/iframe immediately — the panel is already a

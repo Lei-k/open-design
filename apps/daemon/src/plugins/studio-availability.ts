@@ -16,15 +16,18 @@ import type {
   InstalledPluginRecord,
   PluginPipeline,
   StudioPluginAvailability,
+  StudioPluginRequirements,
   StudioPluginUnavailableReason,
   StudioWebPluginCapabilities,
 } from '@open-design/contracts';
-import { isStudioPluginAssetReferences, isStudioPluginCraftReferences, isStudioPluginDesignSystemReference, parseStudioPluginSkillReferences, STUDIO_WEB_PLUGIN_CAPABILITIES } from '@open-design/contracts';
+import { isStudioPluginAssetReferences, isStudioPluginCraftReferences, isStudioPluginDesignSystemReference, parseStudioPluginSkillReferences,
+  STUDIO_PLUGIN_EXECUTION_SOURCES, STUDIO_WEB_PLUGIN_CAPABILITIES, studioPluginDeclaredMediaAtom, studioPluginSourceRestrictions } from '@open-design/contracts';
 import { resolveAppliedPipeline, type ScenarioRegistryEntry } from '@open-design/plugin-runtime';
 import { isKnownAtom } from './atoms.js';
 import { deriveAutoAtomSurfaces } from './atoms/auto-surfaces.js';
 import { ensureCoreQualityStages } from './ensure-core-stages.js';
 import { isInternalBundledStrategyV2 } from './strategy-provenance.js';
+import { detectStudioDesktopSteps, STUDIO_PLUGIN_PACKAGE_UNREADABLE, type StudioPluginDocument } from './studio-desktop-steps.js';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -41,27 +44,78 @@ function declaredPipeline(od: Record<string, unknown>): PluginPipeline | undefin
   return valid ? od.pipeline as PluginPipeline : 'invalid';
 }
 
+/**
+ * `documents` is the plugin package's Markdown as `readStudioPluginDocuments`
+ * returns it (S67 repair 1): the desktop-step detector closes plugins whose
+ * captured instructions need a step no Studio turn performs, and `null` (an
+ * unreadable package) fails closed. Routes always pass it; omitting it checks
+ * declarations only, as pure unit fixtures without a package do.
+ */
 export function evaluateStudioPluginAvailability(
   plugin: InstalledPluginRecord,
   scenarios: ReadonlyArray<ScenarioRegistryEntry>,
   web: StudioWebPluginCapabilities = STUDIO_WEB_PLUGIN_CAPABILITIES,
+  documents?: readonly StudioPluginDocument[] | null,
 ): StudioPluginAvailability {
+  return evaluateStudioPlugin(plugin, scenarios, web, documents).availability;
+}
+
+/**
+ * What an applicable plugin needs from each turn's execution source (S67).
+ * Apply pins this with the application; admission re-decides it against the
+ * turn's pinned source with `studioPluginSourceReasons`.
+ */
+export function evaluateStudioPluginRequirements(
+  plugin: InstalledPluginRecord,
+  scenarios: ReadonlyArray<ScenarioRegistryEntry>,
+  web: StudioWebPluginCapabilities = STUDIO_WEB_PLUGIN_CAPABILITIES,
+  documents?: readonly StudioPluginDocument[] | null,
+): StudioPluginRequirements {
+  return evaluateStudioPlugin(plugin, scenarios, web, documents).requirements;
+}
+
+function evaluateStudioPlugin(
+  plugin: InstalledPluginRecord,
+  scenarios: ReadonlyArray<ScenarioRegistryEntry>,
+  web: StudioWebPluginCapabilities,
+  documents?: readonly StudioPluginDocument[] | null,
+): { availability: StudioPluginAvailability; requirements: StudioPluginRequirements } {
+  const neededAtoms = new Set<string>();
+  const neededCapabilities = new Set<string>();
   if (!web.sourceKinds.includes(plugin.sourceKind)) {
-    return { applicable: false, reasons: [{ code: 'source', subject: plugin.sourceKind }] };
+    return { availability: { applicable: false, reasons: [{ code: 'source', subject: plugin.sourceKind }] }, requirements: { atoms: [], capabilities: [] } };
   }
   const reasons = new Map<string, StudioPluginUnavailableReason>();
   const add = (reason: StudioPluginUnavailableReason) => {
     reasons.set(`${reason.code}\0${reason.subject ?? ''}`, reason);
   };
+  /** A first-party atom the plugin needs: unknown fails closed, known ones are recorded per source. */
+  const needAtom = (atom: string) => {
+    if (!isKnownAtom(atom)) add({ code: 'unknown-atom', subject: atom });
+    else { neededAtoms.add(atom); if (!web.atoms.includes(atom)) add({ code: 'atom', subject: atom }); }
+  };
   const od = plugin.manifest?.od as unknown;
   if (od !== undefined && !isRecord(od)) add({ code: 'manifest', subject: 'od' });
   const decl: Record<string, unknown> = isRecord(od) ? od : {};
+  // A declared image/video/audio surface dispatches the media contract (S67).
+  const mediaAtom = studioPluginDeclaredMediaAtom(decl);
+  if (mediaAtom) needAtom(mediaAtom);
+  // Desktop-only core steps in the captured package (S67 repair 1): typed
+  // `capability` reasons, pinned with the application like declared ones.
+  if (documents === null) add(STUDIO_PLUGIN_PACKAGE_UNREADABLE);
+  for (const step of documents ? detectStudioDesktopSteps(documents) : []) {
+    neededCapabilities.add(step.subject!);
+    if (!web.capabilities.includes(step.subject!)) add(step);
+  }
 
   if (!web.strategy && (decl.strategy !== undefined || isInternalBundledStrategyV2(plugin))) add({ code: 'strategy' });
 
   if (decl.capabilities !== undefined) {
     if (!isStringArray(decl.capabilities)) add({ code: 'manifest', subject: 'capabilities' });
-    else for (const capability of decl.capabilities) if (!web.capabilities.includes(capability)) add({ code: 'capability', subject: capability });
+    else for (const capability of decl.capabilities) {
+      neededCapabilities.add(capability);
+      if (!web.capabilities.includes(capability)) add({ code: 'capability', subject: capability });
+    }
   }
 
   if (decl.context !== undefined) {
@@ -92,8 +146,7 @@ export function evaluateStudioPluginAvailability(
       }
       for (const atom of atoms ?? []) {
         if (typeof atom !== 'string') add({ code: 'manifest', subject: 'context' });
-        else if (!isKnownAtom(atom)) add({ code: 'unknown-atom', subject: atom });
-        else if (!web.atoms.includes(atom)) add({ code: 'atom', subject: atom });
+        else needAtom(atom);
       }
     }
   }
@@ -142,16 +195,19 @@ export function evaluateStudioPluginAvailability(
         add({ code: 'manifest', subject: 'pipeline' });
       }
       if ((stage.repeat || stage.until !== undefined) && !web.pipelineDevloop) add({ code: 'pipeline-devloop', subject: stage.id });
-      for (const atom of stage.atoms ?? []) {
-        if (!isKnownAtom(atom)) add({ code: 'unknown-atom', subject: atom });
-        else if (!web.atoms.includes(atom)) add({ code: 'atom', subject: atom });
-      }
+      for (const atom of stage.atoms ?? []) needAtom(atom);
     }
     if (!web.genui) for (const surface of deriveAutoAtomSurfaces({ pipeline })) add({ code: 'genui', subject: surface.id });
   }
 
   const list = [...reasons.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, reason]) => reason);
-  return { applicable: list.length === 0, reasons: list };
+  const requirements = { atoms: [...neededAtoms].sort(), capabilities: [...neededCapabilities].sort() };
+  const restrictions = list.length === 0 ? studioPluginSourceRestrictions(requirements, web) : [];
+  // Every source refused is no source at all: never advertise an unrunnable plugin.
+  if (restrictions.length === STUDIO_PLUGIN_EXECUTION_SOURCES.length) {
+    return { availability: { applicable: false, reasons: restrictions[0]!.reasons }, requirements };
+  }
+  return { availability: { applicable: list.length === 0, reasons: list, ...(restrictions.length ? { sourceRestrictions: restrictions } : {}) }, requirements };
 }
 
 /** Counts for reporting: applicable/unavailable and how many plugins carry each reason. */

@@ -1675,6 +1675,7 @@ export const ko: Dict = {
   "pluginsView.webUnavailable": "웹에서는 사용할 수 없음",
   "pluginsView.webUnavailableNeeds": "필요: {reasons}",
   "pluginsView.webApplyFromProject": "프로젝트 입력창에서 적용하세요",
+  "pluginsView.webSourceRestricted": "{source}에서는 사용 불가 · 필요: {reasons}",
   "pluginsView.uninstall": "Uninstall",
   "pluginsView.uninstalling": "Uninstalling…",
   "pluginsView.uninstallConfirm": "Uninstall {title}?",

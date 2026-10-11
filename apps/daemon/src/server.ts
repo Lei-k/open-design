@@ -17657,6 +17657,8 @@ export async function startServer({
     ...(studioCatalog ? { skillCatalog: studioCatalog } : {}),
     ...(studioCatalogSharing ? { designAccess: studioCatalogSharing.grants, skillAccess: studioCatalogSharing.grants } : {}),
     ...(multiUserMode.poolClock ? { clock: multiUserMode.poolClock } : {}),
+    // Read per request: the Live Artifact registrar below is the one run admission receives (S67 repair 2).
+    liveArtifactsAvailable: () => studioLiveArtifacts !== null,
   }) : null;
   if (multiUserMode) registerStudioArchiveRoutes(app, { db, projectsRoot: PROJECTS_DIR, accountActive: multiUserFront!.accountActive });
   if (multiUserMode) registerStudioCommentRoutes(app, { db, accountActive: multiUserFront!.accountActive, onChanged: (projectId) => {

@@ -9,7 +9,7 @@ import { InstalledPluginRecordSchema, STUDIO_PARITY_LANES, type AuthAccount, typ
 import { CookieSession } from '../../src/multiuser/session';
 import { StudioCapabilitiesProvider } from '../../src/runtime/studio-capabilities';
 import { studioRequestAvailable } from '../../src/runtime/studio-transport';
-import { studioPluginAvailability, studioPluginOffered, studioPluginReasonTokens } from '../../src/runtime/studio-plugins';
+import { studioAppliedPluginRestrictions, studioPluginAvailability, studioPluginOffered, studioPluginReasonTokens } from '../../src/runtime/studio-plugins';
 import { PluginWebAvailability } from '../../src/components/PluginWebAvailability';
 import { PluginDetailView } from '../../src/components/PluginDetailView';
 
@@ -103,4 +103,41 @@ it('replaces the Home hand-off Use button with Web availability on the plugin pa
   </StudioCapabilitiesProvider>);
   await waitFor(() => expect(screen.getByTestId('plugin-web-availability-no')).toBeTruthy());
   expect(screen.queryByTestId('plugin-detail-use')).toBeNull();
+});
+
+// S67: Live Artifact and media atoms run in Studio turns. A plugin needing media
+// is applicable, but personal Codex has no media function; the shared badge
+// names that source and what it lacks, and malformed restriction entries are dropped.
+it('names the execution sources whose turns cannot run an applicable plugin', () => {
+  const restricted = { applicable: true, reasons: [], sourceRestrictions: [{ source: 'personal-codex',
+    reasons: [{ code: 'atom', subject: 'media-image' }, { code: 'capability', subject: 'media:image' }] }] };
+  expect(studioPluginAvailability(record('media', restricted))).toEqual(restricted);
+  expect(studioPluginOffered(record('media', restricted))).toBe(true);
+  expect(studioPluginAvailability(record('odd', { applicable: true, reasons: [],
+    sourceRestrictions: [{ source: 'host-shell', reasons: [{ code: 'atom', subject: 'x' }] }, 'personal-codex', { source: 'personal-codex', reasons: 'media' }] })))
+    .toEqual({ applicable: true, reasons: [] });
+  render(<>
+    <PluginWebAvailability record={record('media', restricted)} />
+    <PluginWebAvailability record={record('everywhere', { applicable: true, reasons: [] })} />
+  </>);
+  const media = screen.getByTestId('plugin-web-availability-media');
+  expect(media.getAttribute('data-applicable')).toBe('true');
+  expect(media.getAttribute('data-restricted-sources')).toBe('personal-codex');
+  expect(media.textContent).toContain('project composer');
+  expect(media.textContent).toContain('Not on Codex · personal subscription');
+  expect(media.textContent).toContain('media-image');
+  const everywhere = screen.getByTestId('plugin-web-availability-everywhere');
+  expect(everywhere.getAttribute('data-restricted-sources')).toBeNull();
+  expect(everywhere.textContent).not.toContain('Not on');
+});
+
+// S67 repair 2: an application's restrictions come from its pin, as the daemon
+// sends them on the apply response and `GET /api/applied-plugins/:id`.
+it('reads an application\'s pinned source restrictions and drops anything malformed', () => {
+  const pinned = [{ source: 'personal-codex', reasons: [{ code: 'atom', subject: 'media-image' }] }];
+  expect(studioAppliedPluginRestrictions({ snapshotId: 's', sourceRestrictions: pinned })).toEqual(pinned);
+  expect(studioAppliedPluginRestrictions({ snapshotId: 's' })).toEqual([]);
+  expect(studioAppliedPluginRestrictions(null)).toEqual([]);
+  expect(studioAppliedPluginRestrictions({ sourceRestrictions: [{ source: 'desktop', reasons: [{ code: 'atom' }] },
+    { source: 'company-openai', reasons: [{ nope: true }] }, { source: 'account-openai', reasons: 'x' }, ...pinned] })).toEqual(pinned);
 });

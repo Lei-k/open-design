@@ -7,7 +7,7 @@
 // manifest's declarations; there is no per-plugin list. When a capability
 // lands on Web, adding it here makes more plugins applicable.
 
-import type { ApplyResult } from '../plugins/apply.js';
+import type { ApplyResult, AppliedPluginSnapshot } from '../plugins/apply.js';
 import type { InstalledPluginRecord } from '../plugins/installed.js';
 import type { PluginPipeline } from '../plugins/manifest.js';
 
@@ -70,6 +70,13 @@ export interface StudioPipelineProgress {
  *   own SKILL.md files, authorized catalog skills, bundled side files,
  *   requested craft rulebooks and design documents/packages are captured at apply.
  * - `strategy`, `genui`, `connectors`, `mcp`: not run by Studio turns.
+ * - `sourceGaps` (S67): atoms and capabilities a particular execution source
+ *   cannot run. A plugin needing one stays applicable when another source runs
+ *   it; turns on that source are refused at admission with the typed reasons.
+ *   `live-artifact` runs on every source through the canonical Studio Live
+ *   Artifact tools bound to the admitted run (S52/S53/S62). The media atoms run
+ *   only on OpenAI sources through the S34 media functions, billed to the
+ *   turn's own source; personal Codex has no media function.
  */
 export interface StudioWebPluginCapabilities {
   atoms: readonly string[];
@@ -86,11 +93,19 @@ export interface StudioWebPluginCapabilities {
   };
   /** Install sources a Web account may apply from. Third-party installs stay refused. */
   sourceKinds: readonly string[];
+  sourceGaps: Readonly<Record<StudioPluginExecutionSource, { atoms: readonly string[]; capabilities: readonly string[] }>>;
 }
 
+/** The three Studio execution sources a turn is pinned to (#55/#63). */
+export type StudioPluginExecutionSource = 'personal-codex' | 'company-openai' | 'account-openai';
+export const STUDIO_PLUGIN_EXECUTION_SOURCES: readonly StudioPluginExecutionSource[] = ['personal-codex', 'company-openai', 'account-openai'];
+
+const STUDIO_MEDIA_ATOMS = ['media-audio', 'media-image', 'media-video'] as const;
+const STUDIO_MEDIA_CAPABILITIES = ['media:audio', 'media:image', 'media:video'] as const;
+
 export const STUDIO_WEB_PLUGIN_CAPABILITIES: StudioWebPluginCapabilities = {
-  atoms: ['discovery-question-form', 'file-edit', 'file-read', 'file-write', 'todo-write'],
-  capabilities: ['fs:read', 'fs:write', 'prompt:inject'],
+  atoms: ['discovery-question-form', 'file-edit', 'file-read', 'file-write', 'live-artifact', ...STUDIO_MEDIA_ATOMS, 'todo-write'],
+  capabilities: ['fs:read', 'fs:write', ...STUDIO_MEDIA_CAPABILITIES, 'prompt:inject'],
   pipelines: true,
   pipelineDevloop: false,
   strategy: false,
@@ -99,7 +114,80 @@ export const STUDIO_WEB_PLUGIN_CAPABILITIES: StudioWebPluginCapabilities = {
   mcp: false,
   context: { localSkills: true, skillRefs: true, designSystem: true, craft: true, assets: true, claudePlugins: false },
   sourceKinds: ['bundled'],
+  sourceGaps: {
+    'personal-codex': { atoms: STUDIO_MEDIA_ATOMS, capabilities: STUDIO_MEDIA_CAPABILITIES },
+    'company-openai': { atoms: [], capabilities: [] },
+    'account-openai': { atoms: [], capabilities: [] },
+  },
 };
+
+/**
+ * The media surface a plugin declares through `od.surface`, else `od.mode`.
+ * Desktop routes image/video/audio plugins to the media contract by that
+ * surface (`od media generate`), so the plugin needs the matching media atom
+ * even when its pipeline names only file and Live Artifact atoms.
+ */
+export function studioPluginDeclaredMediaAtom(od: unknown): string | null {
+  if (!od || typeof od !== 'object' || Array.isArray(od)) return null;
+  const declaration = od as Record<string, unknown>;
+  for (const value of [declaration.surface, declaration.mode]) {
+    if (value === 'image' || value === 'video' || value === 'audio') return `media-${value}`;
+  }
+  return null;
+}
+
+/**
+ * What an applied plugin needs from the execution source of each turn: every
+ * first-party atom its pipeline, context or declared media surface names, and
+ * its declared capabilities. Captured at apply and pinned with the application.
+ */
+export interface StudioPluginRequirements {
+  atoms: string[];
+  capabilities: string[];
+}
+
+/** An execution source an otherwise applicable plugin cannot run on. */
+export interface StudioPluginSourceRestriction {
+  source: StudioPluginExecutionSource;
+  reasons: StudioPluginUnavailableReason[];
+}
+
+/**
+ * Typed reasons `source` cannot run these requirements; empty when it can.
+ * A pinned requirement no Studio turn runs at all (an atom or capability the
+ * registry no longer lists, or a detected desktop-only step) refuses every source.
+ */
+export function studioPluginSourceReasons(
+  requirements: StudioPluginRequirements,
+  source: StudioPluginExecutionSource,
+  web: StudioWebPluginCapabilities = STUDIO_WEB_PLUGIN_CAPABILITIES,
+): StudioPluginUnavailableReason[] {
+  const gap = web.sourceGaps[source];
+  return [
+    ...[...new Set(requirements.atoms)].filter((atom) => !web.atoms.includes(atom) || gap.atoms.includes(atom)).sort()
+      .map((subject) => ({ code: 'atom' as const, subject })),
+    ...[...new Set(requirements.capabilities)].filter((capability) => !web.capabilities.includes(capability) || gap.capabilities.includes(capability)).sort()
+      .map((subject) => ({ code: 'capability' as const, subject })),
+  ];
+}
+
+/** Every source that cannot run these requirements, in source order. */
+export function studioPluginSourceRestrictions(
+  requirements: StudioPluginRequirements,
+  web: StudioWebPluginCapabilities = STUDIO_WEB_PLUGIN_CAPABILITIES,
+): StudioPluginSourceRestriction[] {
+  return STUDIO_PLUGIN_EXECUTION_SOURCES.flatMap((source) => {
+    const reasons = studioPluginSourceReasons(requirements, source, web);
+    return reasons.length ? [{ source, reasons }] : [];
+  });
+}
+
+/** `error.details` of a turn refused because its source cannot run the applied plugin (S67). */
+export interface StudioPluginSourceRefusalDetails {
+  pluginId: string;
+  source: StudioPluginExecutionSource;
+  reasons: StudioPluginUnavailableReason[];
+}
 
 /** Bounded bundled rulebook identifiers; never filesystem paths or URLs. */
 export function isStudioPluginCraftReferences(value: unknown): value is string[] {
@@ -169,9 +257,13 @@ export function isStudioPluginDesignSystemReference(value: unknown): value is { 
  * - `strategy`: an OD Next strategy binding.
  * - `genui`: a declared or derived GenUI surface (`subject` = surface id).
  * - `connector` / `mcp`: a connector or MCP server (`subject` = id/name).
- * - `capability`: an `od.capabilities` entry (`subject` = capability).
+ * - `capability`: an `od.capabilities` entry (`subject` = capability), or a
+ *   desktop-only core step the captured package instructs (`subject` =
+ *   `desktop:media-scaffold`, `desktop:html-video-render`, `desktop:music-sfx-audio`,
+ *   `desktop:codex-tool`, `desktop:local-script` or `desktop:od-cli`; S67 repair 1).
  * - `context`: context the apply snapshot cannot capture yet
- *   (`assets`, `craft`, `design-system`, `skill-ref`, `claude-plugin`).
+ *   (`assets`, `craft`, `design-system`, `skill-ref`, `claude-plugin`), or a
+ *   plugin package whose documents cannot be read completely (`package`).
  * - `manifest`: a declaration that does not parse (`subject` = field). Fails closed.
  * - `source`: not a bundled plugin (`subject` = source kind).
  */
@@ -188,6 +280,11 @@ export interface StudioPluginUnavailableReason {
 export interface StudioPluginAvailability {
   applicable: boolean;
   reasons: StudioPluginUnavailableReason[];
+  /**
+   * Additive (S67): sources whose turns cannot run an applicable plugin, with
+   * typed reasons. Absent when every Studio source runs it or it is unavailable.
+   */
+  sourceRestrictions?: StudioPluginSourceRestriction[];
 }
 
 /**
@@ -221,6 +318,24 @@ export type StudioPluginApplyResponse = ApplyResult & {
   snapshotId: string;
   warnings: string[];
   manifestSourceDigest: string;
+  /**
+   * Additive (S67): sources whose turns refuse this application; absent when
+   * every source runs it. Derived from the application's pinned requirements
+   * (S67 repair 2), exactly as run admission decides them.
+   */
+  sourceRestrictions?: StudioPluginSourceRestriction[];
+};
+
+/**
+ * `GET /api/applied-plugins/:snapshotId` for a Studio account: the immutable
+ * snapshot plus the sources whose turns refuse this application (S67 repair 2).
+ * The restrictions come from the application's pinned requirements, which run
+ * admission enforces, never from the plugin's current catalog row: a catalog
+ * upgrade changes neither. Absent when every source runs the application;
+ * desktop daemons never send it.
+ */
+export type StudioAppliedPluginResponse = AppliedPluginSnapshot & {
+  sourceRestrictions?: StudioPluginSourceRestriction[];
 };
 
 /** `error.details` of a refused apply (`403 MULTIUSER_CAPABILITY_UNAVAILABLE`). */

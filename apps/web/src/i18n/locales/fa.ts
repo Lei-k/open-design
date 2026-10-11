@@ -1675,6 +1675,7 @@ export const fa: Dict = {
   "pluginsView.webUnavailable": "در وب در دسترس نیست",
   "pluginsView.webUnavailableNeeds": "نیاز دارد: {reasons}",
   "pluginsView.webApplyFromProject": "از کادر نوشتن یک پروژه اعمال کنید",
+  "pluginsView.webSourceRestricted": "روی {source} در دسترس نیست · نیاز دارد: {reasons}",
   "pluginsView.uninstall": "Uninstall",
   "pluginsView.uninstalling": "Uninstalling…",
   "pluginsView.uninstallConfirm": "Uninstall {title}?",

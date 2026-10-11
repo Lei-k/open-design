@@ -1678,6 +1678,7 @@ export const ar: Dict = {
   "pluginsView.webUnavailable": "غير متاح على الويب",
   "pluginsView.webUnavailableNeeds": "يتطلب: {reasons}",
   "pluginsView.webApplyFromProject": "طبّقه من مربع الكتابة في مشروع",
+  "pluginsView.webSourceRestricted": "غير متاح على {source} · يحتاج: {reasons}",
   "pluginsView.uninstall": "Uninstall",
   "pluginsView.uninstalling": "Uninstalling…",
   "pluginsView.uninstallConfirm": "Uninstall {title}?",

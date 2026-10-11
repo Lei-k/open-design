@@ -1676,6 +1676,7 @@ export const ptBR: Dict = {
   "pluginsView.webUnavailable": "Indisponível na Web",
   "pluginsView.webUnavailableNeeds": "Requer: {reasons}",
   "pluginsView.webApplyFromProject": "Aplique pelo campo de mensagem de um projeto",
+  "pluginsView.webSourceRestricted": "Indisponível em {source} · Precisa de: {reasons}",
   "pluginsView.uninstall": "Uninstall",
   "pluginsView.uninstalling": "Uninstalling…",
   "pluginsView.uninstallConfirm": "Uninstall {title}?",

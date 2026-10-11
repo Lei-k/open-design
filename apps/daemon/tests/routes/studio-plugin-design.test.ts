@@ -22,13 +22,14 @@ let hold: Promise<void> | null; let entered: (() => void) | undefined;
 const routes = new Map<string, (req: Request, res: Response) => Promise<void>>();
 function install(reference: { primary?: boolean; ref?: string }) {
   upsertInstalledPlugin(db, { id: 'design-fixture', title: 'Design fixture', version: '1.0.0', sourceKind: 'bundled', source: root,
-    trust: 'bundled', capabilitiesGranted: [], fsPath: path.join(root, 'missing-plugin'), installedAt: 1, updatedAt: 1,
+    // A real, empty plugin folder: the S67 desktop-step detector refuses unreadable packages.
+    trust: 'bundled', capabilitiesGranted: [], fsPath: path.join(root, 'plugin'), installedAt: 1, updatedAt: 1,
     manifest: { name: 'design-fixture', version: '1.0.0', od: { kind: 'scenario', capabilities: ['prompt:inject'],
       context: { designSystem: reference } } } } as InstalledPluginRecord);
 }
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-plugin-design-route-')); brands = path.join(root, 'brands');
-  fs.mkdirSync(path.join(brands, 'brand'), { recursive: true });
+  fs.mkdirSync(path.join(brands, 'brand'), { recursive: true }); fs.mkdirSync(path.join(root, 'plugin'));
   fs.writeFileSync(path.join(brands, 'brand/DESIGN.md'), 'BUNDLED_DESIGN_RULES');
   fs.writeFileSync(path.join(brands, 'brand/tokens.css'), ':root { --brand: #123456; }');
   db = openDatabase(root, { dataDir: root }); hold = null; entered = undefined;
