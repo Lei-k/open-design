@@ -1,3 +1,4 @@
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
 import styles from './SettingsFrame.module.css';
 import { useState } from 'react';
 import type { ReactNode, Ref } from 'react';
@@ -26,6 +27,7 @@ export function SettingsFrame({ presentation, header, nav, children, onClose, st
   /** Studio identity in the page chrome. */
   accountControl?: ReactNode;
 }) {
+  const studio = useStudioCapabilities();
   const t = useT();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => typeof window !== 'undefined' && window.matchMedia?.('(max-width: 640px)').matches === true);
   const [fullscreen, setFullscreen] = useState(true);
@@ -35,7 +37,7 @@ export function SettingsFrame({ presentation, header, nav, children, onClose, st
   const surface = (
     <div
       className={
-        styles.surface + ' modal modal-settings' +
+        styles.surface + ' modal modal-settings' + (!studio.hostServices ? ` ${styles.studio}` : '') +
         (pageMode ? ' settings-page-surface' : '') +
         (sidebarCollapsed ? ' settings-sidebar-collapsed' : '') +
         (!pageMode && fullscreen ? ' settings-fullscreen' : '')

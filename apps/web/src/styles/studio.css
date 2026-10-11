@@ -6,3 +6,14 @@
   .workspace-shell[data-studio-pilot] .split-resize-handle { display: none; }
   .workspace-shell[data-studio-pilot] .split > .studio-unavailable { grid-column: 1; grid-row: 2; margin: 0; padding: 8px 16px; font-size: 12px; }
 }
+
+/* Capability-state controls inside the shared project viewer; native styles stay owned by their components. */
+.workspace-shell[data-studio-pilot] .chrome-unified-panel button,
+.workspace-shell[data-studio-pilot] .chrome-publish-actions button,
+.workspace-shell[data-studio-pilot] .file-version-download-menu button { min-height: 40px; }
+@media (max-width: 600px) {
+  .workspace-shell[data-studio-pilot] .viewer-toolbar-inline-actions { flex-wrap: wrap; min-width: 0; }
+  .workspace-shell[data-studio-pilot] .chrome-unified-panel { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+  .workspace-shell[data-studio-pilot] .chrome-publish-plain input,
+  .workspace-shell[data-studio-pilot] .social-share-grid textarea { min-width: 0; max-width: 100%; }
+}

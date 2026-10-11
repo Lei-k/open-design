@@ -1,6 +1,30 @@
 import type { Dict } from '../types';
 
 export const hu: Dict = {
+  'studio.deployMissingHint': "Állítsd be a saját szolgáltatói tokenedet a Beállítások → Telepítés alatt.",
+  'studio.deployOwnerOnly': "Csak a projekt tulajdonosa telepíthet és kezelheti a telepítési rekordokat.",
+
+  'studio.capability.deployment': "Ez a telepítés nem engedélyezte ezt a műveletet.",
+  'studio.capability.settings': "Ellenőrizd a beállításokat, vagy próbáld újra, ha elérhető a szolgáltatás.",
+  'studio.capability.notificationUnsupported': "Ez a böngésző nem támogat rendszerértesítéseket.",
+  'studio.capability.activity': "Az eredmények és tevékenységek továbbra is láthatók a Studio felületén.",
+  'studio.capability.notificationDenied': "Az értesítések tiltva vannak. Engedélyezd a böngésző webhelybeállításaiban.",
+  'studio.capability.notificationPrompt': "Bekapcsoláskor a böngésző értesítési engedélyt kér.",
+  'studio.capability.directoryUnsupported': "Ez a böngésző nem támogat mappaválasztást.",
+  'studio.capability.filesAlternative': "Tölts fel fájlokat, vagy használd a ZIP-importálást.",
+  'studio.capability.rendererDisabled': "Ez a telepítés nem támogat renderelt exportot.",
+  'studio.capability.htmlZipAlternative': "A saját projektek HTML- és ZIP-letöltése továbbra is elérhető.",
+  'studio.capability.download': "Ha nem jelenik meg fájl, engedélyezd a webhely letöltéseit, és próbáld újra.",
+  'studio.capability.downloadAlternative': "Ellenőrizd a böngésző letöltési listáját; a befejezés itt nem észlelhető.",
+  'studio.capability.clipboardDenied': "A vágólap hozzáférése megtagadva.",
+  'studio.capability.manualCopy': "Jelöld ki a szöveget, és másold kézzel.",
+  'studio.capability.clipboardUnsupported': "Ez a böngésző nem rendelkezik Clipboard API-val.",
+  'studio.capability.popup': "Ha nem nyílik új lap, engedélyezd a felugró ablakokat, vagy használd az azonos lapon nyíló hivatkozást.",
+  'studio.capability.sameTab': "Megnyitás ezen a lapon",
+  'studio.capability.storage': "A böngészőadatokhoz való hozzáférés tiltva van.",
+  'studio.capability.signOutAlternative': "A kijelentkezés továbbra is visszavonja a munkamenetet; a webhelyadatokat a böngészőben kezeld.",
+  'studio.capability.narrow': "Kis képernyőn görgetéssel és panelnavigációval érhetők el a műveletek.",
+
   'studio.deployStatus': 'Refresh status',
   'studio.deployCheckLink': 'Check link',
   'studio.deployRedeploy': 'Redeploy',
@@ -13,6 +37,8 @@ export const hu: Dict = {
   'studio.deployClear': 'Clear token',
   'studio.deployHistoryFull': 'A telepítési előzmények megteltek (100 bejegyzés). Új telepítés előtt törölj egy bejegyzést.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
+  "studio.deployRefreshBusy": "A telepítés frissítése foglalt. Próbáld újra rövidesen.",
+  "studio.deployAuthorityChanged": "A fiók, a munkamenet, a token vagy a projekthozzáférés megváltozott. Nem lett helyi eredmény mentve. A szolgáltató már létrehozhatott egy távoli telepítést; ellenőrizd a szolgáltatói fiókodat.",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "A mentett emlékek és profiladatok bekerülnek a későbbi futtatásokba. Az automatikus kinyerés opcionális: OpenAI-körök után fut az adott kör saját forrásán (vállalati keret vagy a saját kulcsod), személyes Codex-köröknél kimarad.",
 

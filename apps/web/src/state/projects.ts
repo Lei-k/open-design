@@ -1010,16 +1010,16 @@ export async function importClaudeDesignZip(
 export async function importBrowserDirectory(files: File[]): Promise<ImportFolderResponse> {
   const form = new FormData();
   let bytes = 0;
-  const visible = files.filter((file) => !file.webkitRelativePath.split('/').some((segment) => segment.startsWith('.') || segment === 'node_modules'));
+  const visible = files.filter((file) => !(file.webkitRelativePath || file.name).split('/').some((segment) => segment.startsWith('.') || segment === 'node_modules'));
   if (!visible.length || visible.length > 500) throw new Error('Choose a folder with 1–500 visible files');
   const fields: import('@open-design/contracts').StudioDirectoryImportFields = {
-    name: (visible[0]!.webkitRelativePath.split('/')[0] || 'Imported folder').slice(0, 100),
+    name: ((visible[0]!.webkitRelativePath || '').split('/')[0] || 'Imported folder').slice(0, 100),
   };
   form.append('name', fields.name!);
   for (const file of visible) {
     bytes += file.size;
     if (file.size > 25 * 1024 * 1024 || bytes > 64 * 1024 * 1024) throw new Error('Folder exceeds the 64 MB upload limit');
-    const relative = file.webkitRelativePath;
+    const relative = file.webkitRelativePath || file.name;
     form.append('files', file, relative.includes('/') ? relative.slice(relative.indexOf('/') + 1) : file.name);
   }
   const response = await fetch('/api/import/files', { method: 'POST', body: form });
