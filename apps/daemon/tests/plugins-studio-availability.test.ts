@@ -8,8 +8,8 @@
 // ordered stages only. Devloops and unsupported policies remain refused.
 import { describe, expect, it } from 'vitest';
 import type { InstalledPluginRecord, StudioWebPluginCapabilities } from '@open-design/contracts';
-import { STUDIO_WEB_PLUGIN_CAPABILITIES } from '@open-design/contracts';
-import { evaluateStudioPluginAvailability, studioPluginReasonSummary } from '../src/plugins/studio-availability.js';
+import { STUDIO_WEB_PLUGIN_CAPABILITIES, studioPluginSourceReasons } from '@open-design/contracts';
+import { evaluateStudioPluginAvailability, evaluateStudioPluginRequirements, studioPluginReasonSummary } from '../src/plugins/studio-availability.js';
 
 function record(od: Record<string, unknown>, extra: Partial<InstalledPluginRecord> = {}): InstalledPluginRecord {
   return {
@@ -51,11 +51,11 @@ describe('evaluateStudioPluginAvailability', () => {
       pipeline: { stages: [{ id: 'generate', atoms: ['file-write', 'live-artifact'] }] } }), scenarios, noRunner);
     expect(template.applicable).toBe(false);
     expect(template.reasons).toEqual([
-      { code: 'atom', subject: 'critique-theater' }, { code: 'atom', subject: 'live-artifact' },
+      { code: 'atom', subject: 'critique-theater' },
       { code: 'pipeline' }, { code: 'pipeline-devloop', subject: 'critique' }]);
     // An atom without a pipeline inherits the bundled scenario's.
     const atom = evaluateStudioPluginAvailability(record({ kind: 'atom', capabilities: ['prompt:inject'] }), scenarios, noRunner);
-    expect(atom.reasons).toEqual(expect.arrayContaining([{ code: 'atom', subject: 'live-artifact' }, { code: 'pipeline-devloop', subject: 'critique' }]));
+    expect(atom.reasons).toEqual(expect.arrayContaining([{ code: 'atom', subject: 'critique-theater' }, { code: 'pipeline-devloop', subject: 'critique' }]));
   });
 
   it('fails closed on unknown atoms, host capabilities, strategies, GenUI, connectors, MCP, context it cannot capture and malformed declarations', () => {
@@ -174,5 +174,71 @@ describe('evaluateStudioPluginAvailability', () => {
       { applicable: false, reasons: [{ code: 'atom', subject: 'live-artifact' }] },
     ]);
     expect(summary).toEqual({ total: 3, applicable: 1, unavailable: 2, byReason: { 'atom:critique-theater': 1, 'atom:live-artifact': 2 } });
+  });
+});
+
+// S67 (#61/#63/#68): `live-artifact` and the media atoms already exist as Studio
+// capabilities. Live Artifacts run on every source through the canonical Studio
+// tools; media runs only where the S34 functions exist (the OpenAI sources), so
+// a plugin needing media stays applicable but names personal Codex as a source
+// whose turns are refused. Nothing is keyed by plugin id.
+describe('S67 Studio atoms with per-source availability', () => {
+  const generate = (atoms: string[], od: Record<string, unknown> = {}) => record({ kind: 'scenario', capabilities: ['prompt:inject', 'fs:write'],
+    pipeline: { stages: [{ id: 'render', atoms }] }, ...od });
+
+  it('opens live-artifact stages on every execution source', () => {
+    expect(evaluateStudioPluginAvailability(generate(['file-write', 'live-artifact']), scenarios)).toEqual({ applicable: true, reasons: [] });
+    expect(evaluateStudioPluginRequirements(generate(['file-write', 'live-artifact']), scenarios))
+      .toEqual({ atoms: ['file-write', 'live-artifact'], capabilities: ['fs:write', 'prompt:inject'] });
+    // Control: a registry without the atom still refuses it.
+    expect(evaluateStudioPluginAvailability(generate(['live-artifact']), scenarios, { ...STUDIO_WEB_PLUGIN_CAPABILITIES,
+      atoms: STUDIO_WEB_PLUGIN_CAPABILITIES.atoms.filter((atom) => atom !== 'live-artifact') }).reasons)
+      .toEqual([{ code: 'atom', subject: 'live-artifact' }]);
+  });
+
+  it('opens declared media atoms and capabilities only on the OpenAI sources', () => {
+    const media = generate(['media-image', 'media-video', 'media-audio', 'live-artifact'],
+      { capabilities: ['prompt:inject', 'media:image', 'media:video', 'media:audio', 'fs:write'] });
+    expect(evaluateStudioPluginAvailability(media, scenarios)).toEqual({ applicable: true, reasons: [], sourceRestrictions: [
+      { source: 'personal-codex', reasons: [{ code: 'atom', subject: 'media-audio' }, { code: 'atom', subject: 'media-image' },
+        { code: 'atom', subject: 'media-video' }, { code: 'capability', subject: 'media:audio' }, { code: 'capability', subject: 'media:image' },
+        { code: 'capability', subject: 'media:video' }] }] });
+    const requirements = evaluateStudioPluginRequirements(media, scenarios);
+    expect(studioPluginSourceReasons(requirements, 'company-openai')).toEqual([]);
+    expect(studioPluginSourceReasons(requirements, 'account-openai')).toEqual([]);
+    expect(studioPluginSourceReasons(requirements, 'personal-codex').map((reason) => reason.subject))
+      .toEqual(['media-audio', 'media-image', 'media-video', 'media:audio', 'media:image', 'media:video']);
+    // Context atoms count the same way as stage atoms.
+    expect(evaluateStudioPluginAvailability(record({ kind: 'scenario', context: { atoms: ['media-image'] } }), scenarios).sourceRestrictions)
+      .toEqual([{ source: 'personal-codex', reasons: [{ code: 'atom', subject: 'media-image' }] }]);
+  });
+
+  it('derives the media atom from a declared image, video or audio surface', () => {
+    // Desktop routes these surfaces to `od media generate`, even when the pipeline names only file and Live Artifact atoms.
+    for (const [od, atom] of [[{ mode: 'image' }, 'media-image'], [{ surface: 'audio', mode: 'scenario' }, 'media-audio'],
+      [{ surface: 'hyperframes', mode: 'video' }, 'media-video']] as const) {
+      const plugin = generate(['file-write', 'live-artifact'], od);
+      expect(evaluateStudioPluginAvailability(plugin, scenarios)).toEqual({ applicable: true, reasons: [],
+        sourceRestrictions: [{ source: 'personal-codex', reasons: [{ code: 'atom', subject: atom }] }] });
+      expect(evaluateStudioPluginRequirements(plugin, scenarios).atoms).toContain(atom);
+    }
+    expect(evaluateStudioPluginAvailability(generate(['file-write'], { mode: 'prototype', surface: 'web' }), scenarios))
+      .toEqual({ applicable: true, reasons: [] });
+  });
+
+  it('keeps desktop-only media pipelines, unknown media atoms and unrunnable plugins closed', () => {
+    // The HyperFrames renderer and the image-template atoms are not Studio functions.
+    expect(evaluateStudioPluginAvailability(generate(['media-video'], { capabilities: ['prompt:inject', 'media:video-generate'] }), scenarios).reasons)
+      .toEqual([{ code: 'capability', subject: 'media:video-generate' }]);
+    expect(evaluateStudioPluginAvailability(generate(['image-generate']), scenarios).reasons).toEqual([{ code: 'unknown-atom', subject: 'image-generate' }]);
+    // A plugin no source can run is unavailable rather than restricted everywhere.
+    const nowhere: StudioWebPluginCapabilities = { ...STUDIO_WEB_PLUGIN_CAPABILITIES, sourceGaps: {
+      'personal-codex': { atoms: ['media-image'], capabilities: [] }, 'company-openai': { atoms: ['media-image'], capabilities: [] },
+      'account-openai': { atoms: ['media-image'], capabilities: [] } } };
+    expect(evaluateStudioPluginAvailability(generate(['media-image']), scenarios, nowhere))
+      .toEqual({ applicable: false, reasons: [{ code: 'atom', subject: 'media-image' }] });
+    // Unavailable plugins carry no restriction list.
+    expect(evaluateStudioPluginAvailability(generate(['media-image', 'critique-theater']), scenarios))
+      .toEqual({ applicable: false, reasons: [{ code: 'atom', subject: 'critique-theater' }] });
   });
 });

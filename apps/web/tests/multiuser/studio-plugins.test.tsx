@@ -104,3 +104,29 @@ it('replaces the Home hand-off Use button with Web availability on the plugin pa
   await waitFor(() => expect(screen.getByTestId('plugin-web-availability-no')).toBeTruthy());
   expect(screen.queryByTestId('plugin-detail-use')).toBeNull();
 });
+
+// S67: Live Artifact and media atoms run in Studio turns. A plugin needing media
+// is applicable, but personal Codex has no media function; the shared badge
+// names that source and what it lacks, and malformed restriction entries are dropped.
+it('names the execution sources whose turns cannot run an applicable plugin', () => {
+  const restricted = { applicable: true, reasons: [], sourceRestrictions: [{ source: 'personal-codex',
+    reasons: [{ code: 'atom', subject: 'media-image' }, { code: 'capability', subject: 'media:image' }] }] };
+  expect(studioPluginAvailability(record('media', restricted))).toEqual(restricted);
+  expect(studioPluginOffered(record('media', restricted))).toBe(true);
+  expect(studioPluginAvailability(record('odd', { applicable: true, reasons: [],
+    sourceRestrictions: [{ source: 'host-shell', reasons: [{ code: 'atom', subject: 'x' }] }, 'personal-codex', { source: 'personal-codex', reasons: 'media' }] })))
+    .toEqual({ applicable: true, reasons: [] });
+  render(<>
+    <PluginWebAvailability record={record('media', restricted)} />
+    <PluginWebAvailability record={record('everywhere', { applicable: true, reasons: [] })} />
+  </>);
+  const media = screen.getByTestId('plugin-web-availability-media');
+  expect(media.getAttribute('data-applicable')).toBe('true');
+  expect(media.getAttribute('data-restricted-sources')).toBe('personal-codex');
+  expect(media.textContent).toContain('project composer');
+  expect(media.textContent).toContain('Not on Codex · personal subscription');
+  expect(media.textContent).toContain('media-image');
+  const everywhere = screen.getByTestId('plugin-web-availability-everywhere');
+  expect(everywhere.getAttribute('data-restricted-sources')).toBeNull();
+  expect(everywhere.textContent).not.toContain('Not on');
+});

@@ -1,7 +1,15 @@
-import type { InstalledPluginRecord } from '@open-design/contracts';
+import type { InstalledPluginRecord, StudioPluginExecutionSource } from '@open-design/contracts';
 import { useI18n } from '../i18n';
+import type { Dict } from '../i18n/types';
 import { studioPluginAvailability, studioPluginReasonTokens } from '../runtime/studio-plugins';
 import styles from './PluginWebAvailability.module.css';
+
+/** The Studio source picker's own labels name each execution source. */
+const SOURCE_LABELS: Record<StudioPluginExecutionSource, keyof Dict> = {
+  'personal-codex': 'multiuser.executionSourcePersonalCodex',
+  'company-openai': 'multiuser.executionSourceCompanyOpenAI',
+  'account-openai': 'multiuser.executionSourcePersonalKey',
+};
 
 /**
  * Whether a bundled plugin can be applied by a Web account, and why not (#61).
@@ -14,9 +22,16 @@ export function PluginWebAvailability({ record }: { record: InstalledPluginRecor
   const availability = studioPluginAvailability(record);
   if (!availability) return null;
   if (availability.applicable) {
+    // S67: an applicable plugin some execution sources cannot run (media on personal Codex).
+    const restrictions = availability.sourceRestrictions ?? [];
     return (
-      <span className={`${styles.availability} ${styles.applicable}`} data-testid={`plugin-web-availability-${record.id}`} data-applicable="true">
+      <span className={`${styles.availability} ${styles.applicable}`} data-testid={`plugin-web-availability-${record.id}`} data-applicable="true"
+        {...(restrictions.length ? { 'data-restricted-sources': restrictions.map((item) => item.source).join(' ') } : {})}>
         <span className={styles.badge}>{t('pluginsView.webApplyFromProject')}</span>
+        {restrictions.map((item) => (
+          <span key={item.source} className={styles.reasons}>{t('pluginsView.webSourceRestricted', { source: t(SOURCE_LABELS[item.source]),
+            reasons: studioPluginReasonTokens(item.reasons).join(', ') })}</span>
+        ))}
       </span>
     );
   }

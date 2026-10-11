@@ -2036,6 +2036,7 @@ export interface Dict {
   'pluginsView.webUnavailable': string;
   'pluginsView.webUnavailableNeeds': string;
   'pluginsView.webApplyFromProject': string;
+  'pluginsView.webSourceRestricted': string;
   'pluginsView.uninstall': string;
   'pluginsView.uninstalling': string;
   'pluginsView.uninstallConfirm': string;

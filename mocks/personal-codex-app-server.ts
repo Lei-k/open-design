@@ -152,6 +152,19 @@ async function turn(id: number, params: Json): Promise<void> {
     });
     if ((reply.result as Json | undefined)?.success !== true) return failed('Live artifact fixture refused', 'badRequest');
   }
+  // `[mock-live-artifact-create]`: the agent registers a Studio Live Artifact through the dynamic tool (S67).
+  if (text.includes('[mock-live-artifact-create]')) {
+    const requestId = toolRequestId--;
+    const requestJson = JSON.stringify({ input: { title: 'Codex live artifact', preview: { type: 'html', entry: 'index.html' },
+      document: { format: 'html_template_v1', templatePath: 'template.html', generatedPreviewPath: 'index.html', dataPath: 'data.json',
+        dataJson: { total: 7 } } }, templateHtml: '<h1>{{data.total}}</h1>' });
+    const reply = await new Promise<Json>((resolve) => {
+      toolReplies.set(requestId, resolve);
+      send({ id: requestId, method: 'item/tool/call', params: { threadId, turnId, callId: `live_create_${turnId}`,
+        tool: 'live_artifacts_create', arguments: { requestJson } } });
+    });
+    if ((reply.result as Json | undefined)?.success !== true) return failed('Live artifact fixture refused', 'badRequest');
+  }
   if (text.includes('[mock-connector]')) {
     const requestId = toolRequestId--;
     const reply = await new Promise<Json>((resolve) => {

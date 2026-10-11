@@ -471,10 +471,20 @@ describe('same Studio APIs through remote od sessions', () => {
   it('lists, shows and applies bundled plugins with Web availability through od plugin; B and unavailable plugins are refused (#61)', async () => {
     const listed = success(await cli(['plugin', 'list', '--bundled', '--session-file', aFile, '--json']));
     expect(listed.total).toBeGreaterThan(100);
-    // The finite stage runner opens this bundled pipeline of Web atoms.
-    expect(listed.plugins.filter((plugin: { availability: { applicable: boolean } }) => plugin.availability.applicable).map((plugin: { id: string }) => plugin.id)).toEqual([PIPELINE_ONLY_PLUGIN_ID]);
+    // The finite stage runner opens this bundled pipeline of Web atoms; S67 opens the Live Artifact examples.
+    const applicable = listed.plugins.filter((plugin: { availability: { applicable: boolean } }) => plugin.availability.applicable).map((plugin: { id: string }) => plugin.id);
+    expect(applicable).toEqual(expect.arrayContaining([PIPELINE_ONLY_PLUGIN_ID, 'example-image-poster', 'example-frame-glitch-title']));
+    expect(applicable).toHaveLength(15);
     const share = listed.plugins.find((plugin: { id: string }) => plugin.id === PIPELINE_ONLY_PLUGIN_ID);
     expect(share).toMatchObject({ fsPath: '', availability: { applicable: true, reasons: [] } });
+    // A declared image surface runs on the OpenAI sources only; info and the text listing say so.
+    const posterRestriction = [{ source: 'personal-codex', reasons: [{ code: 'atom', subject: 'media-image' }] }];
+    expect(success(await cli(['plugin', 'info', 'example-image-poster', '--session-file', aFile, '--json'])).availability)
+      .toEqual({ applicable: true, reasons: [], sourceRestrictions: posterRestriction });
+    const listedText = await cli(['plugin', 'list', '--bundled', '--session-file', aFile]);
+    expect(listedText.code, listedText.stderr).toBe(0);
+    expect(listedText.stdout).toMatch(/^example-image-poster@\S+ .*web=applicable\(not personal-codex: atom:media-image\)$/m);
+    expect(listedText.stdout).toMatch(/^example-frame-glitch-title@\S+ .*web=applicable\(not personal-codex: atom:media-video\)$/m);
     const unavailable = success(await cli(['plugin', 'show', 'image-template-vr-headset-exploded-view-poster', '--session-file', aFile, '--json']));
     expect(unavailable.availability).toMatchObject({ applicable: false, reasons: expect.arrayContaining([{ code: 'unknown-atom', subject: 'image-generate' }]) });
     // Previewing a shipped example does not imply its generation atoms are available.
@@ -491,6 +501,20 @@ describe('same Studio APIs through remote od sessions', () => {
     const pipeline = await cli(['plugin', 'apply', PIPELINE_ONLY_PLUGIN_ID, '--project', pid, '--session-file', aFile, '--json']);
     expect(success(pipeline)).toMatchObject({ ok: true, projectId: pid, appliedPlugin: { pluginId: PIPELINE_ONLY_PLUGIN_ID, pipeline: { stages: [
       { id: 'inspect-project', atoms: ['file-read'] }, { id: 'package-plugin', atoms: ['file-write'] }] } } });
+    // S67: apply reports the restriction, and a personal Codex turn of the pin is refused with typed reasons.
+    // The bundled media examples bind the project's primary design system (S50), so this project selects one.
+    const media = success(await cli(['project', 'create', '--name', 'CLI media plugin', '--design-system', 'airbnb', '--session-file', aFile, '--json']));
+    const mediaPid = media.project.id as string;
+    const poster = success(await cli(['plugin', 'apply', 'example-image-poster', '--project', mediaPid, '--session-file', aFile, '--json']));
+    expect(poster).toMatchObject({ ok: true, appliedPlugin: { pluginId: 'example-image-poster' }, sourceRestrictions: posterRestriction });
+    const posterText = await cli(['plugin', 'apply', 'example-image-poster', '--project', mediaPid, '--session-file', aFile]);
+    expect(posterText.stdout).toContain('[apply] execution sources: not personal-codex: atom:media-image');
+    const codexTurn = await cli(['run', 'start', '--project', mediaPid, '--conversation', media.conversationId, '--execution-source', 'personal_subscription',
+      '--prompt-file', '-', '--session-file', aFile, '--json'], 'Make the poster');
+    expect(codexTurn.code).not.toBe(0);
+    expect(JSON.parse(codexTurn.stderr).error).toMatchObject({ code: 'MULTIUSER_CAPABILITY_UNAVAILABLE', data: { details: {
+      pluginId: 'example-image-poster', source: 'personal-codex', reasons: [{ code: 'atom', subject: 'media-image' }] } } });
+    expect(success(await cli(['conversation', 'messages', media.conversationId, '--project', mediaPid, '--session-file', aFile, '--json'])).messages).toEqual([]);
     const refused = await cli(['plugin', 'apply', 'image-template-vr-headset-exploded-view-poster', '--project', pid, '--session-file', aFile, '--json']);
     expect(refused.code).not.toBe(0);
     expect(refused.stderr).toContain('MULTIUSER_CAPABILITY_UNAVAILABLE');

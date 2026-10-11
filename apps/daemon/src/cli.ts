@@ -3961,6 +3961,8 @@ function emitPluginList({ entries, json, emptyMessage, showRank }) {
     console.log(emptyMessage ?? 'No plugins matched.');
     return;
   }
+  // Await the flush like --json does: a piped Studio listing (460 rows) must not be cut at exit.
+  const lines = [];
   for (const entry of entries) {
     const p = entry.plugin;
     const tail = showRank && entry.matched.length > 0
@@ -3968,10 +3970,18 @@ function emitPluginList({ entries, json, emptyMessage, showRank }) {
       : '';
     // Studio sessions (#61) carry Web availability; local daemons do not.
     const web = p.availability
-      ? `  web=${p.availability.applicable ? 'applicable' : `unavailable(${p.availability.reasons.map((r) => r.subject ? `${r.code}:${r.subject}` : r.code).join(',')})`}`
+      ? `  web=${p.availability.applicable ? `applicable${formatStudioSourceRestrictions(p.availability.sourceRestrictions)}` : `unavailable(${p.availability.reasons.map((r) => r.subject ? `${r.code}:${r.subject}` : r.code).join(',')})`}`
       : '';
-    console.log(`${p.id}@${p.version}  trust=${p.trust}  source=${p.sourceKind}  title="${p.title}"${web}${tail}`);
+    lines.push(`${p.id}@${p.version}  trust=${p.trust}  source=${p.sourceKind}  title="${p.title}"${web}${tail}`);
   }
+  return writePluginStdout(lines.join('\n') + '\n');
+}
+
+// S67: an applicable Studio plugin some execution sources cannot run, e.g.
+// `(not personal-codex: atom:media-image)`. Empty when every source runs it.
+function formatStudioSourceRestrictions(restrictions) {
+  if (!Array.isArray(restrictions) || restrictions.length === 0) return '';
+  return `(${restrictions.map((item) => `not ${item.source}: ${(item.reasons ?? []).map((r) => r.subject ? `${r.code}:${r.subject}` : r.code).join(',')}`).join('; ')})`;
 }
 
 async function runPluginInfo(rest) {
@@ -4986,6 +4996,8 @@ async function runPluginApply(rest) {
     `[apply] ${snap.pluginId}@${snap.pluginVersion} digest=${snap.manifestSourceDigest.slice(0, 12)}…`,
     `[apply] context: ${(data.contextItems ?? []).map((c) => `${c.kind}:${c.id ?? c.name ?? c.path}`).join(', ')}`,
     ...(Array.isArray(data.warnings) ? data.warnings.map((w) => `[apply] warn: ${w}`) : []),
+    ...(Array.isArray(data.sourceRestrictions) && data.sourceRestrictions.length
+      ? [`[apply] execution sources: ${formatStudioSourceRestrictions(data.sourceRestrictions).slice(1, -1)}`] : []),
   ];
   return writePluginStdout(lines.join('\n') + '\n');
 }
@@ -6268,7 +6280,9 @@ function printPluginHelp() {
   od plugin info <id>                     Print a plugin's manifest + trust state as JSON.
   od plugin show <id>                     Same as info. With --session-file (multi-user Studio) the
                                           catalog is the bundled one, each plugin with Web
-                                          availability; list --json includes it too.
+                                          availability; list --json includes it too. A plugin some
+                                          execution sources cannot run (media on personal Codex)
+                                          lists them under availability.sourceRestrictions.
   od plugin manifest <id>                 Print only the parsed manifest JSON (no wrapper).
   od plugin preview <id> [--example <n>]  Read shipped HTML; --json for machines. Studio sessions
                                           also accept --variant descriptor for an isolated preview URL.
@@ -8478,7 +8492,10 @@ Common options:
             data:    data.error.data,
           });
         }
-        if (flags.json && typeof data?.error?.code === 'string') return exitWithStructuredError(data.error);
+        // Typed details (e.g. S67's source refusal of the applied plugin) reach the envelope too.
+        if (flags.json && typeof data?.error?.code === 'string') {
+          return exitWithStructuredError({ code: data.error.code, message: data.error.message, data: structuredErrorData(data.error) });
+        }
         console.error(`POST /api/runs failed: ${resp.status} ${JSON.stringify(data)}`);
         process.exit(1);
       }

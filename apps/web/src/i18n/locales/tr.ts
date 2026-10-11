@@ -1650,6 +1650,7 @@ export const tr: Dict = {
   "pluginsView.webUnavailable": "Web’de kullanılamaz",
   "pluginsView.webUnavailableNeeds": "Gerekenler: {reasons}",
   "pluginsView.webApplyFromProject": "Bir projenin mesaj kutusundan uygulayın",
+  "pluginsView.webSourceRestricted": "{source} üzerinde kullanılamaz · Gerekli: {reasons}",
   "pluginsView.uninstall": "Uninstall",
   "pluginsView.uninstalling": "Uninstalling…",
   "pluginsView.uninstallConfirm": "Uninstall {title}?",

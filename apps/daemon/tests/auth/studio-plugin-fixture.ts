@@ -39,3 +39,35 @@ export function installStudioFixturePlugin(dataRoot: string): void {
       .run(...columns.map((key) => row[key]));
   } finally { db.close(); }
 }
+
+/** S67: test-only plugins declaring the Studio atoms, evaluated by the same registry. */
+export const FIXTURE_LIVE_ARTIFACT_PLUGIN_ID = 'studio-test-live-artifact-plugin';
+export const FIXTURE_MEDIA_PLUGIN_ID = 'studio-test-media-plugin';
+
+/**
+ * Two more `bundled` rows in the test daemon's own table (never the shipped
+ * tree): one finite stage of `file-write` + `live-artifact` (every source), and
+ * one image stage of `media-image` + `live-artifact` with the `media:image`
+ * capability and a declared image surface (OpenAI sources only).
+ */
+export function installStudioAtomFixturePlugins(dataRoot: string): void {
+  const db = new Database(path.join(dataRoot, 'app.sqlite'));
+  try {
+    const base = db.prepare('SELECT * FROM installed_plugins WHERE id = ?').get(FIXTURE_PLUGIN_ID) as Record<string, unknown> | undefined;
+    if (!base) throw new Error(`${FIXTURE_PLUGIN_ID} is not installed`);
+    const manifest = JSON.parse(String(base.manifest_json)) as Record<string, any>;
+    const fixtures: Array<[string, Record<string, unknown>]> = [
+      [FIXTURE_LIVE_ARTIFACT_PLUGIN_ID, { capabilities: ['prompt:inject', 'fs:write'],
+        pipeline: { stages: [{ id: 'render', atoms: ['file-write', 'live-artifact'] }] } }],
+      [FIXTURE_MEDIA_PLUGIN_ID, { mode: 'image', surface: 'image', capabilities: ['prompt:inject', 'fs:write', 'media:image'],
+        pipeline: { stages: [{ id: 'generate', atoms: ['media-image', 'live-artifact'] }] } }],
+    ];
+    for (const [id, od] of fixtures) {
+      const row: Record<string, unknown> = { ...base, id, title: id, manifest_json: JSON.stringify({ ...manifest, name: id, title: id,
+        od: { ...manifest.od, ...od } }) };
+      const columns = Object.keys(row);
+      db.prepare(`INSERT OR REPLACE INTO installed_plugins (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`)
+        .run(...columns.map((key) => row[key]));
+    }
+  } finally { db.close(); }
+}

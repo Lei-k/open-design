@@ -1670,6 +1670,7 @@ export const zhCN: Dict = {
   "pluginsView.webUnavailable": "Web 版暂不可用",
   "pluginsView.webUnavailableNeeds": "需要：{reasons}",
   "pluginsView.webApplyFromProject": "可在项目的输入框中套用",
+  "pluginsView.webSourceRestricted": "{source} 不可用 · 需要：{reasons}",
   "pluginsView.uninstall": "卸载",
   "pluginsView.uninstalling": "卸载中…",
   "pluginsView.uninstallConfirm": "确定卸载「{title}」？",

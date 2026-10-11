@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
 import type {
   AppliedPluginSnapshot, InstalledPluginRecord, StudioPluginApplyRefusalDetails, StudioPluginApplyRequest,
-  StudioPluginApplyResponse, StudioPluginRecord, PluginPipeline,
+  StudioPluginApplyResponse, StudioPluginRecord, StudioPluginRequirements, PluginPipeline,
 } from '@open-design/contracts';
 import { parseStudioPluginSkillReferences, renderPluginBlock, resolveLocalizedText } from '@open-design/contracts';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
@@ -15,7 +15,7 @@ import { bundledScenarioRegistry } from '../plugins/bundled-scenarios.js';
 import { getMarketplace, listMarketplaces } from '../plugins/marketplaces.js';
 import { getInstalledPlugin, listInstalledPlugins } from '../plugins/registry.js';
 import { createSnapshot, linkSnapshotToProject } from '../plugins/snapshots.js';
-import { evaluateStudioPluginAvailability } from '../plugins/studio-availability.js';
+import { evaluateStudioPluginAvailability, evaluateStudioPluginRequirements } from '../plugins/studio-availability.js';
 import { captureStudioCraft } from '../plugins/studio-craft.js';
 import { captureStudioPluginResources, type StudioPluginResources } from '../plugins/studio-resources.js';
 import { readStudioSkillPackages, type StudioSkillPackage } from '../services/studio-skill-packages.js';
@@ -46,6 +46,18 @@ export interface StudioPluginCapture {
   promptSha256: string;
   pipeline?: PluginPipeline;
   resourcePackage?: StudioSkillPackage;
+  /** What each turn's execution source must run (S67), pinned at apply. */
+  requirements: StudioPluginRequirements;
+}
+
+/**
+ * Requirements of an application recorded before S67 pinned them: its atoms
+ * and capabilities as the snapshot recorded them. Those applications predate
+ * the Live Artifact and media atoms on Web, so none of them can need media.
+ */
+function legacyRequirements(snapshot: AppliedPluginSnapshot): StudioPluginRequirements {
+  const atoms = new Set([...(snapshot.pipeline?.stages ?? []).flatMap((stage) => stage.atoms ?? []), ...(snapshot.resolvedContext?.atoms ?? [])]);
+  return { atoms: [...atoms].sort(), capabilities: [...new Set(snapshot.capabilitiesRequired ?? [])].sort() };
 }
 
 export interface StudioPlugins {
@@ -126,17 +138,24 @@ export function registerStudioPluginRoutes(app: Express, input: {
   if (!(db.prepare(`PRAGMA table_info(${TABLE})`).all() as Array<{ name: string }>).some((column) => column.name === 'resource_package_json')) {
     db.exec(`ALTER TABLE ${TABLE} ADD COLUMN resource_package_json TEXT`);
   }
+  // S67: per-source requirements pinned with the application; older rows derive them from their snapshot.
+  if (!(db.prepare(`PRAGMA table_info(${TABLE})`).all() as Array<{ name: string }>).some((column) => column.name === 'requirements_json')) {
+    db.exec(`ALTER TABLE ${TABLE} ADD COLUMN requirements_json TEXT`);
+  }
 
   type Row = { snapshot_id: string; owner_account_id: string; project_id: string; plugin_id: string; plugin_version: string;
-    manifest_source_digest: string; snapshot_json: string; prompt: string; prompt_sha256: string; resource_package_json: string | null };
+    manifest_source_digest: string; snapshot_json: string; prompt: string; prompt_sha256: string; resource_package_json: string | null;
+    requirements_json: string | null };
   const readRow = (snapshotId: string) => db.prepare(`SELECT * FROM ${TABLE} WHERE snapshot_id = ?`).get(snapshotId) as Row | undefined;
   const capture = (row: Row): StudioPluginCapture => {
-    const pipeline = (JSON.parse(row.snapshot_json) as AppliedPluginSnapshot).pipeline;
+    const snapshot = JSON.parse(row.snapshot_json) as AppliedPluginSnapshot;
+    const pipeline = snapshot.pipeline;
+    const requirements = row.requirements_json === null ? legacyRequirements(snapshot) : JSON.parse(row.requirements_json) as StudioPluginRequirements;
     const resource = row.resource_package_json === null ? undefined : JSON.parse(row.resource_package_json) as StudioSkillPackage;
     if (resource) readStudioSkillPackages([{ id: resource.id, package: resource }]);
     return { snapshotId: row.snapshot_id, projectId: row.project_id, pluginId: row.plugin_id,
       pluginVersion: row.plugin_version, manifestSourceDigest: row.manifest_source_digest, prompt: row.prompt, promptSha256: row.prompt_sha256,
-      ...(pipeline ? { pipeline } : {}), ...(resource ? { resourcePackage: resource } : {}) };
+      ...(pipeline ? { pipeline } : {}), ...(resource ? { resourcePackage: resource } : {}), requirements };
   };
   const ownerActive = (projectId: string) => {
     const owner = projects.ownership.ownerOf(projectId);
@@ -188,6 +207,7 @@ export function registerStudioPluginRoutes(app: Express, input: {
       return sendApiError(res, 403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'this plugin declares steps Studio turns do not run yet',
         { details: JSON.parse(JSON.stringify(details)) });
     }
+    const requirements = evaluateStudioPluginRequirements(record, scenarios);
     const plugin = projectRecord(record);
     const skillIds = parseStudioPluginSkillReferences(record.manifest.od?.context?.skills ?? [])!
       .filter((ref) => ref.kind === 'catalog').map((ref) => ref.id);
@@ -285,14 +305,15 @@ export function registerStudioPluginRoutes(app: Express, input: {
       });
       linkSnapshotToProject(db, created.snapshotId, body.projectId);
       db.prepare(`INSERT INTO ${TABLE} (snapshot_id, owner_account_id, project_id, plugin_id, plugin_version, manifest_source_digest,
-          snapshot_json, prompt, prompt_sha256, resource_package_json, applied_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          snapshot_json, prompt, prompt_sha256, resource_package_json, requirements_json, applied_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(created.snapshotId, actor, body.projectId, created.pluginId, created.pluginVersion, created.manifestSourceDigest,
           JSON.stringify(created), prompt, createHash('sha256').update(prompt).digest('hex'),
-          resources.package ? JSON.stringify(resources.package) : null, now());
+          resources.package ? JSON.stringify(resources.package) : null, JSON.stringify(requirements), now());
       return created;
     })();
     const response: StudioPluginApplyResponse = { ok: true, ...computed.result, appliedPlugin: snapshot, projectId: body.projectId,
-      snapshotId: snapshot.snapshotId, warnings: computed.warnings, manifestSourceDigest: computed.manifestSourceDigest };
+      snapshotId: snapshot.snapshotId, warnings: computed.warnings, manifestSourceDigest: computed.manifestSourceDigest,
+      ...(availability.sourceRestrictions ? { sourceRestrictions: availability.sourceRestrictions } : {}) };
     res.json(response);
   }));
 

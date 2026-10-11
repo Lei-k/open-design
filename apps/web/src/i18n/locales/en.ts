@@ -1650,6 +1650,7 @@ export const en: Dict = {
   "pluginsView.webUnavailable": "Not available on Web",
   "pluginsView.webUnavailableNeeds": "Needs: {reasons}",
   "pluginsView.webApplyFromProject": "Apply it from a project composer",
+  "pluginsView.webSourceRestricted": "Not on {source} · Needs: {reasons}",
   "pluginsView.uninstall": "Uninstall",
   "pluginsView.uninstalling": "Uninstalling…",
   "pluginsView.uninstallConfirm": "Uninstall {title}?",

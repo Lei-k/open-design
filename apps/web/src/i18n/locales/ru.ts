@@ -1650,6 +1650,7 @@ export const ru: Dict = {
   "pluginsView.webUnavailable": "Недоступно в веб-версии",
   "pluginsView.webUnavailableNeeds": "Требуется: {reasons}",
   "pluginsView.webApplyFromProject": "Примените в поле ввода проекта",
+  "pluginsView.webSourceRestricted": "Недоступно в {source} · Требуется: {reasons}",
   "pluginsView.uninstall": "Uninstall",
   "pluginsView.uninstalling": "Uninstalling…",
   "pluginsView.uninstallConfirm": "Uninstall {title}?",

@@ -1650,6 +1650,7 @@ export const th: Dict = {
   "pluginsView.webUnavailable": "ไม่พร้อมใช้งานบนเว็บ",
   "pluginsView.webUnavailableNeeds": "ต้องใช้: {reasons}",
   "pluginsView.webApplyFromProject": "ใช้จากช่องพิมพ์ของโปรเจกต์",
+  "pluginsView.webSourceRestricted": "ใช้ไม่ได้กับ {source} · ต้องการ: {reasons}",
   "pluginsView.uninstall": "Uninstall",
   "pluginsView.uninstalling": "Uninstalling…",
   "pluginsView.uninstallConfirm": "Uninstall {title}?",

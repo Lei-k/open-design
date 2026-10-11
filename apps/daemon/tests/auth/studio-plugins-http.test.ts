@@ -22,8 +22,13 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts,
   startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
 import { PERSONAL_CODEX_MOCK, actorDir, codexHome, linkCodex, setTurnMode, until } from './personal-codex-helpers.js';
-import { FIXTURE_PLUGIN_ID, FIXTURE_RESOURCE_MARKER, FIXTURE_SKILL_MARKER, PIPELINE_ONLY_PLUGIN_ID, installStudioFixturePlugin } from './studio-plugin-fixture.js';
+import { FIXTURE_LIVE_ARTIFACT_PLUGIN_ID, FIXTURE_MEDIA_PLUGIN_ID, FIXTURE_PLUGIN_ID, FIXTURE_RESOURCE_MARKER, FIXTURE_SKILL_MARKER,
+  PIPELINE_ONLY_PLUGIN_ID, installStudioAtomFixturePlugins, installStudioFixturePlugin } from './studio-plugin-fixture.js';
 
+/** S67: bundled plugins whose every step (file-write, live-artifact, media surface) runs on Web. */
+const S67_BUNDLED_APPLICABLE = ['example-audio-jingle', 'example-frame-data-chart-nyt', 'example-frame-flowchart-sticky', 'example-frame-glitch-title',
+  'example-frame-light-leak-cinema', 'example-frame-liquid-bg-hero', 'example-frame-logo-outro', 'example-frame-macos-notification', 'example-hatch-pet',
+  'example-hyperframes', 'example-image-poster', 'example-vfx-text-cursor', 'example-video-hyperframes', 'example-video-shortform'];
 /** Test-only no-pipeline plugin, isolating immutable captures and pin races. */
 const APPLICABLE = FIXTURE_PLUGIN_ID;
 /** Bundled plugin opened by the finite stage runner. */
@@ -42,10 +47,35 @@ const tavily: typeof fetch = async () => {
   if (researchHold) await researchHold;
   return Response.json({ answer: 'PLUGIN_RACE_FINDINGS', results: [{ title: 'Note', url: 'https://example.test/note', content: 'note' }] });
 };
+/** S67 media fixture: every provider media request with the key that paid for it. */
+const PNG = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(64, 7)]);
+const mediaCalls: Array<{ url: string; authorization: string }> = [];
+/** S67: the tools and stage directive each OpenAI request carried, by marker. */
+const atomRequests: Array<{ marker: string; tools: string[]; prompt: string; authorization: string }> = [];
+const liveArtifactDraft = JSON.stringify({ input: { title: 'OpenAI live artifact', preview: { type: 'html', entry: 'index.html' },
+  document: { format: 'html_template_v1', templatePath: 'template.html', generatedPreviewPath: 'index.html', dataPath: 'data.json',
+    dataJson: { total: 5 } } }, templateHtml: '<h1>{{data.total}}</h1>' });
 const questionForm = '<question-form id="brief" title="Brief">{"questions":[{"id":"color","label":"Color","type":"text"}]}</question-form>';
-const openai: typeof fetch = async (_url, init) => {
+const openai: typeof fetch = async (url, init) => {
+  const authorization = new Headers(init?.headers).get('authorization') ?? '';
+  if (String(url) !== 'https://api.openai.com/v1/responses') {
+    mediaCalls.push({ url: String(url), authorization });
+    return String(url).endsWith('/images/generations') ? Response.json({ data: [{ b64_json: PNG.toString('base64') }] })
+      : new Response('unexpected', { status: 404 });
+  }
+  const requestBody = JSON.parse(String(init?.body)) as { tools?: Array<{ name: string }> };
   const input = JSON.parse(String(init?.body)).input as Array<{ role?: string; content?: string; type?: string; call_id?: string; output?: string }>;
   const prompt = [...input].reverse().find((item) => item.role === 'user')?.content ?? '';
+  for (const [marker, name, args] of [['[plugin-live-artifact]', 'live_artifacts_create', { requestJson: liveArtifactDraft }],
+    ['[plugin-media]', 'generate_image', { prompt: 'A calm product hero', path: 'assets/hero.png', size: '1024x1024' }]] as const) {
+    if (!prompt.includes(marker)) continue;
+    const done = input.find((item) => item.type === 'function_call_output' && item.call_id === `atom-${name}`);
+    if (!done) atomRequests.push({ marker, tools: (requestBody.tools ?? []).map((tool) => tool.name), prompt, authorization });
+    const output = done ? [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Atom done.' }] }]
+      : [{ type: 'function_call', name, call_id: `atom-${name}`, arguments: JSON.stringify(args) }];
+    return new Response([...(done ? [{ type: 'response.output_text.delta', delta: 'Atom done.' }] : []), { type: 'response.completed', response: { output } }]
+      .map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
+  }
   if (prompt.includes('[plugin-resource]')) {
     const read = input.find((item) => item.type === 'function_call_output' && item.call_id === 'plugin-fixture-read');
     const output = read ? [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: String(read.output) }] }]
@@ -80,6 +110,7 @@ beforeAll(async () => {
   expect((await daemon.request({ method: 'PUT', path: '/api/multiuser/settings/provider-keys/openai', cookie: a.cookie,
     body: { revision: 0, apiKey: 'sk-plugins-a-own-fixture-0123456789' } })).status).toBe(200);
   installStudioFixturePlugin(root);
+  installStudioAtomFixturePlugins(root);
 }, 180_000);
 afterAll(async () => { await daemon?.close(); cleanupIsolatedDataRoot(); });
 
@@ -296,14 +327,19 @@ describe('Studio bundled plugin catalog', () => {
     const byId = new Map(listed.map((plugin) => [plugin.id, plugin]));
     // Finite stages of Web atoms now execute on every source.
     expect(byId.get(PIPELINE_ONLY)?.availability).toEqual({ applicable: true, reasons: [] });
-    // This bundled pipeline and the no-pipeline fixture are applicable.
-    expect(listed.filter((plugin) => plugin.availability.applicable).map((plugin) => plugin.id).sort()).toEqual([PIPELINE_ONLY, APPLICABLE].sort());
+    // This bundled pipeline, the test fixtures and (S67) the bundled Live
+    // Artifact examples are applicable; no plugin is refused for live-artifact.
+    expect(listed.filter((plugin) => plugin.availability.applicable).map((plugin) => plugin.id).sort()).toEqual([PIPELINE_ONLY, APPLICABLE,
+      FIXTURE_LIVE_ARTIFACT_PLUGIN_ID, FIXTURE_MEDIA_PLUGIN_ID, ...S67_BUNDLED_APPLICABLE].sort());
     expect(byId.get(APPLICABLE)?.availability).toEqual({ applicable: true, reasons: [] });
-    // A live-artifact template: its declared atom and the critique loop the
-    // apply pipeline adds do not run in Studio turns, and both are named.
-    const liveArtifact = listed.find((plugin) => plugin.availability.reasons.some((reason) => reason.code === 'atom' && reason.subject === 'live-artifact'))!;
-    expect(liveArtifact.availability.applicable).toBe(false);
-    expect(liveArtifact.availability.reasons).toEqual(expect.arrayContaining([{ code: 'atom', subject: 'critique-theater' }]));
+    expect(listed.some((plugin) => plugin.availability.reasons.some((reason) => reason.subject === 'live-artifact'))).toBe(false);
+    // A live-artifact template still needs the critique loop the apply pipeline adds.
+    expect(byId.get('example-article-magazine')?.availability).toEqual({ applicable: false,
+      reasons: expect.arrayContaining([{ code: 'atom', subject: 'critique-theater' }, { code: 'pipeline-devloop', subject: 'critique' }]) });
+    // A declared image surface runs only where the S34 media functions exist.
+    expect(byId.get('example-image-poster')?.availability).toEqual({ applicable: true, reasons: [],
+      sourceRestrictions: [{ source: 'personal-codex', reasons: [{ code: 'atom', subject: 'media-image' }] }] });
+    expect(byId.get(FIXTURE_LIVE_ARTIFACT_PLUGIN_ID)?.availability).toEqual({ applicable: true, reasons: [] });
     // An atom the first-party catalog does not know fails closed.
     expect(byId.get('image-template-vr-headset-exploded-view-poster')?.availability).toEqual({
       applicable: false, reasons: expect.arrayContaining([{ code: 'unknown-atom', subject: 'image-generate' }]) });
@@ -358,7 +394,7 @@ describe('Studio bundled plugin catalog', () => {
     const target = await project(a);
     const listed = await catalog(a);
     const unavailable = listed.find((plugin) => plugin.id === 'example-article-magazine')!;
-    expect(unavailable.availability.reasons).toEqual(expect.arrayContaining([{ code: 'atom', subject: 'live-artifact' }]));
+    expect(unavailable.availability.reasons).toEqual(expect.arrayContaining([{ code: 'atom', subject: 'critique-theater' }]));
     const before = withDb((db) => (db.prepare('SELECT COUNT(*) AS n FROM applied_plugin_snapshots').get() as { n: number }).n);
     const refused = await apply(a, unavailable.id, { projectId: target.projectId });
     expect(refused.status, refused.text).toBe(403);
@@ -510,4 +546,121 @@ describe('Studio bundled plugin catalog', () => {
       await settled(retry.json.runId, label);
     }
   }, 120_000);
+});
+
+// S67 (#61/#63/#68): a plugin stage that declares `live-artifact` gets the
+// canonical Studio Live Artifact tools bound to the admitted project,
+// conversation and run on every source; `media-image` gets the S34 function on
+// the OpenAI sources, billed to the turn's own key. Personal Codex has no media
+// function, so its turns are refused at admission with the typed reasons and
+// nothing is written. A shared project's editor runs on the editor's own source.
+describe('S67 plugin atoms on Studio execution sources', () => {
+  const sources = [
+    { executionSource: 'personal_subscription', agentId: 'codex' },
+    { executionSource: 'company_pool', agentId: 'openai' },
+    { executionSource: 'personal_api_key', agentId: 'openai-byok' },
+  ];
+  const liveArtifacts = (user: Principal, projectId: string) => request(user, 'GET', `/api/live-artifacts?projectId=${enc(projectId)}`);
+  const rows = (conversationId: string) => withDb((db) => ({
+    runs: (db.prepare('SELECT COUNT(*) AS n FROM multiuser_runs WHERE conversation_id = ?').get(conversationId) as { n: number }).n,
+    messages: (db.prepare('SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?').get(conversationId) as { n: number }).n,
+  }));
+
+  it.each(sources)('runs the live-artifact atom through the run-bound Studio tools on $executionSource', async (source) => {
+    const target = await project(a);
+    const applied = await apply(a, FIXTURE_LIVE_ARTIFACT_PLUGIN_ID, { projectId: target.projectId });
+    expect(applied.status, applied.text).toBe(200);
+    const pinned = withDb((db) => db.prepare('SELECT requirements_json FROM studio_plugin_applications WHERE snapshot_id = ?')
+      .get(applied.json.snapshotId) as { requirements_json: string });
+    expect(JSON.parse(pinned.requirements_json)).toEqual({ atoms: ['file-write', 'live-artifact'], capabilities: ['fs:write', 'prompt:inject'] });
+    const before = atomRequests.length;
+    const started = await turn(a, target, { ...source, message: '[plugin-live-artifact] [mock-live-artifact-create] Register the report.' });
+    expect(started.status, started.text).toBe(202);
+    const runId = started.json.runId as string;
+    const events = await request(a, 'GET', `/api/runs/${runId}/events`);
+    expect(events.text).toContain('"status":"succeeded"');
+    expect(events.text).toContain('"type":"live_artifact"');
+    const listed = await liveArtifacts(a, target.projectId);
+    expect(listed.status, listed.text).toBe(200);
+    expect(listed.json.artifacts).toHaveLength(1);
+    expect(listed.json.artifacts[0]).toMatchObject({ projectId: target.projectId, sessionId: target.conversationId, createdByRunId: runId });
+    const directive = '- live-artifact: live_artifacts_create, live_artifacts_list, live_artifacts_read, live_artifacts_update and live_artifacts_refresh';
+    if (source.executionSource === 'personal_subscription') {
+      expect(JSON.parse(readFileSync(path.join(codexHome(root, a.id), 'mock-turn-evidence.json'), 'utf8')).message).toContain(directive);
+    } else {
+      const sent = atomRequests.slice(before).find((item) => item.marker === '[plugin-live-artifact]')!;
+      expect(sent.tools).toEqual(expect.arrayContaining(['live_artifacts_create', 'live_artifacts_refresh']));
+      expect(sent.prompt).toContain(directive);
+    }
+    // B and the administrator: A's artifacts are the same refusal as a missing project.
+    const missing = await liveArtifacts(b, randomUUID());
+    for (const user of [b, admin]) expect((await liveArtifacts(user, target.projectId)).text).toBe(missing.text);
+  });
+
+  it.each(sources.slice(1))('runs the media-image atom on $executionSource, billed to the turn\'s own source', async (source) => {
+    const target = await project(a);
+    const applied = await apply(a, FIXTURE_MEDIA_PLUGIN_ID, { projectId: target.projectId });
+    expect(applied.status, applied.text).toBe(200);
+    const mediaBefore = mediaCalls.length; const before = atomRequests.length;
+    const started = await turn(a, target, { ...source, message: '[plugin-media] Make the hero image.' });
+    expect(started.status, started.text).toBe(202);
+    const runId = started.json.runId as string;
+    expect((await request(a, 'GET', `/api/runs/${runId}/events`)).text).toContain('"status":"succeeded"');
+    const run = (await request(a, 'GET', `/api/runs/${runId}`)).json;
+    expect(run.output.media).toEqual({ images: 1, speechCharacters: 0, videoSeconds: 0 });
+    expect(run.output.files).toEqual(expect.arrayContaining(['assets/hero.png']));
+    const key = source.executionSource === 'personal_api_key' ? 'sk-plugins-a-own-fixture-0123456789' : 'sk-plugins-race-fixture-0123456789';
+    expect(mediaCalls.slice(mediaBefore).map((call) => call.authorization)).toEqual([`Bearer ${key}`]);
+    const sent = atomRequests.slice(before).find((item) => item.marker === '[plugin-media]')!;
+    expect(sent.tools).toEqual(expect.arrayContaining(['generate_image', 'live_artifacts_create']));
+    expect(sent.prompt).toContain('- media-image: generate_image');
+    expect((await request(a, 'GET', `/api/projects/${target.projectId}/raw/assets/hero.png`)).status).toBe(200);
+    for (const user of [b, admin]) expect((await request(user, 'GET', `/api/projects/${target.projectId}/raw/assets/hero.png`)).status).toBe(404);
+  });
+
+  it('refuses a personal Codex turn of a media plugin at admission with typed reasons and writes nothing', async () => {
+    const target = await project(a);
+    const applied = await apply(a, FIXTURE_MEDIA_PLUGIN_ID, { projectId: target.projectId });
+    expect(applied.status, applied.text).toBe(200);
+    expect(applied.json.appliedPlugin.pluginId).toBe(FIXTURE_MEDIA_PLUGIN_ID);
+    const refused = await turn(a, target, { message: '[plugin-media] Make the hero image.' });
+    expect(refused.status, refused.text).toBe(409);
+    expect(refused.json.error).toMatchObject({ code: 'MULTIUSER_CAPABILITY_UNAVAILABLE', details: { pluginId: FIXTURE_MEDIA_PLUGIN_ID,
+      source: 'personal-codex', reasons: [{ code: 'atom', subject: 'media-image' }, { code: 'capability', subject: 'media:image' }] } });
+    expect(rows(target.conversationId)).toEqual({ runs: 0, messages: 0 });
+    // The pin is unchanged and still runs on an OpenAI source of the same conversation.
+    expect((await request(a, 'GET', `/api/projects/${target.projectId}`)).json.project.appliedPluginSnapshotId).toBe(applied.json.snapshotId);
+    const openaiTurn = await turn(a, target, { executionSource: 'personal_api_key', agentId: 'openai-byok', message: '[plugin-media] Make the hero image.' });
+    expect(openaiTurn.status, openaiTurn.text).toBe(202);
+    expect((await request(a, 'GET', `/api/runs/${openaiTurn.json.runId}/events`)).text).toContain('"status":"succeeded"');
+  });
+
+  it('keeps run-owner authority when an editor runs the owner\'s applied media plugin', async () => {
+    const target = await project(a);
+    expect((await apply(a, FIXTURE_MEDIA_PLUGIN_ID, { projectId: target.projectId })).status).toBe(200);
+    expect((await request(a, 'PUT', `/api/multiuser/projects/${target.projectId}/shares`, { username: b.username, role: 'edit' })).status).toBe(200);
+    try {
+      const keyB = 'sk-plugins-b-own-fixture-0123456789';
+      const state = await request(b, 'GET', '/api/multiuser/settings/provider-keys');
+      const revision = state.json.keys?.find?.((item: { provider: string }) => item.provider === 'openai')?.revision ?? 0;
+      const saved = await request(b, 'PUT', '/api/multiuser/settings/provider-keys/openai', { revision, apiKey: keyB });
+      expect(saved.status, saved.text).toBe(200);
+      const conversation = await request(b, 'POST', `/api/projects/${target.projectId}/conversations`, { title: 'B media' });
+      expect(conversation.status, conversation.text).toBe(200);
+      const own = { projectId: target.projectId, conversationId: conversation.json.conversation.id as string };
+      // B cannot take A's plugin onto B's personal Codex source either.
+      const refused = await turn(b, own, { message: '[plugin-media] B image' });
+      expect(refused.status, refused.text).toBe(409);
+      expect(refused.json.error.details).toMatchObject({ pluginId: FIXTURE_MEDIA_PLUGIN_ID, source: 'personal-codex' });
+      const mediaBefore = mediaCalls.length;
+      const started = await turn(b, own, { executionSource: 'personal_api_key', agentId: 'openai-byok', message: '[plugin-media] B image' });
+      expect(started.status, started.text).toBe(202);
+      expect((await request(b, 'GET', `/api/runs/${started.json.runId}/events`)).text).toContain('"status":"succeeded"');
+      // The editor's own key pays; A cannot read or attach to B's run.
+      expect(mediaCalls.slice(mediaBefore).map((call) => call.authorization)).toEqual([`Bearer ${keyB}`]);
+      expect((await request(a, 'GET', `/api/runs/${started.json.runId}`)).status).toBe(404);
+    } finally {
+      expect((await request(a, 'DELETE', `/api/multiuser/projects/${target.projectId}/shares/${b.id}`)).status).toBe(200);
+    }
+  });
 });

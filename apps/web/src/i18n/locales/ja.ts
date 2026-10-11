@@ -1649,6 +1649,7 @@ export const ja: Dict = {
   "pluginsView.webUnavailable": "Web では利用できません",
   "pluginsView.webUnavailableNeeds": "必要：{reasons}",
   "pluginsView.webApplyFromProject": "プロジェクトの入力欄から適用できます",
+  "pluginsView.webSourceRestricted": "{source} では利用不可 · 必要: {reasons}",
   "pluginsView.uninstall": "Uninstall",
   "pluginsView.uninstalling": "Uninstalling…",
   "pluginsView.uninstallConfirm": "Uninstall {title}?",

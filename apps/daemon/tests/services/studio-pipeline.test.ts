@@ -82,7 +82,7 @@ it.each([
   { stages: [{ id: 'loop', atoms: ['file-read'], repeat: true, until: 'iterations>=2' }] },
   { stages: [{ id: 'inspect', atoms: ['file-read'], onFailure: 'skip' }] },
   { stages: [{ id: 'inspect', atoms: ['file-read'], hiddenCondition: 'skip' }] },
-  { stages: [{ id: 'inspect', atoms: ['live-artifact'] }] },
+  { stages: [{ id: 'inspect', atoms: ['critique-theater'] }] },
   { stages: [pipeline.stages[0], pipeline.stages[0]] },
 ])('rejects an unsupported/damaged pipeline before publishing or starting a worker: %j', async (invalid) => {
   const { events, prompts, input } = options({ snapshot: { snapshotId: 'snapshot', pipeline: invalid as PluginPipeline } });
@@ -156,4 +156,19 @@ describe('real provider adapters on a finite Studio pipeline (provider fixtures,
     expect(result.value.text).toBe('Stage: package');
     expect(JSON.parse(readFileSync(path.join(codexHome, 'mock-turn-evidence.json'), 'utf8')).turnsInThread).toBe(2);
   });
+});
+
+// S67: a stage that declares Live Artifact or media atoms names the Studio tools
+// that carry them out, never a desktop shell command; other stages are unchanged.
+it('names the Studio tools of live-artifact and media atoms in the stage directive', async () => {
+  const studioAtoms = { stages: [{ id: 'render', atoms: ['file-write', 'live-artifact', 'media-image', 'media-video', 'media-audio'] },
+    { id: 'package', atoms: ['file-write'] }] };
+  const { prompts, input } = options({ snapshot: { snapshotId: 'snapshot', pipeline: studioAtoms } });
+  await runStudioPipeline(input);
+  expect(prompts[0]).toContain('- live-artifact: live_artifacts_create, live_artifacts_list, live_artifacts_read, live_artifacts_update and live_artifacts_refresh');
+  expect(prompts[0]).toContain('- media-image: generate_image');
+  expect(prompts[0]).toContain('- media-video: generate_video');
+  expect(prompts[0]).toContain('- media-audio: generate_speech (speech narration only)');
+  expect(prompts[0]).toContain('instead of any desktop shell or `od` command');
+  expect(prompts[1]).not.toContain('Studio tools for these atoms');
 });
