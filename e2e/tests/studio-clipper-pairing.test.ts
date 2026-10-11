@@ -42,3 +42,18 @@ it('refuses pairing and credential transmission over remote plaintext HTTP', asy
   expect((await fixture.message({ type: 'pairAccount', code: 'ONCE' })).ok).toBe(false); expect(fixture.calls).toHaveLength(0);
   await fixture.message({ type: 'getStatus' }); expect(fixture.calls[0].init.headers).toEqual({});
 });
+it('labels the code field and exchange action distinctly in every extension locale', () => {
+  const context: { OD_CLIPPER_I18N?: { LOCALES: string[]; dictionaries: Record<string, Record<string, string>> } } = {};
+  runInNewContext(readFileSync(new URL('../../clipper/i18n.js', import.meta.url), 'utf8'), context);
+  const i18n = context.OD_CLIPPER_I18N!;
+  expect(i18n.LOCALES).toHaveLength(21);
+  for (const locale of i18n.LOCALES) {
+    const { pairCode, pairAccount } = i18n.dictionaries[locale];
+    expect(pairCode, locale).not.toBe(pairAccount);
+    if (locale === 'en') { expect(pairCode).toBe('Pairing code'); expect(pairAccount).toBe('Pair account'); }
+    else { expect(pairCode, locale).not.toBe('Create pairing code'); expect(pairAccount, locale).not.toBe('Create pairing code'); }
+  }
+  expect(i18n.dictionaries.vi.pairCode).toBe('Mã ghép nối'); expect(i18n.dictionaries.nl.pairAccount).toBe('Account koppelen');
+  const html = readFileSync(new URL('../../clipper/popup.html', import.meta.url), 'utf8');
+  expect(html).toContain('data-i18n="pairCode">Pairing code'); expect(html).toContain('data-i18n="pairAccount">Pair account');
+});

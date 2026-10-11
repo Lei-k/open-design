@@ -4,34 +4,35 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, rm, writeFile, rename } from 'node:fs/promises';
 import path from 'node:path';
 import { isStudioLibraryIngestRequest, isStudioLibraryApplyRequest, type LibraryAssetFilter } from '@open-design/contracts';
-import { multiUserActorOf, applyUntrustedContentPolicy } from '../http/multiuser-gate.js';
-import { bindMultiUserStream, multiUserStreamAllowed } from '../http/multiuser-stream.js';
+import { multiUserActorOf, applyUntrustedContentPolicy, multiUserLibraryIngestAdmitted } from '../http/multiuser-gate.js';
+import { bindMultiUserStream } from '../http/multiuser-stream.js';
 import { sendApiError } from '../http/api-errors.js';
 import { StudioLibrary, StudioLibraryError, studioLibraryExtensionOrigin } from '../services/studio-library.js';
 import { ProjectAccessStore } from '../storage/project-access.js';
 import { insertProject, insertConversation, setTabs } from '../db.js';
-import { toolTokenRegistry } from '../tool-tokens.js';
+import type { AuthActor } from '../services/auth-service.js';
 import { STUDIO_LIBRARY_TOOL_DESCRIPTORS } from '../services/studio-library-tools.js';
 import { projectDir } from '../projects.js';
 
 const tokenOf = (req: Request) => /^Bearer\s+(.+)$/i.exec(req.get('authorization') ?? '')?.[1];
 const fieldsOnly = (body: unknown, fields: string[]) => body !== null && typeof body === 'object' && !Array.isArray(body) && Object.keys(body).every((key) => fields.includes(key));
-export function registerStudioLibraryRoutes(app: Express, input: { db: Database.Database; dataRoot: string; projectsRoot: string; accountActive(id: string): boolean }) {
+export function registerStudioLibraryRoutes(app: Express, input: { db: Database.Database; dataRoot: string; projectsRoot: string; accountActive(id: string): boolean; sessionCurrent(actor: AuthActor): boolean }) {
   const store = new StudioLibrary(input); const projects = new ProjectAccessStore(input.db, { accountActive: input.accountActive });
   const missing = (res: Response) => sendApiError(res, 404, 'NOT_FOUND', 'asset not found');
   const handle = (operation: (req: Request, res: Response, owner: string, current: () => boolean) => Promise<unknown> | unknown) => async (req: Request, res: Response) => {
     try {
-      let owner = multiUserActorOf(res)?.accountId; let current = () => multiUserStreamAllowed(res);
-      if (['/api/library/ingest', '/api/library/clipper-probe'].includes(req.path) && (tokenOf(req) || studioLibraryExtensionOrigin(req.get('origin')))) {
+      const actor = multiUserActorOf(res); const connected = () => !req.aborted && !res.destroyed;
+      let owner = actor?.accountId; let current = () => connected() && Boolean(actor && input.sessionCurrent(actor));
+      if (['/api/library/ingest', '/api/library/clipper-probe'].includes(req.route?.path) && (tokenOf(req) || studioLibraryExtensionOrigin(req.get('origin')))) {
         const token = tokenOf(req); const resolved = store.tokenOwner(token, req.get('origin'));
         if (!resolved || !token) return sendApiError(res, 401, 'UNAUTHORIZED', 'extension token required');
-        owner = resolved; current = () => store.tokenOwner(token, req.get('origin')) === resolved;
+        owner = resolved; current = () => connected() && store.tokenOwner(token, req.get('origin')) === resolved;
       }
       if (!owner || !input.accountActive(owner) || !current()) return sendApiError(res, 401, 'UNAUTHORIZED', 'authentication required');
       await operation(req, res, owner, current);
     } catch (error) {
       const safe = error instanceof StudioLibraryError ? error : new StudioLibraryError(500, 'INTERNAL_ERROR');
-      if (!res.headersSent && !res.writableEnded) sendApiError(res, safe.status, safe.code, safe.code === 'MULTIUSER_LIBRARY_LIMIT_REACHED' ? 'account library storage limit reached' : 'account library request refused');
+      if (!res.headersSent && !res.writableEnded && !res.destroyed) sendApiError(res, safe.status, safe.code, safe.code === 'MULTIUSER_LIBRARY_LIMIT_REACHED' ? 'account library storage limit reached' : 'account library request refused');
     }
   };
   const cors = (req: Request, res: Response) => {
@@ -41,7 +42,7 @@ export function registerStudioLibraryRoutes(app: Express, input: { db: Database.
   };
   app.post('/api/library/pair', handle((req, res, owner) => {
     if (!fieldsOnly(req.body ?? {}, [])) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid pairing request');
-    res.json(store.pair(owner));
+    res.setHeader('Cache-Control', 'no-store'); res.json(store.pair(owner, multiUserActorOf(res)!));
   }));
   for (const route of ['/api/library/pair/confirm', '/api/library/ingest']) app.options(route, (req, res) => {
     if (!cors(req, res)) return sendApiError(res, 403, 'FORBIDDEN', 'extension origin required'); res.status(204).end();
@@ -60,24 +61,25 @@ export function registerStudioLibraryRoutes(app: Express, input: { db: Database.
     cors(req, res);
     const body = req.body;
     if (!isStudioLibraryIngestRequest(body)) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid capture');
-    const token = tokenOf(req); const result = await store.ingest(owner, body, current, Boolean(token));
-    if (current()) { if (token) store.touch(token); res.json(result); }
+    const token = tokenOf(req); const result = await store.ingest(owner, body, current, Boolean(token), multiUserLibraryIngestAdmitted(res));
+    // Successful ingest has committed. Revocation after commit cannot turn it into a refusal.
+    if (token) store.touch(token); res.json(result);
   }));
   app.get('/api/library/clipper-probe', handle((_req, res) => res.json({ ok: true })));
   app.get('/api/library/assets', handle(async (req, res, owner, current) => {
     const filter: LibraryAssetFilter = {};
     for (const key of ['kind', 'tag', 'domain', 'date', 'q', 'source', 'projectId', 'designSystemId'] as const) if (typeof req.query[key] === 'string') Object.assign(filter, { [key]: req.query[key] });
     if (typeof req.query.limit === 'string') filter.limit = Number(req.query.limit);
-    const assets = await store.list(owner, filter); if (current()) res.json({ assets });
+    const assets = await store.list(owner, filter); if (!current()) throw new StudioLibraryError(401, 'UNAUTHORIZED'); res.json({ assets });
   }));
   app.get('/api/library/assets/:id', handle(async (req, res, owner, current) => {
-    const asset = await store.get(owner, String(req.params.id)); if (!current()) return; return asset ? res.json({ asset }) : missing(res);
+    const asset = await store.get(owner, String(req.params.id)); if (!current()) throw new StudioLibraryError(401, 'UNAUTHORIZED'); return asset ? res.json({ asset }) : missing(res);
   }));
   app.delete('/api/library/assets/:id', handle(async (req, res, owner, current) => {
-    const removed = await store.remove(owner, String(req.params.id), current); if (current()) return removed ? res.json({ ok: true }) : missing(res);
+    const removed = await store.remove(owner, String(req.params.id), current); if (!current()) throw new StudioLibraryError(401, 'UNAUTHORIZED'); return removed ? res.json({ ok: true }) : missing(res);
   }));
   for (const kind of ['raw', 'figma', 'element'] as const) app.get(`/api/library/assets/:id/${kind}`, handle(async (req, res, owner, current) => {
-    const result = await store.bytes(owner, String(req.params.id), kind); if (!current()) return; if (!result) return missing(res);
+    const result = await store.bytes(owner, String(req.params.id), kind); if (!current()) throw new StudioLibraryError(401, 'UNAUTHORIZED'); if (!result) return missing(res);
     applyUntrustedContentPolicy(res); res.setHeader('Cache-Control', 'no-store'); res.setHeader('Content-Type', result.mime);
     if (kind === 'figma') res.setHeader('Content-Disposition', 'attachment; filename="capture.od-figma.json"'); res.send(result.bytes);
   }));
@@ -87,7 +89,7 @@ export function registerStudioLibraryRoutes(app: Express, input: { db: Database.
     if (!isStudioLibraryApplyRequest(req.body)) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid project target');
     const check = canWrite(owner, req.body.projectId, current); if (!check()) return missing(res);
     const result = await store.apply(owner, id, req.body.projectId, input.projectsRoot, check, req.body.dir, req.body.includeElement === true);
-    if (check()) res.json(result);
+    if (!check()) throw new StudioLibraryError(404, 'NOT_FOUND'); res.json(result);
   }));
   app.post('/api/library/assets/:id/edit-as-page', handle(async (req, res, owner, current) => {
     if (!fieldsOnly(req.body ?? {}, [])) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid page request');
@@ -97,9 +99,9 @@ export function registerStudioLibraryRoutes(app: Express, input: { db: Database.
     const projectId = randomUUID(); const conversationId = randomUUID(); const staging = path.join(input.dataRoot, 'studio-library-staging', randomUUID());
     const target = projectDir(input.projectsRoot, projectId); let published = false; let committed = false;
     try {
-      await mkdir(staging, { recursive: true, mode: 0o700 }); if (!current()) return; await writeFile(path.join(staging, 'index.html'), raw.bytes, { flag: 'wx', mode: 0o600 });
-      if (!current()) return; await mkdir(input.projectsRoot, { recursive: true }); if (!current()) return; await rename(staging, target); published = true;
-      if (!current()) return;
+      await mkdir(staging, { recursive: true, mode: 0o700 }); if (!current()) throw new StudioLibraryError(401, 'UNAUTHORIZED'); await writeFile(path.join(staging, 'index.html'), raw.bytes, { flag: 'wx', mode: 0o600 });
+      if (!current()) throw new StudioLibraryError(401, 'UNAUTHORIZED'); await mkdir(input.projectsRoot, { recursive: true }); if (!current()) throw new StudioLibraryError(401, 'UNAUTHORIZED'); await rename(staging, target); published = true;
+      if (!current()) throw new StudioLibraryError(401, 'UNAUTHORIZED');
       input.db.transaction(() => {
         if (!current()) throw new StudioLibraryError(401, 'UNAUTHORIZED'); const now = Date.now();
         insertProject(input.db, { id: projectId, name: (asset.sourceTitle || 'Captured page').slice(0, 80), skillId: null, designSystemId: null,
@@ -108,7 +110,7 @@ export function registerStudioLibraryRoutes(app: Express, input: { db: Database.
         projects.ownership.bindOwner(projectId, owner, now); projects.bindConversationAuthor(conversationId, owner); setTabs(input.db, projectId, ['index.html'], 'index.html');
       }).immediate(); committed = true;
       await store.link(owner, id, projectId, current);
-      if (current()) res.json({ projectId, conversationId, relPath: 'index.html' });
+      if (!current()) throw new StudioLibraryError(401, 'UNAUTHORIZED'); res.json({ projectId, conversationId, relPath: 'index.html' });
     } finally { await rm(staging, { recursive: true, force: true }); if (published && !committed) await rm(target, { recursive: true, force: true }); }
   }));
   app.get('/api/library/events', handle((_req, res, owner, current) => {
@@ -116,14 +118,11 @@ export function registerStudioLibraryRoutes(app: Express, input: { db: Database.
     const send = (event: string, data: unknown) => { if (current()) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
     send('ready', { ok: true }); const unsubscribe = store.subscribe(owner, send); res.once('close', unsubscribe);
   }));
-  const runCurrent = (owner: string, projectId: string, runId: string) => {
-    const run = input.db.prepare('SELECT owner_account_id AS owner, project_id AS project, status FROM multiuser_runs WHERE id=?').get(runId) as { owner: string; project: string; status: string } | undefined;
-    return Boolean(run && run.owner === owner && run.project === projectId && run.status === 'active' && projects.canWrite(projectId, owner));
-  };
   const tools = (owner: string, projectId: string, current: () => boolean) => ({
     async execute(name: string, args: Record<string, unknown>) {
       const check = canWrite(owner, projectId, current); if (!check()) throw new StudioLibraryError(404, 'NOT_FOUND');
       if (name === 'library_search' && fieldsOnly(args, ['query', 'kind', 'date', 'limit'])) {
+        if (args.limit !== undefined && (typeof args.limit !== 'number' || !Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 100)) throw new StudioLibraryError(400, 'BAD_REQUEST');
         const results = await store.list(owner, { q: typeof args.query === 'string' ? args.query : '', limit: typeof args.limit === 'number' ? args.limit : 20,
           ...(typeof args.kind === 'string' ? { kind: args.kind as NonNullable<LibraryAssetFilter['kind']> } : {}), ...(typeof args.date === 'string' ? { date: args.date } : {}) });
         if (!check()) throw new StudioLibraryError(404, 'NOT_FOUND'); return { results: results.map((asset) => ({ asset, score: 0 })), semantic: false };
@@ -135,17 +134,7 @@ export function registerStudioLibraryRoutes(app: Express, input: { db: Database.
       throw new StudioLibraryError(400, 'BAD_REQUEST');
     },
   });
-  for (const operation of ['search', 'apply'] as const) app.post(`/api/tools/library/${operation}`, async (req, res) => {
-    const validation = toolTokenRegistry.validate(tokenOf(req), { endpoint: req.path, operation: `library:${operation}` });
-    if (!validation.ok) return sendApiError(res, 401, validation.code, 'library tool refused');
-    const grant = validation.grant; const owner = grant.studioLibrary?.ownerAccountId;
-    try {
-      if (!owner || !runCurrent(owner, grant.projectId, grant.runId)) throw new StudioLibraryError(404, 'NOT_FOUND');
-      const result = await tools(owner, grant.projectId, () => runCurrent(owner, grant.projectId, grant.runId)
-        && toolTokenRegistry.validate(tokenOf(req)).ok).execute(`library_${operation}`, req.body);
-      res.json(result);
-    } catch (error) { const safe = error instanceof StudioLibraryError ? error : new StudioLibraryError(500, 'INTERNAL_ERROR'); sendApiError(res, safe.status, safe.code, 'library tool refused'); }
-  });
+  for (const operation of ['search', 'apply'] as const) app.post(`/api/tools/library/${operation}`, (_req, res) => sendApiError(res, 403, 'FORBIDDEN', 'library tools are available only within an owned run'));
   return { store, tools, descriptors: STUDIO_LIBRARY_TOOL_DESCRIPTORS };
 }
 export type StudioLibraryRuntime = ReturnType<typeof registerStudioLibraryRoutes>;

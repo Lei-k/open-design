@@ -1193,7 +1193,7 @@ import {
   getRouteRegistrationInventory,
   installRouteRegistrationGuard,
 } from './route-registration-guard.js';
-import { installMultiUserFront } from './http/multiuser-gate.js';
+import { installMultiUserFront, multiUserLibraryExtensionAdmitted } from './http/multiuser-gate.js';
 import { multiUserStudioCapabilities } from './http/studio-parity.js';
 import { resolveMultiUserMode, type MultiUserModeOptions } from './services/multiuser-mode.js';
 import { assertServerContextSatisfiesRoutes } from './route-context-contract.js';
@@ -1238,6 +1238,8 @@ import {
   isZeroConfigClipperLibraryRequest,
   parseHostHeader,
 } from './origin-validation.js';
+import { STUDIO_LIBRARY_LIMITS } from '@open-design/contracts';
+import { StudioLibraryError } from './services/studio-library.js';
 import { registerStudioLibraryRoutes } from './routes/studio-library.js';
 import { registerLibraryRoutes } from './routes/library.js';
 import {
@@ -3332,11 +3334,15 @@ export async function startServer({
   // Clipper page captures are self-contained HTML with inlined images plus a
   // Figma IR, which for an image-heavy site (The Economist, news front pages)
   // runs to tens of MB — far past a normal JSON body. Give the ingest route a
-  // dedicated generous limit so a full-page capture doesn't 413; the rest of the
-  // API stays at the conservative 4mb. Registered first so this parser claims
+  // dedicated ceiling after account-token admission. Studio cookie captures use
+  // 8 MiB (3 MiB decoded -> 4 MiB base64 plus 4 MiB envelope); valid extension
+  // tokens and local-daemon captures retain 128 MiB. The rest of the API stays
+  // at the conservative 4mb. Registered first so this parser claims
   // the ingest body before the global one (express.json is a no-op once a body
   // has already been read).
-  app.use('/api/library/ingest', express.json({ limit: '128mb' }));
+  const libraryCookieParser = express.json({ limit: STUDIO_LIBRARY_LIMITS.manualRequestBytes });
+  const libraryExtensionParser = express.json({ limit: STUDIO_LIBRARY_LIMITS.requestBytes });
+  app.use('/api/library/ingest', (req, res, next) => (multiUserMode && !multiUserLibraryExtensionAdmitted(res) ? libraryCookieParser : libraryExtensionParser)(req, res, next));
   // Brand extract-from-html carries the full rendered page DOM (+ collected CSS)
   // the web read out of the in-app browser tab after the user cleared an anti-bot
   // wall — well past 4mb for image/markup-heavy sites. Give it a dedicated limit
@@ -8820,7 +8826,12 @@ export async function startServer({
     authorizeProjectRequest,
   });
   // OD Library — global asset registry (clipper ingest, grid, pairing, apply).
-  const studioLibrary = multiUserMode ? registerStudioLibraryRoutes(app, { db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, accountActive: multiUserFront!.accountActive }) : null;
+  const studioLibrary = multiUserMode ? registerStudioLibraryRoutes(app, { db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, accountActive: multiUserFront!.accountActive, sessionCurrent: multiUserFront!.sessionCurrent }) : null;
+  if (studioLibrary) multiUserFront!.setLibraryAdmission((owner, token, origin) => {
+    const account = owner ?? studioLibrary.store.tokenOwner(token, origin);
+    if (!account) throw new StudioLibraryError(401, 'UNAUTHORIZED');
+    return studioLibrary.store.admitIngest(account);
+  }, (source) => studioLibrary.store.admitPair(source));
   if (studioLibrary) multiUserFront!.setLibraryTokenCurrent((token, origin) => studioLibrary.store.tokenOwner(token, origin) !== null);
   if (!multiUserMode) registerLibraryRoutes(app, {
     db,
@@ -17759,7 +17770,8 @@ export async function startServer({
     ...(studioAutomations ? { automations: studioAutomations } : {}),
     ...(multiUserMode?.poolClock ? { clock: multiUserMode.poolClock } : {}),
   }) : null;
-  if (multiUserRuns) multiUserFront?.setCancelAccountRuns((accountId) => {
+  if (multiUserRuns) multiUserFront?.setCancelAccountRuns((accountId, reason) => {
+    studioLibrary?.store.invalidateAccount(accountId, reason === 'password-reset' || reason === 'sessions-revoked');
     // Pending connector authorizations die with the session (S58); connections stay recorded.
     studioConnectors?.invalidateAccount(accountId);
     studioConnectorRuntime?.invalidateAccount(accountId);

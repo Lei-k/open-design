@@ -1,14 +1,15 @@
 import Database from 'better-sqlite3';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { mkdir, lstat, readdir, open, unlink } from 'node:fs/promises';
+import { mkdir, lstat, readdir, open, unlink, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { constants } from 'node:fs';
 import { STUDIO_LIBRARY_LIMITS, LIBRARY_UPLOAD_MAX_BYTES, isLibraryUploadMimeAllowed,
   type LibraryAssetFilter, type LibraryIngestRequest, type LibraryIngestResponse, type LibraryPairingConfirmRequest,
   type StudioLibraryConnectionStatus, type ApiErrorCode, type LibrarySourceKind } from '@open-design/contracts';
-import { migrateLibrary, listLibraryAssets, getLibraryAsset, findLibraryAssetByHash, updateLibraryAsset, deleteLibraryAsset, addLibraryAssetSource } from '../library-store.js';
+import { migrateLibrary, listLibraryAssets, getLibraryAsset, findLibraryAssetByHash, deleteLibraryAsset, addLibraryAssetSource } from '../library-store.js';
 import { registerLibraryAsset, detectMime, extForMime, resolveAssetFigmaSidecarPath, resolveAssetElementSidecarPath, writeFigmaSidecar, writeElementSidecar } from '../library.js';
+import type { AuthActor } from './auth-service.js';
 import { writeCompanyProjectMedia } from './company-project-files.js';
 import { createSafeOutboundFetch } from '../http/safe-outbound-fetch.js';
 
@@ -27,8 +28,12 @@ export function studioLibraryExtensionOrigin(value: unknown): string | null {
 export class StudioLibrary {
   private readonly pending = new Map<string, Promise<unknown>>();
   private readonly events = new EventEmitter();
+  private readonly inFlight = new Map<string, number>();
+  private readonly pairSources = new Map<string, number>();
+  private pairWindow = 0;
+  private pairCount = 0;
   private readonly clock: () => number;
-  constructor(private readonly input: { db: Database.Database; dataRoot: string; accountActive(id: string): boolean; clock?: () => number }) {
+  constructor(private readonly input: { db: Database.Database; dataRoot: string; accountActive(id: string): boolean; sessionCurrent?: (actor: AuthActor) => boolean; clock?: () => number }) {
     this.clock = input.clock ?? Date.now; this.events.setMaxListeners(0);
     input.db.exec(`CREATE TABLE IF NOT EXISTS studio_library_pairing (
       owner_account_id TEXT PRIMARY KEY, code_hash TEXT UNIQUE NOT NULL, expires_at INTEGER NOT NULL);
@@ -37,21 +42,28 @@ export class StudioLibrary {
       extension_origin TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS studio_library_token_owner ON studio_library_tokens(owner_account_id);
       CREATE TABLE IF NOT EXISTS studio_library_rate (owner_account_id TEXT PRIMARY KEY, window_at INTEGER NOT NULL, count INTEGER NOT NULL);`);
+    const columns = input.db.prepare("PRAGMA table_info(studio_library_pairing)").all() as { name: string }[];
+    if (!columns.some((column) => column.name === 'session_snapshot')) input.db.exec('ALTER TABLE studio_library_pairing ADD COLUMN session_snapshot TEXT');
   }
   private active(owner: string) { if (!this.input.accountActive(owner)) refuse(401, 'UNAUTHORIZED'); }
-  pair(owner: string) {
-    this.active(owner); const code = randomBytes(12).toString('base64url'); const expiresAt = this.clock() + STUDIO_LIBRARY_LIMITS.pairingTtlMs;
-    this.input.db.prepare(`INSERT INTO studio_library_pairing VALUES (?, ?, ?) ON CONFLICT(owner_account_id)
-      DO UPDATE SET code_hash=excluded.code_hash, expires_at=excluded.expires_at`).run(owner, hash(code), expiresAt);
+  pair(owner: string, actor: AuthActor) {
+    this.active(owner);
+    if (!actor || actor.accountId !== owner || !this.input.sessionCurrent?.(actor)) refuse(401, 'UNAUTHORIZED');
+    const code = randomBytes(12).toString('base64url'); const expiresAt = this.clock() + STUDIO_LIBRARY_LIMITS.pairingTtlMs;
+    this.input.db.prepare(`INSERT INTO studio_library_pairing (owner_account_id, code_hash, expires_at, session_snapshot) VALUES (?, ?, ?, ?) ON CONFLICT(owner_account_id)
+      DO UPDATE SET code_hash=excluded.code_hash, expires_at=excluded.expires_at, session_snapshot=excluded.session_snapshot`).run(owner, hash(code), expiresAt, JSON.stringify(actor));
     return { code, expiresAt };
   }
   confirm(body: LibraryPairingConfirmRequest) {
     const origin = studioLibraryExtensionOrigin(body.extensionOrigin);
     if (!origin || typeof body.code !== 'string' || body.code.length > 64 || (body.label !== undefined && (typeof body.label !== 'string' || body.label.length > 128 || /[\x00-\x1f]/.test(body.label)))) refuse(400, 'BAD_REQUEST');
     return this.input.db.transaction(() => {
-      const pending = this.input.db.prepare('SELECT owner_account_id AS owner, expires_at AS expiresAt FROM studio_library_pairing WHERE code_hash=?')
-        .get(hash(body.code)) as { owner: string; expiresAt: number } | undefined;
+      const pending = this.input.db.prepare('SELECT owner_account_id AS owner, expires_at AS expiresAt, session_snapshot AS session FROM studio_library_pairing WHERE code_hash=?')
+        .get(hash(body.code)) as { owner: string; expiresAt: number; session: string | null } | undefined;
       if (!pending || pending.expiresAt <= this.clock() || !this.input.accountActive(pending.owner)) return refuse(401, 'PAIRING_FAILED');
+      let actor: AuthActor | null = null;
+      try { actor = pending.session ? JSON.parse(pending.session) as AuthActor : null; } catch {}
+      if (!actor || actor.accountId !== pending.owner || !this.input.sessionCurrent?.(actor)) return refuse(401, 'PAIRING_FAILED');
       const count = this.connection(pending.owner).tokens.length;
       if (count >= STUDIO_LIBRARY_LIMITS.maxTokens) refuse(409, 'CONFLICT');
       const token = `odlt_${randomBytes(32).toString('base64url')}`; const label = body.label?.trim() || 'Browser Extension'; const now = this.clock();
@@ -59,6 +71,32 @@ export class StudioLibrary {
       this.input.db.prepare('DELETE FROM studio_library_pairing WHERE owner_account_id=?').run(pending.owner);
       return { token, label };
     }).immediate();
+  }
+  /** The existing auth revocation hook cancels pending codes for the whole account. */
+  invalidateAccount(owner: string, revokeTokens = false) {
+    this.input.db.transaction(() => {
+      this.input.db.prepare('DELETE FROM studio_library_pairing WHERE owner_account_id=?').run(owner);
+      if (revokeTokens) this.input.db.prepare('DELETE FROM studio_library_tokens WHERE owner_account_id=?').run(owner);
+    }).immediate();
+  }
+  /** Bounded source map: the global ceiling bounds its cardinality in each minute. */
+  admitPair(source: string) {
+    const now = this.clock();
+    if (now - this.pairWindow >= 60000) { this.pairWindow = now; this.pairCount = 0; this.pairSources.clear(); }
+    const count = this.pairSources.get(source) ?? 0;
+    if (count >= STUDIO_LIBRARY_LIMITS.pairPerSourcePerMinute || this.pairCount >= STUDIO_LIBRARY_LIMITS.pairGlobalPerMinute) refuse(429, 'RATE_LIMITED');
+    this.pairCount++; this.pairSources.set(source, count + 1);
+  }
+  /** Gate admission precedes parsing; release is idempotent for finish/close/abort. */
+  admitIngest(owner: string): () => void {
+    this.active(owner); const count = this.inFlight.get(owner) ?? 0;
+    if (count >= STUDIO_LIBRARY_LIMITS.ingestInFlight) refuse(429, 'RATE_LIMITED');
+    this.rate(owner); this.inFlight.set(owner, count + 1); let released = false;
+    return () => {
+      if (released) return; released = true;
+      const remaining = (this.inFlight.get(owner) ?? 1) - 1;
+      if (remaining) this.inFlight.set(owner, remaining); else this.inFlight.delete(owner);
+    };
   }
   tokenOwner(token: string | undefined, origin?: string): string | null {
     if (!token || token.length > 128) return null;
@@ -109,8 +147,11 @@ export class StudioLibrary {
     return next;
   }
   private check(owner: string, current: () => boolean) { this.active(owner); if (!current()) refuse(401, 'UNAUTHORIZED'); }
-  async ingest(owner: string, body: LibraryIngestRequest & { mime?: string | undefined }, current: () => boolean, clipper = false): Promise<LibraryIngestResponse> {
-    this.check(owner, current); this.rate(owner);
+  async ingest(owner: string, body: LibraryIngestRequest & { mime?: string | undefined }, current: () => boolean, clipper = false, admitted = false): Promise<LibraryIngestResponse> {
+    this.check(owner, current); const release = admitted ? () => {} : this.admitIngest(owner);
+    try { return await this.ingestAdmitted(owner, body, current, clipper); } finally { release(); }
+  }
+  private async ingestAdmitted(owner: string, body: LibraryIngestRequest & { mime?: string | undefined }, current: () => boolean, clipper: boolean): Promise<LibraryIngestResponse> {
     let bytes: Buffer;
     if (typeof body.text === 'string') bytes = Buffer.from(body.text);
     else if (typeof body.dataUrl === 'string') {
@@ -150,22 +191,32 @@ export class StudioLibrary {
       };
       if (!existing && usage >= STUDIO_LIBRARY_LIMITS.assets || await size(path.join(root, 'objects')) + (existing ? 0 : bytes.length) + sidecarDelta > STUDIO_LIBRARY_LIMITS.accountBytes) refuse(409, 'MULTIUSER_LIBRARY_LIMIT_REACHED');
       this.check(owner, current);
-      const result = await registerLibraryAsset({ db, libraryDir: root, storage: 'owned', bytes, mime,
-        filename: `capture${extForMime(mime)}`, kind: body.kind, sourceUrl: body.sourceUrl, sourceTitle: body.sourceTitle, tags: body.tags,
-        metadata: { ...(body.metadata ?? {}), ...(body.figmaCapture ? { figmaCapture: { version: 1, size: Buffer.byteLength(body.figmaCapture), nodeCount: body.figmaNodeCount ?? 0 } } : {}) },
-        source: { sourceKind: clipper ? 'clipper' : 'manual-upload' }, authorize: () => this.check(owner, current) });
-      this.check(owner, current);
-      if (body.figmaCapture && !await writeFigmaSidecar(root, result.asset.contentHash, body.figmaCapture)) refuse(500, 'INGEST_FAILED');
-      this.check(owner, current);
-      if (body.elementHtml && !await writeElementSidecar(root, result.asset.contentHash, body.elementHtml)) refuse(500, 'INGEST_FAILED');
-      this.check(owner, current);
-      if (result.deduped && (body.figmaCapture || body.elementHtml)) updateLibraryAsset(db, result.asset.id, { metadata: {
-        ...(result.asset.metadata ?? {}), ...(body.metadata ?? {}),
-        ...(body.figmaCapture ? { figmaCapture: { version: 1, size: Buffer.byteLength(body.figmaCapture), nodeCount: body.figmaNodeCount ?? 0 } } : {}),
-      } });
-      const asset = publicAsset(getLibraryAsset(db, result.asset.id)!);
-      this.events.emit(owner, 'ingest', { assetId: asset.id, deduped: result.deduped });
-      return { asset, deduped: result.deduped, ...(result.taskId ? { taskId: result.taskId } : {}) };
+      // Sidecars must be complete before the registry commit. Restore dedup
+      // sidecars on failure, so denied updates cannot damage an existing asset.
+      const previous: { filename: string; bytes: Buffer | null }[] = []; let committed = false;
+      try {
+        for (const [content, suffix, writer] of [[body.figmaCapture, '.od-figma.json', writeFigmaSidecar], [body.elementHtml, '.element.html', writeElementSidecar]] as const) {
+          if (content === undefined) continue;
+          const filename = `${object}${suffix}`;
+          const old = await readFile(filename).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; return null; });
+          previous.push({ filename, bytes: old }); this.check(owner, current);
+          if (!await writer(root, contentHash, content)) refuse(500, 'INGEST_FAILED');
+        }
+        this.check(owner, current);
+        const result = await registerLibraryAsset({ db, libraryDir: root, storage: 'owned', bytes, mime,
+          filename: `capture${extForMime(mime)}`, kind: body.kind, sourceUrl: body.sourceUrl, sourceTitle: body.sourceTitle, tags: body.tags,
+          metadata: { ...(body.metadata ?? {}), ...(body.figmaCapture ? { figmaCapture: { version: 1, size: Buffer.byteLength(body.figmaCapture), nodeCount: body.figmaNodeCount ?? 0 } } : {}) },
+          source: { sourceKind: clipper ? 'clipper' : 'manual-upload' }, refreshMetadataOnDedup: Boolean(body.figmaCapture || body.elementHtml), authorize: () => this.check(owner, current) });
+        committed = true;
+        const asset = publicAsset(result.asset);
+        try { this.events.emit(owner, 'ingest', { assetId: asset.id, deduped: result.deduped }); } catch { /* Commit already succeeded; a disconnected subscriber cannot undo it. */ }
+        return { asset, deduped: result.deduped, ...(result.taskId ? { taskId: result.taskId } : {}) };
+      } finally {
+        if (!committed) for (const old of previous) {
+          if (old.bytes) await writeFile(old.filename, old.bytes);
+          else await unlink(old.filename).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; });
+        }
+      }
     });
   }
   list(owner: string, filter: LibraryAssetFilter = {}) { return this.withStore(owner, async (db) => listLibraryAssets(db, filter).map(publicAsset)); }

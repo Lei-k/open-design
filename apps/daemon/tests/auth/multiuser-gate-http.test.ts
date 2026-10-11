@@ -145,8 +145,7 @@ describe('route classification covers the real inventory', () => {
         'POST /api/library/ingest', 'GET /api/library/clipper-probe', 'GET /api/library/assets', 'GET /api/library/events',
         'GET /api/library/assets/:id', 'DELETE /api/library/assets/:id', 'GET /api/library/assets/:id/raw',
         'GET /api/library/assets/:id/figma', 'GET /api/library/assets/:id/element',
-        'POST /api/library/assets/:id/apply', 'POST /api/library/assets/:id/edit-as-page',
-        'POST /api/tools/library/search', 'POST /api/tools/library/apply'].map((key) => `actor-scoped ${key}`),
+        'POST /api/library/assets/:id/apply', 'POST /api/library/assets/:id/edit-as-page'].map((key) => `actor-scoped ${key}`),
       ...['OPTIONS /api/library/pair/confirm', 'POST /api/library/pair/confirm', 'OPTIONS /api/library/ingest'].map((key) => `auth ${key}`),
 
       ...['/api/projects', '/api/multiuser/projects'].flatMap((prefix) => [

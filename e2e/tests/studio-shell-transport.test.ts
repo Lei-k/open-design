@@ -577,5 +577,6 @@ it('S72 exposes the account library with settings and keeps extension exchange, 
   }
   for (const path of ['/api/library/sync', '/api/library/pair/confirm', '/api/tools/library/search', '/api/tools/library/apply']) {
     expect(studioRequestAvailable('POST', path, () => true), path).toBe(false);
+    if (path !== '/api/library/pair/confirm') expect(matchMultiUserRoute('POST', path).every(({ entry }) => entry.routeClass === 'blocked-in-multiuser'), path).toBe(true);
   }
 });

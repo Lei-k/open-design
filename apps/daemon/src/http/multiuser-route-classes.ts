@@ -1,6 +1,6 @@
 import type { ProjectShareRole } from '../storage/project-access.js';
 import { MULTIUSER_SHELL_PATHS, MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE, MULTIUSER_AGENT_ICON_ROUTE, MULTIUSER_EDITOR_ICON_ROUTE, publicMultiUserFile } from './multiuser-static.js';
-import { STUDIO_MCP_INSTALL_UNAVAILABLE_REASON } from '@open-design/contracts';
+import { STUDIO_MCP_INSTALL_UNAVAILABLE_REASON, STUDIO_LIBRARY_LIMITS } from '@open-design/contracts';
 
 // Multi-user route classification registry (issue #4) — declarative data.
 //
@@ -788,11 +788,11 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'GET /api/library/assets/:id', 'DELETE /api/library/assets/:id',
     'GET /api/library/assets/:id/raw', 'GET /api/library/assets/:id/figma', 'GET /api/library/assets/:id/element',
     'POST /api/library/assets/:id/apply', 'POST /api/library/assets/:id/edit-as-page',
-    'POST /api/tools/library/search', 'POST /api/tools/library/apply',
   ]).map((entry) => entry.method === 'POST' && entry.path.startsWith('/api/library/') ? {
-    ...entry, maxBodyBytes: entry.path.endsWith('/ingest') ? 128 * 1024 * 1024 : 16384,
+    ...entry, maxBodyBytes: entry.path.endsWith('/ingest') ? STUDIO_LIBRARY_LIMITS.manualRequestBytes : 16384,
     bodyPolicy: entry.path.endsWith('/ingest') ? 'studio-library-ingest' as const : entry.path.endsWith('/apply') ? 'studio-library-apply' as const : 'empty' as const,
   } : entry),
+  ...blocked('library tools use the in-process run owner; no HTTP grant is minted', ['POST /api/tools/library/search', 'POST /api/tools/library/apply']),
   ...blocked('host filesystem library sync cannot enter an account library', ['POST /api/library/sync']).map((entry) => ({ ...entry, capabilityRefusal: 'library-sync' })),
   ...blocked('brand extraction writes the daemon-global brand library and runs agents', [
     'GET /api/brands',

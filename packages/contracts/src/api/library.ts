@@ -498,6 +498,11 @@ export interface StudioLibraryConnectionStatus {
 export const STUDIO_LIBRARY_LIMITS = {
   pairingTtlMs: 5 * 60 * 1000, maxTokens: 16,
   ingestBytes: 25 * 1024 * 1024, requestBytes: 128 * 1024 * 1024,
+  // 3 MiB decoded becomes 4 MiB base64; allow another 4 MiB for JSON/capture fields.
+  manualRequestBytes: 8 * 1024 * 1024,
+  ingestInFlight: 2,
+  pairPerSourcePerMinute: 60,
+  pairGlobalPerMinute: 300,
   accountBytes: 256 * 1024 * 1024, assets: 2000, ingestPerMinute: 60,
 } as const;
 

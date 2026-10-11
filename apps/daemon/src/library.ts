@@ -14,7 +14,7 @@
 
 import type Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   LibraryAssetKind,
@@ -280,6 +280,8 @@ export interface RegisterLibraryAssetInput {
   originProjectId?: string | undefined;
   relPath?: string | undefined;
   metadata?: Record<string, unknown> | undefined;
+  /** Atomically refresh capture metadata when owned sidecars are replaced. */
+  refreshMetadataOnDedup?: boolean;
 }
 
 export interface RegisterLibraryAssetResult {
@@ -301,6 +303,7 @@ function dedupIntoExistingAsset(
     const merged = dedupeTags([...existing.tags, ...input.tags]);
     updateLibraryAsset(db, existing.id, { tags: merged });
   }
+  if (input.refreshMetadataOnDedup && input.metadata) updateLibraryAsset(db, existing.id, { metadata: { ...(existing.metadata ?? {}), ...input.metadata } });
   const refreshed = getLibraryAsset(db, existing.id) ?? existing;
   return { asset: refreshed, deduped: true };
 }
@@ -347,7 +350,7 @@ export async function registerLibraryAsset(
   input.authorize?.();
   const existing = findLibraryAssetByHash(db, contentHash);
   if (existing) {
-    return dedupIntoExistingAsset(db, existing, input);
+    return db.transaction(() => { input.authorize?.(); return dedupIntoExistingAsset(db, existing, input); }).immediate();
   }
 
   if (!mime) mime = detectMime(bytes, input.filename);
@@ -360,62 +363,66 @@ export async function registerLibraryAsset(
   const id = randomUUID();
 
   let filePath: string | undefined;
-  if (input.storage === 'owned') {
-    const ext = extForMime(mime, input.filename);
-    filePath = libraryObjectPath(libraryDir, contentHash, ext);
-    await mkdir(path.dirname(filePath), { recursive: true });
-    input.authorize?.();
-    await writeFile(filePath, bytes);
-    input.authorize?.();
-  } else {
-    // referenced: the bytes already live somewhere; point at the existing file.
-    filePath = input.absPath;
-  }
-
-  const domain = domainFromUrl(input.sourceUrl);
-  const tags = dedupeTags([...(input.tags ?? []), domain]);
-
-  input.authorize?.();
   try {
-    insertLibraryAsset(db, {
-      id,
-      kind,
-      storage: input.storage,
-      sourceUrl: input.sourceUrl,
-      sourceTitle: input.sourceTitle,
-      sourceDomain: domain,
-      capturedAt,
-      archivedDate: archivedDateFor(capturedAt),
-      filePath,
-      originProjectId: input.originProjectId,
-      relPath: input.relPath,
-      mime,
-      width: dims?.width,
-      height: dims?.height,
-      size: bytes.length,
-      contentHash,
-      tags,
-      metadata: input.metadata,
-    });
-  } catch (err) {
-    // A concurrent ingest of the same bytes won the UNIQUE(content_hash) race in
-    // the window between our findLibraryAssetByHash SELECT above and this INSERT
-    // (the `await mkdir`/`await writeFile` yield lets a sibling request slip
-    // through the same not-found check). registerLibraryAsset is idempotent by
-    // content hash, so fold into the dedup branch rather than surfacing a 500.
-    if (isUniqueContentHashViolation(err)) {
+    if (input.storage === 'owned') {
+      const ext = extForMime(mime, input.filename);
+      filePath = libraryObjectPath(libraryDir, contentHash, ext);
+      await mkdir(path.dirname(filePath), { recursive: true });
+      input.authorize?.();
+      await writeFile(filePath, bytes);
+      input.authorize?.();
+    } else {
+      // referenced: the bytes already live somewhere; point at the existing file.
+      filePath = input.absPath;
+    }
+
+    const domain = domainFromUrl(input.sourceUrl);
+    const tags = dedupeTags([...(input.tags ?? []), domain]);
+
+    return db.transaction(() => {
+      input.authorize?.();
       const winner = findLibraryAssetByHash(db, contentHash);
       if (winner) return dedupIntoExistingAsset(db, winner, input);
+      insertLibraryAsset(db, {
+        id,
+        kind,
+        storage: input.storage,
+        sourceUrl: input.sourceUrl,
+        sourceTitle: input.sourceTitle,
+        sourceDomain: domain,
+        capturedAt,
+        archivedDate: archivedDateFor(capturedAt),
+        filePath,
+        originProjectId: input.originProjectId,
+        relPath: input.relPath,
+        mime,
+        width: dims?.width,
+        height: dims?.height,
+        size: bytes.length,
+        contentHash,
+        tags,
+        metadata: input.metadata,
+      });
+      addLibraryAssetSource(db, { assetId: id, ...input.source });
+
+      const taskId = recordEnrichmentTask(db, id, kind);
+
+      const asset = getLibraryAsset(db, id);
+      if (!asset) throw new Error(`library asset vanished after insert: ${id}`);
+      return { asset, deduped: false, taskId };
+    }).immediate();
+  } catch (error) {
+    // A failed registration cannot leave a quota-consuming unindexed object.
+    // Never unlink an object already committed by a concurrent registration.
+    if (input.storage === 'owned' && filePath && !findLibraryAssetByHash(db, contentHash)) {
+      await unlink(filePath).catch((failure: NodeJS.ErrnoException) => { if (failure.code !== 'ENOENT') throw failure; });
     }
-    throw err;
+    if (isUniqueContentHashViolation(error)) {
+      const winner = findLibraryAssetByHash(db, contentHash);
+      if (winner) return db.transaction(() => { input.authorize?.(); return dedupIntoExistingAsset(db, winner, input); }).immediate();
+    }
+    throw error;
   }
-  addLibraryAssetSource(db, { assetId: id, ...input.source });
-
-  const taskId = recordEnrichmentTask(db, id, kind);
-
-  const asset = getLibraryAsset(db, id);
-  if (!asset) throw new Error(`library asset vanished after insert: ${id}`);
-  return { asset, deduped: false, taskId };
 }
 
 /**

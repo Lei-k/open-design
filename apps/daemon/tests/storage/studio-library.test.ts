@@ -9,7 +9,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 const setup = () => {
   const root = mkdtempSync(path.join(tmpdir(), 'studio-library-')); roots.push(root);
   const db = new Database(':memory:'); const active = new Set(['a', 'b', 'admin']); let now = 1000;
-  const store = new StudioLibrary({ db, dataRoot: root, accountActive: (id) => active.has(id), clock: () => now });
+  const store = new StudioLibrary({ db, dataRoot: root, accountActive: (id) => active.has(id), sessionCurrent: () => true, clock: () => now });
   return { store, db, active, advance: () => { now += 300001; } };
 };
 it('uses account-isolated content hashes and safe private paths', async () => {
@@ -24,12 +24,12 @@ it('uses account-isolated content hashes and safe private paths', async () => {
 });
 it('hashes codes and tokens, consumes once, expires, scopes list/revoke and checks deactivation', () => {
   const { store, db, active, advance } = setup();
-  const pending = store.pair('a'); const paired = store.confirm({ code: pending.code, extensionOrigin: 'chrome-extension://abc', label: 'A' });
+  const pending = store.pair('a', { accountId: 'a', username: 'a', role: 'user', sessionId: 'a', sessionExpiresAt: 900000 }); const paired = store.confirm({ code: pending.code, extensionOrigin: 'chrome-extension://abc', label: 'A' });
   expect(paired.token).toMatch(/^odlt_/); expect(store.tokenOwner(paired.token)).toBe('a');
   expect(JSON.stringify(store.connection('a'))).not.toContain(paired.token);
   expect(JSON.stringify(db.prepare('SELECT * FROM studio_library_tokens').all())).not.toContain(paired.token);
   expect(() => store.confirm({ code: pending.code, extensionOrigin: 'chrome-extension://abc' })).toThrow(StudioLibraryError);
-  const expired = store.pair('a'); advance(); expect(() => store.confirm({ code: expired.code, extensionOrigin: 'chrome-extension://abc' })).toThrow();
+  const expired = store.pair('a', { accountId: 'a', username: 'a', role: 'user', sessionId: 'a', sessionExpiresAt: 900000 }); advance(); expect(() => store.confirm({ code: expired.code, extensionOrigin: 'chrome-extension://abc' })).toThrow();
   expect(store.connection('b').tokens).toEqual([]); const id = store.connection('a').tokens[0]!.id;
   expect(store.revoke('b', id)).toBe(false); active.delete('a'); expect(store.tokenOwner(paired.token)).toBeNull(); active.add('a');
   expect(store.revoke('a', id)).toBe(true); expect(store.tokenOwner(paired.token)).toBeNull(); db.close();

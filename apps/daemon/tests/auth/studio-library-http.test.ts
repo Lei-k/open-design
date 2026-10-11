@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import path from 'node:path';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { currentAccountRevision } from './helpers.js';
-import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts, startMultiUserDaemon,
+import { cleanupIsolatedDataRoot, loadIsolatedServerModule, login, multiUserOptions, provisionAccounts, startMultiUserDaemon,
   type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
 let daemon: StartedMultiUserDaemon; let root: string; let a: Principal; let b: Principal; let admin: Principal;
 const origin = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop';
@@ -109,3 +109,50 @@ it('creates an owned page and refuses applying into foreign and read-only projec
   // Use admin's asset: a foreign asset is refused before project authorization.
   expect((await call(a, 'POST', `/api/library/assets/${saved.json.asset.id}/apply`, { projectId: edited.json.projectId })).status).toBe(404);
 });
+it.each(['logout', 'rotate session', 'own session revoke', 'admin session revoke', 'password reset', 'password reset setup', 'own password change', 'deactivate'] as const)(
+  'enforces pending-code and extension-token lifecycle on %s, including reauthentication', async (action) => {
+    let setupToken: string | undefined; const username = `lifecycle-${randomUUID().slice(0, 8)}`; let password = 'library-fixture-password-A1!';
+    const created = await call(admin, 'POST', '/api/auth/users', { username, password, role: action === 'own session revoke' ? 'admin' : 'user' });
+    expect(created.status, created.text).toBe(201);
+    const user: Principal = { id: created.json.account.id, username, password, cookie: await login(daemon, username, password) };
+    const token = (await pair(user)).token; const pending = await call(user, 'POST', '/api/library/pair', {}); expect(pending.status).toBe(200);
+    const exchangePending = () => call(null, 'POST', '/api/library/pair/confirm', { code: pending.json.code, extensionOrigin: origin }, { origin });
+    const tokenCapture = () => call(null, 'POST', '/api/library/ingest', { text: `token-${action}` }, { origin, authorization: `Bearer ${token}` });
+    if (action === 'logout') expect((await call(user, 'POST', '/api/auth/logout', {})).status).toBe(204);
+    if (action === 'rotate session') expect((await call(user, 'POST', '/api/auth/session/rotate', {})).status).toBe(200);
+    if (action === 'own session revoke' || action === 'admin session revoke') expect((await call(action === 'own session revoke' ? user : admin, 'POST', `/api/auth/users/${user.id}/sessions/revoke`, {})).status).toBe(200);
+    if (action === 'password reset') {
+      password = 'library-reset-password-B2!';
+      const revision = await currentAccountRevision(daemon.request, user.id, admin.cookie);
+      expect((await call(admin, 'POST', `/api/auth/users/${user.id}/password`, { password, revision })).status).toBe(204);
+    }
+    if (action === 'password reset setup') {
+      password = 'library-setup-password-D4!'; const revision = await currentAccountRevision(daemon.request, user.id, admin.cookie);
+      const reset = await call(admin, 'POST', `/api/auth/users/${user.id}/password`, { revision });
+      expect(reset.status, reset.text).toBe(201); setupToken = reset.json.setup.token;
+    }
+    if (action === 'own password change') {
+      password = 'library-own-password-C3!';
+      expect((await call(user, 'POST', '/api/auth/password', { currentPassword: user.password, newPassword: password })).status).toBe(200);
+    }
+    if (action === 'deactivate') {
+      const revision = await currentAccountRevision(daemon.request, user.id, admin.cookie);
+      expect((await call(admin, 'PATCH', `/api/auth/users/${user.id}`, { active: false, revision })).status).toBe(200);
+    }
+    expect((await exchangePending()).status).toBe(401);
+    expect((await tokenCapture()).status).toBe(action === 'logout' || action === 'rotate session' ? 200 : 401);
+    if (action === 'deactivate') {
+      const revision = await currentAccountRevision(daemon.request, user.id, admin.cookie);
+      expect((await call(admin, 'PATCH', `/api/auth/users/${user.id}`, { active: true, revision })).status).toBe(200);
+      expect((await tokenCapture()).status).toBe(200);
+    }
+    if (setupToken) expect((await call(null, 'POST', '/api/auth/setup', { token: setupToken, password })).status).toBe(200);
+    user.cookie = await login(daemon, username, password);
+    expect((await exchangePending()).status).toBe(401);
+    expect((await tokenCapture()).status).toBe(action === 'logout' || action === 'rotate session' || action === 'deactivate' ? 200 : 401);
+    const fresh = await pair(user); expect(fresh.token).not.toBe(token);
+    expect((await call(null, 'POST', '/api/library/ingest', { text: 'fresh authorization' }, { origin, authorization: `Bearer ${fresh.token}` })).status).toBe(200);
+    const connection = await call(user, 'GET', '/api/library/connection');
+    expect(connection.text).not.toContain(token); expect(connection.text).not.toContain(fresh.token);
+  },
+);
