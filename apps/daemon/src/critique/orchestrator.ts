@@ -128,7 +128,23 @@ export async function runOrchestrator(
   const { runId, projectId, conversationId, artifactDir, adapter, cfg, db, stdout } = params;
   const authorized = () => params.authorized?.() !== false;
   const check = () => { if (!authorized()) throw new AbortError(); };
-  const bus: CritiqueSseBus = { emit(event) { if (authorized()) params.bus.emit(event); } };
+  const committedShip: { status: CritiqueRunStatus | null } = { status: null };
+  const bus: CritiqueSseBus = { emit(event) {
+    if (!authorized() || committedShip.status !== null) return;
+    if (params.authorized && event.event === 'critique.ship') {
+      // Publish the terminal row before the durable replay. Later authority
+      // loss stops effects/reads; it cannot change an already published result.
+      db.transaction(() => {
+        updateCritiqueRun(db, runId, { status: event.data.status, score: event.data.composite, artifactPath,
+          rounds: completedRounds.map((r) => ({ n: r.n, composite: r.composite, mustFix: r.mustFix,
+            decision: decideRound(r.composite, r.mustFix, cfg) as 'continue' | 'ship' })) });
+        params.bus.emit(event);
+      })();
+      committedShip.status = event.data.status;
+      return;
+    }
+    params.bus.emit(event);
+  } };
   check();
   const skill = params.skill ?? 'unknown';
   // Phase 12 round-duration histogram needs the wall-clock time the first
@@ -732,11 +748,14 @@ export async function runOrchestrator(
 
   // Revocation wins over in-flight artifact/transcript I/O. Never publish a
   // handle to bytes completed after the authority that admitted them expired.
-  if (!authorized()) {
+  if (!authorized() && committedShip.status === null) {
     finalStatus = 'interrupted';
     artifactPath = null;
     transcriptPath = null;
   }
+  if (committedShip.status !== null) finalStatus = committedShip.status;
+  // A transcript finishing after revocation is not a new published handle.
+  if (!authorized()) transcriptPath = null;
 
   // Build rounds summary for persistence.
   const roundsSummary = completedRounds.map((r) => ({

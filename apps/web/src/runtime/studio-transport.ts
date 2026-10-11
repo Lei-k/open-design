@@ -167,8 +167,8 @@ export function studioRequestAvailable(method: string, path: string,
     if (/^\/api\/multiuser\/mcp\/oauth\/(?:refresh|cancel)$/.test(path)) return method === 'POST';
     if (mcpPath === '/api/multiuser/mcp/oauth/status') return method === 'GET';
   }
-  // S66: private Jury transcripts follow run authority on the daemon.
-  if (usable('generation')) {
+  // S66: Jury uses any enabled execution source, independently from media.
+  if (usable('execution')) {
     const jury = /^\/api\/(?:multiuser\/)?projects\/[^/]+\/critique(?:\/[^/]+(?:\/(events|transcript|artifact|interrupt))?)?$/.exec(path);
     if (jury) return jury[1] === 'interrupt' ? method === 'POST' : method === 'GET' || (!jury[1] && /^\/api\/(?:multiuser\/)?projects\/[^/]+\/critique$/.test(path) && method === 'POST');
   }

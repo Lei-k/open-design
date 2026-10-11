@@ -292,7 +292,7 @@ it('reconciles recent stale Jury rows on restart without crossing owner boundari
   const db = new Database(path.join(root, 'app.sqlite'));
   try {
     for (const id of [run.runId, other.runId]) {
-      db.prepare("UPDATE multiuser_runs SET status = 'active' WHERE id = ?").run(id);
+      db.prepare("UPDATE multiuser_runs SET status = 'active', critique_reconciled = 0 WHERE id = ?").run(id);
       db.prepare("UPDATE critique_runs SET status = 'running', updated_at = ? WHERE id = ?").run(Date.now(), id);
       db.prepare("DELETE FROM studio_critique_events WHERE run_id = ? AND event IN ('critique.ship', 'critique.interrupted', 'critique.failed', 'critique.degraded')").run(id);
     }

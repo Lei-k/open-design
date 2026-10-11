@@ -106,3 +106,11 @@ describe('sandbox arguments', () => {
     expect(args.slice(-2)).toEqual(['--chdir', '/data/projects/p']);
   });
 });
+
+it('Jury outer sandbox mounts project context read-only while keeping private runtime mounts writable', () => {
+  const project = '/project-context';
+  const args = personalSandboxArgs({ bwrap: BWRAP, readOnlyPaths: [] },
+    { codexHome: '/private-runtime/codex', home: '/private-runtime/home', temp: '/private-runtime/tmp', cwd: project, ...{ readOnlyCwd: true } });
+  expect(args.flatMap((arg, index) => arg === '--bind' ? [args[index + 1]] : [])).not.toContain(project);
+  expect(args.flatMap((arg, index) => arg === '--ro-bind' ? [args[index + 1]] : [])).toContain(project);
+});

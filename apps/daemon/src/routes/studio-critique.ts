@@ -1,4 +1,4 @@
-import { constants, promises as fs } from 'node:fs';
+import { constants, promises as fs, existsSync, lstatSync, realpathSync, readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
@@ -13,7 +13,7 @@ import { multiUserActorOf } from '../http/multiuser-gate.js';
 
 type Run = { id: string; owner_account_id: string; project_id: string; status: 'queued' | 'active' | 'succeeded' | 'failed' | 'canceled'; request_json: string | null };
 export function registerStudioCritiqueRoutes(app: Express, input: {
-  db: Database.Database; dataRoot: string;
+  db: Database.Database; dataRoot: string; dataRootCanonical: string; accountExists(id: string): boolean;
   owned(req: Request, res: Response, id: string): Run | null;
   canView(projectId: string, accountId: string): boolean;
   start(body: Record<string, unknown>, res: Response): Promise<unknown>;
@@ -24,10 +24,14 @@ export function registerStudioCritiqueRoutes(app: Express, input: {
     run_id TEXT NOT NULL REFERENCES multiuser_runs(id) ON DELETE CASCADE,
     seq INTEGER NOT NULL, event TEXT NOT NULL, data TEXT NOT NULL,
     PRIMARY KEY(run_id, seq))`);
-  const stale = db.prepare(`SELECT c.id FROM critique_runs c JOIN multiuser_runs r ON r.id = c.id
-    WHERE c.status IN ('running', 'interrupted') AND r.status NOT IN ('active', 'queued')
-    AND json_valid(r.request_json) AND json_extract(r.request_json, '$.critique') = 1`).all() as Array<{ id: string }>;
-  if (stale.length) reconcileStaleRuns(db, { staleAfterMs: 0, now: Date.now() + 1, runIds: stale.map((row) => row.id) });
+  const columns = db.prepare('PRAGMA table_info(multiuser_runs)').all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === 'critique_reconciled')) db.exec('ALTER TABLE multiuser_runs ADD COLUMN critique_reconciled INTEGER NOT NULL DEFAULT 0');
+  db.exec(`CREATE INDEX IF NOT EXISTS studio_critique_pending_recovery ON multiuser_runs(id)
+    WHERE critique_reconciled = 0 AND json_valid(request_json) AND json_extract(request_json, '$.critique') = 1;
+    CREATE UNIQUE INDEX IF NOT EXISTS studio_critique_terminal ON studio_critique_events(run_id)
+    WHERE event IN ('critique.ship', 'critique.interrupted', 'critique.failed', 'critique.degraded')`);
+  const pending = db.prepare(`SELECT r.* FROM multiuser_runs r WHERE r.critique_reconciled = 0
+    AND r.status NOT IN ('active', 'queued') AND json_valid(r.request_json) AND json_extract(r.request_json, '$.critique') = 1`).all() as Run[];
   const listeners = new Map<string, Set<Response>>();
   const isCritique = (run: Run) => { try { return JSON.parse(run.request_json ?? '{}').critique === true; } catch { return false; } };
   const resolve = (req: Request, res: Response) => {
@@ -74,7 +78,7 @@ export function registerStudioCritiqueRoutes(app: Express, input: {
   app.get(`${prefix}/:runId/events`, (req, res) => {
     const run = resolve(req, res); if (!run) return;
     const cursor = req.get('Last-Event-ID') ?? req.query.after ?? '0';
-    const last = frames(run.id).at(-1)?.seq ?? 0;
+    const last = (db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM studio_critique_events WHERE run_id = ?').get(run.id) as { seq: number }).seq;
     if (typeof cursor !== 'string' || !/^\d{1,15}$/.test(cursor) || Number(cursor) > last) {
       sendApiError(res, 400, 'BAD_REQUEST', 'invalid event cursor'); return;
     }
@@ -98,12 +102,13 @@ export function registerStudioCritiqueRoutes(app: Express, input: {
     const refusal = () => { if (!res.headersSent) sendApiError(res, 404, 'NOT_FOUND', 'run not found'); else res.destroy(); };
     const file = getCritiqueRun(db, run.id)?.artifactPath;
     if (!file) { refusal(); return; }
-    const directory = studioCritiqueDirectory(input.dataRoot, run.owner_account_id, run.project_id, run.id);
+    const directory = studioCritiqueDirectory(input.dataRootCanonical, run.owner_account_id, run.project_id, run.id);
     let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
     try {
-      if (path.dirname(file) !== directory || await fs.realpath(directory) !== directory) { refusal(); return; }
+      const rawDirectory = studioCritiqueDirectory(input.dataRoot, run.owner_account_id, run.project_id, run.id);
+      if (![directory, rawDirectory].includes(path.dirname(file)) || await fs.realpath(path.dirname(file)) !== directory) { refusal(); return; }
       if (!resolve(req, res)) return;
-      handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      handle = await fs.open(path.join(directory, path.basename(file)), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       const stat = await handle.stat();
       if (!resolve(req, res)) return;
       if (!stat.isFile() || stat.size > STUDIO_CRITIQUE_MAX_BYTES) { refusal(); return; }
@@ -130,7 +135,11 @@ export function registerStudioCritiqueRoutes(app: Express, input: {
   const emit = (id: string, event: CritiqueSseEvent) => {
       const seq = (db.prepare('SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM studio_critique_events WHERE run_id = ?').get(id) as { n: number }).n;
       const data = JSON.stringify(event.data);
-      db.prepare('INSERT INTO studio_critique_events VALUES (?, ?, ?, ?)').run(id, seq, event.event, data);
+      db.transaction(() => {
+        db.prepare('INSERT INTO studio_critique_events VALUES (?, ?, ?, ?)').run(id, seq, event.event, data);
+        if (['critique.ship', 'critique.interrupted', 'critique.failed', 'critique.degraded'].includes(event.event))
+          db.prepare('UPDATE multiuser_runs SET critique_reconciled = 1 WHERE id = ?').run(id);
+      })();
       for (const res of listeners.get(id) ?? []) if (multiUserStreamAllowed(res)) res.write(`id: ${seq}\nevent: ${event.event}\ndata: ${data}\n\n`);
   };
   const closeReplay = (id: string, status: 'failed' | 'canceled') => {
@@ -153,21 +162,59 @@ export function registerStudioCritiqueRoutes(app: Express, input: {
       ? { event: 'critique.interrupted', data: { runId: id, bestRound: best?.round ?? 0, composite: best?.composite ?? 0 } }
       : { event: 'critique.failed', data: { runId: id, cause: 'orchestrator_internal' } });
   };
-  // Boot recovery also closes the private replay, including rows already
-  // reconciled by the daemon's earlier age-based scan. Never publish handles
-  // from unfinished artifact/transcript writes after a crash.
-  for (const { id } of stale) if (!terminal(id)) {
-    updateCritiqueRun(db, id, { artifactPath: null, transcriptPath: null });
-    closeReplay(id, 'canceled');
+  const recoverPublishedArtifact = (run: Run) => {
+    // Legacy writers published SHIP before saving its path. Recover only a
+    // bounded, regular artifact in this immutable actor/project/run directory.
+    const directory = studioCritiqueDirectory(input.dataRootCanonical, run.owner_account_id, run.project_id, run.id);
+    if (!existsSync(directory) || realpathSync(directory) !== directory) return null;
+    const files = ['html', 'css', 'md', 'txt', 'json', 'svg', 'bin'].map((extension) => path.join(directory, `artifact.${extension}`))
+      .filter((file) => { if (!existsSync(file)) return false; const stat = lstatSync(file); return stat.isFile() && stat.size <= STUDIO_CRITIQUE_MAX_BYTES; });
+    return files.length === 1 ? files[0]! : null;
+  };
+  // A terminal marker prevents rehydrating all historic runs on every boot.
+  // Old-writer SHIP frames are authoritative even if its final metadata write
+  // was interrupted. New writers commit the Jury row before publishing SHIP.
+  for (const run of pending) {
+    if (!input.accountExists(run.owner_account_id)) continue;
+    const ship = db.prepare("SELECT data FROM studio_critique_events WHERE run_id = ? AND event = 'critique.ship'").get(run.id) as { data: string } | undefined;
+    const critique = getCritiqueRun(db, run.id);
+    if (ship && critique) {
+      const value = JSON.parse(ship.data) as { status: 'shipped' | 'below_threshold'; composite: number };
+      updateCritiqueRun(db, run.id, { status: value.status, score: value.composite,
+        artifactPath: critique.artifactPath ?? (['shipped', 'below_threshold'].includes(value.status) ? recoverPublishedArtifact(run) : null) });
+      db.prepare("UPDATE multiuser_runs SET status = 'succeeded', critique_reconciled = 1 WHERE id = ?").run(run.id);
+    } else if (critique && ['shipped', 'below_threshold'].includes(critique.status)) {
+      emit(run.id, { event: 'critique.ship', data: { runId: run.id, round: critique.rounds.at(-1)?.n ?? 1,
+        composite: critique.score ?? 0, status: critique.status as 'shipped' | 'below_threshold',
+        artifactRef: { projectId: run.project_id, artifactId: run.id }, summary: 'Recovered terminal Jury result' } });
+      db.prepare("UPDATE multiuser_runs SET status = 'succeeded' WHERE id = ?").run(run.id);
+    } else if (!terminal(run.id)) {
+      if (critique) {
+        reconcileStaleRuns(db, { staleAfterMs: 0, now: Date.now() + 1, runIds: [run.id] });
+        updateCritiqueRun(db, run.id, { status: 'interrupted', artifactPath: null, transcriptPath: null });
+      }
+      closeReplay(run.id, 'canceled');
+    } else db.prepare('UPDATE multiuser_runs SET critique_reconciled = 1 WHERE id = ?').run(run.id);
   }
-  // Parent recovery may finish a turn that crashed before its critique row
-  // existed. Close that actor's private replay too, without starting a source.
-  for (const run of db.prepare(`SELECT * FROM multiuser_runs WHERE status IN ('failed', 'canceled')
-    AND json_valid(request_json) AND json_extract(request_json, '$.critique') = 1`).all() as Run[]) {
-    closeReplay(run.id, run.status === 'canceled' ? 'canceled' : 'failed');
-  }
-  return { emit, terminal, finish(id: string, status: 'succeeded' | 'failed' | 'canceled') {
+  const root = path.join(input.dataRootCanonical, 'critique-artifacts', 'studio');
+  const safeRoot = () => existsSync(root) && realpathSync(root) === root;
+  const purgeProject = (projectId: string) => {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(projectId) || !safeRoot()) return;
+    for (const owner of readdirSync(root)) {
+      const home = path.join(root, owner);
+      if (!lstatSync(home).isDirectory() || realpathSync(home) !== home) continue;
+      rmSync(path.join(home, projectId), { recursive: true, force: true });
+    }
+  };
+  const purgeDeletedAccounts = () => {
+    if (!safeRoot()) return;
+    for (const owner of readdirSync(root)) if (!input.accountExists(owner)) rmSync(path.join(root, owner), { recursive: true, force: true });
+  };
+  purgeDeletedAccounts();
+  return { emit, terminal, purgeProject, purgeDeletedAccounts, finish(id: string, status: 'succeeded' | 'failed' | 'canceled') {
     const critique = getCritiqueRun(db, id);
+    const ship = db.prepare("SELECT 1 FROM studio_critique_events WHERE run_id = ? AND event = 'critique.ship'").get(id);
+    if (ship) status = 'succeeded';
     if (critique?.status === 'running' && status !== 'succeeded') {
       updateCritiqueRun(db, id, { status: status === 'canceled' ? 'interrupted' : 'failed', artifactPath: null, transcriptPath: null });
     }
@@ -175,5 +222,6 @@ export function registerStudioCritiqueRoutes(app: Express, input: {
     // effect authority. Persist the outcome independently of that row state.
     if (status !== 'succeeded') closeReplay(id, status);
     for (const res of listeners.get(id) ?? []) res.end(); listeners.delete(id);
+    return status;
   } };
 }

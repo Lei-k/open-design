@@ -2,10 +2,10 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { StudioDesignJury } from '../../../src/components/Theater/StudioDesignJury';
-const mock = vi.hoisted(() => ({ available: true, fetch: vi.fn(), connections: [] as string[],
+const mock = vi.hoisted(() => ({ available: true, media: true, fetch: vi.fn(), connections: [] as string[],
   streams: [] as Array<{ events: Record<string, EventListener>; closed: boolean }> }));
 vi.mock('../../../src/runtime/studio-capabilities', () => ({ useStudioCapabilities: () => ({
-  available: () => mock.available, reason: () => 'Execution disabled', generation: 1,
+  available: (lane: string) => lane === 'generation' ? mock.media : mock.available, reason: () => 'Execution disabled', generation: 1,
 }) }));
 vi.mock('../../../src/runtime/studio-transport', () => ({ studioFetch: mock.fetch, studioEventSourceCtor: () => class {
   handle = { events: {} as Record<string, EventListener>, closed: false };
@@ -102,4 +102,12 @@ it('does not display another project’s late start result', async () => {
   release(Response.json({ runId: 'old-run' }));
   await waitFor(() => expect(mock.fetch.mock.calls.some((call) => call[0] === '/api/projects/other/critique')).toBe(true));
   expect(mock.connections.some((url) => url.includes('old-run'))).toBe(false);
+});
+
+it('allows a personal Codex Jury without reopening the disabled media generation lane', async () => {
+  mock.media = false;
+  try {
+    render(<StudioDesignJury projectId="p" conversationId="c" agentId="codex" canWrite />);
+    expect(screen.getByRole('button', { name: 'Start Design Jury' })).toBeTruthy();
+  } finally { mock.media = true; }
 });

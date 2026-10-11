@@ -42,7 +42,7 @@ import type { MultiUserDesignRoutes } from './multiuser-design.js';
 import { CompanyOpenAIConfigError, CompanyOpenAIStore } from '../storage/company-openai.js';
 import { CompanyOpenAIWorker, runCompanyOpenAITurn } from '../runtimes/company-openai.js';
 import { registerStudioCritiqueRoutes } from './studio-critique.js';
-import { runStudioCritique } from '../critique/studio.js';
+import { runStudioCritique, studioCritiqueProjectTools } from '../critique/studio.js';
 import { runStudioPipeline } from '../services/studio-pipeline.js';
 import { createStudioChatInvalidation } from '../services/studio-chat-invalidation.js';
 import { observeStudioProjectDefaults, studioProjectDefaultsUnchanged, type StudioProjectDefaultsObservation } from '../services/studio-project-defaults.js';
@@ -142,7 +142,8 @@ type FieldRefusal = { status: number; code: ApiErrorCode; message: string; detai
 const safeProjectRelative = (value: string) => value.length > 0 && value.length <= 512 && !value.includes('\0') && !value.startsWith('/')
   && !value.includes('\\') && !/^[A-Za-z]:/.test(value) && value.split('/').every((part) => part !== '..' && part !== '.' && part !== '');
 const REQUEST_KEY = /^[A-Za-z0-9._:-]{1,128}$/;
-const POLICY_FIELDS = new Set<string>([...MULTIUSER_PERSONAL_RUN_FIELD_POLICY.honored,
+// Private Jury admission adds this internal flag; public /api/runs rejects it.
+const POLICY_FIELDS = new Set<string>(['critique', ...MULTIUSER_PERSONAL_RUN_FIELD_POLICY.honored,
   ...MULTIUSER_PERSONAL_RUN_FIELD_POLICY.defaultOnly, ...MULTIUSER_PERSONAL_RUN_FIELD_POLICY.notApplied]);
 const isDefault = (key: string, value: unknown): boolean => value === undefined || (
   ['skillIds', 'attachments', 'commentAttachments'].includes(key) ? Array.isArray(value) && value.length === 0
@@ -352,6 +353,7 @@ export function multiUserTerminalErrorCode(source: 'company_pool' | 'personal_su
 export function registerMultiUserRunRoutes(app: Express, input: {
   db: Database.Database;
   dataRoot: string;
+  dataRootCanonical: string;
   sessionCurrent?: (actor: AuthActor) => boolean;
   projectsRoot: string;
   mockAgentScript?: string;
@@ -880,6 +882,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
    * new 'close' listener may never fire, so cancellers settle the run directly.
    */
   const running = (child: RunWorker) => child.exitCode === null && child.signalCode === null;
+  // Markers exist before legacy private chat projections are cleaned up.
+  if (!(db.prepare('PRAGMA table_info(multiuser_runs)').all() as Array<{ name: string }>).some((column) => column.name === 'critique_reconciled'))
+    db.exec('ALTER TABLE multiuser_runs ADD COLUMN critique_reconciled INTEGER NOT NULL DEFAULT 0');
   const studioMessages = new MultiUserStudioMessages(db);
   const cancelPending = new Set<string>();
   const sourceInvalidated = new Set<string>();
@@ -952,7 +957,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   const publishEvent = (id: string, frame: string) => {
     for (const res of listeners.get(id) ?? []) if (multiUserStreamAllowed(res)) res.write(frame);
     const committed = row(id);
-    if (committed) chatInvalidation.changed(committed.project_id, committed.conversation_id,
+    if (committed && storedRequest(committed.request_json)?.critique !== true) chatInvalidation.changed(committed.project_id, committed.conversation_id,
       committed.status !== 'active' && committed.status !== 'queued');
   };
   const emit = <E extends MultiUserRunEvent['event']>(id: string, event: E, data: RunEventData<E>) => {
@@ -1049,7 +1054,12 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     if (storesClosed) return;
     const existing = row(id);
     if (!existing || (existing.status !== 'active' && existing.status !== 'queued')) return;
-    critiqueRoutes?.finish(id, status);
+    // Recovery runs before route registration. A durable Jury SHIP already
+    // owns its outcome, including the ordinary parent run's terminal replay.
+    if (!critiqueRoutes && storedRequest(existing.request_json)?.critique === true
+      && db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'studio_critique_events'").get()
+      && db.prepare("SELECT 1 FROM studio_critique_events WHERE run_id = ? AND event = 'critique.ship'").get(id)) status = 'succeeded';
+    status = critiqueRoutes?.finish(id, status) ?? status;
     if (existing.status === 'active' && isCompany(existing)) closeLedgerSpan(existing, status);
     const projection = projections.get(id);
     projection?.flush();
@@ -1074,7 +1084,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       return frames;
     })();
     for (const frame of frames) publishEvent(id, frame);
-    if (status === 'succeeded' && (isPersonal(existing) || isOpenAI(existing))) scheduleMemory(existing, result);
+    if (status === 'succeeded' && storedRequest(existing.request_json)?.critique !== true && (isPersonal(existing) || isOpenAI(existing))) scheduleMemory(existing, result);
     for (const res of listeners.get(id) ?? []) res.end();
     listeners.delete(id);
     children.delete(id);
@@ -1196,7 +1206,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           quotaWatch.unref();
           worker.once('close', () => clearInterval(quotaWatch));
           try {
-            const history = JSON.parse(key.history) as Record<string, unknown>[];
+            const history = JSON.parse(request.critique === true ? '[]' : key.history) as Record<string, unknown>[];
             if (!Array.isArray(history)) throw new Error('invalid company history');
             const userPrompt = withInstruction(next.request_json, storedMessage(next.request_json)!);
             const stablePrompt = typeof request.stablePrompt === 'string' ? request.stablePrompt : '';
@@ -1205,7 +1215,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             const focused = Array.isArray(request.workspaceItems) && request.workspaceItems.length
               ? `\n\n${renderRunContextPrompt({ workspaceItems: request.workspaceItems }, null)}` : '';
             const skillPackages = studioRunResourcePackages(request);
-            const skillRoot = input.scriptSandbox ? stageStudioSkillPackages(runHome, skillPackages) : undefined;
+            const skillRoot = input.scriptSandbox && request?.critique !== true ? stageStudioSkillPackages(runHome, skillPackages) : undefined;
             artifactBaselines.set(next.id, { cwd: realCwd, before: snapshotProjectArtifacts(realCwd) });
             const authorized = () => {
               if (storesClosed) return false;
@@ -1215,12 +1225,12 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             };
             const usage = { inputTokens: 0, outputTokens: 0 };
             const mediaUsage = { images: 0, speechCharacters: 0, videoSeconds: 0 };
-            const connectorTools = connectorToolsFor(next, authorized);
-            const mcpTools = mcpToolsFor(next, authorized);
+            const connectorTools = request.critique === true ? null : connectorToolsFor(next, authorized);
+            const mcpTools = request.critique === true ? null : mcpToolsFor(next, authorized);
             let stageHistory = history;
             let stageCount = 0;
             const execute = request.critique === true ? (args: Parameters<typeof runStudioPipeline<Awaited<ReturnType<typeof runCompanyOpenAITurn>>>>[0]) =>
-              runStudioCritique({ db, dataRoot, owner: next.owner_account_id, projectId: next.project_id, conversationId: next.conversation_id, runId: next.id,
+              runStudioCritique({ db, dataRootCanonical: input.dataRootCanonical, owner: next.owner_account_id, projectId: next.project_id, conversationId: next.conversation_id, runId: next.id,
                 authorized, cancel: () => { worker.kill('SIGTERM'); }, emit: (event) => critiqueRoutes!.emit(next.id, event), runStage: args.runStage }) : runStudioPipeline;
             void execute({ db, runId: next.id, snapshot: pluginSnapshotOf(request), resumeStage: request.pipelineResumeStage,
               check: () => { worker.abort.signal.throwIfAborted(); if (!authorized()) throw new Error('company_authority_changed'); },
@@ -1232,11 +1242,12 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                   // Every stage stays on the turn's own source and bill (#63).
                   ...(connectorTools ? { connectors: connectorTools } : {}),
                   ...(mcpTools ? { mcp: mcpTools } : {}),
-                  systemPrompt: `${stablePrompt}${STUDIO_MEDIA_PROMPT}${input.liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : ''}`, media: true,
-                  ...(input.liveArtifacts ? { liveArtifacts: artifactToolsFor(next, authorized, (event) => projection.accept(event))! } : {}),
+                  systemPrompt: request.critique === true ? stablePrompt : `${stablePrompt}${STUDIO_MEDIA_PROMPT}${input.liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : ''}`,
+                  media: request.critique !== true, projectReadOnly: request.critique === true,
+                  ...(input.liveArtifacts && request.critique !== true ? { liveArtifacts: artifactToolsFor(next, authorized, (event) => projection.accept(event))! } : {}),
                   prompt: `${userPrompt}${attached}${renderCommentAttachmentHint(normalizeCommentAttachments(Array.isArray(request.commentAttachments) ? request.commentAttachments : []))}${focused}${directive}`,
                   history: stageHistory, skillPackages, projectsRoot, projectId: next.project_id, worker, authorized,
-                  ...(skillRoot && input.scriptSandbox ? { runSkillScript: createStudioSkillScriptRunner({ sandbox: input.scriptSandbox,
+                  ...(skillRoot && input.scriptSandbox && request.critique !== true ? { runSkillScript: createStudioSkillScriptRunner({ sandbox: input.scriptSandbox,
                     packages: skillPackages, skillRoot, runHome, cwd: realCwd }) } : {}),
                   onAgentEvent: (event) => {
                     if (event.type === 'text_delta' && typeof event.delta === 'string') text += event.delta;
@@ -1251,9 +1262,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 return { value: result, ok: result.ok, text, tokensUsed: result.usage.inputTokens + result.usage.outputTokens };
               },
             }).then(async ({ value: result, progress }) => {
-              if (!authorized()) { finish(next.id, 'canceled'); return; }
+              if (!authorized()) { finish(next.id, 'canceled', { usage }); return; }
               const after = await snapshotProjectArtifactsAsync(realCwd);
-              if (!authorized()) { finish(next.id, 'canceled'); return; }
+              if (!authorized()) { finish(next.id, 'canceled', { usage }); return; }
               const files = diffRunArtifacts(artifactBaselines.get(next.id)!.before, after).touchedPaths
                 .map((file) => path.relative(realCwd, file).replaceAll('\\', '/')).filter((file) => file && !file.startsWith('../')).slice(0, 128);
               const producedFiles = files.flatMap((name) => {
@@ -1263,8 +1274,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
               const messageId = studioMessages.ids(next.id).assistantMessageId;
               if (getMessage(db, messageId)?.runId === next.id) await captureRunChatArtifactSnapshots({ db, blobs: artifactBlobs },
                 { projectId: next.project_id, messageId, runId: next.id, projectRoot: realCwd, touchedPaths: files.map((file) => path.join(realCwd, file)) });
-              if (!authorized()) { finish(next.id, 'canceled'); return; }
-              key.saveHistory(JSON.stringify(result.input));
+              if (!authorized()) { finish(next.id, 'canceled', { usage }); return; }
+              if (request.critique !== true) key.saveHistory(JSON.stringify(result.input));
               if (workspaceToolsUnavailable(projection.toolStartupFailed, files.length, projection.artifactCount)) {
                 finish(next.id, 'failed', { reason: 'MULTIUSER_RUN_TOOLS_UNAVAILABLE', files, producedFiles, usage }); return;
               }
@@ -1422,12 +1433,12 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           const runId = next.id;
           try {
             const skillPackages = studioRunResourcePackages(request);
-            const skillRoot = stageStudioSkillPackages(runHome, skillPackages);
+            const skillRoot = request?.critique === true ? undefined : stageStudioSkillPackages(runHome, skillPackages);
             artifactBaselines.set(runId, { cwd: realCwd, before: snapshotProjectArtifacts(realCwd) });
             startRun(next);
             const owner = next.owner_account_id;
             const accountId = account.id;
-            const includeStable = Boolean(stablePrompt) && (!session.thread_id || session.stable_prompt_hash !== stablePromptHash);
+            const includeStable = Boolean(stablePrompt) && (request?.critique === true || !session.thread_id || session.stable_prompt_hash !== stablePromptHash);
             // Attachments were owner-checked at admission; re-resolve against the
             // real project root now, since files may have moved since.
             const attached = formatProjectAttachmentHint(resolveSafeProjectAttachments(realCwd,
@@ -1445,13 +1456,14 @@ export function registerMultiUserRunRoutes(app: Express, input: {
               && row(runId)?.status === 'active' && accounts.getAccountById(owner)?.active === true
               && projects.canWrite(next.project_id, owner) && personal.usableAccount(owner)?.id === accountId
               && personal.usableAccount(owner)?.credentialVersion === next.credential_version && critiqueSessionCurrent(request);
-            const liveArtifacts = artifactToolsFor(next, allowed, (event) => projection.accept(event));
-            const connectorTools = connectorToolsFor(next, allowed);
-            const mcpTools = mcpToolsFor(next, allowed);
-            let resumeThreadId = session.thread_id;
+            const liveArtifacts = request?.critique === true ? null : artifactToolsFor(next, allowed, (event) => projection.accept(event));
+            const connectorTools = request?.critique === true ? null : connectorToolsFor(next, allowed);
+            const mcpTools = request?.critique === true ? null : mcpToolsFor(next, allowed);
+            const juryTools = request?.critique === true ? studioCritiqueProjectTools(projectsRoot, next.project_id, allowed) : null;
+            let resumeThreadId = request?.critique === true ? null : session.thread_id;
             let stageCount = 0;
             const execute = request?.critique === true ? (args: Parameters<typeof runStudioPipeline<PersonalTurnResult>>[0]) =>
-              runStudioCritique({ db, dataRoot, owner, projectId: next.project_id, conversationId: next.conversation_id, runId, authorized: allowed,
+              runStudioCritique({ db, dataRootCanonical: input.dataRootCanonical, owner, projectId: next.project_id, conversationId: next.conversation_id, runId, authorized: allowed,
                 cancel: () => { interrupts.get(runId)?.(); children.get(runId)?.kill('SIGTERM'); }, emit: (event) => critiqueRoutes!.emit(runId, event), runStage: args.runStage }) : runStudioPipeline;
             void execute({ db, runId, snapshot: pluginSnapshotOf(request), resumeStage: request?.pipelineResumeStage,
               check: () => { if (!allowed()) throw new Error('personal_authority_changed'); },
@@ -1464,6 +1476,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                   command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
                   ...(skillRoot ? { skillPackages: skillRoot } : {}),
                   prompt: `${stageCount === 1 ? prompt : userPrompt}${directive}`, resumeThreadId,
+                  ...(juryTools ? { dynamicTools: juryTools.tools, onDynamicToolCall: juryTools.execute } : {}),
                   ...(liveArtifacts || connectorTools || mcpTools ? { dynamicToolsPrompt: liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : '',
                     dynamicTools: [
                       ...(liveArtifacts ? STUDIO_LIVE_ARTIFACT_TOOLS.map(({ properties, required, ...tool }) => ({ ...tool,
@@ -1483,8 +1496,9 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                   // `danger-full-access` is scoped to the outer boundary, not the
                   // daemon container or host. Mock-only unsandboxed test lanes keep
                   // the normal platform/operator-resolved Codex policy.
-                  sandboxMode: launch.sandbox ? 'danger-full-access' : codexResolvedSandboxMode(),
-                  onThread: (threadId) => { if (allowed()) db.prepare(`UPDATE multiuser_personal_sessions SET thread_id = ?, updated_at = ?
+                  sandboxMode: request?.critique === true ? 'read-only' : launch.sandbox ? 'danger-full-access' : codexResolvedSandboxMode(),
+                  readOnlyCwd: request?.critique === true, ephemeral: request?.critique === true,
+                  onThread: (threadId) => { if (allowed() && request?.critique !== true) db.prepare(`UPDATE multiuser_personal_sessions SET thread_id = ?, updated_at = ?
                     WHERE conversation_id = ? AND personal_account_id = ?`).run(threadId, now(), next.conversation_id, accountId); },
                   onAgentEvent: (event) => { if (allowed()) {
                     if (request?.critique === true) { if (event.type === 'text_delta' && typeof event.delta === 'string') onText?.(event.delta); }
@@ -1543,7 +1557,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                   return finish(runId, 'failed', { reason: 'MULTIUSER_RUN_TOOLS_UNAVAILABLE', files, producedFiles });
                 }
                 projection.flush();
-                if (includeStable && stablePromptHash) {
+                if (request?.critique !== true && includeStable && stablePromptHash) {
                   db.prepare(`UPDATE multiuser_personal_sessions SET stable_prompt_hash = ?, updated_at = ?
                     WHERE conversation_id = ? AND personal_account_id = ?`).run(stablePromptHash, now(), next.conversation_id, accountId);
                 }
@@ -2188,7 +2202,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     dispatch();
     res.status(202).json({ runId: id, run: body(row(id)!) });
   };
-  app.post('/api/runs', (req, res) => admitRun(req.body, res));
+  app.post('/api/runs', (req, res) => {
+    if (req.body?.critique !== undefined) return sendApiError(res, 403, 'MULTIUSER_CAPABILITY_UNAVAILABLE', 'start Jury through the declared project critique route');
+    return admitRun(req.body, res);
+  });
   /**
    * Owner-only: the conversation is pinned to a personal account that is no
    * longer the owner's linked account. Re-authorization keeps the account row,
@@ -2292,7 +2309,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
     res.json(body(row(run.id)!));
   };
   app.post('/api/runs/:id/cancel', (req, res) => { const run = owned(req, res); if (run) interruptRun(run, res); });
-  critiqueRoutes = registerStudioCritiqueRoutes(app, { db, dataRoot, owned, canView: (projectId, owner) => projects.canView(projectId, owner),
+  critiqueRoutes = registerStudioCritiqueRoutes(app, { db, dataRoot, dataRootCanonical: input.dataRootCanonical, accountExists: (id) => accounts.getAccountById(id) !== null, owned, canView: (projectId, owner) => projects.canView(projectId, owner),
     start: admitRun, interrupt: interruptRun });
   app.post('/api/runs/:id/steer', (req, res) => {
     const run = owned(req, res);
@@ -2383,6 +2400,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       return !!found && found.owner_account_id === accountId && projects.canView(found.project_id, accountId);
     },
     cancelAccountRuns(accountId) {
+      if (!accounts.getAccountById(accountId)) critiqueRoutes?.purgeDeletedAccounts();
       // Session revocation stops this account's turns. Deactivation also
       // suspends every collaborator's turn in its projects; an ordinary logout
       // by an active owner does not revoke those collaborators' authority.
@@ -2438,7 +2456,10 @@ export function registerMultiUserRunRoutes(app: Express, input: {
         dispatch();
         dispatchPersonal();
         keepFence = true;
-        return release;
+        return () => {
+          try { if (accountId === null && conversationId === undefined && !getProject(db, projectId)) critiqueRoutes?.purgeProject(projectId); }
+          finally { release(); }
+        };
       } finally { if (!keepFence) release(); }
     },
     // A subscription switch: pinned conversations keep their account but start a fresh native thread.

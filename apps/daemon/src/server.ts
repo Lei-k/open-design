@@ -17704,7 +17704,7 @@ export async function startServer({
     sessionCurrent: multiUserFront?.sessionCurrent,
     ...(studioConnectorRuntime ? { connectors: studioConnectorRuntime } : {}),
     ...(studioMcpRuntime ? { mcp: studioMcpRuntime } : {}),
-    db, dataRoot: RUNTIME_DATA_DIR, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
+    db, dataRoot: RUNTIME_DATA_DIR, dataRootCanonical: RUNTIME_DATA_DIR_CANONICAL, projectsRoot: PROJECTS_DIR, repositoryRoot: PROJECT_ROOT,
     emitProjectEvent,
     ...(studioLiveArtifacts ? { liveArtifacts: studioLiveArtifacts } : {}),
     ...(multiUserMode.testMockAgentScript ? { mockAgentScript: multiUserMode.testMockAgentScript } : {}),

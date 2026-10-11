@@ -532,8 +532,8 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
       ...(routeClass === 'owner-scoped-project' ? { projectParam: 'projectId' } : {}),
       ...(suffix === '/:runId/interrupt' ? { bodyPolicy: 'empty' as const } : {}),
       ...(method === 'POST' && !suffix ? { maxBodyBytes: 128 * 1024 } : {}) };
-    return [...group(routeClass, 'actor-owned standalone Design Jury on the turn source', [`${method} ${route}`], { ...extras, rewriteTo: alias }),
-      ...group(routeClass, 'actor-owned standalone Design Jury alias', [`${method} ${alias}`], extras)];
+    return [...group(routeClass, 'private read-only Design Jury; start only through this declared project route', [`${method} ${route}`], { ...extras, rewriteTo: alias }),
+      ...group(routeClass, 'private read-only Design Jury alias; same cookie actor and declared entry point', [`${method} ${alias}`], extras)];
   }),
   ...blocked(R_RUNS, [
     'POST /api/projects/:id/media/hyperframes/scaffold',
@@ -591,7 +591,7 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
   ]),
   ...group('admin-only', 'company OpenAI metadata; credentials never returned', ['GET /api/admin/pool/openai']),
   ...group('admin-only', 'write-only encrypted company credential and revision-checked provider policy', ['PUT /api/admin/pool/openai'], { bodyPolicy: 'company-openai' }),
-  ...group('actor-scoped', 'test mock only; create binds the trusted actor, owned managed project and conversation in one SQLite insert', [
+  ...group('actor-scoped', 'ordinary pinned-source runs bind the cookie actor, project and conversation; Jury flags are refused here', [
     'POST /api/runs',
     'GET /api/runs',
   ]),

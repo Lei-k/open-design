@@ -4,6 +4,11 @@ import { MULTIUSER_ROUTE_CLASSIFICATION } from '../../src/http/multiuser-route-c
 import { multiUserStudioCapabilities, studioLaneForRoute, studioRouteParityInventory } from '../../src/http/studio-parity.js';
 
 describe('Studio parity delivery ledger (#52)', () => {
+  it('keeps generation disabled on a personal Codex only server while execution can run Jury', () => {
+    const capabilities = multiUserStudioCapabilities(true, { personalEnabled: true });
+    expect(capabilities.features.execution.status).toBe('pilot');
+    expect(capabilities.features.generation.status).toBe('admin-disabled');
+  });
   it('assigns account deploy config to settings and owner deployment operations to delivery on both aliases', () => {
     const routes = MULTIUSER_ROUTE_CLASSIFICATION.filter((entry) =>
       /^\/api\/(?:multiuser\/)?deploy\/config$/.test(entry.path)

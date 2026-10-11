@@ -130,9 +130,9 @@ export function multiUserStudioCapabilities(studioPilot = false, policy: { perso
     const pilot = studioPilot ? STUDIO_PILOT_LANES[lane.id] : undefined;
     if (!pilot) return [lane.id, unavailable(lane.issue)];
     if ((lane.id === 'execution' || lane.id === 'composer') && !policy.personalEnabled && !policy.companyEnabled && !policy.personalKeysEnabled) return [lane.id, executionOff];
-    // Jury runs on every account source; media still needs an OpenAI source.
-    if (lane.id === 'generation' && !policy.companyEnabled && !policy.personalKeysEnabled && !policy.personalEnabled) return [lane.id, { status: 'admin-disabled',
-      reason: 'Design Jury needs an account execution source; none is enabled on this server.' }];
+    // Generation gates media. Standalone Jury derives availability from execution.
+    if (lane.id === 'generation' && !policy.companyEnabled && !policy.personalKeysEnabled) return [lane.id, { status: 'admin-disabled',
+      reason: 'Media generation needs an OpenAI execution source; none is enabled on this server.' }];
     return [lane.id, { status: 'pilot', reason: pilot }];
   })) as StudioRuntimeCapabilities['features'];
   return { schemaVersion: 1, shell: studioPilot ? 'studio' : 'legacy-multiuser', features,

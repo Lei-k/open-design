@@ -14,7 +14,7 @@ import type { UseCritiqueStreamOptions } from './hooks/useCritiqueStream';
 type Props = { projectId: string; conversationId: string | null; agentId: string | null; canWrite: boolean };
 export function StudioDesignJury(props: Props) {
   const studio = useStudioCapabilities();
-  if (!studio.available('generation') || !studio.available('execution')) return <p role="status">{studio.reason(!studio.available('generation') ? 'generation' : 'execution')}</p>;
+  if (!studio.available('execution')) return <p role="status">{studio.reason('execution')}</p>;
   return <Jury key={`${studio.generation}:${props.projectId}:${props.conversationId}`} {...props} />;
 }
 function Jury({ projectId, conversationId, agentId, canWrite }: Props) {
