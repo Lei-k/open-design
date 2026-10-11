@@ -5733,6 +5733,7 @@ export const ar: Dict = {
   'chat.record.thinking': "يفكّر",
   'chat.record.thinkingTokens': "{count} رمز",
   'chat.record.thoughts': "مسار التفكير",
+  'chat.pipeline.iteration': 'التكرار {iteration} / {max}',
   'chat.record.done': "تم",
   'chat.record.failedTurn': "فشل التشغيل",
   'chat.record.plan': "الخطة · {count} خطوات",

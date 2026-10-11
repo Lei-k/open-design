@@ -5732,6 +5732,7 @@ export const ko: Dict = {
   'chat.record.thinking': "생각 중",
   'chat.record.thinkingTokens': "{count} 토큰",
   'chat.record.thoughts': "사고 과정",
+  'chat.pipeline.iteration': '반복 {iteration} / {max}',
   'chat.record.done': "완료",
   'chat.record.failedTurn': "실행 실패",
   'chat.record.plan': "실행 계획 · {count}단계",

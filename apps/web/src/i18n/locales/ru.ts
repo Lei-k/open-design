@@ -5733,6 +5733,7 @@ export const ru: Dict = {
   'chat.record.thinking': "Думает",
   'chat.record.thinkingTokens': "{count} токенов",
   'chat.record.thoughts': "Ход мыслей",
+  'chat.pipeline.iteration': 'итерация {iteration} / {max}',
   'chat.record.done': "Готово",
   'chat.record.failedTurn': "Запуск не удался",
   'chat.record.plan': "План · {count} шагов",

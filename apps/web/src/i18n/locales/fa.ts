@@ -5727,6 +5727,7 @@ export const fa: Dict = {
   'chat.record.thinking': "در حال فکر کردن",
   'chat.record.thinkingTokens': "{count} توکن",
   'chat.record.thoughts': "روند تفکر",
+  'chat.pipeline.iteration': 'تکرار {iteration} / {max}',
   'chat.record.done': "انجام شد",
   'chat.record.failedTurn': "اجرا ناموفق بود",
   'chat.record.plan': "برنامه · {count} مرحله",

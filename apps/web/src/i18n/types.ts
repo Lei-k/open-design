@@ -6002,6 +6002,7 @@ export interface Dict {
   /** 思考行右边那个槽:「3.3k tokens」。`{count}` 已由 `formatThinkingTokens` 写好 */
   'chat.record.thinkingTokens': string;
   'chat.record.thoughts': string;
+  'chat.pipeline.iteration': string;
   'chat.record.done': string;
   'chat.record.canceled': string;
   'chat.record.pending': string;

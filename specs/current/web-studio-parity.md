@@ -1252,3 +1252,82 @@ The additional final daemon test-type check also passes; five tracked daemon tes
 
 - Company pool: user confirmed OpenAI’s official API on 2026-10-07. S9 implements server-owned API credentials, provider slots, worker quotas, source pinning and token/worker usage accounting; no subscription fallback. Actual API-key/provider validation remains separate from mock-provider contract tests.
 - Deployment acceptance: no staging environment exists. User will deploy to their own EC2 and run final two-account real-provider acceptance there. Local acceptance uses the maintained HTTPS browser harness; #70 still requires the full matrix, mobile/accessibility/performance and rollback evidence before fallback removal.
+
+## S70 — plugin critique devloops on Studio (#61, #63)
+
+Local implementation checkpoint on `lane/s70-critique-devloop`, based on `1978812221aa31561d78b6d8996e2d2be7dcf1f9`; no commit, push, external write or provider call. This supersedes S42's blanket `repeat`/`until` refusal and the S66/S67 catalog's critique/devloop refusal, while retaining S41/S42 ordered stage edges, question continuations and S67 pinned-requirement admission.
+
+**Admission and execution.** The daemon reuses `plugins/until.ts` for parsing and evaluation. `plugins/studio-devloop.ts` owns the single `STUDIO_DEVLOOP_MAX_ITERATIONS = 8` policy constant. A repeated stage needs an unconditional OR disjunct `iterations>=N` or `iterations>N` whose integer termination count is at most eight (`>7` is allowed, `>8` is refused). A bound conjoined with a score does not prove termination. Only `iterations` and `critique.score` are admitted; known unsupported signals and absent/over-ceiling bounds produce typed `pipeline-devloop-signal` and `pipeline-devloop-unbounded` reasons. Invalid grammar remains a typed manifest refusal. The same policy runs on catalog admission, captured pins and execution; client/provider iteration claims never determine the cursor or termination.
+
+Every iteration retains its turn's company OpenAI, account OpenAI or personal Codex source. Ordinary atoms use the existing stage worker; `critique-theater` uses the existing S66 Jury parser, scoreboard and read-only worker, with its daemon composite normalized from the S66 ten-point scale to the plugin five-point scale. Ordinary worker text cannot supply a score. Internal Jury protocol/artifacts are private and removed after evaluation; the parent turn retains scored stage edges and the existing `run_devloop_iterations` audit. OpenAI token usage accumulates across all stage/Jury workers, including failures; company quota, live session, active account, project access, source revision and cancellation are rechecked before work. Personal Codex retains its existing source/sandbox policy and normal conversation thread; ephemeral Jury threads cannot replace it. A failed iteration aborts the pipeline.
+
+**Contracts and surfaces.** `PluginPipelineStageEvent` already carried a zero-based iteration; it gains optional `maxIterations` on start/completion and optional five-point `critiqueScore` on completion. `StudioPipelineProgress` gains an optional zero-based `iteration`, stored in the run output and used only by the daemon's question continuation. Questions pause without recording a completed iteration; an answer resumes the same stage/index and remaining bound. Web renders “iteration k / max” through one new key filled in all 19 locales; non-converged completions remain working. Persisted events render after reload, and existing CLI run watch consumes the same edges. No HTTP route, route classification, frontend transport allowlist or CLI command is added.
+
+**Catalog recount.** The production bundled registry/document/availability/reason-summary audit is covered by `tests/plugins-studio-devloop-catalog.test.ts`. Frozen base capability policy reproduces **10 applicable / 450 unavailable of 460**; S70 gives **315 / 145**, opening **305** plugins. There are no remaining catalog `critique-theater` or `pipeline-devloop` blanket refusals. Remaining reason counts overlap between plugins:
+
+| Reason | Count |
+| --- | ---: |
+| atom:build-test | 1 |
+| atom:code-import | 2 |
+| atom:design-extract | 2 |
+| atom:diff-review | 1 |
+| atom:direction-picker | 17 |
+| atom:figma-extract | 2 |
+| atom:handoff | 6 |
+| atom:patch-edit | 3 |
+| atom:rewrite-plan | 1 |
+| atom:token-map | 4 |
+| capability:bash | 2 |
+| capability:connector:figma | 1 |
+| capability:desktop:codex-tool | 1 |
+| capability:desktop:html-video-render | 2 |
+| capability:desktop:local-script | 5 |
+| capability:desktop:media-scaffold | 1 |
+| capability:desktop:music-sfx-audio | 1 |
+| capability:desktop:od-cli | 9 |
+| capability:media:image-generate | 45 |
+| capability:media:video-generate | 63 |
+| capability:network | 5 |
+| capability:pipeline:* | 1 |
+| capability:shell | 1 |
+| capability:subprocess | 5 |
+| connector:figma | 1 |
+| genui:__auto_diff_review_review | 1 |
+| manifest:pipeline.until | 1 |
+| unknown-atom:image-generate | 45 |
+| unknown-atom:video-generate | 40 |
+
+**Evidence.** New runner/admission cases first failed (18 failed, 41 passed, one native skip), then passed; the Web iteration assertion first failed (one failed, seven passed), then passed. Actual S66 Jury integration first failed score normalization and question pause (three failed, one passed), then all four cases passed. The focused daemon gate covers stage/pipeline/handoff/until, availability/pins/catalog, desktop steps and Jury authority/orchestrator/scoreboard: 150 passed, one existing native Codex skip. Web stage timeline, plugin composer/catalog and app boot observer: 23 passed. Composer tests apply/send each of `example-article-magazine`, `example-dashboard` and `example-ve-terminal-mono`; matching HTTP witnesses exercise their generated HTML and scored critique edges, but those HTTP cases could not execute here. Contract/host builds, daemon build, daemon test types, Web typecheck, guard, i18n and `git diff --check` pass.
+
+**Blocked validation and remaining work.** `studio-plugins-http` (52 cases) plus `studio-critique-http` (15) fail suite setup with `listen EPERM: operation not permitted 127.0.0.1`; all 67 cases are skipped. The focused compiled CLI plugin test fails its build hook with `spawnSync .../node EPERM` (27 skipped). The transport oracle passes 29 assertions and fails its nested Web observer spawn with the same EPERM; that observer passes when run directly in the Web gate. `pnpm guard` and `pnpm i18n:check` hit the tsx IPC listener restriction; equivalent `node --import tsx scripts/guard.ts` and `scripts/i18n-check.ts` pass. Coordinator must rerun HTTP on all three mock sources, CLI and the full transport oracle in an environment permitting listeners/child processes. No full suite, browser screenshot, native personal provider, real provider, deployment or rollout acceptance is claimed. Abrupt daemon termination can leave a private internal Jury row/artifact before its `finally` cleanup; normal completion/failure cleanup is tested, and account/project purge remains the existing cleanup boundary. No open product decision.
+
+### Repair 1 — design-system admission and stratified HTTP evidence
+
+Coordinator's unrestricted gate on the initial diff passes guard, i18n, host/daemon builds, Web types, whitespace and all 30 transport assertions; Web passes 212 cases across 15 files. Daemon's 14-file gate passes 243 cases and fails three: one renderer-dependent CLI export also fails on base (`UPSTREAM_UNAVAILABLE`), and the two new article/dashboard witnesses fail apply with a missing design-system selection. Those two failures are the RED evidence for this repair; the export case is unchanged.
+
+The failures have different causes. `example-dashboard` explicitly declares `od.context.designSystem: { primary: true }`, so the HTTP witness now creates an actor-owned design system and selects it through `PATCH /api/projects/:id` before applying. It first asserts the original 409 when no selection exists. `example-article-magazine` instead declares `od.design_system.requires: false` in SKILL.md and has no sidecar design-system dependency. The existing skill adapter synthesized an empty reference from that opt-out, which `mergeManifests` filled into the sidecar and Studio correctly interpreted as an inherited dependency. The adapter now omits that invented reference. A genuine inherited dependency, an explicit adapter ref/primary selection and an explicit sidecar dependency retain their existing admission requirements; no route admission rule is relaxed. The adapter regression fails before the fix and passes afterward, with explicit-dependency controls.
+
+The 305 openings comprise 143 design-system plugins, 161 examples and one scenario. The replacement HTTP table samples all three groups and applies unmodified bundled plugins on every allowed source: **eight plugins / 23 runs**. It covers injected quality floors versus a declared critique loop, inherited/explicit/no brand, discovery, craft and captured assets, the corrected desktop detector, and a media source restriction:
+
+| Sample | Selection/category | Sources |
+| --- | --- | --- |
+| example-article-magazine | article; skill brand opt-out | all three |
+| example-dashboard | dashboard; inherited brand and craft | all three |
+| example-ve-terminal-mono | deck; discovery; former false desktop detection | all three |
+| design-system-linear-app | design system; explicit bundled brand | all three |
+| example-wireframe-greybox | wireframe; captured HTML seed | all three |
+| example-huashu-slides | presentation; discovery and assets | all three |
+| example-webgl-aurora-veil | WebGL; inherited brand | all three |
+| od-media-generation | media scenario; declared loop; image selection | company/account OpenAI |
+
+The seven HTML samples generate `index.html` and a real run-bound Live Artifact; the media sample generates a PNG and wraps its bytes in an HTML Live Artifact (see Repair 2). Jury fixtures return a low first score and a passing second score; WebGL keeps low scores through the three-iteration ceiling. Assertions require exact start/completion indexes, final convergence within the pinned bound, daemon scores, complete pipeline progress, audit rows, matching persisted Web transcript edges, and the same OpenAI bill/read-only Jury tools. The personal app-server fixture gains stage-scoped replies/effects so generation cannot repeat its mutation in the Jury stage. The catalog unit checks that every sampled id was newly opened, has the expected effective design reference and allowed sources, and applies to a bounded pipeline using the actual pure apply service.
+
+Repair-local gates: plugin-runtime adapter/merge/parser/validation/fallback **48 passed** (adapter RED: one failed/six passed); daemon focused **150 passed, one existing native skip**; Web plus i18n **212 passed**. Plugin-runtime, host and daemon builds, plugin-runtime/daemon-test/Web types, mock syntax/types, direct guard/i18n checks and whitespace pass. An initial catalog fixture used a private evaluator export; it was corrected to the existing public requirements evaluator and passes. The mock's standalone typecheck exposed the pre-existing boolean return from the stdout sink; explicitly making that sink return void preserves its protocol and clears the errors. Recount remains **315 applicable / 145 unavailable of 460; 305 opened**, with unchanged reason counts above. The expanded HTTP file now has 72 cases; its new 23-run sample awaits coordinator execution because this writer still cannot bind listeners. No new routes/contracts/locales, real-provider or browser acceptance claim.
+
+### Repair 2 — media output expectations
+
+Coordinator's unrestricted Repair 1 gate passes guard, i18n, host/daemon builds, Web types and all 212 Web tests. Daemon passes 263 tests and fails three: the unchanged base renderer-dependent CLI export, and the two media sample rows expecting a project `index.html` instead of their actual `assets/hero.png`. All seven HTML samples / 21 source runs pass through their artifact, audit and transcript assertions. Both media rows pass stage/iteration/termination checks before the incorrect file assertion.
+
+The witness was wrong. The bundled `od-media-generation/SKILL.md` explicitly saves a media binary and registers a Live Artifact preview; it does not require a project HTML page. The sample table now declares `expectedFiles` for every plugin: `index.html` for the seven HTML samples and `assets/hero.png` for media. The media mock uses a valid PNG and a data-backed HTML Live Artifact embedding exactly those image bytes, consistent with Studio's existing HTML-only artifact storage and `img-src data:` preview policy. HTTP checks retain one artifact, the iteration audit and persisted pipeline edges; they additionally check run/project/conversation artifact ownership, exact project PNG bytes, owner raw access versus foreign/admin 404, the rendered image, and one persisted artifact-created card. HTML samples retain their HTML-file and single-artifact assertions.
+
+A local worker/tool/store/projection witness on both OpenAI sources first fails the missing media expectation (**2 failed**), then passes (**2 passed**): it generates the PNG through the actual media tool, stores exactly one run-bound image preview, verifies rendered bytes and the durable artifact event, and confirms that artifact storage does not create a project `index.html`. Focused daemon checks now pass **191 tests / 12 files**, with one existing native skip; Web remains **212 / 15 files**. Daemon test types, Web types, host/daemon builds, direct guard/i18n checks and whitespace pass. The catalog test still proves **315 / 145; 305 opened**, with unchanged reasons and eight sampled plugins / 23 allowed-source rows. No production behavior, route, contract or locale changes in this repair. Full repaired HTTP execution, including the media audit and pipeline transcript assertions after the former failure, remains for the coordinator; the sandbox restriction is unchanged.

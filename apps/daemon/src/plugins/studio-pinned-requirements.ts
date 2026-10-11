@@ -10,6 +10,7 @@ import type {
 } from '@open-design/contracts';
 import { STUDIO_PLUGIN_EXECUTION_SOURCES, studioPluginSourceReasons } from '@open-design/contracts';
 import type { StudioSkillPackage } from '../services/studio-skill-packages.js';
+import { studioDevloop } from './studio-devloop.js';
 import { detectStudioDesktopSteps, STUDIO_PLUGIN_PACKAGE_UNREADABLE, studioPluginPackageDocuments } from './studio-desktop-steps.js';
 
 /** The parts of an application (or a run's captured copy of it) the derivation reads. */
@@ -37,6 +38,7 @@ function pinnedNeeds(pin: StudioPinnedPlugin, runtime: StudioPinnedPluginRuntime
   const requirements: StudioPluginRequirements = { atoms: pinned.atoms, capabilities: [...new Set([...pinned.capabilities,
     ...(documents ? detectStudioDesktopSteps(documents) : []).map((reason) => reason.subject!)])] };
   const always: StudioPluginUnavailableReason[] = [
+    ...(pin.pipeline?.stages ?? []).flatMap((stage) => studioDevloop(stage).reasons),
     ...(!runtime.liveArtifacts && requirements.atoms.includes('live-artifact') ? [{ code: 'atom' as const, subject: 'live-artifact' }] : []),
     ...(documents ? [] : [STUDIO_PLUGIN_PACKAGE_UNREADABLE]),
   ];

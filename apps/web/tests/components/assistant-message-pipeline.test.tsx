@@ -36,3 +36,13 @@ it('ignores malformed stage frames and renders no stage row when no pipeline ran
   render(<AssistantMessage message={message([{ kind: 'text', text: 'Ordinary reply' }], 'succeeded')} streaming={false} />);
   expect(screen.queryByTestId('status-pill')).toBeNull();
 });
+
+it('shows the persisted iteration and maximum for a devloop through live and reload paths', () => {
+  const frame = { ...started, iteration: 1, maxIterations: 3 };
+  const event = translateAgentEvent({ type: 'pipeline_stage', stage: frame });
+  const view = render(<AssistantMessage message={message([event!], 'running')} streaming />);
+  expect(screen.getByTestId('status-detail').textContent).toBe('inspect-project · iteration 2 / 3');
+  view.rerender(<AssistantMessage message={message([frame, { ...completed, iteration: 1, maxIterations: 3, converged: false }], 'running')} streaming={false} />);
+  expect(screen.getByTestId('status-pill').textContent).toContain('Working');
+  expect(screen.getByTestId('status-detail').textContent).toBe('inspect-project · iteration 2 / 3');
+});

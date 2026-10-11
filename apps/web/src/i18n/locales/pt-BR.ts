@@ -5733,6 +5733,7 @@ export const ptBR: Dict = {
   'chat.record.thinking': "Pensando",
   'chat.record.thinkingTokens': "{count} tokens",
   'chat.record.thoughts': "Raciocínio",
+  'chat.pipeline.iteration': 'iteração {iteration} / {max}',
   'chat.record.done': "Concluído",
   'chat.record.failedTurn': "Execução falhou",
   'chat.record.plan': "Plano · {count} etapas",

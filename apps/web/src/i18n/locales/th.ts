@@ -5733,6 +5733,7 @@ export const th: Dict = {
   'chat.record.thinking': "กำลังคิด",
   'chat.record.thinkingTokens': "{count} โทเคน",
   'chat.record.thoughts': "กระบวนการคิด",
+  'chat.pipeline.iteration': 'รอบที่ {iteration} / {max}',
   'chat.record.done': "เสร็จแล้ว",
   'chat.record.failedTurn': "รันไม่สำเร็จ",
   'chat.record.plan': "แผน · {count} ขั้น",

@@ -482,7 +482,8 @@ describe('same Studio APIs through remote od sessions', () => {
     // captured skill needs a desktop-only core step, including the S42 pipeline plugin.
     const applicable = listed.plugins.filter((plugin: { availability: { applicable: boolean } }) => plugin.availability.applicable).map((plugin: { id: string }) => plugin.id);
     expect(applicable).toEqual(expect.arrayContaining(['example-image-poster', 'example-frame-glitch-title']));
-    expect(applicable).toHaveLength(10);
+    expect(applicable).toHaveLength(315);
+    expect(applicable).toEqual(expect.arrayContaining(['example-article-magazine', 'example-dashboard', 'example-ve-terminal-mono']));
     const share = listed.plugins.find((plugin: { id: string }) => plugin.id === PIPELINE_ONLY_PLUGIN_ID);
     expect(share).toMatchObject({ fsPath: '', availability: { applicable: false, reasons: [{ code: 'capability', subject: 'desktop:od-cli' }] } });
     expect(success(await cli(['plugin', 'info', 'example-hatch-pet', '--session-file', aFile, '--json'])).availability)

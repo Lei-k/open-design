@@ -79,7 +79,7 @@ it.each([null, { snapshotId: 'empty', pipeline: { stages: [] } }])('preserves on
   expect(db.prepare('SELECT * FROM run_devloop_iterations').all()).toEqual([]);
 });
 it.each([
-  { stages: [{ id: 'loop', atoms: ['file-read'], repeat: true, until: 'iterations>=2' }] },
+  { stages: [{ id: 'loop', atoms: ['file-read'], repeat: true, until: 'critique.score>=4' }] },
   { stages: [{ id: 'inspect', atoms: ['file-read'], onFailure: 'skip' }] },
   { stages: [{ id: 'inspect', atoms: ['file-read'], hiddenCondition: 'skip' }] },
   { stages: [{ id: 'inspect', atoms: ['critique-theater'] }] },
@@ -117,7 +117,8 @@ describe('real provider adapters on a finite Studio pipeline (provider fixtures,
     };
     const { input, events } = options();
     let billedTokens = 0;
-    const result = await runStudioPipeline({ ...input, runStage: async (directive) => {
+    const { runCritique: _critique, ...workerInput } = input;
+    const result = await runStudioPipeline({ ...workerInput, runStage: async (directive) => {
       let text = '';
       const value = await runCompanyOpenAITurn({ apiKey, model: 'fixture-model', prompt: `Package my work${directive}`,
         history, projectsRoot: root, projectId: 'owner', worker: new CompanyOpenAIWorker(), authorized: () => true,
@@ -144,7 +145,8 @@ describe('real provider adapters on a finite Studio pipeline (provider fixtures,
     writeFileSync(path.join(codexHome, 'mock-control.json'), JSON.stringify({ promptReplyMarkers: ['Stage: inspect', 'Stage: package'] }));
     let thread: string | null = null; const threads: Array<string | null> = [];
     const { input } = options();
-    const result = await runStudioPipeline({ ...input, runStage: async (directive) => {
+    const { runCritique: _critique, ...workerInput } = input;
+    const result = await runStudioPipeline({ ...workerInput, runStage: async (directive) => {
       const turn = await runPersonalCodexTurn({ command: [process.execPath, path.resolve('../../mocks/personal-codex-app-server.ts')],
         codexHome, home, temp: home, cwd, dataRoot: root, prompt: `Package${directive}`, resumeThreadId: thread, sandboxMode: 'workspace-write' });
       const value = await turn.done; thread = value.threadId; threads.push(thread);
@@ -171,4 +173,44 @@ it('names the Studio tools of live-artifact and media atoms in the stage directi
   expect(prompts[0]).toContain('- media-audio: generate_speech (speech narration only)');
   expect(prompts[0]).toContain('instead of any desktop shell or `od` command');
   expect(prompts[1]).not.toContain('Studio tools for these atoms');
+});
+
+const loop = { stages: [{ id: 'inspect', atoms: ['file-read', 'critique-theater'], repeat: true, until: 'critique.score>=4 || iterations>=3' }] };
+it('terminates a bounded loop on this iteration’s Jury score, with durable iteration edges', async () => {
+  let calls = 0;
+  const { input, events } = options({ snapshot: { snapshotId: 'snapshot', pipeline: loop },
+    runCritique: async () => ({ value: 'done', ok: true, text: 'Done', score: ++calls === 2 ? 4.5 : 2 }) });
+  await runStudioPipeline(input);
+  expect(calls).toBe(2);
+  expect(events.map((e) => e.iteration)).toEqual([0, 0, 1, 1]);
+  expect(events.filter((e) => e.kind === 'pipeline_stage_completed').map((e) => e.converged)).toEqual([false, true]);
+});
+it('terminates on the daemon-owned iteration bound and never accepts a provider iteration signal', async () => {
+  let calls = 0;
+  const { input } = options({ snapshot: { snapshotId: 'snapshot', pipeline: loop },
+    runCritique: async () => { calls++; return { value: 'done', ok: true, text: 'Done', score: 1, iterations: 500 }; } });
+  await runStudioPipeline(input);
+  expect(calls).toBe(3);
+  expect(db.prepare('SELECT iteration FROM run_devloop_iterations ORDER BY rowid').all()).toEqual([{ iteration: 1 }, { iteration: 2 }, { iteration: 3 }]);
+});
+it.each(['canceled', 'revoked'])('prevents the next iteration when %s between completion and next start', async (reason) => {
+  let allowed = true; let calls = 0;
+  const { input } = options({ snapshot: { snapshotId: 'snapshot', pipeline: loop },
+    check: () => { if (!allowed) throw new Error(reason); },
+    emit: (event) => { if (event.kind === 'pipeline_stage_completed') allowed = false; },
+    runCritique: async () => { calls++; return { value: 'done', ok: true, text: 'Done', score: 1 }; } });
+  await expect(runStudioPipeline(input)).rejects.toThrow(reason);
+  expect(calls).toBe(1);
+});
+it('pauses in the second iteration and resumes the daemon-owned iteration without resetting its ceiling', async () => {
+  let calls = 0;
+  const first = options({ snapshot: { snapshotId: 'snapshot', pipeline: loop },
+    runStage: async () => ({ value: 'done', ok: true, text: ++calls === 2 ? question : 'Done' }),
+    runCritique: async () => ({ value: 'done', ok: true, text: '', score: 1 }) });
+  const paused = await runStudioPipeline(first.input);
+  expect(paused.progress).toMatchObject({ stageIndex: 0, iteration: 1, awaitingInput: true });
+  const second = options({ snapshot: { snapshotId: 'snapshot', pipeline: loop }, resumeStage: 0, resumeIteration: 1,
+    runCritique: async () => ({ value: 'done', ok: true, text: '', score: 1 }) });
+  await runStudioPipeline(second.input);
+  expect(second.events.map((e) => e.iteration)).toEqual([1, 1, 2, 2]);
 });

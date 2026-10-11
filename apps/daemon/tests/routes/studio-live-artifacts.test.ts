@@ -18,6 +18,7 @@ import { createStudioLiveArtifactTools } from '../../src/live-artifacts/studio-t
 import { CompanyOpenAIWorker, runCompanyOpenAITurn } from '../../src/runtimes/company-openai.js';
 import { PersonalRunEvents } from '../../src/runtimes/personal-run-events.js';
 import { runSseEventToPersistedAgentEvent } from '../../src/runtimes/chat-run-messages.js';
+import { S70_DEVLOOP_SAMPLE, S70_MEDIA_PNG_BASE64, s70MediaArtifactDraft } from '../auth/studio-devloop-sample.js';
 
 let root: string; let projects: string; let directory: string; let db: Database.Database; let access: ProjectAccessStore;
 let store: StudioLiveArtifacts; let closeService: () => void; let auth: AuthStore; let clock: number; let inactive: Set<string>; let events: unknown[];
@@ -307,4 +308,42 @@ it('S61 keeps MCP Live Artifact sources refused with the actor-grant lifecycle r
   db.prepare('UPDATE studio_live_artifacts SET artifact_json = ? WHERE project_id = ? AND id = ?').run(JSON.stringify(legacy), 'project', legacy.id);
   expect(() => store.refresh('project', legacy.id)).toThrow('refreshing-actor');
   expect(store.history('project', legacy.id)).toEqual([]);
+});
+
+it.each(['company_pool', 'personal_api_key'])('S70 saves media bytes and a run-bound image preview on %s', async (source) => {
+  const sample = S70_DEVLOOP_SAMPLE.find((sample) => sample.id === 'od-media-generation')!;
+  expect(sample.expectedFiles).toEqual(['assets/hero.png']);
+  const image = Buffer.from(S70_MEDIA_PNG_BASE64, 'base64');
+  const value = s70MediaArtifactDraft(sample.expectedFiles[0]!);
+  const persisted: unknown[] = [];
+  const projection = new PersonalRunEvents(directory, [root], (event) => {
+    const saved = runSseEventToPersistedAgentEvent(event.event, event.data); if (saved) persisted.push(saved);
+  });
+  const tools = createStudioLiveArtifactTools({ store, projectId: 'project', conversationId: 'conversation', runId: 'media-run', authorized: () => true,
+    onChanged: (action, artifact) => projection.accept({ type: 'live_artifact', action, projectId: 'project', artifactId: artifact.id, title: artifact.title, refreshStatus: artifact.refreshStatus }) });
+  let generated = false;
+  const fetcher: typeof fetch = async (url, init) => {
+    expect((init?.headers as Record<string, string>).authorization).toBe(`Bearer ${source}-fixture`);
+    if (String(url).endsWith('/images/generations')) return Response.json({ data: [{ b64_json: image.toString('base64') }] });
+    const output = generated ? [] : [
+      { type: 'function_call', name: 'generate_image', call_id: 'image', arguments: JSON.stringify({ prompt: 'A calm product hero', path: 'assets/hero.png', size: '1024x1024' }) },
+      { type: 'function_call', name: 'live_artifacts_create', call_id: 'preview', arguments: JSON.stringify({ requestJson: JSON.stringify(value) }) },
+    ];
+    generated = true;
+    return new Response(`data: ${JSON.stringify({ type: 'response.completed', response: { output } })}\n\n`, { headers: { 'content-type': 'text/event-stream' } });
+  };
+  const result = await runCompanyOpenAITurn({ apiKey: `${source}-fixture`, model: 'fixture-model', prompt: 'Make the image', history: [],
+    projectsRoot: projects, projectId: 'project', worker: new CompanyOpenAIWorker(), authorized: () => true,
+    onAgentEvent: (event) => projection.accept(event), media: true, liveArtifacts: tools, fetch: fetcher });
+  expect(result.ok).toBe(true); expect(result.files).toEqual(sample.expectedFiles); expect(result.media.images).toBe(1);
+  expect(fs.readFileSync(path.join(directory, 'assets/hero.png'))).toEqual(image);
+  expect(fs.existsSync(path.join(directory, 'index.html'))).toBe(false);
+  expect(store.list('project')).toHaveLength(1);
+  const artifact = store.list('project')[0]!;
+  expect(artifact).toMatchObject({ projectId: 'project', sessionId: 'conversation', createdByRunId: 'media-run' });
+  expect(store.code('project', artifact.id, 'rendered')).toContain(`<img src="data:image/png;base64,${image.toString('base64')}"`);
+  expect(store.code('project', artifact.id, 'rendered')).toContain('assets/hero.png');
+  expect(persisted.filter((event: any) => event.kind === 'live_artifact')).toEqual([
+    expect.objectContaining({ action: 'created', artifactId: artifact.id, projectId: 'project' }),
+  ]);
 });

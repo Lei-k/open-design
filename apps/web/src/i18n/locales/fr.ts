@@ -5732,6 +5732,7 @@ export const fr: Dict = {
   'chat.record.thinking': "Réflexion",
   'chat.record.thinkingTokens': "{count} tokens",
   'chat.record.thoughts': "Raisonnement",
+  'chat.pipeline.iteration': 'itération {iteration} / {max}',
   'chat.record.done': "Terminé",
   'chat.record.failedTurn': "Exécution échouée",
   'chat.record.plan': "Plan · {count} étapes",

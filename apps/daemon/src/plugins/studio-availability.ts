@@ -9,8 +9,8 @@
 // is keyed by plugin id. Declarations that do not parse fail closed.
 //
 // Studio executes finite ordered stages on the turn's pinned provider (S42).
-// Devloops, non-abort failure policies and unrecognised stage fields stay
-// unavailable; they must never be silently flattened into ordinary stages.
+// Devloops require a provable bound and Studio-produced signals (S70).
+// Non-abort failure policies and unrecognised stage fields remain unavailable.
 
 import type {
   InstalledPluginRecord,
@@ -23,6 +23,7 @@ import type {
 import { isStudioPluginAssetReferences, isStudioPluginCraftReferences, isStudioPluginDesignSystemReference, parseStudioPluginSkillReferences,
   STUDIO_PLUGIN_EXECUTION_SOURCES, STUDIO_WEB_PLUGIN_CAPABILITIES, studioPluginDeclaredMediaAtom, studioPluginSourceRestrictions } from '@open-design/contracts';
 import { resolveAppliedPipeline, type ScenarioRegistryEntry } from '@open-design/plugin-runtime';
+import { studioDevloop } from './studio-devloop.js';
 import { isKnownAtom } from './atoms.js';
 import { deriveAutoAtomSurfaces } from './atoms/auto-surfaces.js';
 import { ensureCoreQualityStages } from './ensure-core-stages.js';
@@ -194,7 +195,10 @@ function evaluateStudioPlugin(
         || Object.keys(stage).some((key) => !['id', 'atoms', 'repeat', 'until', 'onFailure'].includes(key))) {
         add({ code: 'manifest', subject: 'pipeline' });
       }
-      if ((stage.repeat || stage.until !== undefined) && !web.pipelineDevloop) add({ code: 'pipeline-devloop', subject: stage.id });
+      if (stage.repeat || stage.until !== undefined) {
+        if (!web.pipelineDevloop) add({ code: 'pipeline-devloop', subject: stage.id });
+        else for (const reason of studioDevloop(stage).reasons) add(reason);
+      }
       for (const atom of stage.atoms ?? []) needAtom(atom);
     }
     if (!web.genui) for (const surface of deriveAutoAtomSurfaces({ pipeline })) add({ code: 'genui', subject: surface.id });

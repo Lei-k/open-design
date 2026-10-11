@@ -6185,6 +6185,7 @@ export const zhTW: Dict = {
   'chat.record.thinking': "思考中",
   'chat.record.thinkingTokens': "{count} tokens",
   'chat.record.thoughts': "思考過程",
+  'chat.pipeline.iteration': '第 {iteration} / {max} 輪',
   'chat.record.done': "已完成",
   'chat.record.failedTurn': "執行失敗",
   'chat.record.plan': "執行計畫 · {count} 步",

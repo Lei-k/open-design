@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { adaptAgentSkill } from '../src/adapters/agent-skill';
 import { parseManifestObject } from '../src/parsers/manifest';
+import { mergeManifests } from '../src/merge';
 
 const SAMPLE_SKILL = `---
 name: blog-post
@@ -28,6 +29,21 @@ Produce one long-form article page.
 `;
 
 describe('adaptAgentSkill', () => {
+  it('does not invent an inherited design-system reference for an explicit skill opt-out', () => {
+    const skill = adaptAgentSkill(SAMPLE_SKILL.replace('requires: true', 'requires: false'), { folderId: 'blog-post' }).manifest;
+    expect(skill.od?.context?.designSystem).toBeUndefined();
+    const sidecar = { ...skill, od: { ...skill.od, context: { designSystem: { ref: 'apple', primary: true } } } };
+    // An explicit manifest dependency still wins: the adapter cannot erase it.
+    expect(mergeManifests({ sidecar, adapters: [skill] }).od?.context?.designSystem).toEqual({ ref: 'apple', primary: true });
+    expect(parseManifestObject(skill).ok).toBe(true);
+  });
+
+  it.each(['requires: true', 'requires: false\n    ref: apple', 'requires: false\n    primary: true'])(
+    'retains inherited or explicitly selected design dependencies: %s', (declaration) => {
+      const skill = adaptAgentSkill(SAMPLE_SKILL.replace('requires: true', declaration), { folderId: 'blog-post' }).manifest;
+      expect(skill.od?.context?.designSystem).toBeDefined();
+    });
+
   it('synthesizes a v1-valid manifest from od: frontmatter', () => {
     const result = adaptAgentSkill(SAMPLE_SKILL, { folderId: 'blog-post' });
     expect(result.manifest.name).toBe('blog-post');

@@ -14,6 +14,7 @@
 //   A turn whose plugin choice read the live
 //   project pin, empty or not, is refused when the pin changes before its
 //   commit, on every execution source (F2).
+import { syntheticGoodTranscript } from '../../src/critique/__fixtures__/adapters/synthetic-good.js';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -25,6 +26,9 @@ import { PERSONAL_CODEX_MOCK, actorDir, codexHome, linkCodex, setTurnMode, until
 import { FIXTURE_LIVE_ARTIFACT_PLUGIN_ID, FIXTURE_MEDIA_PLUGIN_ID, FIXTURE_PIPELINE_PLUGIN_ID, FIXTURE_PLUGIN_ID, FIXTURE_RESOURCE_MARKER, FIXTURE_SKILL_MARKER,
   PIPELINE_ONLY_PLUGIN_ID, installStudioAtomFixturePlugins, installStudioFixturePlugin } from './studio-plugin-fixture.js';
 import { buildStudioSkillPackage } from '../../src/services/studio-skill-packages.js';
+import type { PluginPipeline, PluginPipelineStageEvent } from '@open-design/contracts';
+import { S70_DEVLOOP_SAMPLE, S70_MEDIA_PNG_BASE64, s70MediaArtifactDraft } from './studio-devloop-sample.js';
+import { projectDir } from '../../src/projects.js';
 
 /** S67: bundled plugins whose every step (file-write, live-artifact, media surface) runs on Web. */
 const S67_BUNDLED_APPLICABLE = ['example-frame-data-chart-nyt', 'example-frame-flowchart-sticky', 'example-frame-glitch-title',
@@ -59,7 +63,7 @@ const tavily: typeof fetch = async () => {
   return Response.json({ answer: 'PLUGIN_RACE_FINDINGS', results: [{ title: 'Note', url: 'https://example.test/note', content: 'note' }] });
 };
 /** S67 media fixture: every provider media request with the key that paid for it. */
-const PNG = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(64, 7)]);
+const PNG = Buffer.from(S70_MEDIA_PNG_BASE64, 'base64');
 const mediaCalls: Array<{ url: string; authorization: string }> = [];
 /** S67: the tools and stage directive each OpenAI request carried, by marker. */
 const atomRequests: Array<{ marker: string; tools: string[]; prompt: string; authorization: string }> = [];
@@ -67,6 +71,9 @@ const liveArtifactDraft = JSON.stringify({ input: { title: 'OpenAI live artifact
   document: { format: 'html_template_v1', templatePath: 'template.html', generatedPreviewPath: 'index.html', dataPath: 'data.json',
     dataJson: { total: 5 } } }, templateHtml: '<h1>{{data.total}}</h1>' });
 const questionForm = '<question-form id="brief" title="Brief">{"questions":[{"id":"color","label":"Color","type":"text"}]}</question-form>';
+const sampleHtml = '<!doctype html><title>S70</title><h1>S70 design</h1>';
+const lowJuryScore = syntheticGoodTranscript().replace(/score="[\d.]+"/g, 'score="2"');
+const sampleRequests: Array<{ id: string; stage: string; iteration: number; authorization: string; tools: string[] }> = [];
 const openai: typeof fetch = async (url, init) => {
   const authorization = new Headers(init?.headers).get('authorization') ?? '';
   if (String(url) !== 'https://api.openai.com/v1/responses') {
@@ -77,6 +84,31 @@ const openai: typeof fetch = async (url, init) => {
   const requestBody = JSON.parse(String(init?.body)) as { tools?: Array<{ name: string }> };
   const input = JSON.parse(String(init?.body)).input as Array<{ role?: string; content?: string; type?: string; call_id?: string; output?: string }>;
   const prompt = [...input].reverse().find((item) => item.role === 'user')?.content ?? '';
+  const sampleId = /\[s70-sample:([a-z0-9-]+)\]/.exec(prompt)?.[1];
+  if (sampleId) {
+    const sample = S70_DEVLOOP_SAMPLE.find((item) => item.id === sampleId)!;
+    const stage = [...prompt.matchAll(/\nStage: ([^\n]+)\nAtoms:/g)].at(-1)?.[1] ?? '';
+    const iteration = Number([...prompt.matchAll(/\nCurrent iteration: (\d+) \/ \d+\.\n/g)].at(-1)?.[1] ?? 0);
+    sampleRequests.push({ id: sampleId, stage, iteration, authorization, tools: (requestBody.tools ?? []).map((tool) => tool.name) });
+    let text = 'Stage complete.';
+    let output: Record<string, unknown>[] = [];
+    if (stage === 'critique') text = sample.ceiling || iteration === 1 ? lowJuryScore : syntheticGoodTranscript();
+    else if (stage === 'generate') {
+      const done = input.some((item) => item.type === 'function_call_output' && item.call_id === 's70-sample-live');
+      if (!done) output = [
+        ...(!sample.media ? [{ type: 'function_call', call_id: 's70-sample-design', name: 'write_project_file',
+          arguments: JSON.stringify({ path: 'index.html', content: sampleHtml }) }] : []),
+        ...(sample.media ? [{ type: 'function_call', call_id: 's70-sample-media', name: 'generate_image',
+          arguments: JSON.stringify({ prompt: 'A calm product hero', path: 'assets/hero.png', size: '1024x1024' }) }] : []),
+        { type: 'function_call', call_id: 's70-sample-live', name: 'live_artifacts_create', arguments: JSON.stringify({
+          requestJson: sample.media ? JSON.stringify(s70MediaArtifactDraft(sample.expectedFiles[0]!)) : liveArtifactDraft }) },
+      ];
+    }
+    return new Response([...(output.length ? [] : [{ type: 'response.output_text.delta', delta: text }]),
+      { type: 'response.completed', response: { output: output.length ? output
+        : [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }] } }]
+      .map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
+  }
   for (const [marker, name, args] of [['[plugin-live-artifact]', 'live_artifacts_create', { requestJson: liveArtifactDraft }],
     ['[plugin-media]', 'generate_image', { prompt: 'A calm product hero', path: 'assets/hero.png', size: '1024x1024' }]] as const) {
     if (!prompt.includes(marker)) continue;
@@ -97,7 +129,9 @@ const openai: typeof fetch = async (url, init) => {
     return new Response(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(''),
       { headers: { 'content-type': 'text/event-stream' } });
   }
-  const text = prompt.includes('[pipeline-question]') ? questionForm : 'Noted.';
+  const text = prompt.includes('CRITIQUE_RUN') ? syntheticGoodTranscript()
+    : prompt.includes('[s70-question]') && prompt.includes('Current iteration: 2 / 3') ? questionForm
+    : prompt.includes('[pipeline-question]') ? questionForm : 'Noted.';
   return new Response([{ type: 'response.output_text.delta', delta: text }, { type: 'response.completed', response: {
     output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }] } }]
     .map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } });
@@ -342,13 +376,13 @@ describe('Studio bundled plugin catalog', () => {
     expect(byId.get(PIPELINE)?.availability).toEqual({ applicable: true, reasons: [] });
     // The test fixtures and (S67) the runnable bundled Live Artifact examples
     // are applicable; no plugin is refused for live-artifact.
-    expect(listed.filter((plugin) => plugin.availability.applicable).map((plugin) => plugin.id).sort()).toEqual([PIPELINE, APPLICABLE,
-      FIXTURE_LIVE_ARTIFACT_PLUGIN_ID, FIXTURE_MEDIA_PLUGIN_ID, ...S67_BUNDLED_APPLICABLE].sort());
+    expect(listed.filter((plugin) => plugin.availability.applicable)).toHaveLength(319);
+    for (const id of [PIPELINE, APPLICABLE, FIXTURE_LIVE_ARTIFACT_PLUGIN_ID, FIXTURE_MEDIA_PLUGIN_ID, ...S67_BUNDLED_APPLICABLE])
+      expect(byId.get(id)?.availability.applicable, id).toBe(true);
     expect(byId.get(APPLICABLE)?.availability).toEqual({ applicable: true, reasons: [] });
     expect(listed.some((plugin) => plugin.availability.reasons.some((reason) => reason.subject === 'live-artifact'))).toBe(false);
     // A live-artifact template still needs the critique loop the apply pipeline adds.
-    expect(byId.get('example-article-magazine')?.availability).toEqual({ applicable: false,
-      reasons: expect.arrayContaining([{ code: 'atom', subject: 'critique-theater' }, { code: 'pipeline-devloop', subject: 'critique' }]) });
+    expect(byId.get('example-article-magazine')?.availability).toEqual({ applicable: true, reasons: [] });
     // A declared image surface runs only where the S34 media functions exist.
     expect(byId.get('example-image-poster')?.availability).toEqual({ applicable: true, reasons: [],
       sourceRestrictions: [{ source: 'personal-codex', reasons: [{ code: 'atom', subject: 'media-image' }] }] });
@@ -406,8 +440,8 @@ describe('Studio bundled plugin catalog', () => {
   it('refuses an unavailable plugin server-side with its typed reasons and persists nothing', async () => {
     const target = await project(a);
     const listed = await catalog(a);
-    const unavailable = listed.find((plugin) => plugin.id === 'example-article-magazine')!;
-    expect(unavailable.availability.reasons).toEqual(expect.arrayContaining([{ code: 'atom', subject: 'critique-theater' }]));
+    const unavailable = listed.find((plugin) => plugin.id === 'od-new-generation')!;
+    expect(unavailable.availability.reasons).toEqual(expect.arrayContaining([{ code: 'atom', subject: 'direction-picker' }]));
     const before = withDb((db) => (db.prepare('SELECT COUNT(*) AS n FROM applied_plugin_snapshots').get() as { n: number }).n);
     const refused = await apply(a, unavailable.id, { projectId: target.projectId });
     expect(refused.status, refused.text).toBe(403);
@@ -797,4 +831,150 @@ describe('S67 repair 1: desktop-only core steps close plugins at catalog, apply 
     expect((await request(a, 'GET', `/api/applied-plugins/${legacyId}`)).json.sourceRestrictions).toEqual(['personal-codex', 'company-openai', 'account-openai']
       .map((item) => ({ source: item, reasons: [{ code: 'capability', subject: 'desktop:od-cli' }] })));
   });
+});
+
+
+describe('S70 HTTP plugin devloops on all pinned sources', () => {
+  it.each([
+    { executionSource: 'personal_subscription', agentId: 'codex' },
+    { executionSource: 'company_pool', agentId: 'openai' },
+    { executionSource: 'personal_api_key', agentId: 'openai-byok' },
+  ])('runs the bounded Jury stage and persists its score on $executionSource', async (source) => {
+    const target = await project(a);
+    const original = withDb((db) => db.prepare('SELECT manifest_json FROM installed_plugins WHERE id = ?').get(PIPELINE) as { manifest_json: string });
+    try {
+      withDb((db) => db.prepare("UPDATE installed_plugins SET manifest_json = json_set(manifest_json, '$.od.pipeline', json(?)) WHERE id = ?")
+        .run(JSON.stringify({ stages: [{ id: 'critique', atoms: ['critique-theater'], repeat: true, until: 'critique.score>=4 || iterations>=3' }] }), PIPELINE));
+      expect((await apply(a, PIPELINE, { projectId: target.projectId })).status).toBe(200);
+    } finally { withDb((db) => db.prepare('UPDATE installed_plugins SET manifest_json = ? WHERE id = ?').run(original.manifest_json, PIPELINE)); }
+    setTurnMode(root, a, { reply: syntheticGoodTranscript() });
+    try {
+      const started = await turn(a, target, source);
+      expect(started.status, started.text).toBe(202);
+      const events = await request(a, 'GET', `/api/runs/${started.json.runId}/events`);
+      expect(events.text).toContain('"status":"succeeded"');
+      expect(events.text).toContain('"kind":"pipeline_stage_completed"');
+      expect(events.text).toContain('"critiqueScore":');
+      expect(events.text).toContain('"maxIterations":3');
+      expect(events.text).not.toContain('ARTIFACT');
+      const audits = withDb((db) => db.prepare('SELECT iteration, critique_summary FROM run_devloop_iterations WHERE run_id = ?').all(started.json.runId)) as Array<{ iteration: number; critique_summary: string }>;
+      expect(audits).toHaveLength(1); expect(JSON.parse(audits[0]!.critique_summary).score).toBeGreaterThanOrEqual(4);
+      const foreign = await request(b, 'GET', `/api/runs/${started.json.runId}/events`);
+      expect(foreign.status).toBe(404);
+    } finally { setTurnMode(root, a, {}); }
+  });
+  it.each(S70_DEVLOOP_SAMPLE.flatMap((sample) => sample.sources.map((source) => ({ ...sample, source }))))(
+    'applies and terminates the sampled Web pipeline for $id on $source ($category)', async (sample) => {
+      const target = await project(a);
+      const body = { projectId: target.projectId, ...(sample.inputs ? { inputs: sample.inputs } : {}) };
+      if (sample.projectDesign) {
+        // Preserve S67 admission: an inherited brand is selected through the
+        // same project API a Web user drives, never by changing DB/manifests.
+        const missing = await apply(a, sample.id, body);
+        expect(missing.status, missing.text).toBe(409);
+        expect(missing.json.error).toMatchObject({ code: 'CONFLICT', message: 'select a design system before applying this plugin' });
+        const design = await request(a, 'POST', '/api/design-systems', { title: 'S70 sample brand', body: '# S70 brand\nUse restrained typography and spacing.' });
+        expect(design.status, design.text).toBe(201);
+        const selected = await request(a, 'PATCH', `/api/projects/${target.projectId}`, { designSystemId: design.json.designSystem.id });
+        expect(selected.status, selected.text).toBe(200);
+        expect(selected.json.project.designSystemId).toBe(design.json.designSystem.id);
+      }
+      const applied = await apply(a, sample.id, body);
+      expect(applied.status, applied.text).toBe(200);
+      const pipeline = applied.json.appliedPlugin.pipeline as PluginPipeline;
+      expect(pipeline.stages.find((stage) => stage.id === 'critique')).toMatchObject({ repeat: true, until: 'critique.score>=4 || iterations>=3' });
+      const source = sample.source === 'personal-codex' ? { executionSource: 'personal_subscription', agentId: 'codex' }
+        : sample.source === 'company-openai' ? { executionSource: 'company_pool', agentId: 'openai' }
+        : { executionSource: 'personal_api_key', agentId: 'openai-byok' };
+      const before = sampleRequests.length;
+      setTurnMode(root, a, { reply: 'Stage complete.', stageResponses: {
+        generate: { reply: 'Created the design.', artifactBytes: { 'index.html': Buffer.from(sampleHtml).toString('base64') }, liveArtifact: true },
+        'critique:1': { reply: lowJuryScore },
+        'critique:2': { reply: sample.ceiling ? lowJuryScore : syntheticGoodTranscript() },
+        'critique:3': { reply: lowJuryScore },
+      } });
+      try {
+        const started = await turn(a, target, { ...source, message: `[s70-sample:${sample.id}] Create the design from the captured resources. Audience: product team. Decision: approve the design. Content: a shipped product, 5 active users. Use image for the media kind.` });
+        expect(started.status, started.text).toBe(202);
+        const events = await request(a, 'GET', `/api/runs/${started.json.runId}/events`);
+        expect(events.text).toContain('"status":"succeeded"');
+        const frames = events.text.split('\n').filter((line) => line.startsWith('data: ')).map((line) => JSON.parse(line.slice(6)));
+        const timeline: PluginPipelineStageEvent[] = frames.filter((frame) => frame.type === 'pipeline_stage').map((frame) => frame.stage);
+        const completed = timeline.filter((stage) => stage.kind === 'pipeline_stage_completed');
+        expect([...new Set(completed.map((stage) => stage.stageId))]).toEqual(pipeline.stages.map((stage) => stage.id));
+        const critique = completed.filter((stage) => stage.stageId === 'critique');
+        expect(critique.map((stage) => stage.iteration)).toEqual(sample.ceiling ? [0, 1, 2] : [0, 1]);
+        expect(critique.map((stage) => stage.converged)).toEqual(sample.ceiling ? [false, false, true] : [false, true]);
+        expect(critique.every((stage) => stage.maxIterations === 3 && stage.runId === started.json.runId && stage.snapshotId === applied.json.snapshotId)).toBe(true);
+        expect(critique[0]!.critiqueScore).toBe(1);
+        if (!sample.ceiling) expect(critique.at(-1)!.critiqueScore).toBeGreaterThanOrEqual(4);
+        const starts = timeline.filter((stage) => stage.kind === 'pipeline_stage_started' && stage.stageId === 'critique');
+        expect(starts.map((stage) => stage.iteration)).toEqual(critique.map((stage) => stage.iteration));
+        const info = await request(a, 'GET', `/api/runs/${started.json.runId}`);
+        expect(info.json.output.pipeline).toMatchObject({ stageIndex: pipeline.stages.length, awaitingInput: false });
+        expect(info.json.output.files).toEqual(expect.arrayContaining(sample.expectedFiles));
+        const artifacts = await request(a, 'GET', `/api/live-artifacts?projectId=${enc(target.projectId)}`);
+        expect(artifacts.status, artifacts.text).toBe(200); expect(artifacts.json.artifacts).toHaveLength(1);
+        const artifact = artifacts.json.artifacts[0];
+        expect(artifact).toMatchObject({ projectId: target.projectId, sessionId: target.conversationId, createdByRunId: started.json.runId,
+          preview: { type: 'html', entry: 'index.html' } });
+        if (sample.media) {
+          const mediaPath = sample.expectedFiles[0]!;
+          expect(readFileSync(path.join(projectDir(path.join(root, 'projects'), target.projectId), mediaPath))).toEqual(PNG);
+          const raw = `/api/projects/${target.projectId}/raw/${mediaPath}`;
+          expect((await request(a, 'GET', raw)).status).toBe(200);
+          for (const foreign of [b, admin]) expect((await request(foreign, 'GET', raw)).status).toBe(404);
+          const preview = await request(a, 'GET', `/api/live-artifacts/${artifact.id}/preview?projectId=${enc(target.projectId)}&variant=rendered-source`);
+          expect(preview.status, preview.text).toBe(200);
+          expect(preview.text).toContain(`<img src="data:image/png;base64,${S70_MEDIA_PNG_BASE64}"`);
+          expect(preview.text).toContain(mediaPath);
+        }
+        const audits = withDb((db) => db.prepare('SELECT iteration FROM run_devloop_iterations WHERE run_id = ? AND stage_id = ? ORDER BY rowid')
+          .all(started.json.runId, 'critique'));
+        expect(audits).toEqual(sample.ceiling ? [{ iteration: 1 }, { iteration: 2 }, { iteration: 3 }] : [{ iteration: 1 }, { iteration: 2 }]);
+        const transcript = await request(a, 'GET', `/api/projects/${target.projectId}/conversations/${target.conversationId}/messages`);
+        const assistant = transcript.json.messages.find((message: any) => message.runId === started.json.runId && message.role === 'assistant');
+        expect(assistant.events.filter((event: any) => event.kind.startsWith('pipeline_stage_'))).toEqual(timeline);
+        expect(assistant.events.filter((event: any) => event.kind === 'live_artifact')).toEqual([
+          expect.objectContaining({ action: 'created', artifactId: artifact.id, projectId: target.projectId }),
+        ]);
+        if (sample.source !== 'personal-codex') {
+          const calls = sampleRequests.slice(before);
+          const key = sample.source === 'company-openai' ? 'sk-plugins-race-fixture-0123456789' : 'sk-plugins-a-own-fixture-0123456789';
+          expect(calls.every((call) => call.authorization === `Bearer ${key}`)).toBe(true);
+          expect(calls.filter((call) => call.stage === 'critique').map((call) => call.iteration)).toEqual(sample.ceiling ? [1, 2, 3] : [1, 2]);
+          expect(calls.filter((call) => call.stage === 'critique').every((call) => !call.tools.includes('write_project_file') && !call.tools.includes('generate_image'))).toBe(true);
+          if (sample.media) {
+            expect(info.json.output.media.images).toBe(1);
+            expect(info.json.output.files).toContain('assets/hero.png');
+          }
+        }
+      } finally { setTurnMode(root, a, {}); }
+  });
+});
+
+
+it.each([
+  { executionSource: 'company_pool', agentId: 'openai' },
+  { executionSource: 'personal_api_key', agentId: 'openai-byok' },
+])('S70 resumes a question in iteration two without resetting its bound on $executionSource', async (source) => {
+  const target = await project(a);
+  const original = withDb((db) => db.prepare('SELECT manifest_json FROM installed_plugins WHERE id = ?').get(PIPELINE) as { manifest_json: string });
+  try {
+    withDb((db) => db.prepare("UPDATE installed_plugins SET manifest_json = json_set(manifest_json, '$.od.pipeline', json(?)) WHERE id = ?")
+      .run(JSON.stringify({ stages: [{ id: 'critique', atoms: ['file-read', 'critique-theater'], repeat: true, until: 'critique.score>=5 || iterations>=3' }] }), PIPELINE));
+    expect((await apply(a, PIPELINE, { projectId: target.projectId })).status).toBe(200);
+  } finally { withDb((db) => db.prepare('UPDATE installed_plugins SET manifest_json = ? WHERE id = ?').run(original.manifest_json, PIPELINE)); }
+  const started = await turn(a, target, { ...source, message: '[s70-question] Review the design' });
+  expect(started.status, started.text).toBe(202);
+  const events = await request(a, 'GET', `/api/runs/${started.json.runId}/events`);
+  expect(events.text).toContain('"status":"succeeded"');
+  const paused = await request(a, 'GET', `/api/runs/${started.json.runId}`);
+  expect(paused.json.output.pipeline).toMatchObject({ awaitingInput: true, stageIndex: 0, iteration: 1 });
+  const answered = await turn(a, target, { ...source, message: 'Use the current direction',
+    analyticsHints: { entryFrom: 'question_answer', sourceRunId: started.json.runId } });
+  expect(answered.status, answered.text).toBe(202);
+  expect((await request(a, 'GET', `/api/runs/${answered.json.runId}/events`)).text).toContain('"status":"succeeded"');
+  const iterations = withDb((db) => db.prepare('SELECT iteration FROM run_devloop_iterations WHERE run_id = ? ORDER BY rowid').all(answered.json.runId));
+  expect(iterations).toEqual([{ iteration: 2 }, { iteration: 3 }]);
 });

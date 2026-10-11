@@ -1,9 +1,11 @@
 import path from 'node:path';
-import { mkdir, realpath } from 'node:fs/promises';
+import { mkdir, realpath, rm } from 'node:fs/promises';
 import type Database from 'better-sqlite3';
+import { emittedRenderableQuestionForm } from '@open-design/contracts';
 import { defaultCritiqueConfig, type CritiqueSseEvent } from '@open-design/contracts/critique';
 import { renderPanelPrompt } from '../prompts/panel.js';
 import { listCompanyProjectFiles, readCompanyProjectFile } from '../services/company-project-files.js';
+import { deleteCritiqueRun } from './persistence.js';
 import { runOrchestrator } from './orchestrator.js';
 
 /** Bounded Studio policy, independent from host rollout, adapters and app config. */
@@ -19,8 +21,10 @@ export function studioCritiqueDirectory(dataRoot: string, owner: string, project
 export async function runStudioCritique<T>(input: {
   db: Database.Database; dataRootCanonical: string; owner: string; projectId: string; conversationId: string; runId: string;
   authorized(): boolean; cancel(): void; emit(event: CritiqueSseEvent): void;
-  runStage(directive: string, onText: (text: string) => void): Promise<{ value: T; ok: boolean; text: string }>;
-}): Promise<{ value: T; progress?: undefined }> {
+  /** Pipeline questions pause without consuming an iteration or canceling the source. */
+  allowQuestions?: boolean;
+  runStage(directive: string, onText: (text: string) => void): Promise<{ value: T; ok: boolean; text: string; tokensUsed?: number }>;
+}): Promise<{ value: T; score?: number; tokensUsed?: number; questionText?: string; progress?: undefined }> {
   const abort = new AbortController();
   const check = () => { if (!input.authorized()) { abort.abort(); input.cancel(); } };
   check(); abort.signal.throwIfAborted();
@@ -31,7 +35,8 @@ export async function runStudioCritique<T>(input: {
   const cfg = { ...defaultCritiqueConfig(), enabled: true, parserMaxBlockBytes: STUDIO_CRITIQUE_MAX_BYTES };
   const queue: string[] = [];
   let wake: (() => void) | undefined;
-  let ended = false; let bytes = 0; let eventBytes = 0;
+  let ended = false; let bytes = 0; let eventBytes = 0; let questionPause = false;
+  const buffered: string[] = [];
   const stdout = { async *[Symbol.asyncIterator]() {
     while (!ended || queue.length) {
       if (queue.length) yield queue.shift()!;
@@ -42,7 +47,7 @@ export async function runStudioCritique<T>(input: {
   const orchestration = runOrchestrator({ db: input.db, runId: input.runId, projectId: input.projectId,
     conversationId: input.conversationId, artifactId: input.runId, artifactDir: directory, cfg,
     adapter: 'studio-source', stdout, signal: abort.signal, authorized: input.authorized,
-    child: { kill() { input.cancel(); return true; } }, bus: { emit(event) {
+    child: { kill() { if (!questionPause) input.cancel(); return true; } }, bus: { emit(event) {
       eventBytes += Buffer.byteLength(JSON.stringify(event));
       if (eventBytes > MAX_TRANSCRIPT_BYTES && !['critique.ship', 'critique.failed', 'critique.interrupted', 'critique.degraded'].includes(event.event)) {
         const error = new Error('critique_transcript_limit'); abort.abort(error); input.cancel(); throw error;
@@ -60,14 +65,19 @@ export async function runStudioCritique<T>(input: {
       if (bytes > MAX_TRANSCRIPT_BYTES) {
         const error = new Error('critique_output_limit'); abort.abort(error); input.cancel(); throw error;
       }
-      queue.push(text); wake?.(); wake = undefined;
+      if (input.allowQuestions) buffered.push(text);
+      else { queue.push(text); wake?.(); wake = undefined; }
     });
+    questionPause = input.allowQuestions === true && result.ok && !/<(?:CRITIQUE_RUN|ARTIFACT|ROUND|PANELIST|SHIP)\b/.test(result.text)
+      && emittedRenderableQuestionForm(result.text);
+    if (!questionPause) for (const chunk of buffered) queue.push(chunk);
     if (!result.ok && input.authorized()) { abort.abort(new Error('critique_source_failed')); input.cancel(); }
     ended = true; wake?.();
     const outcome = await orchestration;
     check(); abort.signal.throwIfAborted();
+    if (questionPause) return { value: result.value, questionText: result.text, ...(result.tokensUsed === undefined ? {} : { tokensUsed: result.tokensUsed }) };
     if (!result.ok || !['shipped', 'below_threshold'].includes(outcome.status)) throw new Error('critique_not_shipped');
-    return { value: result.value };
+    return { value: result.value, ...(result.tokensUsed === undefined ? {} : { tokensUsed: result.tokensUsed }), ...(outcome.composite === null ? {} : { score: outcome.composite }) };
   } catch (error) {
     // A provider limit/error is a system failure. A revocation or explicit
     // interruption has already aborted the run or removed its authority.
@@ -93,4 +103,22 @@ export function studioCritiqueProjectTools(projectsRoot: string, projectId: stri
     if (name === 'read_project_file' && Object.keys(args).length === 1 && typeof args.path === 'string') return readCompanyProjectFile(projectsRoot, projectId, args.path);
     throw new Error('critique_tool_refused');
   } };
+}
+
+/** Each pipeline iteration gets an isolated Jury evaluation on the parent
+ * turn's source. Keep its scored result in the stage audit/edges; temporary
+ * protocol bodies and generated Jury artifacts never enter shared chat. */
+export async function runStudioPipelineCritique<T>(input: Parameters<typeof runStudioCritique<T>>[0],
+  cursor: { stageIndex: number; iteration: number }): Promise<{ value: T; ok: boolean; text: string; score?: number; tokensUsed?: number }> {
+  const runId = `${input.runId}-s${cursor.stageIndex}-i${cursor.iteration}`;
+  try {
+    const result = await runStudioCritique({ ...input, runId, allowQuestions: true, emit: () => {} });
+    // Plugin until uses a five-point score. S66's daemon composite is on
+    // its configured scale (currently ten), independent of the wire claim.
+    return { ...result, ...(result.score === undefined ? {} : { score: result.score * 5 / defaultCritiqueConfig().scoreScale }),
+      ok: true, text: result.questionText ?? '' };
+  } finally {
+    deleteCritiqueRun(input.db, runId);
+    await rm(studioCritiqueDirectory(input.dataRootCanonical, input.owner, input.projectId, runId), { recursive: true, force: true });
+  }
 }

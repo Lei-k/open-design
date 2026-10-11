@@ -5733,6 +5733,7 @@ export const tr: Dict = {
   'chat.record.thinking': "Düşünüyor",
   'chat.record.thinkingTokens': "{count} token",
   'chat.record.thoughts': "Düşünce süreci",
+  'chat.pipeline.iteration': 'yineleme {iteration} / {max}',
   'chat.record.done': "Tamamlandı",
   'chat.record.failedTurn': "Çalıştırma başarısız",
   'chat.record.plan': "Plan · {count} adım",

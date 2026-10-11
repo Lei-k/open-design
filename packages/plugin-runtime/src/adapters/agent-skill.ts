@@ -54,7 +54,11 @@ export function adaptAgentSkill(
   const tags = stringArray(frontmatter['tags']);
 
   const designSystemFm = isObject(od['design_system']) ? od['design_system'] : null;
-  const designSystem = designSystemFm
+  // A portable skill can opt out of active brand context. Do not turn
+  // `requires: false` alone into the empty reference that means "inherit
+  // the project's design system". Explicit dependencies remain dependencies.
+  const designSystem = designSystemFm && (designSystemFm['requires'] !== false
+    || stringOr(designSystemFm['ref'], '').trim() || designSystemFm['primary'] === true)
     ? {
         ref: stringOr(designSystemFm['ref'], '') || undefined,
         primary: typeof designSystemFm['primary'] === 'boolean' ? (designSystemFm['primary'] as boolean) : undefined,

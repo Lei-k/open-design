@@ -14,6 +14,7 @@ export const PluginPipelineStageEventSchema = z.discriminatedUnion('kind', [
     snapshotId: z.string(),
     stageId:   z.string(),
     iteration: z.number().int().min(0),
+    maxIterations: z.number().int().min(1).optional(),
     startedAt: z.number(),
   }),
   z.object({
@@ -22,6 +23,8 @@ export const PluginPipelineStageEventSchema = z.discriminatedUnion('kind', [
     snapshotId:  z.string(),
     stageId:     z.string(),
     iteration:   z.number().int().min(0),
+    maxIterations: z.number().int().min(1).optional(),
+    critiqueScore: z.number().min(0).max(5).optional(),
     completedAt: z.number(),
     converged:   z.boolean().optional(),
     diffSummary: z.string().optional(),

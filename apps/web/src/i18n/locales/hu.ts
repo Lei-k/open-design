@@ -5733,6 +5733,7 @@ export const hu: Dict = {
   'chat.record.thinking': "Gondolkodik",
   'chat.record.thinkingTokens': "{count} token",
   'chat.record.thoughts': "Gondolatmenet",
+  'chat.pipeline.iteration': 'ismétlés {iteration} / {max}',
   'chat.record.done': "Kész",
   'chat.record.failedTurn': "A futtatás hibára futott",
   'chat.record.plan': "Terv · {count} lépés",

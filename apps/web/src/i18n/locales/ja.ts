@@ -5732,6 +5732,7 @@ export const ja: Dict = {
   'chat.record.thinking': "思考中",
   'chat.record.thinkingTokens': "{count} トークン",
   'chat.record.thoughts': "思考プロセス",
+  'chat.pipeline.iteration': '反復 {iteration} / {max}',
   'chat.record.done': "完了",
   'chat.record.failedTurn': "実行失敗",
   'chat.record.plan': "実行計画 · {count} ステップ",

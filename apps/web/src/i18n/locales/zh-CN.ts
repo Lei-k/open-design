@@ -6178,6 +6178,7 @@ export const zhCN: Dict = {
   'chat.record.thinking': "思考中",
   'chat.record.thinkingTokens': "{count} tokens",
   'chat.record.thoughts': "思考过程",
+  'chat.pipeline.iteration': '第 {iteration} / {max} 轮',
   'chat.record.done': "已完成",
   'chat.record.failedTurn': "运行失败",
   'chat.record.plan': "执行计划 · {count} 步",
