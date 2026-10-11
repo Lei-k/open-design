@@ -1,3 +1,4 @@
+import { currentAccountRevision } from './helpers.js';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -259,7 +260,7 @@ it.each(['deactivation', 'grant-revocation', 'project-delete'] as const)('R1 %s 
     })]);
     const base = `/api/projects/${p.id}/critique/${runId}`;
     if (mode === 'deactivation') {
-      expect((await daemon.request({ method: 'PATCH', path: `/api/auth/users/${a.id}`, cookie: admin.cookie, body: { active: false } })).status).toBe(200);
+      expect((await daemon.request({ method: 'PATCH', path: `/api/auth/users/${a.id}`, cookie: admin.cookie, body: { revision: await currentAccountRevision(daemon.request, a.id, admin.cookie), active: false } })).status).toBe(200);
       expect((await daemon.request({ path: `${base}/artifact`, cookie: a.cookie })).status).toBe(401);
     } else if (mode === 'grant-revocation') {
       revocation = daemon.request({ method: 'DELETE', path: `/api/multiuser/projects/${p.id}/shares/${b.id}`, cookie: a.cookie });
@@ -282,7 +283,7 @@ it.each(['deactivation', 'grant-revocation', 'project-delete'] as const)('R1 %s 
       try { await vi.waitFor(() => expect((db.prepare('SELECT status FROM multiuser_runs WHERE id = ?').get(runId) as { status: string }).status).not.toBe('active')); }
       finally { db.close(); }
       if (mode === 'deactivation') {
-        await daemon.request({ method: 'PATCH', path: `/api/auth/users/${a.id}`, cookie: admin.cookie, body: { active: true } });
+        await daemon.request({ method: 'PATCH', path: `/api/auth/users/${a.id}`, cookie: admin.cookie, body: { revision: await currentAccountRevision(daemon.request, a.id, admin.cookie), active: true } });
         a.cookie = await login(daemon, a.username, a.password);
       } else await daemon.request({ method: 'PUT', path: `/api/multiuser/projects/${p.id}/shares`, cookie: a.cookie, body: { username: b.username, role: 'edit' } });
       expect((await daemon.request({ path: base, cookie: owner.cookie })).json.critique.status).toBe('shipped');
@@ -293,7 +294,7 @@ it.each(['deactivation', 'grant-revocation', 'project-delete'] as const)('R1 %s 
   } finally {
     release(); gate.wait = null;
     if (mode === 'deactivation') {
-      await daemon.request({ method: 'PATCH', path: `/api/auth/users/${a.id}`, cookie: admin.cookie, body: { active: true } });
+      await daemon.request({ method: 'PATCH', path: `/api/auth/users/${a.id}`, cookie: admin.cookie, body: { revision: await currentAccountRevision(daemon.request, a.id, admin.cookie), active: true } });
       a.cookie = await login(daemon, a.username, a.password);
     }
   }
