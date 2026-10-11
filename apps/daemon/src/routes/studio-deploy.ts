@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
 import {
   STUDIO_DEPLOY_MISSING_REASON,
+  STUDIO_DEPLOY_HISTORY_FULL_REASON,
   STUDIO_DEPLOY_DOMAIN_REASON,
   type StudioDeployConfig,
   type StudioDeployment,
@@ -12,7 +13,9 @@ import { sendApiError } from '../http/api-errors.js';
 import { OutboundAuthorityRefused, OutboundRequestRefused } from '../http/safe-outbound-fetch.js';
 import { getProject } from '../db.js';
 import { ProjectAccessStore } from '../storage/project-access.js';
-import { StudioDeployStore, studioDeployProvider, StudioDeployInputError } from '../storage/studio-deploy.js';
+import {
+  StudioDeployStore, studioDeployProvider, StudioDeployInputError, StudioDeployRecordMissing, StudioDeployHistoryFull,
+} from '../storage/studio-deploy.js';
 import { captureStudioProject } from '../projects/studio-snapshot.js';
 import { buildDeployFilePlan, cloudflarePagesProjectNameForProject } from '../deploy.js';
 import { studioProvider, type StudioDeployOutboundInjection } from '../deploy/studio-provider.js';
@@ -54,6 +57,13 @@ export function registerStudioDeployRoutes(app: Express, deps: RegisterStudioDep
       throw new AuthorityChanged();
   };
   const failed = (res: Response, error: unknown) => {
+    if (
+      error instanceof StudioDeployRecordMissing ||
+      (error instanceof OutboundAuthorityRefused && error.cause instanceof StudioDeployRecordMissing)
+    )
+      return notFound(res);
+    if (error instanceof StudioDeployHistoryFull)
+      return sendApiError(res, 409, 'MULTIUSER_DEPLOY_HISTORY_FULL', STUDIO_DEPLOY_HISTORY_FULL_REASON);
     if (error instanceof TokenMissing)
       return sendApiError(res, 409, 'MULTIUSER_DEPLOY_TOKEN_MISSING', STUDIO_DEPLOY_MISSING_REASON);
     if (
@@ -146,7 +156,7 @@ export function registerStudioDeployRoutes(app: Express, deps: RegisterStudioDep
     const config = store.read(actor.accountId, studioDeployProvider(provider ?? 'vercel'));
     if (!config.configured) throw new TokenMissing();
     if (config.providerId === 'cloudflare-pages') {
-      if (!config.accountId) throw new StudioDeployInputError(400);
+      if (!config.accountId || !/^[a-f0-9]{32}$/i.test(config.accountId)) throw new StudioDeployInputError(400);
       config.projectName = cloudflarePagesProjectNameForProject(
         project,
         config.projectName || getProject(deps.db, project)?.name || '',
@@ -155,12 +165,13 @@ export function registerStudioDeployRoutes(app: Express, deps: RegisterStudioDep
     check(actor, project, config);
     return config;
   };
-  const remote = (actor: AuthActor, project: string, config: StudioDeployConfig) =>
+  const remote = (actor: AuthActor, project: string, config: StudioDeployConfig, sourceId?: string) =>
     studioProvider({
       provider: config.providerId,
       config,
       ...(deps.outbound ? { outbound: deps.outbound } : {}),
       authorize: () => {
+        if (sourceId && !store.get(actor.accountId, project, sourceId)) throw new StudioDeployRecordMissing();
         check(actor, project, config);
         const token = store.token(actor.accountId, config.providerId);
         if (!token) throw new AuthorityChanged();
@@ -174,12 +185,20 @@ export function registerStudioDeployRoutes(app: Express, deps: RegisterStudioDep
     res.json({ deployments: store.list(target.actor.accountId, target.project) });
   });
   const running = new Set<string>();
+  const acquireSlot = (account: string, res: Response): boolean => {
+    if (running.has(account) || running.size >= 2) {
+      sendApiError(res, 409, 'CONFLICT', 'Deployment slots are busy; try again shortly.');
+      return false;
+    }
+    running.add(account);
+    return true;
+  };
   const run = async (req: Request, res: Response, redeploy = false, preflight = false) => {
     const target = owner(req, res);
     if (!target) return;
-    if (running.has(target.actor.accountId) || running.size >= 2)
-      return sendApiError(res, 409, 'CONFLICT', 'Deployment slots are busy; try again shortly.');
-    running.add(target.actor.accountId);
+    if (redeploy && !store.get(target.actor.accountId, target.project, String(req.params.deploymentId)))
+      return notFound(res);
+    if (!acquireSlot(target.actor.accountId, res)) return;
     try {
       const previous = redeploy
         ? store.get(target.actor.accountId, target.project, String(req.params.deploymentId))
@@ -202,9 +221,9 @@ export function registerStudioDeployRoutes(app: Express, deps: RegisterStudioDep
           missing: [],
           invalid: [],
         });
-      if (store.list(target.actor.accountId, target.project).length >= 100) throw new StudioDeployInputError(409);
+      if (store.list(target.actor.accountId, target.project).length >= 100) throw new StudioDeployHistoryFull();
       const deployTarget = body.target ?? (config.providerId === 'cloudflare-pages' ? 'production' : 'preview');
-      const result = await remote(target.actor, target.project, config).deploy(
+      const result = await remote(target.actor, target.project, config, previous?.id).deploy(
         captured.plan.files,
         target.project,
         deployTarget,
@@ -223,12 +242,11 @@ export function registerStudioDeployRoutes(app: Express, deps: RegisterStudioDep
         updatedAt: now,
         lastLinkCheck: null,
       };
-      store.save(target.actor.accountId, row, {
-        teamId: config.teamId,
-        teamSlug: config.teamSlug,
-        accountId: config.accountId,
-        projectName: config.projectName,
-      });
+      store.create(
+        target.actor.accountId, row,
+        { teamId: config.teamId, teamSlug: config.teamSlug, accountId: config.accountId, projectName: config.projectName },
+        () => check(target.actor, target.project, config), previous?.id,
+      );
       res.setHeader('Cache-Control', 'no-store');
       res.json(row);
     } catch (error) {
@@ -254,22 +272,25 @@ export function registerStudioDeployRoutes(app: Express, deps: RegisterStudioDep
       if (!target) return;
       const row = store.get(target.actor.accountId, target.project, String(req.params.deploymentId));
       if (!row) return notFound(res);
+      if (!acquireSlot(target.actor.accountId, res)) return;
       try {
         const config = {
           ...configuration(target.actor, target.project, row.providerId),
           ...store.locator(target.actor.accountId, target.project, row.id),
         };
-        const provider = remote(target.actor, target.project, config);
+        const provider = remote(target.actor, target.project, config, row.id);
         const result =
           action === 'status'
             ? await provider.status(row.deploymentId)
             : { lastLinkCheck: await provider.checkLink(row.url) };
         check(target.actor, target.project, config);
         const updated = { ...row, ...result, updatedAt: Date.now() };
-        store.save(target.actor.accountId, updated);
+        store.updateRecord(target.actor.accountId, updated, () => check(target.actor, target.project, config));
         res.json(updated);
       } catch (error) {
         failed(res, error);
+      } finally {
+        running.delete(target.actor.accountId);
       }
     });
   app.delete(`${projectBase}/deployments/:deploymentId`, (req, res) => {

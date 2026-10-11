@@ -11,6 +11,7 @@ export const uk: Dict = {
   'studio.deployMissing': 'No token configured',
   'studio.deployToken': 'Provider token',
   'studio.deployClear': 'Clear token',
+  'studio.deployHistoryFull': 'Історія розгортань заповнена (100 записів). Видаліть запис перед новим розгортанням.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Збережені спогади та дані профілю враховуються в наступних запусках. Автоматичне вилучення вмикається за бажанням: воно виконується після ходів OpenAI на джерелі цього ходу (пул компанії або ваш ключ) і пропускається для особистих ходів Codex.",

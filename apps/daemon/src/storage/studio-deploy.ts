@@ -17,6 +17,8 @@ export class StudioDeployInputError extends Error {
     super('Deploy settings refused');
   }
 }
+export class StudioDeployRecordMissing extends Error {}
+export class StudioDeployHistoryFull extends Error {}
 const FIELDS = [
   'teamId',
   'teamSlug',
@@ -86,6 +88,10 @@ export class StudioDeployStore {
         const value = input[field];
         if (typeof value !== 'string' || value.length > 128 || (value && !/^[a-zA-Z0-9_.-]+$/.test(value)))
           throw new StudioDeployInputError(400);
+        if (value && field === 'accountId' && !/^[a-f0-9]{32}$/i.test(value))
+          throw new StudioDeployInputError(400);
+        if (value && field === 'projectName' && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(value))
+          throw new StudioDeployInputError(400);
         fields[field] = value;
       }
     return this.db
@@ -144,18 +150,30 @@ export class StudioDeployStore {
       ...(JSON.parse(row.locator) as StudioDeployFields),
     } : {};
   }
-  save(owner: string, row: StudioDeployment, locator?: StudioDeployFields): void {
-    this.db
-      .prepare(
-        'INSERT INTO studio_deploy_records VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record WHERE account_id=excluded.account_id AND project_id=excluded.project_id',
-      )
-      .run(
-        row.id,
-        owner,
-        row.projectId,
-        JSON.stringify(row),
-        JSON.stringify(locator ?? this.locator(owner, row.projectId, row.id)),
-      );
+  /** Creation never updates another record. Authority and optional redeploy source are checked atomically. */
+  create(
+    owner: string,
+    row: StudioDeployment,
+    locator: StudioDeployFields,
+    authorize: () => void,
+    sourceId?: string,
+  ): void {
+    this.db.transaction(() => {
+      if (sourceId && !this.get(owner, row.projectId, sourceId)) throw new StudioDeployRecordMissing();
+      authorize();
+      if (this.list(owner, row.projectId).length >= 100) throw new StudioDeployHistoryFull();
+      this.db.prepare('INSERT INTO studio_deploy_records VALUES(?,?,?,?,?)')
+        .run(row.id, owner, row.projectId, JSON.stringify(row), JSON.stringify(locator));
+    }).immediate();
+  }
+  /** Refresh is UPDATE-only: deletion is final and the captured locator remains immutable. */
+  updateRecord(owner: string, row: StudioDeployment, authorize: () => void): void {
+    this.db.transaction(() => {
+      if (!this.get(owner, row.projectId, row.id)) throw new StudioDeployRecordMissing();
+      authorize();
+      this.db.prepare('UPDATE studio_deploy_records SET record=? WHERE id=? AND account_id=? AND project_id=?')
+        .run(JSON.stringify(row), row.id, owner, row.projectId);
+    }).immediate();
   }
   delete(owner: string, project: string, id: string): void {
     this.db

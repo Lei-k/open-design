@@ -175,7 +175,11 @@ export function StudioDeployMenu({
         method,
         ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {}),
       });
-      if (!res.ok) throw new Error();
+      if (!res.ok) {
+        const data = await res.json();
+        setError(t(data?.error?.code === 'MULTIUSER_DEPLOY_HISTORY_FULL' ? 'studio.deployHistoryFull' : 'studio.deployFailed'));
+        return;
+      }
       await load();
     } catch {
       setError(t('studio.deployFailed'));

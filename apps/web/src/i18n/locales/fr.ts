@@ -11,6 +11,7 @@ export const fr: Dict = {
   'studio.deployMissing': 'No token configured',
   'studio.deployToken': 'Provider token',
   'studio.deployClear': 'Clear token',
+  'studio.deployHistoryFull': 'L’historique des déploiements est plein (100 entrées). Supprimez une entrée avant de déployer à nouveau.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Les mémoires enregistrées et les informations de profil sont incluses dans les prochaines exécutions. L’extraction automatique est facultative : elle s’exécute après les tours OpenAI sur la source de ce tour (le pool de l’entreprise ou votre propre clé) et est ignorée pour les tours Codex personnels.",

@@ -11,6 +11,7 @@ export const ja: Dict = {
   'studio.deployMissing': 'トークン未設定',
   'studio.deployToken': 'プロバイダートークン',
   'studio.deployClear': 'トークンを削除',
+  'studio.deployHistoryFull': 'デプロイ履歴が上限（100件）に達しました。履歴を1件削除してから再度デプロイしてください。',
   'studio.deployFailed': 'デプロイに失敗しました。設定または履歴を再読み込みして再試行してください。',
   'studio.deployProgress': 'デプロイ中…',
   "studio.manualMemoryHint": "保存したメモリとプロフィール情報は今後の実行に含まれます。自動抽出はオプトインです。OpenAI のターン後に、そのターン自身のソース（会社のプールまたは自分のキー）で実行され、個人の Codex ターンではスキップされます。",

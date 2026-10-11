@@ -11,6 +11,7 @@ export const th: Dict = {
   'studio.deployMissing': 'No token configured',
   'studio.deployToken': 'Provider token',
   'studio.deployClear': 'Clear token',
+  'studio.deployHistoryFull': 'ประวัติการปรับใช้เต็มแล้ว (100 รายการ) ลบรายการประวัติก่อนปรับใช้อีกครั้ง',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "หน่วยความจำที่บันทึกไว้และข้อมูลโปรไฟล์จะถูกใช้ในการรันครั้งถัดไป การดึงข้อมูลอัตโนมัติเป็นตัวเลือก: ทำงานหลังรอบ OpenAI โดยใช้แหล่งของรอบนั้นเอง (พูลของบริษัทหรือคีย์ของคุณ) และจะข้ามรอบ Codex ส่วนตัว",

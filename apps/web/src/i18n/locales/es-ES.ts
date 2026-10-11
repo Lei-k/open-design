@@ -11,6 +11,7 @@ export const esES: Dict = {
   'studio.deployMissing': 'No token configured',
   'studio.deployToken': 'Provider token',
   'studio.deployClear': 'Clear token',
+  'studio.deployHistoryFull': 'El historial de despliegues está lleno (100 registros). Elimina un registro antes de volver a desplegar.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Las memorias guardadas y los datos del perfil se incluyen en las próximas ejecuciones. La extracción automática es opcional: se ejecuta tras los turnos de OpenAI con la fuente de ese turno (el grupo de la empresa o tu propia clave) y se omite en los turnos personales de Codex.",

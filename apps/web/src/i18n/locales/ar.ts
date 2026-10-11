@@ -11,6 +11,7 @@ export const ar: Dict = {
   'studio.deployMissing': 'No token configured',
   'studio.deployToken': 'Provider token',
   'studio.deployClear': 'Clear token',
+  'studio.deployHistoryFull': 'سجل عمليات النشر ممتلئ (100 سجل). احذف سجل نشر قبل النشر مرة أخرى.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "تُضمَّن الذكريات المحفوظة وحقائق الملف الشخصي في التشغيلات القادمة. الاستخراج التلقائي اختياري: يعمل بعد أدوار OpenAI على مصدر ذلك الدور نفسه (مجمّع الشركة أو مفتاحك الخاص) ويُتخطّى في أدوار Codex الشخصية.",

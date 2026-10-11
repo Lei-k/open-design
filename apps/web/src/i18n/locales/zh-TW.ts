@@ -11,6 +11,7 @@ export const zhTW: Dict = {
   'studio.deployMissing': '尚未設定權杖',
   'studio.deployToken': '供應商權杖',
   'studio.deployClear': '清除權杖',
+  'studio.deployHistoryFull': '部署歷史已滿（100 筆紀錄）。請刪除一筆部署紀錄後再部署。',
   'studio.deployFailed': '部署請求失敗。請重新載入設定或歷史紀錄後重試。',
   'studio.deployProgress': '正在部署…',
   "studio.manualMemoryHint": "已儲存的記憶和個人資料會用於之後的執行。自動擷取需手動開啟：在 OpenAI 回合結束後使用該回合自身的來源（公司池或你自己的金鑰）執行，個人 Codex 回合會略過。",

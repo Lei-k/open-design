@@ -11,6 +11,7 @@ export const ko: Dict = {
   'studio.deployMissing': 'No token configured',
   'studio.deployToken': 'Provider token',
   'studio.deployClear': 'Clear token',
+  'studio.deployHistoryFull': '배포 기록이 가득 찼습니다(100개). 다시 배포하기 전에 배포 기록을 삭제하세요.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "저장된 메모리와 프로필 정보는 이후 실행에 포함됩니다. 자동 추출은 선택 사항이며, OpenAI 턴이 끝난 뒤 해당 턴의 소스(회사 풀 또는 내 키)로 실행되고 개인 Codex 턴에서는 건너뜁니다.",

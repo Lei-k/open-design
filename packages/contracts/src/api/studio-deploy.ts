@@ -43,3 +43,6 @@ export const STUDIO_DEPLOY_MISSING_REASON = 'Configure your own provider token i
 export const STUDIO_DEPLOY_OWNER_REASON = 'Only the project owner may deploy or view deployment history.';
 export const STUDIO_DEPLOY_DOMAIN_REASON =
   'Cloudflare custom domains and zone discovery are unavailable on multi-user Web; use the provider-managed pages.dev link.';
+
+export const STUDIO_DEPLOY_HISTORY_FULL_REASON =
+  'Deployment history is full (100 records). Delete a deployment record before deploying again.';

@@ -11,6 +11,7 @@ export const fa: Dict = {
   'studio.deployMissing': 'No token configured',
   'studio.deployToken': 'Provider token',
   'studio.deployClear': 'Clear token',
+  'studio.deployHistoryFull': 'تاریخچهٔ استقرار پر است (100 رکورد). پیش از استقرار دوباره، یک رکورد استقرار را حذف کنید.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "حافظه‌های ذخیره‌شده و اطلاعات پروفایل در اجراهای بعدی گنجانده می‌شوند. استخراج خودکار اختیاری است: پس از نوبت‌های OpenAI با منبع همان نوبت (استخر شرکت یا کلید خودتان) اجرا می‌شود و برای نوبت‌های شخصی Codex رد می‌شود.",

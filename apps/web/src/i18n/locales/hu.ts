@@ -11,6 +11,7 @@ export const hu: Dict = {
   'studio.deployMissing': 'No token configured',
   'studio.deployToken': 'Provider token',
   'studio.deployClear': 'Clear token',
+  'studio.deployHistoryFull': 'A telepítési előzmények megteltek (100 bejegyzés). Új telepítés előtt törölj egy bejegyzést.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "A mentett emlékek és profiladatok bekerülnek a későbbi futtatásokba. Az automatikus kinyerés opcionális: OpenAI-körök után fut az adott kör saját forrásán (vállalati keret vagy a saját kulcsod), személyes Codex-köröknél kimarad.",

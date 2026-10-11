@@ -11,6 +11,7 @@ export const de: Dict = {
   'studio.deployMissing': 'No token configured',
   'studio.deployToken': 'Provider token',
   'studio.deployClear': 'Clear token',
+  'studio.deployHistoryFull': 'Der Bereitstellungsverlauf ist voll (100 Einträge). Lösche einen Eintrag, bevor du erneut bereitstellst.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Gespeicherte Erinnerungen und Profilangaben fließen in künftige Läufe ein. Die automatische Extraktion ist optional: Sie läuft nach OpenAI-Runden über die Quelle dieser Runde (Firmenpool oder dein eigener Schlüssel) und wird bei persönlichen Codex-Runden übersprungen.",

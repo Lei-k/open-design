@@ -48,3 +48,22 @@ it('account/provider/purpose sealing refuses copied ciphertext and configuration
     rmSync(root, { recursive: true });
   }
 });
+
+it('validates provider path fields before persistence, allowing only canonical Cloudflare IDs and Pages names', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 's64-store-'));
+  const db = new Database(':memory:');
+  try {
+    db.exec('CREATE TABLE projects(id TEXT PRIMARY KEY)');
+    const store = new StudioDeployStore(db, root);
+    for (const field of ['accountId', 'projectName'])
+      for (const value of ['.', '..', '%2e', '%2E%2e', 'a/b', 'a\\b', 'a?b', 'a#b'])
+        expect(() => store.update('a', 'cloudflare-pages', { revision: 0, [field]: value })).toThrow();
+    for (const accountId of ['short', 'g'.repeat(32), 'a'.repeat(31), 'a'.repeat(33)])
+      expect(() => store.update('a', 'cloudflare-pages', { revision: 0, accountId })).toThrow();
+    for (const projectName of ['UPPER', 'a_b', '-site', 'a.b', 'a'.repeat(64)])
+      expect(() => store.update('a', 'cloudflare-pages', { revision: 0, projectName })).toThrow();
+    expect(store.update('a', 'cloudflare-pages', { revision: 0, accountId: 'ABCDEF0123456789'.repeat(2), projectName: 'site-123' }))
+      .toMatchObject({ revision: 1, projectName: 'site-123' });
+    expect(store.update('a', 'cloudflare-pages', { revision: 1, projectName: '' }).projectName).toBe('');
+  } finally { db.close(); rmSync(root, { recursive: true }); }
+});

@@ -11,6 +11,7 @@ export const it: Dict = {
   'studio.deployMissing': 'No token configured',
   'studio.deployToken': 'Provider token',
   'studio.deployClear': 'Clear token',
+  'studio.deployHistoryFull': 'La cronologia dei deployment è piena (100 record). Elimina un record prima di eseguire un nuovo deployment.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Le memorie salvate e i dati del profilo vengono inclusi nelle esecuzioni future. L’estrazione automatica è facoltativa: viene eseguita dopo i turni OpenAI sulla fonte di quel turno (il pool aziendale o la tua chiave) ed è saltata per i turni Codex personali.",

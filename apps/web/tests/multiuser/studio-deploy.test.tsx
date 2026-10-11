@@ -105,3 +105,15 @@ it('configured owners can deploy and see bounded progress', async () => {
     expect(calls.some((c) => c.url === '/api/projects/p/deploy' && c.body.providerId === 'vercel')).toBe(true),
   );
 });
+
+it('history-full deploy errors show the localized actionable cap message', async () => {
+  await mount(<StudioDeployMenu projectId="p" fileName="index.html" owner />, true);
+  await screen.findByText('Vercel');
+  const original = globalThis.fetch;
+  vi.stubGlobal('fetch', vi.fn(async (input, init) => String(input).endsWith('/deploy')
+    ? Response.json({ error: { code: 'MULTIUSER_DEPLOY_HISTORY_FULL', message: 'untrusted provider text' } }, { status: 409 })
+    : original(input, init)));
+  fireEvent.click(screen.getByText('Vercel'));
+  expect((await screen.findByRole('alert')).textContent)
+    .toBe('Deployment history is full (100 records). Delete a deployment record before deploying again.');
+});

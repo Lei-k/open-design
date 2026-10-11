@@ -11,6 +11,7 @@ export const ptBR: Dict = {
   'studio.deployMissing': 'No token configured',
   'studio.deployToken': 'Provider token',
   'studio.deployClear': 'Clear token',
+  'studio.deployHistoryFull': 'O histórico de implantações está cheio (100 registros). Exclua um registro antes de implantar novamente.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Memórias salvas e dados do perfil são incluídos nas próximas execuções. A extração automática é opcional: ela roda após turnos da OpenAI na fonte do próprio turno (o pool da empresa ou sua chave) e é ignorada em turnos pessoais do Codex.",

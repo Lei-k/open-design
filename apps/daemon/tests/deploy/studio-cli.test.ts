@@ -73,9 +73,32 @@ it('private file config, clear/show and all record commands use standard endpoin
         ),
       ).toBe(0);
     for (const op of ['run', 'list', 'status', 'check-link', 'redeploy', 'delete'])
-      expect(await runStudioDeployCli([op, 'p', 'd', '--json'], async () => 'http://fixture')).toBe(0);
+      expect(await runStudioDeployCli(['run', 'list'].includes(op) ? [op, 'p', '--json'] : [op, 'p', 'd', '--json'], async () => 'http://fixture')).toBe(0);
     expect(calls.map((c) => c.url)).toContain('http://fixture/api/projects/p/deployments/d/redeploy');
   } finally {
     rmSync(root, { recursive: true });
   }
+});
+
+it('rejects stray positionals before resolving a session, reading a token or making HTTP, without reflecting them', async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 's64-cli-'));
+  const file = path.join(root, 'token');
+  writeFileSync(file, 'S64_PRIVATE_TOKEN_1234', { mode: 0o600 });
+  const secret = 'S64-stray-secret-9283';
+  const resolve = vi.fn(async () => 'http://fixture');
+  const fetch = vi.fn(async () => Response.json({}));
+  vi.stubGlobal('fetch', fetch);
+  const errors: string[] = [];
+  vi.spyOn(process.stderr, 'write').mockImplementation((value) => { errors.push(String(value)); return true; });
+  for (const args of [
+    ['config', 'set', secret, '--provider', 'vercel', '--revision', '0', '--token-file', file],
+    ['config', 'show', secret, '--provider', 'vercel'],
+    ['config', 'clear', secret, '--provider', 'vercel', '--revision', '0'],
+    ['run', 'p', secret], ['list', 'p', secret],
+    ...['status', 'check-link', 'redeploy', 'delete'].map((op) => [op, 'p', 'd', secret]),
+  ]) expect(await runStudioDeployCli(args, resolve)).toBe(2);
+  expect(resolve).not.toHaveBeenCalled();
+  expect(fetch).not.toHaveBeenCalled();
+  rmSync(root, { recursive: true });
+  expect(errors.join('')).not.toContain(secret);
 });

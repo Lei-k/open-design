@@ -11,6 +11,7 @@ export const id: Dict = {
   'studio.deployMissing': 'No token configured',
   'studio.deployToken': 'Provider token',
   'studio.deployClear': 'Clear token',
+  'studio.deployHistoryFull': 'Riwayat deployment penuh (100 catatan). Hapus satu catatan sebelum melakukan deployment lagi.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Memori tersimpan dan fakta profil disertakan dalam proses berikutnya. Ekstraksi otomatis bersifat opsional: berjalan setelah giliran OpenAI pada sumber giliran itu sendiri (kumpulan perusahaan atau kunci Anda) dan dilewati untuk giliran Codex pribadi.",

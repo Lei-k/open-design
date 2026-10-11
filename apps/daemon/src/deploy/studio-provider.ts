@@ -81,7 +81,9 @@ export function studioProvider(input: {
     ...input.outbound,
     maxRedirects: 0,
     maxResponseBytes: 1024 * 1024,
-    timeoutMs: input.outbound?.timeoutMs ?? 10_000,
+    // 64 MiB captured bytes become about 86 MiB of base64 plus metadata.
+    // A 90 s inline-upload ceiling allows roughly 1 MiB/s while staying inside the 120 s pipeline.
+    timeoutMs: input.outbound?.timeoutMs ?? 90_000,
   });
   const sentCredentials = new Set<string>();
   let secrets = knownSecrets([]);
@@ -95,8 +97,14 @@ export function studioProvider(input: {
     asset = false,
     contentType = 'application/json',
     allow404 = false,
+    requestCeilingMs = 10_000,
   ) => {
     if (Date.now() - start > 120_000) throw new OutboundRequestRefused('timeout');
+    // Captured locators may predate current config validation; refuse them before URL normalization or DNS.
+    if (input.provider === 'cloudflare-pages' &&
+      (!/^[a-f0-9]{32}$/i.test(input.config.accountId ?? '') ||
+        !/^[a-z0-9][a-z0-9-]{0,62}$/.test(input.config.projectName ?? '')))
+      throw new OutboundRequestRefused('host');
     const canonical = new URL(`${api}${suffix}`);
     if (!['api.vercel.com', 'api.cloudflare.com'].includes(canonical.hostname))
       throw new OutboundRequestRefused('host');
@@ -108,7 +116,7 @@ export function studioProvider(input: {
       method,
       ...(body !== undefined ? { body } : {}),
       headers: { 'Content-Type': contentType },
-      timeoutMs: Math.max(1, 120_000 - (Date.now() - start)),
+      timeoutMs: Math.max(1, Math.min(requestCeilingMs, 120_000 - (Date.now() - start))),
       beforeConnect: (hop) => {
         if (hop.url.origin !== expected || hop.hop !== 0) throw new OutboundRequestRefused('host');
         // Account token is decrypted only after the synchronous live authority check, at dispatch and socket.
@@ -147,6 +155,10 @@ export function studioProvider(input: {
             ...vercelDeploymentRequestBody(files, projectId),
             ...(target === 'production' ? { target: 'production' } : {}),
           }),
+          false,
+          'application/json',
+          false,
+          90_000,
         );
         return projection(json);
       }
@@ -234,6 +246,7 @@ export function studioProvider(input: {
       const expected = new URL(destination).origin;
       const response = await safe(destination, {
         method: 'HEAD',
+        timeoutMs: Math.max(1, Math.min(10_000, 120_000 - (Date.now() - start))),
         beforeConnect: (hop) => {
           if (hop.url.origin !== expected || hop.hop) throw new OutboundRequestRefused('host');
           input.authorize();

@@ -33,6 +33,7 @@ const responses: string[] = [];
 let holdPath: string | null = null;
 let held: () => void = () => {};
 let release: () => void = () => {};
+let heldReleases: (() => void)[] = [];
 let failure = false;
 let echo = false;
 let redirect = false;
@@ -56,7 +57,7 @@ async function setToken(user = a, provider = 'vercel', value: string | null = to
     providerId: provider,
     revision: current.json.revision,
     token: value,
-    ...(provider === 'cloudflare-pages' ? { accountId: 'cf-account', projectName: 'site' } : {}),
+    ...(provider === 'cloudflare-pages' ? { accountId: 'a'.repeat(32), projectName: 'site' } : {}),
   });
   expect(result.status, result.text).toBe(200);
   configRevision = result.json.revision;
@@ -90,6 +91,7 @@ beforeAll(async () => {
       held();
       await new Promise<void>((resolve) => {
         release = resolve;
+        heldReleases.push(resolve);
       });
     }
     if (redirect) {
@@ -154,6 +156,7 @@ beforeAll(async () => {
 beforeEach(() => {
   holdDns = false;
   holdPath = null;
+  heldReleases = [];
   failure = false;
   echo = false;
   redirect = false;
@@ -252,7 +255,7 @@ it.each(['vercel', 'cloudflare-pages'])(
     expect((await call(a, 'PUT', '/api/deploy/config', {
       providerId: provider,
       revision: originalConfig.json.revision,
-      ...(provider === 'vercel' ? { teamId: 'team-new' } : { accountId: 'cf-new', projectName: 'changed' }),
+      ...(provider === 'vercel' ? { teamId: 'team-new' } : { accountId: 'b'.repeat(32), projectName: 'changed' }),
     })).status).toBe(200);
     const scopeStart = requests.length;
     expect((await call(a, 'POST', base + '/status', {})).status).toBe(200);
@@ -435,7 +438,7 @@ it('real od CLI uses the account session, accepts stdin tokens, refuses argv, an
   expect(deployed.code, deployed.stderr).toBe(0);
   const record = JSON.parse(deployed.stdout);
   for (const op of ['list', 'status', 'check-link', 'redeploy', 'delete']) {
-    const response = await run([op, id, record.id]);
+    const response = await run(op === 'list' ? [op, id] : [op, id, record.id]);
     expect(response.code, response.stderr).toBe(0);
     expect(() => JSON.parse(response.stdout)).not.toThrow();
   }
@@ -444,6 +447,127 @@ it('real od CLI uses the account session, accepts stdin tokens, refuses argv, an
     (await run(['config', 'clear', '--provider', 'vercel', '--revision', String(JSON.parse(current.stdout).revision)]))
       .code,
   ).toBe(0);
+});
+// S64 ports REPRO-1, with the same hold → DELETE → release sequence for every async record effect.
+it.each(['status', 'check-link', 'redeploy'])(
+  '%s cannot revive or derive a new record after its source is deleted',
+  async (action) => {
+    await setToken();
+    const id = await project();
+    const deployed = await deploy(id);
+    expect(deployed.status, deployed.text).toBe(200);
+    const base = `/api/projects/${id}/deployments/${deployed.json.id}`;
+    const missing = await call(a, 'POST', base.replace(deployed.json.id, randomUUID()) + `/${action}`, {});
+    holdPath = action === 'status' ? '/v13/deployments/deployment-1' : action === 'check-link' ? '/link' : '/v13/deployments';
+    const reached = new Promise<void>((resolve) => { held = resolve; });
+    const pending = call(a, 'POST', `${base}/${action}`, {});
+    await reached;
+    try {
+      expect((await call(a, 'DELETE', base)).json).toEqual({ ok: true, externalDeleted: false });
+    } finally {
+      release();
+    }
+    const response = await pending;
+    expect(response.status, response.text).toBe(404);
+    expect(response.json).toEqual(missing.json);
+    expect((await call(a, 'GET', `/api/projects/${id}/deployments`)).json.deployments).toEqual([]);
+  },
+);
+it('REPRO-2: Cloudflare path-normalizing account IDs are rejected without provider traffic', async () => {
+  const count = requests.length;
+  const current = await call(a, 'GET', '/api/deploy/config?providerId=cloudflare-pages');
+  for (const accountId of ['.', '..', '%2e%2e', 'cf-account']) {
+    const response = await call(a, 'PUT', '/api/deploy/config', {
+      providerId: 'cloudflare-pages', revision: current.json.revision, token: cfToken, accountId, projectName: 'site',
+    });
+    expect(response.status, response.text).toBe(400);
+  }
+  expect(requests.length).toBe(count);
+});
+it('REPRO-3: link checks send no Authorization and foreign record status remains not found', async () => {
+  await setToken();
+  const id = await project();
+  const deployed = await deploy(id);
+  const base = `/api/projects/${id}/deployments/${deployed.json.id}`;
+  const start = requests.length;
+  expect((await call(a, 'POST', base + '/check-link', {})).status).toBe(200);
+  expect(requests.slice(start).map((r) => r.authorization)).toEqual(['undefined']);
+  expect((await call(b, 'POST', base + '/status', {})).status).toBe(404);
+  expect(requests.length).toBe(start + 1);
+});
+it('the 100-record history cap has a specific typed actionable error before provider traffic', async () => {
+  await setToken();
+  const id = await project();
+  const deployed = await deploy(id);
+  const db = new Database(path.join(root, 'app.sqlite'));
+  try {
+    const source = db.prepare('SELECT locator FROM studio_deploy_records WHERE id=?').get(deployed.json.id) as { locator: string };
+    const insert = db.prepare('INSERT INTO studio_deploy_records VALUES(?,?,?,?,?)');
+    db.transaction(() => {
+      for (let i = 1; i < 100; i++) {
+        const recordId = randomUUID();
+        insert.run(recordId, a.id, id, JSON.stringify({ ...deployed.json, id: recordId }), source.locator);
+      }
+    })();
+  } finally { db.close(); }
+  const count = requests.length;
+  for (const route of [`/api/projects/${id}/deploy`, `/api/projects/${id}/deployments/${deployed.json.id}/redeploy`]) {
+    const result = await call(a, 'POST', route, route.endsWith('/redeploy') ? {} : { fileName: 'index.html', providerId: 'vercel' });
+    expect(result.status, result.text).toBe(409);
+    expect(result.json.error).toMatchObject({
+      code: 'MULTIUSER_DEPLOY_HISTORY_FULL',
+      message: 'Deployment history is full (100 records). Delete a deployment record before deploying again.',
+    });
+  }
+  expect(requests.length).toBe(count);
+  expect((await call(a, 'DELETE', `/api/projects/${id}/deployments/${deployed.json.id}`)).status).toBe(200);
+  expect((await deploy(id)).status).toBe(200);
+});
+it.each(['status', 'check-link'])('%s holds the same account outbound slot as deploy', async (action) => {
+  await setToken();
+  const id = await project();
+  const deployed = await deploy(id);
+  const base = `/api/projects/${id}/deployments/${deployed.json.id}`;
+  holdPath = action === 'status' ? '/v13/deployments/deployment-1' : '/link';
+  const reached = new Promise<void>((resolve) => { held = resolve; });
+  const pending = call(a, 'POST', `${base}/${action}`, {});
+  await reached;
+  const count = requests.length;
+  try {
+    for (const suffix of ['/status', '/check-link', '/redeploy'])
+      expect((await call(a, 'POST', base + suffix, {})).status).toBe(409);
+    expect((await deploy(id)).status).toBe(409);
+    expect(requests.length).toBe(count);
+  } finally { release(); }
+  expect((await pending).status).toBe(200);
+  holdPath = null;
+  expect((await call(a, 'POST', base + '/status', {})).status).toBe(200);
+});
+it('status and check-link together fill the two daemon outbound slots across accounts', async () => {
+  await setToken();
+  await setToken(b, 'vercel', bToken);
+  await setToken(admin, 'vercel', token);
+  const idA = await project();
+  const idB = await project(b);
+  const idC = await project(admin);
+  const deployedA = await deploy(idA);
+  const deployedB = await deploy(idB, b);
+  holdPath = '/';
+  const reachedA = new Promise<void>((resolve) => { held = resolve; });
+  const pendingA = call(a, 'POST', `/api/projects/${idA}/deployments/${deployedA.json.id}/status`, {});
+  await reachedA;
+  const reachedB = new Promise<void>((resolve) => { held = resolve; });
+  const pendingB = call(b, 'POST', `/api/projects/${idB}/deployments/${deployedB.json.id}/check-link`, {});
+  await reachedB;
+  const count = requests.length;
+  try {
+    expect((await deploy(idC, admin)).status).toBe(409);
+    expect(requests.length).toBe(count);
+  } finally { for (const resolve of heldReleases) resolve(); }
+  expect((await pendingA).status).toBe(200);
+  expect((await pendingB).status).toBe(200);
+  holdPath = null;
+  expect((await deploy(idC, admin)).status).toBe(200);
 });
 it('every stored column, SQLite/WAL, response and log is free of raw and encoded sentinels', () => {
   const db = new Database(path.join(root, 'app.sqlite'), { readonly: true });

@@ -42,6 +42,8 @@ export async function runStudioDeployCli(
       } else positionals.push(arg);
     }
     const [command, id, record] = positionals;
+    const expected = ['status', 'check-link', 'redeploy', 'delete'].includes(command ?? '') ? 3 : 2;
+    if (positionals.length !== expected) throw new DeployCliInputError('Unexpected deploy arguments.');
     let method = 'GET';
     let route = '';
     let body: Record<string, unknown> | undefined;
