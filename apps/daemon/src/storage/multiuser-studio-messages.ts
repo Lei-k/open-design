@@ -23,7 +23,7 @@ export interface StudioRunMessageInput {
 }
 
 /** Fixed, observable recovery codes (#72). A recorded row is skipped, never retried on every boot. */
-export type MultiUserRecoveryIssue = 'MULTIUSER_STUDIO_BINDING_CONFLICT' | 'MULTIUSER_STUDIO_PROJECTION_FAILED' | 'MULTIUSER_LEDGER_ENTRY_MISSING';
+export type MultiUserRecoveryIssue = 'MULTIUSER_STUDIO_BINDING_CONFLICT' | 'MULTIUSER_STUDIO_PROJECTION_FAILED' | 'MULTIUSER_LEDGER_ENTRY_MISSING' | 'MULTIUSER_CRITIQUE_DUPLICATE_TERMINAL';
 /** Only a binding conflict quarantines; a failed projection is recorded and retried on the next boot. */
 const QUARANTINED = (runId: string) => `SELECT 1 FROM multiuser_recovery_issues i WHERE i.run_id = ${runId} AND i.code = 'MULTIUSER_STUDIO_BINDING_CONFLICT'`;
 
