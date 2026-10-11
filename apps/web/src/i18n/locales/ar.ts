@@ -37,6 +37,8 @@ export const ar: Dict = {
   'studio.deployClear': 'Clear token',
   'studio.deployHistoryFull': 'سجل عمليات النشر ممتلئ (100 سجل). احذف سجل نشر قبل النشر مرة أخرى.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
+  "studio.deployRefreshBusy": "تحديث النشر مشغول. حاول مجددًا بعد قليل.",
+  "studio.deployAuthorityChanged": "تغيّر الحساب أو الجلسة أو الرمز أو الوصول إلى المشروع. لم تُحفظ نتيجة محلية. ربما أنشأ المزوّد نشرًا عن بُعد بالفعل؛ تحقق من حسابك لدى المزوّد.",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "تُضمَّن الذكريات المحفوظة وحقائق الملف الشخصي في التشغيلات القادمة. الاستخراج التلقائي اختياري: يعمل بعد أدوار OpenAI على مصدر ذلك الدور نفسه (مجمّع الشركة أو مفتاحك الخاص) ويُتخطّى في أدوار Codex الشخصية.",
 

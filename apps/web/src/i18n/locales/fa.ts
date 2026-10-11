@@ -37,6 +37,8 @@ export const fa: Dict = {
   'studio.deployClear': 'Clear token',
   'studio.deployHistoryFull': 'تاریخچهٔ استقرار پر است (100 رکورد). پیش از استقرار دوباره، یک رکورد استقرار را حذف کنید.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
+  "studio.deployRefreshBusy": "تازه‌سازی استقرار مشغول است. کمی بعد دوباره تلاش کنید.",
+  "studio.deployAuthorityChanged": "حساب، نشست، توکن یا دسترسی به پروژه تغییر کرده است. هیچ نتیجهٔ محلی ذخیره نشد. ارائه‌دهنده ممکن است قبلاً یک استقرار راه‌دور ایجاد کرده باشد؛ حساب خود نزد ارائه‌دهنده را بررسی کنید.",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "حافظه‌های ذخیره‌شده و اطلاعات پروفایل در اجراهای بعدی گنجانده می‌شوند. استخراج خودکار اختیاری است: پس از نوبت‌های OpenAI با منبع همان نوبت (استخر شرکت یا کلید خودتان) اجرا می‌شود و برای نوبت‌های شخصی Codex رد می‌شود.",
 

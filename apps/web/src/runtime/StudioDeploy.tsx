@@ -1,5 +1,5 @@
 import { StudioCapabilityMessage, useStudioCapabilityState } from './StudioCapabilityState';
-import { StudioExternalLink } from './StudioExternalLink';
+import { StudioExternalLink, StudioExternalLinkGroup } from './StudioExternalLink';
 import { useEffect, useId, useRef, useState } from 'react';
 import { Button } from '@open-design/components';
 import type { StudioDeployConfig, StudioDeployProvider, StudioDeployment } from '@open-design/contracts';
@@ -180,7 +180,11 @@ export function StudioDeployMenu({
       });
       if (!res.ok) {
         const data = await res.json();
-        setError(t(data?.error?.code === 'MULTIUSER_DEPLOY_HISTORY_FULL' ? 'studio.deployHistoryFull' : 'studio.deployFailed'));
+        const code = data?.error?.code;
+        setError(t(code === 'MULTIUSER_DEPLOY_HISTORY_FULL' ? 'studio.deployHistoryFull'
+          : code === 'MULTIUSER_DEPLOY_REFRESH_BUSY' ? 'studio.deployRefreshBusy'
+            : code === 'MULTIUSER_DEPLOY_AUTHORITY_CHANGED' ? 'studio.deployAuthorityChanged'
+              : 'studio.deployFailed'));
         return;
       }
       await load();
@@ -210,6 +214,7 @@ export function StudioDeployMenu({
           ))}
           {busy && <p role="status">{t('studio.deployProgress')}</p>}
           {error && <p role="alert">{error}</p>}
+          <StudioExternalLinkGroup enabled={records.some((row) => row.fileName === fileName && row.url)}>
           {records
             .filter((r) => r.fileName === fileName)
             .map((row) => (
@@ -253,6 +258,7 @@ export function StudioDeployMenu({
                 )}
               </div>
             ))}
+          </StudioExternalLinkGroup>
         </>
       )}
     </section>

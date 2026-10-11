@@ -15145,7 +15145,8 @@ function HtmlViewer({
   const rendererExports = studio.hostServices || studioRenderedExports;
   const renderedState = useStudioCapabilityState('rendered-export');
   const renderedReasonId = useId();
-  const downloadState = useStudioCapabilityState('download');
+  const [archiveDownloadFailed, setArchiveDownloadFailed] = useState(false);
+  const downloadState = useStudioCapabilityState('download', { ...(archiveDownloadFailed ? { failure: 'download' } : {}) });
   const shareClipboardState = useStudioCapabilityState('clipboard', { ...(shareClipboardFailed ? { failure: 'permission' } : {}) });
   // Preview comments are reviewed for Studio (#59) and shared with project members (#65).
   const commentsUsable = studioRequest('GET', `/api/projects/${projectId}/conversations/active/comments`);
@@ -16706,19 +16707,21 @@ function HtmlViewer({
               {!studio.hostServices && studioRequest('GET', `/api/projects/${projectId}/archive`) && source !== null && !viewerOnly ? (
                 <>
                 <Button variant="ghost" data-testid="download-project-archive" style={{ minHeight: 40 }}
-                  title={t('studio.capability.download')} aria-describedby={archiveAttempted ? archiveReasonId : undefined}
+                  title={downloadState.reasonKey ? t(downloadState.reasonKey) : undefined} aria-describedby={archiveAttempted ? archiveReasonId : undefined}
                   disabled={archiveDownloading} onClick={async () => {
                   setArchiveAttempted(true);
+                  setArchiveDownloadFailed(false);
                   setArchiveDownloading(true);
                   try {
-                    if (!await downloadProjectArchive({ projectId, fallbackTitle: exportTitle }))
+                    const ok = await downloadProjectArchive({ projectId, fallbackTitle: exportTitle });
+                    setArchiveDownloadFailed(!ok);
+                    if (!ok)
                       setExportToast({ message: t('fileViewer.exportFailed'), tone: 'error' });
                   } finally { setArchiveDownloading(false); }
                 }}>
                   {t('fileViewer.exportZip')}
                 </Button>
-                {archiveAttempted ? <StudioCapabilityMessage id={archiveReasonId} state={{ ...downloadState,
-                  reasonKey: 'studio.capability.download', alternativeKey: 'studio.capability.downloadAlternative' }} /> : null}
+                {archiveAttempted ? <StudioCapabilityMessage id={archiveReasonId} state={downloadState} /> : null}
                 </>
               ) : null}
               {!studio.hostServices && studioRequest('POST', '/api/templates') && source !== null && !viewerOnly ? (
@@ -17456,7 +17459,7 @@ function HtmlViewer({
                       <Button key={key} role="menuitem" style={{ minHeight: 40 }} disabled aria-describedby={renderedReasonId}>{t(key)}</Button>)}
                     <StudioCapabilityMessage id={renderedReasonId} state={renderedState} />
                   </> : null}
-                  {!studio.hostServices ? <StudioCapabilityMessage state={{ ...downloadState, reasonKey: 'studio.capability.download', alternativeKey: 'studio.capability.downloadAlternative' }} /> : null}
+                  {!studio.hostServices ? <StudioCapabilityMessage state={downloadState} /> : null}
                   {rendererExports ? (
                   <button
                     type="button"
@@ -17516,6 +17519,7 @@ function HtmlViewer({
                     onClick={() => {
                       if (rendererExports) runExportFormat('zip');
                       else void downloadProjectArchive({ projectId, fallbackTitle: exportTitle }).then((ok) => {
+                        setArchiveDownloadFailed(!ok);
                         if (!ok) setExportToast({ message: t('fileViewer.exportFailed'), tone: 'error' });
                       });
                     }}

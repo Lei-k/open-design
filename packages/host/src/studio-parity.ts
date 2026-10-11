@@ -11,12 +11,12 @@ export type StudioHostAction = {
 export const STUDIO_WEB_CONDITIONS = [
   'notification-api', 'notification-permission', 'clipboard-api', 'clipboard-rejected',
   'directory-api', 'download-blocked', 'renderer', 'popup-blocked', 'narrow-viewport',
-  'site-data-blocked', 'daemon-capability', 'frame-lifecycle',
+  'site-data-blocked', 'project-permission', 'frame-lifecycle',
 ] as const;
 export type StudioWebCondition = typeof STUDIO_WEB_CONDITIONS[number];
 export const STUDIO_WEB_ACTION_CONDITIONS = {
   appearance: ['narrow-viewport'],
-  'clear-data': ['site-data-blocked', 'daemon-capability', 'narrow-viewport'],
+  'clear-data': ['site-data-blocked', 'narrow-viewport'],
   'rendered-export': ['renderer', 'download-blocked', 'narrow-viewport'],
   pet: ['narrow-viewport'],
   preview: ['frame-lifecycle', 'narrow-viewport'],
@@ -24,11 +24,11 @@ export const STUDIO_WEB_ACTION_CONDITIONS = {
   'file-upload': ['narrow-viewport'],
   'external-link': ['popup-blocked', 'narrow-viewport'],
   download: ['download-blocked', 'narrow-viewport'],
-  about: ['daemon-capability', 'narrow-viewport'],
+  about: ['narrow-viewport'],
   notifications: ['notification-api', 'notification-permission', 'narrow-viewport'],
   clipboard: ['clipboard-api', 'clipboard-rejected', 'narrow-viewport'],
-  'public-link': ['daemon-capability', 'narrow-viewport'],
-  deploy: ['daemon-capability', 'narrow-viewport'],
+  'public-link': ['narrow-viewport'],
+  deploy: ['project-permission', 'narrow-viewport'],
 } as const satisfies Record<string, readonly StudioWebCondition[]>;
 export type StudioWebAction = keyof typeof STUDIO_WEB_ACTION_CONDITIONS;
 /** Security ownership and observable Web handling for each condition. */
@@ -43,7 +43,7 @@ export const STUDIO_WEB_CONDITION_DECISIONS = {
   'popup-blocked': { owner: 'browser', handling: 'Validated HTTP(S) links with noopener/noreferrer and same-tab alternative; null is not proof of blocking.', test: 'studio-capability-state' },
   'narrow-viewport': { owner: 'browser', handling: 'Scrollable/reflowed controls and single-pane navigation; no device or user-agent gating.', test: 'studio-capability-state' },
   'site-data-blocked': { owner: 'browser', handling: 'Best-effort browser cleanup still revokes own server session; logout failure is visible.', test: 'studio-browser-data' },
-  'daemon-capability': { owner: 'daemon', handling: 'Authenticated lane/configured credential/owner checks; localized disabled reason, retry/settings alternative.', test: 'studio-deploy' },
+  'project-permission': { owner: 'actor-project', handling: 'Owner-only deployment controls retain a localized denial; authenticated project access remains authoritative.', test: 'studio-deploy' },
   'frame-lifecycle': { owner: 'actor-project', handling: 'Existing bounded frame timeout diagnostics; no cross-origin compositor introspection.', test: 'studio-runtime' },
 } as const satisfies Record<StudioWebCondition, { owner: string; handling: string; test: string }>;
 

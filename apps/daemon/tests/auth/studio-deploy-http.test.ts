@@ -42,6 +42,7 @@ let holdDns = false;
 let dnsHeld: () => void = () => {};
 let releaseDns: () => void = () => {};
 let configRevision = 0;
+let pauseUpload: ((req: http.IncomingMessage) => void) | null = null;
 const call = async (user: Principal, method: string, route: string, body?: unknown) => {
   const response = await daemon.request({
     cookie: user.cookie,
@@ -84,6 +85,11 @@ beforeAll(async () => {
   process.env.OD_USER_STATE_DIR = path.join(root, 'host-state');
   writeFileSync(path.join(root, 'host-state', 'vercel.json'), JSON.stringify({ token: hostToken }), { mode: 0o600 });
   fixture = http.createServer(async (req, res) => {
+    if (pauseUpload && req.method === 'POST' && req.url?.includes('/v13/deployments')) {
+      requests.push({ authorization: String(req.headers.authorization), url: req.url, body: '' });
+      pauseUpload(req);
+      return;
+    }
     let body = '';
     for await (const chunk of req) body += String(chunk);
     const url = req.url!;
@@ -156,6 +162,7 @@ beforeAll(async () => {
   refreshUsers = users.users.slice(2);
 }, 120_000);
 beforeEach(() => {
+  pauseUpload = null;
   holdDns = false;
   holdPath = null;
   heldReleases = [];
@@ -352,6 +359,64 @@ it.each(['clear', 'replace', 'logout', 'disable', 'revoke', 'reset', 'project-de
     if (action !== 'project-delete') expect((await call(a, 'GET', `/api/projects/${id}/deployments`)).json.deployments).toEqual([]);
   },
 );
+it('PH-1 redeploy project deletion during upload returns authority 409 before cascaded record lookup', async () => {
+  await setToken();
+  const id = await project();
+  const first = await deploy(id);
+  expect(first.status, first.text).toBe(200);
+  holdPath = '/v13/deployments';
+  const reached = new Promise<void>((resolve) => { held = resolve; });
+  const pending = call(a, 'POST', `/api/projects/${id}/deployments/${first.json.id}/redeploy`, {});
+  await reached;
+  const count = requests.length;
+  try {
+    expect((await call(a, 'DELETE', `/api/projects/${id}`)).status).toBeLessThan(300);
+    const res = await pending;
+    expect(res.status, res.text).toBe(409);
+    expect(res.json.error.code).toBe('MULTIUSER_DEPLOY_AUTHORITY_CHANGED');
+    expect(requests.length).toBe(count);
+    const db = new Database(path.join(root, 'app.sqlite'), { readonly: true });
+    try { expect(db.prepare('SELECT COUNT(*) n FROM studio_deploy_records WHERE project_id=?').get(id)).toEqual({ n: 0 }); }
+    finally { db.close(); }
+  } finally { release(); }
+});
+it('PP-1 true mid-upload withdrawal aborts a backpressured socket with one request and no record', async () => {
+  await setToken();
+  const id = await project();
+  // Below the existing per-file capture cap; encoded upload exceeds socket buffers.
+  const bytes = 24 * 1024 * 1024;
+  writeFileSync(path.join(root, 'projects', id, 'large.bin'), Buffer.alloc(bytes, 0x61));
+  let upload: http.IncomingMessage | undefined;
+  let received = 0;
+  let closed = false;
+  const reached = new Promise<void>((resolve) => {
+    pauseUpload = (req) => {
+      upload = req;
+      req.pause();
+      req.socket.on('close', () => { closed = true; });
+      resolve();
+    };
+  });
+  const start = requests.length;
+  const pending = deploy(id);
+  try {
+    await reached;
+    expect(upload?.complete).toBe(false);
+    await setToken(a, 'vercel', null);
+    const response = await pending;
+    expect(response.status, response.text).toBe(409);
+    expect(response.json.error.code).toBe('MULTIUSER_DEPLOY_AUTHORITY_CHANGED');
+    upload!.on('data', (chunk: Buffer) => { received += chunk.length; });
+    upload!.on('error', () => {});
+    upload!.resume(); // drain buffered bytes so the server observes the client close
+    await vi.waitFor(() => expect(closed).toBe(true), { timeout: 2000 });
+    expect(received).toBeLessThan(bytes);
+    expect(requests.length - start).toBe(1);
+    const db = new Database(path.join(root, 'app.sqlite'), { readonly: true });
+    try { expect(db.prepare('SELECT COUNT(*) n FROM studio_deploy_records WHERE project_id=?').get(id)).toEqual({ n: 0 }); }
+    finally { db.close(); }
+  } finally { upload?.destroy(); pauseUpload = null; }
+});
 it('token clear while DNS resolves opens no provider socket', async () => {
   await setToken();
   const id = await project();

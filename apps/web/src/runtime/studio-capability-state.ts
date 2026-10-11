@@ -10,9 +10,8 @@ export interface StudioCapabilityFacts {
   clipboard?: boolean;
   directoryInput?: boolean;
   renderedExports?: boolean;
-  deploymentAvailable?: boolean;
   permissionGranted?: boolean;
-  failure?: 'permission' | 'download' | 'popup' | 'storage';
+  failure?: 'permission' | 'download' | 'storage';
 }
 export interface StudioCapabilityState {
   status: StudioCapabilityStatus;
@@ -27,8 +26,6 @@ export function resolveStudioCapability(action: StudioWebAction, facts: StudioCa
   if (facts.hostServices) return { status: 'available', usable: true };
   const state = (status: StudioCapabilityStatus, usable: boolean, reasonKey: keyof Dict,
     alternativeKey?: keyof Dict): StudioCapabilityState => ({ status, usable, reasonKey, ...(alternativeKey ? { alternativeKey } : {}) });
-  if (facts.deploymentAvailable === false)
-    return state('deployment-disabled', false, 'studio.capability.deployment', 'studio.capability.settings');
   switch (action) {
     case 'notifications':
       if (facts.notification === 'unsupported') return state('unsupported-browser', false, 'studio.capability.notificationUnsupported', 'studio.capability.activity');
@@ -49,10 +46,11 @@ export function resolveStudioCapability(action: StudioWebAction, facts: StudioCa
       break;
     case 'download':
       if (facts.failure === 'download') return state('permission-denied', true, 'studio.capability.download', 'studio.capability.downloadAlternative');
-      break;
+      // Anchor delivery cannot prove completion or observe browser blocking.
+      return state(facts.narrow ? 'narrow-viewport-alternative' : 'available', true, 'studio.capability.download', 'studio.capability.downloadAlternative');
     case 'external-link':
-      if (facts.failure === 'popup') return state('permission-denied', true, 'studio.capability.popup', 'studio.capability.sameTab');
-      break;
+      // Conditional guidance, not a claim that a popup was observed as blocked.
+      return state(facts.narrow ? 'narrow-viewport-alternative' : 'available', true, 'studio.capability.popup', 'studio.capability.sameTab');
     case 'clear-data':
       if (facts.failure === 'storage') return state('permission-denied', true, 'studio.capability.storage', 'studio.capability.signOutAlternative');
       break;

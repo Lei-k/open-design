@@ -37,6 +37,8 @@ export const zhCN: Dict = {
   'studio.deployClear': '清除令牌',
   'studio.deployHistoryFull': '部署历史已满（100 条记录）。请删除一条部署记录后再部署。',
   'studio.deployFailed': '部署请求失败。请重新加载设置或历史记录后重试。',
+  "studio.deployRefreshBusy": "部署刷新正忙，请稍后重试。",
+  "studio.deployAuthorityChanged": "账号、会话、令牌或项目访问权限已变更。未保存本地结果。服务商可能已创建远程部署，请检查你的服务商账号。",
   'studio.deployProgress': '正在部署…',
   "studio.manualMemoryHint": "已保存的记忆和个人资料会用于之后的运行。自动提取需手动开启：在 OpenAI 回合结束后使用该回合自身的来源（公司池或你自己的密钥）运行，个人 Codex 回合会跳过。",
 

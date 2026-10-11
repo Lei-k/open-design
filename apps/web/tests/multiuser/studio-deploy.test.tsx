@@ -21,7 +21,7 @@ const capabilities: StudioRuntimeCapabilities = {
     STUDIO_PARITY_LANES.map(({ id }) => [id, { status: 'pilot', reason: 'Pilot' }]),
   ) as StudioRuntimeCapabilities['features'],
 };
-async function mount(child: React.ReactNode, configured = false) {
+async function mount(child: React.ReactNode, configured = false, records: unknown[] = []) {
   const calls: { url: string; body: any }[] = [];
   let revision = 0;
   vi.stubGlobal(
@@ -49,7 +49,7 @@ async function mount(child: React.ReactNode, configured = false) {
           revision,
         });
       }
-      if (url.endsWith('/deployments')) return Response.json({ deployments: [] });
+      if (url.endsWith('/deployments')) return Response.json({ deployments: records });
       return Response.json({});
     }),
   );
@@ -117,4 +117,25 @@ it('history-full deploy errors show the localized actionable cap message', async
   fireEvent.click(screen.getByText('Vercel'));
   expect((await screen.findByRole('alert')).textContent)
     .toBe('Deployment history is full (100 records). Delete a deployment record before deploying again.');
+});
+const history = [1, 2].map((n) => ({ id: `d${n}`, providerId: 'vercel', fileName: 'index.html',
+  status: 'ready', createdAt: 1, url: `https://site${n}.vercel.app` }));
+it.each([
+  ['MULTIUSER_DEPLOY_REFRESH_BUSY', 'Deployment refresh is busy. Try again shortly.'],
+  ['MULTIUSER_DEPLOY_AUTHORITY_CHANGED', 'Account, session, token or project access changed. No local result was saved. The provider may already have created a remote deployment; check your provider account.'],
+])('%s refresh errors have their own localized message, not provider text', async (code, message) => {
+  await mount(<StudioDeployMenu projectId="p" fileName="index.html" owner />, true, history);
+  await screen.findAllByRole('button', { name: 'Refresh status' });
+  const original = fetch;
+  vi.stubGlobal('fetch', vi.fn(async (input, init) => String(input).endsWith('/status')
+    ? Response.json({ error: { code, message: 'untrusted provider text' } }, { status: 409 })
+    : original(input, init)));
+  fireEvent.click(screen.getAllByRole('button', { name: 'Refresh status' })[0]!);
+  expect((await screen.findByRole('alert')).textContent).toBe(message);
+});
+it('deploy history groups multiple links under one popup advisory', async () => {
+  await mount(<StudioDeployMenu projectId="p" fileName="index.html" owner />, true, history);
+  await screen.findByRole('link', { name: 'https://site2.vercel.app' });
+  expect(screen.getAllByRole('status').filter((node) => node.textContent?.includes('If a new tab does not open'))).toHaveLength(1);
+  expect(screen.getAllByRole('link', { name: 'Open in this tab' })).toHaveLength(2);
 });

@@ -37,6 +37,8 @@ export const de: Dict = {
   'studio.deployClear': 'Clear token',
   'studio.deployHistoryFull': 'Der Bereitstellungsverlauf ist voll (100 Einträge). Lösche einen Eintrag, bevor du erneut bereitstellst.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
+  "studio.deployRefreshBusy": "Die Bereitstellungsaktualisierung ist ausgelastet. Versuche es in Kürze erneut.",
+  "studio.deployAuthorityChanged": "Konto, Sitzung, Token oder Projektzugriff wurden geändert. Kein lokales Ergebnis wurde gespeichert. Der Anbieter hat möglicherweise bereits eine entfernte Bereitstellung erstellt; prüfe dein Anbieterkonto.",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Gespeicherte Erinnerungen und Profilangaben fließen in künftige Läufe ein. Die automatische Extraktion ist optional: Sie läuft nach OpenAI-Runden über die Quelle dieser Runde (Firmenpool oder dein eigener Schlüssel) und wird bei persönlichen Codex-Runden übersprungen.",
 

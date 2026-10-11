@@ -37,6 +37,8 @@ export const th: Dict = {
   'studio.deployClear': 'Clear token',
   'studio.deployHistoryFull': 'ประวัติการปรับใช้เต็มแล้ว (100 รายการ) ลบรายการประวัติก่อนปรับใช้อีกครั้ง',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
+  "studio.deployRefreshBusy": "การรีเฟรชการปรับใช้ไม่ว่าง โปรดลองอีกครั้งในอีกสักครู่",
+  "studio.deployAuthorityChanged": "บัญชี เซสชัน โทเค็น หรือสิทธิ์เข้าถึงโครงการเปลี่ยนไป ไม่มีการบันทึกผลลัพธ์ในเครื่อง ผู้ให้บริการอาจสร้างการปรับใช้ระยะไกลแล้ว โปรดตรวจสอบบัญชีของคุณกับผู้ให้บริการ",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "หน่วยความจำที่บันทึกไว้และข้อมูลโปรไฟล์จะถูกใช้ในการรันครั้งถัดไป การดึงข้อมูลอัตโนมัติเป็นตัวเลือก: ทำงานหลังรอบ OpenAI โดยใช้แหล่งของรอบนั้นเอง (พูลของบริษัทหรือคีย์ของคุณ) และจะข้ามรอบ Codex ส่วนตัว",
 

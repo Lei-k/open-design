@@ -10,16 +10,16 @@ const decisions = {
   'directory-api': ['directory', { directoryInput: false }, 'unsupported-browser'],
   'download-blocked': ['download', { failure: 'download' }, 'permission-denied'],
   renderer: ['rendered-export', { renderedExports: false }, 'deployment-disabled'],
-  'popup-blocked': ['external-link', { failure: 'popup' }, 'permission-denied'],
+  'popup-blocked': ['external-link', {}, 'available'], // conditional advisory; anchor blocking is not observable
   'narrow-viewport': ['pet', { narrow: true }, 'narrow-viewport-alternative'],
   'site-data-blocked': ['clear-data', { failure: 'storage' }, 'permission-denied'],
-  'daemon-capability': ['deploy', { deploymentAvailable: false }, 'deployment-disabled'],
+  'project-permission': ['deploy', { permissionGranted: false }, 'permission-denied'],
   'frame-lifecycle': ['preview', {}, 'available'], // existing bounded diagnostics, no speculative browser detection
 } as const satisfies Record<StudioWebCondition, readonly [StudioWebAction, Partial<StudioCapabilityFacts>, StudioCapabilityStatus]>;
 it.each(Object.entries(decisions))('%s has an explicit Web resolution and native bypass', (_, [action, facts, status]) => {
   const result = resolveStudioCapability(action, { hostServices: false, ...facts });
   expect(result.status).toBe(status);
-  if (status !== 'available') expect(result.reasonKey).toMatch(/^studio.capability./);
+  if (status !== 'available') expect(result.reasonKey).toMatch(/^studio\.(capability\.|deployOwnerOnly)/);
   expect(resolveStudioCapability(action, { hostServices: true, ...facts })).toEqual({ status: 'available', usable: true });
 });
 it('notification default is a usable gesture prompt; denial/API absence are not dead permission prompts', () => {

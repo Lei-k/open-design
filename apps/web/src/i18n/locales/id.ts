@@ -37,6 +37,8 @@ export const id: Dict = {
   'studio.deployClear': 'Clear token',
   'studio.deployHistoryFull': 'Riwayat deployment penuh (100 catatan). Hapus satu catatan sebelum melakukan deployment lagi.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
+  "studio.deployRefreshBusy": "Penyegaran deployment sedang sibuk. Coba lagi sebentar lagi.",
+  "studio.deployAuthorityChanged": "Akun, sesi, token, atau akses proyek telah berubah. Tidak ada hasil lokal yang disimpan. Penyedia mungkin sudah membuat deployment jarak jauh; periksa akun penyedia Anda.",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "Memori tersimpan dan fakta profil disertakan dalam proses berikutnya. Ekstraksi otomatis bersifat opsional: berjalan setelah giliran OpenAI pada sumber giliran itu sendiri (kumpulan perusahaan atau kunci Anda) dan dilewati untuk giliran Codex pribadi.",
 

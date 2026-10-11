@@ -63,6 +63,8 @@ export interface Dict {
   'studio.deployToken': string;
   'studio.deployClear': string;
   'studio.deployFailed': string;
+  'studio.deployRefreshBusy': string;
+  'studio.deployAuthorityChanged': string;
   'studio.deployHistoryFull': string;
   'studio.deployProgress': string;
   'studio.liveArtifact.outputMapping': string;

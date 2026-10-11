@@ -37,6 +37,8 @@ export const hu: Dict = {
   'studio.deployClear': 'Clear token',
   'studio.deployHistoryFull': 'A telepítési előzmények megteltek (100 bejegyzés). Új telepítés előtt törölj egy bejegyzést.',
   'studio.deployFailed': 'Deployment request failed. Reload settings or history and try again.',
+  "studio.deployRefreshBusy": "A telepítés frissítése foglalt. Próbáld újra rövidesen.",
+  "studio.deployAuthorityChanged": "A fiók, a munkamenet, a token vagy a projekthozzáférés megváltozott. Nem lett helyi eredmény mentve. A szolgáltató már létrehozhatott egy távoli telepítést; ellenőrizd a szolgáltatói fiókodat.",
   'studio.deployProgress': 'Deploying…',
   "studio.manualMemoryHint": "A mentett emlékek és profiladatok bekerülnek a későbbi futtatásokba. Az automatikus kinyerés opcionális: OpenAI-körök után fut az adott kör saját forrásán (vállalati keret vagy a saját kulcsod), személyes Codex-köröknél kimarad.",
 

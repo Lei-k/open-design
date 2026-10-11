@@ -1,6 +1,6 @@
 import { useStudioCapabilities } from '../runtime/studio-capabilities';
 import { StudioCapabilityMessage, useStudioCapabilityState } from '../runtime/StudioCapabilityState';
-import { StudioExternalLink } from '../runtime/StudioExternalLink';
+import { StudioExternalLink, StudioExternalLinkGroup } from '../runtime/StudioExternalLink';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { SocialSharePlatform, SocialShareResponse } from '@open-design/contracts';
 import { useT } from '../i18n';
@@ -70,6 +70,19 @@ export function SocialShareGrid({ share, className, onShare, onAfterShare }: Pro
   );
   const platforms = Array.isArray(share.platforms) ? share.platforms : [];
 
+  const showCopied = (platform: SocialSharePlatform) => {
+    setFeedbackPlatform(platform);
+    if (feedbackTimerRef.current != null) clearTimeout(feedbackTimerRef.current);
+    feedbackTimerRef.current = setTimeout(() => {
+      feedbackTimerRef.current = null;
+      setFeedbackPlatform((current) => (current === platform ? null : current));
+    }, 1600);
+  };
+  const shareIntent = (platform: SocialSharePlatform) => {
+    onShare?.(platform);
+    onAfterShare?.();
+  };
+
   const copyAndOpen = async (
     platform: SocialSharePlatform,
     entryUrl: string | undefined,
@@ -80,12 +93,7 @@ export function SocialShareGrid({ share, className, onShare, onAfterShare }: Pro
       pendingWindow?.close();
       return;
     }
-    setFeedbackPlatform(platform);
-    if (feedbackTimerRef.current != null) clearTimeout(feedbackTimerRef.current);
-    feedbackTimerRef.current = setTimeout(() => {
-      feedbackTimerRef.current = null;
-      setFeedbackPlatform((current) => (current === platform ? null : current));
-    }, 1600);
+    showCopied(platform);
     if (entryUrl) {
       if (pendingWindow) {
         pendingWindow.opener = null;
@@ -100,20 +108,24 @@ export function SocialShareGrid({ share, className, onShare, onAfterShare }: Pro
   if (!studio.hostServices) return <div className={`social-share-grid${className ? ` ${className}` : ''}`}>
     {!clipboardState.usable ? <textarea readOnly style={{ minHeight: 40 }} value={share.copyText} aria-label={t('studio.capability.manualCopy')}
       onFocus={(event) => event.currentTarget.select()} /> : null}
+    <StudioExternalLinkGroup enabled={platforms.some((target) => target.shareUrl || target.entryUrl)}>
     {platforms.map((target) => <div key={target.platform}>
       {target.mode === 'intent' && target.shareUrl
-        ? <StudioExternalLink href={target.shareUrl}>{t(PLATFORM_LABEL_KEY[target.platform])}</StudioExternalLink>
+        ? <StudioExternalLink href={target.shareUrl} onClick={() => shareIntent(target.platform)}>{t(PLATFORM_LABEL_KEY[target.platform])}</StudioExternalLink>
         : <>
           <button type="button" className={`social-share-button social-share-button--${target.platform}`}
-            disabled={!clipboardState.usable} aria-describedby={clipboardState.reasonKey ? copyReasonId : undefined} style={{ minHeight: 40 }}
+            aria-describedby={clipboardState.reasonKey ? copyReasonId : undefined} style={{ minHeight: 40 }}
             onClick={async () => {
               onShare?.(target.platform);
+              setCopyFailed(false);
+              setFeedbackPlatform(null);
               const ok = await copyToClipboard(share.copyText); setCopyFailed(!ok);
-              if (ok) { setFeedbackPlatform(target.platform); onAfterShare?.(); }
+              if (ok) { showCopied(target.platform); onAfterShare?.(); }
             }}>{feedbackPlatform === target.platform ? t('socialShare.copied') : t(PLATFORM_LABEL_KEY[target.platform])}</button>
-          {target.entryUrl ? <StudioExternalLink href={target.entryUrl}>{t(PLATFORM_LABEL_KEY[target.platform])}</StudioExternalLink> : null}
+          {target.entryUrl ? <StudioExternalLink href={target.entryUrl} onClick={() => shareIntent(target.platform)}>{t(PLATFORM_LABEL_KEY[target.platform])}</StudioExternalLink> : null}
         </>}
     </div>)}
+    </StudioExternalLinkGroup>
     <StudioCapabilityMessage state={clipboardState} id={copyReasonId} />
   </div>;
 

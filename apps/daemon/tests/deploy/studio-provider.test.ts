@@ -1,7 +1,7 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, expect, it, vi } from 'vitest';
-import { studioProvider } from '../../src/deploy/studio-provider.js';
+import { studioProvider, StudioDeployAuthorityRefused } from '../../src/deploy/studio-provider.js';
 
 // Keep sockets real; only the deadline clock is controlled. Native AbortSignal.timeout
 // is replaced with equivalent controllable deadlines so 90-second cases take no real sleep.
@@ -139,3 +139,47 @@ it('preserves changed authority when a transport failure settles before the next
     expect(vi.getTimerCount()).toBe(0);
   } finally { await f.close(); }
 });
+// Independent reviewer PP-1: unlike a held response, the provider has not read
+// the upload. Use real clocks/sockets to observe cancellation under backpressure.
+it('PP-1 mid-upload withdrawal closes the socket before the provider reads the full body', async () => {
+  let upload: http.IncomingMessage | undefined;
+  let reached: () => void = () => {};
+  let requests = 0;
+  let received = 0;
+  let closed = false;
+  let live = true;
+  const server = http.createServer((req) => {
+    requests++;
+    upload = req;
+    req.pause();
+    req.socket.on('close', () => { closed = true; });
+    reached();
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const provider = studioProvider({
+      provider: 'vercel', config: { providerId: 'vercel', configured: true, last4: '1234', revision: 1 },
+      authorize: () => { if (!live) throw new Error('withdrawn'); return 'S65-test-credential-1234'; },
+      outbound: {
+        apiOrigin: `http://deploy.fixture.test.invalid:${(server.address() as AddressInfo).port}`,
+        resolve: async () => ['127.0.0.1'], allowAddress: (address) => address === '127.0.0.1',
+      },
+    });
+    const arrived = new Promise<void>((resolve) => { reached = resolve; });
+    const big = Buffer.alloc(24 * 1024 * 1024, 0x61);
+    const settled = provider.deploy([{ file: 'index.html', data: big }], 'project', 'preview').then(() => null, (error: unknown) => error);
+    await arrived;
+    expect(upload?.complete).toBe(false);
+    live = false;
+    expect(await settled).toBeInstanceOf(StudioDeployAuthorityRefused);
+    upload!.on('data', (chunk: Buffer) => { received += chunk.length; });
+    upload!.on('error', () => {});
+    upload!.resume();
+    await vi.waitFor(() => expect(closed).toBe(true), { timeout: 2000 });
+    expect(received).toBeLessThan(big.length);
+    expect(requests).toBe(1);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}, 30_000);

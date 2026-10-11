@@ -137,6 +137,70 @@ it('clipboard rejection exposes manual text without claiming copied', async () =
   expect(screen.getAllByRole('status').some((status) => status.textContent?.includes('Clipboard access was refused.'))).toBe(true);
   expect(screen.queryByText('Copied')).toBeNull();
 });
+// Port of independent reviewer PW-1–4. Copy remains retryable even when the
+// capability message offers manual selection; the shared fallback is real.
+it('PW-1 absent Clipboard API keeps legacy copy operable and reports its real result', async () => {
+  vi.stubGlobal('navigator', { ...navigator, clipboard: undefined });
+  const exec = vi.fn(() => true);
+  Object.defineProperty(document, 'execCommand', { configurable: true, value: exec });
+  await mount(<SocialShareGrid share={buildSocialSharePayload({ kind: 'project-html', url: 'https://site.example/x' })} />);
+  const button = screen.getByRole('button', { name: 'Instagram' }) as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  fireEvent.click(button);
+  await screen.findByText('Copied');
+  expect(exec).toHaveBeenCalledWith('copy');
+});
+it('PW-2 a failed copy permits retry and clears the failure after success', async () => {
+  const writeText = vi.fn(async () => { throw new DOMException('Not focused', 'NotAllowedError'); });
+  vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+  Object.defineProperty(document, 'execCommand', { configurable: true, value: vi.fn(() => false) });
+  await mount(<SocialShareGrid share={buildSocialSharePayload({ kind: 'project-html', url: 'https://site.example/x' })} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Instagram' }));
+  await screen.findByLabelText('Select the text and copy it manually.');
+  writeText.mockResolvedValue(undefined as never);
+  const button = screen.getByRole('button', { name: 'Instagram' }) as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  fireEvent.click(button);
+  await screen.findByText('Copied');
+  expect(screen.queryByLabelText('Select the text and copy it manually.')).toBeNull();
+  expect(screen.queryByText(/Clipboard access was refused/)).toBeNull();
+});
+it('PW-3 Studio intent links preserve both share callbacks', async () => {
+  const onShare = vi.fn(); const onAfterShare = vi.fn();
+  await mount(<SocialShareGrid share={buildSocialSharePayload({ kind: 'project-html', url: 'https://site.example/x' })} onShare={onShare} onAfterShare={onAfterShare} />);
+  fireEvent.click(screen.getByRole('link', { name: 'X' }));
+  expect(onShare).toHaveBeenCalledWith('x');
+  expect(onAfterShare).toHaveBeenCalledOnce();
+});
+it('PW-4 Studio Copied feedback expires after the existing 1.6 second timeout', async () => {
+  vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText: vi.fn(async () => {}) } });
+  await mount(<SocialShareGrid share={buildSocialSharePayload({ kind: 'project-html', url: 'https://site.example/x' })} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Instagram' }));
+  await screen.findByText('Copied');
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1800)); });
+  expect(screen.queryByText('Copied')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Instagram' })).toBeTruthy();
+});
+it('share link group has one popup advisory while every link retains a same-tab alternative', async () => {
+  await mount(<SocialShareGrid share={buildSocialSharePayload({ kind: 'project-html', url: 'https://site.example/x' })} />);
+  const notices = screen.getAllByRole('status').filter((status) => status.textContent?.includes('If a new tab does not open'));
+  expect(notices).toHaveLength(1);
+  const links = screen.getAllByRole('link', { name: 'Open in this tab' });
+  expect(links.length).toBeGreaterThan(1);
+  expect(links.every((link) => !link.getAttribute('target'))).toBe(true);
+});
+it('failed owned ZIP download uses the shared permission state and remains retryable', async () => {
+  const original = fetch;
+  vi.stubGlobal('fetch', vi.fn(async (input, init) => String(input).endsWith('/archive')
+    ? Response.json({}, { status: 403 }) : original(input, init)));
+  await mount(<FileViewer projectId="p" projectKind="prototype" file={{ name: 'index.html', path: 'index.html', type: 'file', size: 10, mtime: 1, kind: 'html', mime: 'text/html' }} liveHtml="<html><body>Hi</body></html>" />);
+  fireEvent.click(screen.getByTestId('download-project-archive'));
+  await waitFor(() => {
+    const reason = document.getElementById(screen.getByTestId('download-project-archive').getAttribute('aria-describedby')!);
+    expect(reason?.getAttribute('data-capability-state')).toBe('permission-denied');
+  });
+  expect((screen.getByTestId('download-project-archive') as HTMLButtonElement).disabled).toBe(false);
+});
 it('FileViewer keeps manual copy after brief button feedback expires', async () => {
   const ordinaryFetch = fetch;
   vi.stubGlobal('fetch', vi.fn(async (input, init) => String(input).includes('publish-public')
