@@ -190,4 +190,3 @@ export function applyLiveArtifactOutputMapping(options: ApplyLiveArtifactOutputM
       : metricSummary(selected);
   return asBoundedRefreshOutput(transformed);
 }
-
