@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { STUDIO_PARITY_LANES, type AuthAccount, type StudioRuntimeCapabilities } from '@open-design/contracts';
 import { CookieSession } from '../../src/multiuser/session';
@@ -9,6 +9,7 @@ import * as registry from '../../src/providers/registry';
 import { takeHomeComposerAssetSeed } from '../../src/state/libraryHandoff';
 import type { AppConfig } from '../../src/types';
 import { StudioLibrarySettings } from '../../src/runtime/StudioLibrarySettings';
+import * as clipboard from '../../src/lib/copy-to-clipboard';
 const account: AuthAccount = { id: 'A', username: 'A', role: 'user', active: true, passwordState: 'set', createdAt: 1, updatedAt: 1 };
 const capabilities: StudioRuntimeCapabilities = { schemaVersion: 1, shell: 'studio', features: Object.fromEntries(STUDIO_PARITY_LANES.map(({ id }) => [id, { status: 'pilot', reason: 'Pilot' }])) as StudioRuntimeCapabilities['features'] };
 async function mount(fail = false, settings = false, captured = false) {
@@ -30,7 +31,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 it('creates a short-lived code and lists/revokes redacted tokens through standard routes', async () => {
   const { calls } = await mount(); fireEvent.click(screen.getByTestId('studio-library-pair'));
   await screen.findByText('PAIRING_ONCE'); expect(document.body.textContent).toContain('Last used');
-  fireEvent.click(screen.getByTestId('studio-library-revoke-token-id')); await screen.findByTestId('studio-library-empty');
+  fireEvent.click(screen.getByRole('button', { name: 'Revoke token for My extension' })); await screen.findByTestId('studio-library-empty');
   expect(calls).toContain('POST /api/library/pair'); expect(calls).toContain('DELETE /api/library/tokens/token-id');
 });
 it('withdraws a pairing code and token list synchronously on session loss', async () => {
@@ -40,6 +41,35 @@ it('withdraws a pairing code and token list synchronously on session loss', asyn
 it('shows a fixed localized refusal without provider prose or a stale pairing code', async () => {
   await mount(true); fireEvent.click(screen.getByTestId('studio-library-pair')); await screen.findByRole('alert');
   expect(document.body.textContent).not.toMatch(/SECRET_PROVIDER_TEXT|PAIRING_ONCE/);
+});
+
+it('shows and copies the exact Studio origin under a pairing heading', async () => {
+  const copy = vi.spyOn(clipboard, 'copyToClipboard').mockResolvedValue(true);
+  await mount();
+  expect(screen.getByRole('heading', { name: 'Web Clipper pairing', level: 2 })).toBeTruthy();
+  const url = screen.getByRole('textbox', { name: 'Studio URL' }) as HTMLInputElement;
+  expect(url.value).toBe(window.location.origin); expect(url.readOnly).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'Copy Studio URL' }));
+  await screen.findByText('Studio URL copied.');
+  expect(copy).toHaveBeenCalledWith(window.location.origin);
+});
+
+it('keeps the Studio URL available for manual copying when the clipboard refuses', async () => {
+  vi.spyOn(clipboard, 'copyToClipboard').mockResolvedValue(false);
+  await mount(); fireEvent.click(screen.getByRole('button', { name: 'Copy Studio URL' }));
+  await screen.findByText('Could not copy. Select and copy the Studio URL manually.');
+  expect((screen.getByRole('textbox', { name: 'Studio URL' }) as HTMLInputElement).value).toBe(window.location.origin);
+});
+
+it('places pairing after the Library heading and shows the account hint once in the content', async () => {
+  await mount(false, true); fireEvent.click(screen.getByTestId('studio-settings-nav-library'));
+  await screen.findByText('My extension');
+  const content = document.querySelector('.settings-content'); if (!content) throw new Error('Missing Settings content');
+  expect(within(content as HTMLElement).getAllByText('Your library belongs to your account. Host filesystem sync is unavailable.', { exact: true })).toHaveLength(1);
+  const library = within(content as HTMLElement).getByRole('heading', { name: 'Library', level: 1 });
+  const pairing = screen.getByRole('heading', { name: 'Web Clipper pairing', level: 2 });
+  expect(Boolean(library.compareDocumentPosition(pairing) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+  expect(screen.getByRole('heading', { name: 'Paired extensions', level: 3 })).toBeTruthy();
 });
 
 it('discovers Library in the shared Settings frame with pairing, assets and no host sync control', async () => {

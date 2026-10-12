@@ -1,6 +1,13 @@
 import type { Dict } from '../types';
 
 export const pl: Dict = {
+  "studio.libraryPairTitle": "Parowanie Web Clipper",
+  "studio.libraryStudioUrl": "Adres Studio",
+  "studio.libraryCopyUrl": "Kopiuj adres Studio",
+  "studio.libraryUrlCopied": "Adres Studio skopiowany.",
+  "studio.libraryUrlCopyFailed": "Nie udało się skopiować. Zaznacz i skopiuj adres Studio ręcznie.",
+  "studio.libraryPairedExtensions": "Sparowane rozszerzenia",
+  "studio.libraryRevokeLabel": "Unieważnij token dla {label}",
   "studio.libraryHint": "Biblioteka należy do Twojego konta. Synchronizacja plików hosta jest niedostępna.",
   "studio.libraryPair": "Utwórz kod parowania",
   "studio.libraryExpires": "Wygasa o {time}",

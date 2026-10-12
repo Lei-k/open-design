@@ -1,6 +1,13 @@
 import type { Dict } from '../types';
 
 export const th: Dict = {
+  "studio.libraryPairTitle": "จับคู่ Web Clipper",
+  "studio.libraryStudioUrl": "URL ของ Studio",
+  "studio.libraryCopyUrl": "คัดลอก URL ของ Studio",
+  "studio.libraryUrlCopied": "คัดลอก URL ของ Studio แล้ว",
+  "studio.libraryUrlCopyFailed": "คัดลอกไม่ได้ โปรดเลือกและคัดลอก URL ของ Studio ด้วยตนเอง",
+  "studio.libraryPairedExtensions": "ส่วนขยายที่จับคู่แล้ว",
+  "studio.libraryRevokeLabel": "เพิกถอนโทเค็นของ {label}",
   "studio.libraryHint": "คลังของคุณเป็นของบัญชีคุณ ไม่รองรับการซิงค์ไฟล์จากโฮสต์",
   "studio.libraryPair": "สร้างรหัสจับคู่",
   "studio.libraryExpires": "หมดอายุเวลา {time}",

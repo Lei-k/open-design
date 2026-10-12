@@ -15,6 +15,7 @@ import { studioSetTimeout as setTimeout, studioEventSourceCtor } from '../runtim
 // the action bar or with Delete / Backspace.
 
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { ChatAttachment, DesignSystemSummary, LibraryAsset } from '@open-design/contracts';
 import {
   applyLibraryAsset,
@@ -61,6 +62,8 @@ type Translate = ReturnType<typeof useT>;
 
 interface Props {
   active: boolean;
+  /** Settings controls between the Library heading and the asset browser. */
+  beforeAssets?: ReactNode;
   /** Open a project, optionally deep-linking to a specific file in the editor. */
   onOpenProject: (projectId: string, fileName?: string) => void;
 }
@@ -497,7 +500,7 @@ const LibraryCard = memo(function LibraryCard({
   );
 });
 
-export function LibrarySection({ active, onOpenProject }: Props) {
+export function LibrarySection({ active, onOpenProject, beforeAssets }: Props) {
   const t = useT();
   const studio = useStudioCapabilities();
   const { context: workspaceContext } = useWorkspaceContext();
@@ -1180,6 +1183,8 @@ export function LibrarySection({ active, onOpenProject }: Props) {
           </a>
         </div>
       </header>
+
+      {beforeAssets}
 
       <div className={styles.toolbar}>
         <div className={styles.searchWrap}>

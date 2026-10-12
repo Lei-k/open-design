@@ -1,6 +1,13 @@
 import type { Dict } from '../types';
 
 export const tr: Dict = {
+  "studio.libraryPairTitle": "Web Clipper eşleştirme",
+  "studio.libraryStudioUrl": "Studio adresi",
+  "studio.libraryCopyUrl": "Studio adresini kopyala",
+  "studio.libraryUrlCopied": "Studio adresi kopyalandı.",
+  "studio.libraryUrlCopyFailed": "Kopyalanamadı. Studio adresini seçip elle kopyalayın.",
+  "studio.libraryPairedExtensions": "Eşleştirilmiş uzantılar",
+  "studio.libraryRevokeLabel": "{label} için belirteci iptal et",
   "studio.libraryHint": "Kitaplığınız hesabınıza aittir. Ana makine dosya eşitlemesi kullanılamaz.",
   "studio.libraryPair": "Eşleştirme kodu oluştur",
   "studio.libraryExpires": "{time} saatinde sona erer",

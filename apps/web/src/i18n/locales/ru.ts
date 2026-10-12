@@ -1,6 +1,13 @@
 import type { Dict } from '../types';
 
 export const ru: Dict = {
+  "studio.libraryPairTitle": "Сопряжение Web Clipper",
+  "studio.libraryStudioUrl": "Адрес Studio",
+  "studio.libraryCopyUrl": "Копировать адрес Studio",
+  "studio.libraryUrlCopied": "Адрес Studio скопирован.",
+  "studio.libraryUrlCopyFailed": "Не удалось скопировать. Выделите и скопируйте адрес Studio вручную.",
+  "studio.libraryPairedExtensions": "Сопряжённые расширения",
+  "studio.libraryRevokeLabel": "Отозвать токен для {label}",
   "studio.libraryHint": "Библиотека принадлежит вашему аккаунту. Синхронизация файлов сервера недоступна.",
   "studio.libraryPair": "Создать код сопряжения",
   "studio.libraryExpires": "Истекает в {time}",

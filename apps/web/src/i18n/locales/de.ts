@@ -1,6 +1,13 @@
 import type { Dict } from '../types';
 
 export const de: Dict = {
+  "studio.libraryPairTitle": "Web Clipper koppeln",
+  "studio.libraryStudioUrl": "Studio-Adresse",
+  "studio.libraryCopyUrl": "Studio-Adresse kopieren",
+  "studio.libraryUrlCopied": "Studio-Adresse kopiert.",
+  "studio.libraryUrlCopyFailed": "Kopieren fehlgeschlagen. Wählen Sie die Studio-Adresse aus und kopieren Sie sie manuell.",
+  "studio.libraryPairedExtensions": "Gekoppelte Erweiterungen",
+  "studio.libraryRevokeLabel": "Token für {label} widerrufen",
   "studio.libraryHint": "Deine Bibliothek gehört zu deinem Konto. Dateisynchronisierung mit dem Host ist nicht verfügbar.",
   "studio.libraryPair": "Kopplungscode erstellen",
   "studio.libraryExpires": "Gültig bis {time}",

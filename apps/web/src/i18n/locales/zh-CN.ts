@@ -1,6 +1,13 @@
 import type { Dict } from "../types";
 
 export const zhCN: Dict = {
+  "studio.libraryPairTitle": "Web Clipper 配对",
+  "studio.libraryStudioUrl": "Studio 地址",
+  "studio.libraryCopyUrl": "复制 Studio 地址",
+  "studio.libraryUrlCopied": "已复制 Studio 地址。",
+  "studio.libraryUrlCopyFailed": "无法复制。请选中 Studio 地址并手动复制。",
+  "studio.libraryPairedExtensions": "已配对的扩展",
+  "studio.libraryRevokeLabel": "撤销 {label} 的令牌",
   "studio.libraryHint": "设计库属于你的账号。不支持主机文件同步。",
   "studio.libraryPair": "创建配对码",
   "studio.libraryExpires": "{time} 到期",

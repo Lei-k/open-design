@@ -1,6 +1,13 @@
 import type { Dict } from '../types';
 
 export const ja: Dict = {
+  "studio.libraryPairTitle": "Web Clipper のペアリング",
+  "studio.libraryStudioUrl": "Studio の URL",
+  "studio.libraryCopyUrl": "Studio の URL をコピー",
+  "studio.libraryUrlCopied": "Studio の URL をコピーしました。",
+  "studio.libraryUrlCopyFailed": "コピーできませんでした。Studio の URL を選択して手動でコピーしてください。",
+  "studio.libraryPairedExtensions": "ペアリング済みの拡張機能",
+  "studio.libraryRevokeLabel": "{label} のトークンを失効させる",
   "studio.libraryHint": "ライブラリはあなたのアカウント専用です。ホストのファイル同期は利用できません。",
   "studio.libraryPair": "ペアリングコードを作成",
   "studio.libraryExpires": "{time} に期限切れ",

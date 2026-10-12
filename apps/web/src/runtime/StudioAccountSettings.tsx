@@ -135,8 +135,7 @@ export function StudioAccountSettings({ presentation, initialSection, onClose, i
     </>}>
     {isAdminSettingsSection(section) && <StudioAdminPanel section={section} />}
     {section === 'library' && (studio.available('settings') ? <>
-      <StudioLibrarySettings />
-      <LibrarySection active={true} onOpenProject={(projectId, fileName) => { onClose(); navigate({ kind: 'project', projectId, fileName: fileName ?? null }); }} />
+      <LibrarySection active={true} beforeAssets={<StudioLibrarySettings />} onOpenProject={(projectId, fileName) => { onClose(); navigate({ kind: 'project', projectId, fileName: fileName ?? null }); }} />
     </> : <StudioUnavailable lane="settings" />)}
     {section === 'deploy' && (studio.available('settings') ? <StudioDeploySettings /> : <StudioUnavailable lane="settings" />)}
     {section === 'agentAccounts' && <>

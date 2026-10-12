@@ -307,8 +307,21 @@ test('[P1] Studio Settings Library pairs an account clipper once, isolates its t
   const pairButton = page.getByTestId('studio-library-pair');
   await expect(page.getByTestId('studio-settings-nav-library')).toHaveAttribute('aria-current', 'page');
   await expect(section).toBeVisible();
+  await expect(section.getByRole('heading', { name: 'Web Clipper pairing', level: 2 })).toBeVisible();
+  await expect(section.getByRole('heading', { name: 'Paired extensions', level: 3 })).toBeVisible();
+  await expect(section.getByRole('textbox', { name: 'Studio URL', exact: true })).toHaveValue(studio.origin);
+  await expect(section.getByRole('button', { name: 'Copy Studio URL', exact: true })).toBeEnabled();
+  await expect(page.locator('.settings-content').getByText('Your library belongs to your account. Host filesystem sync is unavailable.', { exact: true })).toHaveCount(1);
+  const libraryHeading = page.getByRole('heading', { name: 'Library', exact: true, level: 1 });
+  expect(await libraryHeading.evaluate((heading) => {
+    const pairing = document.querySelector('[data-testid="studio-library-settings"]');
+    return Boolean(pairing && heading.compareDocumentPosition(pairing) & Node.DOCUMENT_POSITION_FOLLOWING);
+  })).toBe(true);
   await expect(page.getByTestId('studio-library-empty')).toBeVisible();
   await expect(pairButton).toBeEnabled();
+  const buttonBounds = await pairButton.boundingBox(); const sectionBounds = await section.boundingBox();
+  if (!buttonBounds || !sectionBounds) throw new Error('Missing Library pairing layout');
+  expect(buttonBounds.width).toBeLessThan(sectionBounds.width);
   const startedAt = Date.now();
   const created = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === '/api/library/pair');
@@ -320,12 +333,12 @@ test('[P1] Studio Settings Library pairs an account clipper once, isolates its t
   expect(pairing.code).toMatch(/^[A-Za-z0-9_-]{16}$/);
   expect(pairing.expiresAt).toBeGreaterThanOrEqual(startedAt + 5 * 60 * 1000);
   expect(pairing.expiresAt).toBeLessThanOrEqual(Date.now() + 5 * 60 * 1000);
-  const displayedCode = section.getByRole('status').locator('code');
+  const displayedCode = section.getByTestId('studio-library-code').locator('code');
   await expect(displayedCode).toHaveCount(1);
   await expect(displayedCode).toHaveText(pairing.code);
   await expect(section).toContainText('enter the code within five minutes. Each code can be used once.');
   const expiryTime = await page.evaluate((time) => new Date(time).toLocaleTimeString(), pairing.expiresAt);
-  await expect(section.getByRole('status')).toContainText(`Expires at ${expiryTime}`);
+  await expect(section.getByTestId('studio-library-code')).toContainText(`Expires at ${expiryTime}`);
   const pendingMetadata = await studio.request('GET', '/api/library/connection', studio.a.cookie);
   expect(pendingMetadata.status).toBe(200);
   expect(pendingMetadata.json).toEqual({ paired: false, tokens: [] });
@@ -386,6 +399,7 @@ test('[P1] Studio Settings Library pairs an account clipper once, isolates its t
       await expect(section).toContainText(extensionOrigin);
       const revoke = page.getByTestId(`studio-library-revoke-${token.id}`);
       await expect(revoke).toBeEnabled();
+      await expect(revoke).toHaveAccessibleName(`Revoke token for ${label}`);
       await page.screenshot({ path: info.outputPath('studio-library-token-list-desktop.png'), animations: 'disabled' });
 
       const foreign = await studio.request('GET', '/api/library/connection', studio.b.cookie);
@@ -421,6 +435,8 @@ test('[P1] Studio Settings Library pairs an account clipper once, isolates its t
       await expect(page.getByRole('heading', { name: 'Library', exact: true, level: 1 })).toBeVisible();
       await expect(pairButton).toBeVisible();
       await expect(revoke).toBeVisible();
+      await expect(section.getByRole('textbox', { name: 'Studio URL', exact: true })).toHaveValue(studio.origin);
+      await expect(revoke).toHaveAccessibleName(`Revoke token for ${label}`);
       await expect(section).toContainText(label);
       await page.screenshot({ path: info.outputPath('studio-library-section-phone.png'), animations: 'disabled' });
 

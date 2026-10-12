@@ -30,6 +30,13 @@ export const LOCALE_LABEL: Record<Locale, string> = {
 // flat (not deeply nested) so missing-key TS errors point straight at the
 // offending string instead of a generic object mismatch.
 export interface Dict {
+  'studio.libraryPairTitle': string;
+  'studio.libraryStudioUrl': string;
+  'studio.libraryCopyUrl': string;
+  'studio.libraryUrlCopied': string;
+  'studio.libraryUrlCopyFailed': string;
+  'studio.libraryPairedExtensions': string;
+  'studio.libraryRevokeLabel': string;
   'studio.libraryHint': string;
   'studio.libraryPair': string;
   'studio.libraryExpires': string;

@@ -1,6 +1,13 @@
 import type { Dict } from '../types';
 
 export const en: Dict = {
+  "studio.libraryPairTitle": "Web Clipper pairing",
+  "studio.libraryStudioUrl": "Studio URL",
+  "studio.libraryCopyUrl": "Copy Studio URL",
+  "studio.libraryUrlCopied": "Studio URL copied.",
+  "studio.libraryUrlCopyFailed": "Could not copy. Select and copy the Studio URL manually.",
+  "studio.libraryPairedExtensions": "Paired extensions",
+  "studio.libraryRevokeLabel": "Revoke token for {label}",
   "studio.libraryHint": "Your library belongs to your account. Host filesystem sync is unavailable.",
   "studio.libraryPair": "Create pairing code",
   "studio.libraryExpires": "Expires at {time}",

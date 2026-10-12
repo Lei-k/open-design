@@ -1,6 +1,13 @@
 import type { Dict } from '../types';
 
 export const ar: Dict = {
+  "studio.libraryPairTitle": "إقران Web Clipper",
+  "studio.libraryStudioUrl": "رابط Studio",
+  "studio.libraryCopyUrl": "نسخ رابط Studio",
+  "studio.libraryUrlCopied": "تم نسخ رابط Studio.",
+  "studio.libraryUrlCopyFailed": "تعذّر النسخ. حدّد رابط Studio وانسخه يدويًا.",
+  "studio.libraryPairedExtensions": "الإضافات المقترنة",
+  "studio.libraryRevokeLabel": "إلغاء رمز الوصول لـ {label}",
   "studio.libraryHint": "مكتبتك تخص حسابك. مزامنة ملفات المضيف غير متاحة.",
   "studio.libraryPair": "إنشاء رمز اقتران",
   "studio.libraryExpires": "تنتهي صلاحيته عند {time}",

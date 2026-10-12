@@ -1,6 +1,13 @@
 import type { Dict } from '../types';
 
 export const fa: Dict = {
+  "studio.libraryPairTitle": "جفت‌سازی Web Clipper",
+  "studio.libraryStudioUrl": "نشانی Studio",
+  "studio.libraryCopyUrl": "کپی نشانی Studio",
+  "studio.libraryUrlCopied": "نشانی Studio کپی شد.",
+  "studio.libraryUrlCopyFailed": "کپی انجام نشد. نشانی Studio را انتخاب و به‌صورت دستی کپی کنید.",
+  "studio.libraryPairedExtensions": "افزونه‌های جفت‌شده",
+  "studio.libraryRevokeLabel": "لغو توکن {label}",
   "studio.libraryHint": "کتابخانه متعلق به حساب شماست. همگام‌سازی فایل‌های میزبان در دسترس نیست.",
   "studio.libraryPair": "ایجاد کد جفت‌سازی",
   "studio.libraryExpires": "انقضا در {time}",

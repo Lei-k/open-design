@@ -1,6 +1,13 @@
 import type { Dict } from '../types';
 
 export const ko: Dict = {
+  "studio.libraryPairTitle": "Web Clipper 페어링",
+  "studio.libraryStudioUrl": "Studio 주소",
+  "studio.libraryCopyUrl": "Studio 주소 복사",
+  "studio.libraryUrlCopied": "Studio 주소를 복사했습니다.",
+  "studio.libraryUrlCopyFailed": "복사할 수 없습니다. Studio 주소를 선택하여 직접 복사하세요.",
+  "studio.libraryPairedExtensions": "페어링된 확장 프로그램",
+  "studio.libraryRevokeLabel": "{label}의 토큰 취소",
   "studio.libraryHint": "라이브러리는 내 계정에 속합니다. 호스트 파일 동기화는 사용할 수 없습니다.",
   "studio.libraryPair": "페어링 코드 만들기",
   "studio.libraryExpires": "{time}에 만료",
