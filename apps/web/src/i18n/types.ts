@@ -6166,4 +6166,21 @@ export interface Dict {
   'studio.synthesis.stale': string;
   'studio.synthesis.authorityChanged': string;
   'studio.synthesis.saved': string;
+  'studio.source.trigger': string;
+  'studio.source.triggerPinned': string;
+  'studio.source.triggerUnavailable': string;
+  'studio.source.chooseHint': string;
+  'studio.source.pinnedHint': string;
+  'studio.source.current': string;
+  'studio.source.newConversation': string;
+  'studio.source.newConversationWith': string;
+  'studio.source.serverDisabled': string;
+  'studio.source.companyDisabled': string;
+  'studio.source.codexUnlinked': string;
+  'studio.source.codexReauth': string;
+  'studio.source.codexDisabled': string;
+  'studio.source.keyMissing': string;
+  'studio.source.linkCodex': string;
+  'studio.source.reauthCodex': string;
+  'studio.source.addKey': string;
 }
