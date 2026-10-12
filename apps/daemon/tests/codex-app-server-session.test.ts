@@ -82,27 +82,6 @@ function completeHandshake(child: FakeChild, threadId = 'th-1', userAgent = 'cod
 }
 
 describe('daemon-owned dynamic tools', () => {
-  it.each([false, true])('reports code-mode-host function output only with Studio opt-in %s', (reportToolStartupFailures) => {
-    const h = harness({ reportToolStartupFailures }); completeHandshake(h.child);
-    h.child.say({ method: 'item/completed', params: { threadId: 'th-1', turnId: 'turn-1', item: {
-      type: 'functionCallOutput', id: 'host-failure', name: 'exec', namespace: 'functions',
-      output: 'failed to spawn code-mode host /opt/codex/bin/codex-code-mode-host: No such file or directory (os error 2)',
-    } } });
-    expect(h.agentEvents.some((event) => event.type === 'workspace_code_mode_host_failure')).toBe(reportToolStartupFailures);
-    expect(h.agentEvents.some((event) => event.type === 'tool_result')).toBe(false);
-    expect(JSON.stringify(h.agentEvents)).not.toContain('/opt/codex');
-  });
-  it.each(['ordinary error', 'array output', 'foreign thread', 'foreign turn', 'started item'])('does not treat %s as host startup evidence', (kind) => {
-    const h = harness({ reportToolStartupFailures: true }); completeHandshake(h.child);
-    h.child.say({ method: 'turn/started', params: { threadId: 'th-1', turn: { id: 'turn-1' } } });
-    h.child.say({ method: kind === 'started item' ? 'item/started' : 'item/completed', params: {
-      threadId: kind === 'foreign thread' ? 'other' : 'th-1', turnId: kind === 'foreign turn' ? 'other' : 'turn-1',
-      item: { type: 'functionCallOutput', id: 'result', name: 'exec', namespace: 'functions',
-        output: kind === 'array output' ? [{ type: 'input_text', text: 'failed to spawn code-mode host /opt/codex/bin/codex-code-mode-host: missing' }]
-          : kind === 'ordinary error' ? 'command failed with exit code 1' : 'failed to spawn code-mode host /opt/codex/bin/codex-code-mode-host: missing' },
-    } });
-    expect(h.agentEvents.some((event) => event.type === 'workspace_code_mode_host_failure')).toBe(false);
-  });
   it('S59 awaits an asynchronous connector tool and keeps bodies out of events', async () => {
     let resolve!: (value: unknown) => void;
     const pending = new Promise((done) => { resolve = done; });

@@ -462,16 +462,6 @@ export function createCodexAppServerNormalizer(
   function handleItem(params: JsonObject, lifecycle: 'item.started' | 'item.completed'): void {
     const item = isRecord(params.item) ? params.item : null;
     if (!item) return;
-    // Handle 0.162.1's function-output shape: a host spawn diagnostic can arrive
-    // before any commandExecution, without a command status or exit-code field.
-    // Keep the diagnostic private: delivery needs evidence, not a tool/chat row.
-    if (reportToolStartupFailures && lifecycle === 'item.completed' && item.type === 'functionCallOutput'
-      && (item.name === 'exec' || item.name === 'wait') && (item.namespace == null || item.namespace === 'functions')
-      && typeof item.output === 'string'
-      && /^(?:Error:\s*)?failed to spawn code-mode host [^\r\n]*codex-code-mode-host:/u.test(item.output)) {
-      emit({ type: 'workspace_code_mode_host_failure' });
-      return;
-    }
     if (item.type === 'agentMessage') {
       if (lifecycle === 'item.completed') handleAgentMessageCompleted(item);
       return;

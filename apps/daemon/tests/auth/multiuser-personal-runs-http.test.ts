@@ -97,6 +97,8 @@ describe('personal subscription run lane', () => {
     ['[mock-tool-startup-failure]', 'failed'],
     ['[mock-code-mode-host-failure]', 'failed'],
     ['[mock-code-mode-host-failure] [mock-write=recovered.html]', 'succeeded'],
+    ['[mock-code-mode-host-warning]', 'failed'],
+    ['[mock-code-mode-host-warning] [mock-write=recovered.html]', 'succeeded'],
     ['text-only answer', 'succeeded'],
     ['[mock-tool-startup-failure] [mock-write=recovered.html]', 'succeeded'],
     ['[mock-mcp-startup-failure] text-only answer', 'succeeded'],

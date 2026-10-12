@@ -197,6 +197,16 @@ export function attachCodexAppServerSession(
   let patchStreaming = false;
   let activeTurnId: string | null = null;
   const toolCalls = new Set<string>();
+  // Raw provider payloads stay private. Retain only bounded call identities for
+  // matching actual exec/wait outputs in this app-server turn.
+  const codeModeCalls = new Map<string, string>();
+  let codeModeFailureReported = false;
+
+  function reportCodeModeFailure(): void {
+    if (codeModeFailureReported) return;
+    codeModeFailureReported = true;
+    onAgentEvent({ type: 'workspace_code_mode_host_failure' });
+  }
 
   function write(frame: JsonObject, onWritten?: () => void): void {
     const stdin = child.stdin;
@@ -292,6 +302,9 @@ export function attachCodexAppServerSession(
       cwd,
       sandbox: sandboxMode,
       approvalPolicy: APPROVAL_POLICY_NEVER,
+      // 0.162.1 advertises this on start only; forwarding intent on resume is
+      // not proof of native support (see S73's resumed-turn acceptance gate).
+      ...(opts.reportToolStartupFailures ? { experimentalRawEvents: true } : {}),
       ...(dynamicToolsSupported ? { dynamicTools: opts.dynamicTools } : {}),
       ...(opts.ephemeral ? { ephemeral: true, config: { 'features.shell_tool': false, 'features.apply_patch_freeform': false,
         'features.apply_patch_streaming_events': false, web_search: 'disabled', mcp_servers: {} } }
@@ -430,6 +443,41 @@ export function attachCodexAppServerSession(
       });
       return;
     }
+    if (frame.method.startsWith('rawResponse')) {
+      // Never normalize raw messages, instructions, arguments or provider
+      // output into chat events. Only a correlated spawn failure is evidence.
+      if (opts.reportToolStartupFailures && frame.method === 'rawResponseItem/completed'
+        && promptSent && !terminalReceived && activeTurnId !== null) {
+        const params = isRecord(frame.params) ? frame.params : {};
+        const item = isRecord(params.item) ? params.item : {};
+        const callId = item.call_id;
+        if (params.threadId === threadId && params.turnId === activeTurnId
+          && typeof callId === 'string' && callId.length > 0 && callId.length <= 160) {
+          if ((item.type === 'custom_tool_call' || item.type === 'function_call')
+            && item.namespace === 'functions' && (item.name === 'exec' || item.name === 'wait')) {
+            if (codeModeCalls.size < 128 && !codeModeCalls.has(callId)) {
+              codeModeCalls.set(callId, item.type === 'custom_tool_call' ? 'custom_tool_call_output' : 'function_call_output');
+            }
+          } else if (item.type === 'custom_tool_call_output' || item.type === 'function_call_output') {
+            const expected = codeModeCalls.get(callId);
+            codeModeCalls.delete(callId); // Consume success and error outputs alike.
+            if (expected === item.type && typeof item.output === 'string'
+              && /^failed to spawn code-mode host \S*codex-code-mode-host: /u.test(item.output)) reportCodeModeFailure();
+          }
+        }
+      }
+      return;
+    }
+    if (opts.reportToolStartupFailures && frame.method === 'warning') {
+      const params = isRecord(frame.params) ? frame.params : {};
+      if (typeof params.message === 'string'
+        && params.message.startsWith('Code Mode is unavailable because failed to spawn code-mode host')) {
+        // A missing host warns after thread/start's reply, before turn/started.
+        // Consume even foreign/late host diagnostics so their paths stay private.
+        if (!terminalReceived && threadId !== null && params.threadId === threadId) reportCodeModeFailure();
+        return;
+      }
+    }
     if (opts.reportToolStartupFailures && frame.method === 'mcpServer/startupStatus/updated') {
       const params = isRecord(frame.params) ? frame.params : {};
       // MCP may initialize before thread/start, with no thread or turn id.
@@ -444,8 +492,6 @@ export function attachCodexAppServerSession(
     if (opts.reportToolStartupFailures && frame.method === 'item/completed') {
       const params = isRecord(frame.params) ? frame.params : {};
       const item = isRecord(params.item) ? params.item : {};
-      if (item.type === 'functionCallOutput' && (terminalReceived || params.threadId !== threadId
-        || (activeTurnId && params.turnId !== activeTurnId))) return;
       if (!terminalReceived && params.threadId === threadId && (!activeTurnId || params.turnId === activeTurnId)
         && item.type === 'mcpToolCall' && item.status === 'failed' && item.result === null && typeof item.server === 'string') {
         onAgentEvent({ type: 'workspace_tool_failed_attempt', server: item.server, scope: startupScope });
@@ -464,12 +510,16 @@ export function attachCodexAppServerSession(
     if (frame.method === 'turn/started') {
       const params = isRecord(frame.params) ? frame.params : {};
       const turn = isRecord(params.turn) ? params.turn : null;
-      if (params.threadId === threadId && typeof turn?.id === 'string') activeTurnId = turn.id;
+      if (params.threadId === threadId && typeof turn?.id === 'string') {
+        if (activeTurnId !== turn.id) codeModeCalls.clear();
+        activeTurnId = turn.id;
+      }
     }
     if (frame.method === 'turn/completed' && terminalReceived) return;
     normalizer.handleNotification(frame.method, frame.params);
     if (frame.method === 'turn/completed') {
       terminalReceived = true;
+      codeModeCalls.clear();
       const params = isRecord(frame.params) ? frame.params : {};
       const turn = isRecord(params.turn) ? params.turn : null;
       turnSucceeded = turn?.status !== 'failed';
@@ -546,7 +596,7 @@ export function attachCodexAppServerSession(
         title: 'Open Design',
         version: opts.clientVersion ?? '0.0.0',
       },
-      capabilities: { experimentalApi: opts.manageThreadVisibility === true || Boolean(opts.dynamicTools && opts.onDynamicToolCall), requestAttestation: false },
+      capabilities: { experimentalApi: opts.reportToolStartupFailures === true || opts.manageThreadVisibility === true || Boolean(opts.dynamicTools && opts.onDynamicToolCall), requestAttestation: false },
     },
     (result) => {
       // Verified with the official 0.146.0 and 0.153.4 binaries: paginated

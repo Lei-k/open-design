@@ -151,7 +151,7 @@ RUN set -eu; \
     mkdir -p /out/bin; \
     wget -qO /tmp/codex.tgz "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-package-x86_64-unknown-linux-musl.tar.gz"; \
     echo "${CODEX_SHA256}  /tmp/codex.tgz" | sha256sum -c -; \
-    tar -xzf /tmp/codex.tgz -C /out bin/codex bin/codex-code-mode-host codex-path/rg codex-package.json; \
+    tar --no-same-owner -xzf /tmp/codex.tgz -C /out bin/codex bin/codex-code-mode-host codex-path/rg codex-package.json; \
     for binary in /out/bin/codex /out/bin/codex-code-mode-host /out/codex-path/rg; do \
       [ -f "$binary" ] && [ -x "$binary" ] || { echo "missing or non-executable Codex package binary: $binary" >&2; exit 1; }; \
     done
@@ -169,6 +169,8 @@ COPY --from=codex-release / /opt/codex/
 # missing execute bits here: an incomplete context must fail the build.
 RUN test -f /opt/codex/bin/codex && test -x /opt/codex/bin/codex && \
     test -f /opt/codex/bin/codex-code-mode-host && test -x /opt/codex/bin/codex-code-mode-host && \
+    test -f /opt/codex/codex-path/rg && test -x /opt/codex/codex-path/rg && \
+    test -f /opt/codex/codex-package.json && \
     chmod -R a+rX /opt/codex && /opt/codex/bin/codex --version
 # Editable PPTX engine (vendored browser bundle) for the export renderer.
 COPY --from=build --chown=open-design:open-design /app/apps/desktop/vendor/dom-to-pptx/dom-to-pptx.bundle.js.gz /opt/open-design/dom-to-pptx.bundle.js.gz

@@ -97,6 +97,20 @@ function pollDevice(): void {
 function threadFile(id: string): string { return path.join(threadsDir, `${id.replace(/[^\w-]/g, '')}.json`); }
 
 let activeTurn: { threadId: string; turnId: string; interrupted: boolean; release?: () => void } | null = null;
+let rawEventsEnabled = false;
+
+/** Replay only the native warning or raw call/output, with this turn's identity. */
+function hostFailureFrames(name: 'nb' | 'rawrun', threadId: string, turnId: string): void {
+  const frames = fs.readFileSync(new URL(`./fixtures/codex-code-mode-host/${name}.jsonl`, import.meta.url), 'utf8');
+  for (const line of frames.trim().split('\n')) {
+    const frame = JSON.parse(line) as { method: string; params: Json };
+    const item = frame.params.item as Json | undefined;
+    if (frame.method === 'warning' || (rawEventsEnabled && frame.method === 'rawResponseItem/completed'
+      && (item?.type === 'custom_tool_call' || item?.type === 'custom_tool_call_output'))) {
+      notify(frame.method, { ...frame.params, threadId, ...(frame.method === 'warning' ? {} : { turnId }) });
+    }
+  }
+}
 
 async function turn(id: number, params: Json): Promise<void> {
   const threadId = String(params.threadId ?? '');
@@ -127,9 +141,9 @@ async function turn(id: number, params: Json): Promise<void> {
       command: 'fixture-tool', status: 'failed', exitCode: null, aggregatedOutput: 'failed to spawn workspace tool' } });
   }
   if (text.includes('[mock-code-mode-host-failure]')) {
-    notify('item/completed', { threadId, turnId, item: { type: 'functionCallOutput', id: 'host-failure', name: 'exec',
-      namespace: 'functions', output: 'failed to spawn code-mode host /opt/codex/bin/codex-code-mode-host: No such file or directory (os error 2)' } });
+    hostFailureFrames('rawrun', threadId, turnId);
   }
+  if (text.includes('[mock-code-mode-host-warning]')) hostFailureFrames('nb', threadId, turnId);
   if (text.includes('[mock-mcp-startup-failure]')) {
     notify('mcpServer/startupStatus/updated', { threadId, name: 'fixture', status: 'failed' });
   }
@@ -312,12 +326,14 @@ function handle(frame: Json): void {
     }
     case 'account/logout': fs.rmSync(authFile, { force: true }); return send({ id, result: {} });
     case 'thread/start': {
+      rawEventsEnabled = params.experimentalRawEvents === true;
       fs.mkdirSync(threadsDir, { recursive: true });
       const threadId = `thr_${randomUUID()}`;
       fs.writeFileSync(threadFile(threadId), JSON.stringify({ turns: 0 }));
       return send({ id, result: { thread: { id: threadId } } });
     }
     case 'thread/resume': {
+      rawEventsEnabled = params.experimentalRawEvents === true;
       const threadId = String(params.threadId ?? '');
       if (!fs.existsSync(threadFile(threadId))) return fail(-32600, `no rollout found for thread id ${threadId}`);
       return send({ id, result: { thread: { id: threadId } } });
