@@ -608,6 +608,117 @@ test('[P1] admin configures the company pool and Studio runs and reloads on its 
   await page.screenshot({ path: info.outputPath('studio-company-run.png') });
 });
 
+test('[P1] Studio synthesis entry points on desktop and phone finalize on the company pool with owner isolation', async ({ page, studio }, info) => {
+  await page.setViewportSize({ width: 1600, height: 1000 });
+  // Reuse the company-pool admin setup with a fake key; no browser API mocks.
+  await page.goto(`${studio.origin}/settings?section=company`);
+  await page.locator('input[name="username"]').fill(studio.admin.username);
+  await page.locator('input[name="password"]').fill(studio.admin.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  const pool = page.getByTestId('company-openai-settings');
+  await expect(pool.locator('input[name="model"]')).toBeVisible({ timeout: T.long });
+  await pool.locator('input[name="model"]').fill('gpt-5.1');
+  await pool.locator('input[name="capacity"]').fill('1');
+  await pool.locator('input[name="enabled"]').check();
+  const key = 'sk-browser-synthesis-fixture-01234567890123456789';
+  await pool.locator('input[name="apiKey"]').fill(key);
+  const configured = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === '/api/admin/pool/openai');
+  await pool.getByRole('button', { name: 'Save', exact: true }).click();
+  const settings = await configured;
+  expect(settings.status(), await settings.text()).toBe(200);
+  expect(JSON.stringify(await settings.json())).not.toContain(key);
+  await expect(pool.locator('input[name="apiKey"]')).toHaveValue('');
+  await page.context().clearCookies();
+
+  const projectId = studioProjectId();
+  const made = await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Studio synthesis acceptance' });
+  expect(made.status, made.text).toBe(200);
+  const conversationId = made.json.conversationId as string;
+  expect(conversationId).toEqual(expect.any(String));
+  const access = await studio.request('GET', `/api/multiuser/projects/${projectId}/access`, studio.a.cookie);
+  expect(access.status, access.text).toBe(200);
+  expect(access.json).toMatchObject({ projectId, role: 'owner', owner: { accountId: studio.a.id }, shared: false });
+  await page.goto(`${studio.origin}/projects/${projectId}`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  const source = page.getByTestId('studio-execution-source').getByRole('combobox', { name: 'Execution source', exact: true });
+  await expect(source).toBeVisible({ timeout: T.long });
+  await source.selectOption('openai');
+  await page.getByTestId('chat-composer-input').fill('Create a calm company landing page to finalize.');
+  const admitted = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/runs');
+  await page.getByTestId('chat-send').click();
+  const turn = await admitted;
+  expect(turn.status(), await turn.text()).toBe(202);
+  expect(turn.request().postDataJSON()).toMatchObject({ projectId, conversationId, agentId: 'openai' });
+  await expect(page.getByTestId('chat-log')).toContainText('Company browser design complete.', { timeout: T.long });
+  await expect.poll(async () => (await studio.request('GET', `/api/runs/${(await turn.json()).runId}`, studio.a.cookie)).json.status,
+    { timeout: T.long }).toBe('succeeded');
+  const messages = await studio.request('GET', `/api/projects/${projectId}/conversations/${conversationId}/messages`, studio.a.cookie);
+  expect(messages.status, messages.text).toBe(200);
+  expect(messages.json.messages).toContainEqual(expect.objectContaining({ role: 'user', content: 'Create a calm company landing page to finalize.' }));
+
+  await page.goto(`${studio.origin}/projects/${projectId}/files/company.html`);
+  const header = page.locator('.ws-tabs-project-actions').getByTestId('studio-synthesis-actions');
+  const duplicate = page.locator('.ws-tabs-file-actions').getByTestId('studio-synthesis-actions');
+  await expect(header.getByRole('button', { name: 'Finalize with AI', exact: true })).toBeEnabled({ timeout: T.long });
+  await expect(header.getByRole('button', { name: 'Create handoff prompt', exact: true })).toBeEnabled();
+  await expect(header.getByRole('combobox')).toHaveValue('company_pool');
+  // #104 followup: the FileViewer portal duplicates finalize beside the header.
+  // Capture current behavior deliberately; this test does not repair it.
+  await expect(duplicate.getByRole('button', { name: 'Finalize with AI', exact: true })).toBeVisible();
+  await expect(duplicate.getByRole('combobox')).toHaveValue('company_pool');
+  await expect(page.getByTestId('studio-synthesis-actions')).toHaveCount(2);
+  await expect(header.getByRole('button', { name: 'Finalize with AI', exact: true })).toBeInViewport();
+  await expect(duplicate.getByRole('button', { name: 'Finalize with AI', exact: true })).toBeInViewport();
+  await page.screenshot({ path: info.outputPath('studio-synthesis-desktop-entry-duplicate.png'), animations: 'disabled', fullPage: true });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await header.getByRole('button', { name: 'Finalize with AI', exact: true }).scrollIntoViewIfNeeded();
+  await expect(header.getByRole('button', { name: 'Finalize with AI', exact: true })).toBeVisible();
+  await expect(header.getByRole('button', { name: 'Finalize with AI', exact: true })).toBeInViewport();
+  await expect(header.getByRole('button', { name: 'Create handoff prompt', exact: true })).toBeVisible();
+  await page.screenshot({ path: info.outputPath('studio-synthesis-phone-entry.png'), animations: 'disabled' });
+  await page.setViewportSize({ width: 1600, height: 1000 });
+
+  const before = await studio.request('GET', `/api/projects/${projectId}/synthesis`, studio.a.cookie);
+  expect(before.status, before.text).toBe(200);
+  expect(before.json.defaultSource).toBe('company_pool');
+  const finalized = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === `/api/projects/${projectId}/finalize/openai`);
+  await header.getByRole('button', { name: 'Finalize with AI', exact: true }).click();
+  const result = await finalized;
+  expect(result.status(), await result.text()).toBe(200);
+  expect(result.request().postDataJSON()).toEqual({ executionSource: 'company_pool', digest: before.json.digest });
+  const receipt = await result.json();
+  expect(receipt).toMatchObject({ projectId, action: 'finalize', executionSource: 'company_pool', fileName: 'DESIGN.md', current: true,
+    model: 'gpt-5.1', digest: before.json.digest, inputTokens: 17, outputTokens: 11 });
+  expect(receipt.transcriptMessageCount).toBeGreaterThan(0);
+  expect(JSON.stringify(receipt)).not.toContain(key);
+  const state = await studio.request('GET', `/api/projects/${projectId}/synthesis`, studio.a.cookie);
+  expect(state.status, state.text).toBe(200);
+  expect(state.json.results.finalize).toMatchObject({ id: receipt.id, current: true, digest: receipt.digest });
+  const output = await studio.request('GET', `/api/projects/${projectId}/files/DESIGN.md`, studio.a.cookie);
+  expect(output.status, output.text).toBe(200);
+  expect(output.text).toContain('# Studio company finalize');
+  expect(output.text).not.toContain(key);
+  // Non-enumerable ownership checks: B sees the exact missing-project refusal
+  // for the project, receipt, owned output and synthesis mutation alike.
+  const missingId = studioProjectId();
+  for (const [method, suffix] of [['GET', ''], ['GET', '/synthesis'], ['GET', '/files/DESIGN.md'], ['POST', '/finalize/openai']] as const) {
+    const body = method === 'POST' ? { executionSource: 'company_pool' } : undefined;
+    const foreign = await studio.request(method, `/api/projects/${projectId}${suffix}`, studio.b.cookie, body);
+    const missing = await studio.request(method, `/api/projects/${missingId}${suffix}`, studio.b.cookie, body);
+    expect(foreign.status).toBe(404); expect(missing.status).toBe(404);
+    expect(foreign.text).toBe(missing.text);
+  }
+  const saved = header.locator('[data-synthesis-result="finalize"]');
+  await expect(saved).toHaveAttribute('data-current', 'true', { timeout: T.long });
+  await expect(saved).toContainText('DESIGN.md');
+  await expect(duplicate.locator('[data-synthesis-result="finalize"]')).toHaveAttribute('data-current', 'true', { timeout: T.long });
+  await page.screenshot({ path: info.outputPath('studio-synthesis-finalize-result.png'), animations: 'disabled', fullPage: true });
+});
+
 test('[P1] Studio account saves its own OpenAI key write-only and runs a conversation pinned to it', async ({ page, studio }, info) => {
   await page.goto(`${studio.origin}/settings`);
   await page.locator('input[name="username"]').fill(studio.a.username);
