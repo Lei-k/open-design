@@ -2,6 +2,22 @@ import type { Dict } from '../types';
 
 export const pl: Dict = {
   'studio.catalogsUnavailable': "Ta operacja katalogu jest niedostępna w Studio. Obsługiwane są podglądy dołączone do wtyczek i pętle rozwoju ze stałym limitem iteracji. Generowanie systemów projektowych oraz nieobsługiwane atomy i strategie wtyczek pozostają w planach. Instalacje zewnętrzne, pobieranie z marketplace, doctor i zarządzanie zaufaniem pozostają niedostępne.",
+  "studio.libraryPairTitle": "Parowanie Web Clipper",
+  "studio.libraryStudioUrl": "Adres Studio",
+  "studio.libraryCopyUrl": "Kopiuj adres Studio",
+  "studio.libraryUrlCopied": "Adres Studio skopiowany.",
+  "studio.libraryUrlCopyFailed": "Nie udało się skopiować. Zaznacz i skopiuj adres Studio ręcznie.",
+  "studio.libraryPairedExtensions": "Sparowane rozszerzenia",
+  "studio.libraryRevokeLabel": "Unieważnij token dla {label}",
+  "studio.libraryHint": "Biblioteka należy do Twojego konta. Synchronizacja plików hosta jest niedostępna.",
+  "studio.libraryPair": "Utwórz kod parowania",
+  "studio.libraryExpires": "Wygasa o {time}",
+  "studio.libraryPairInstructions": "Ustaw ten adres Studio w rozszerzeniu i wpisz kod w ciągu pięciu minut. Każdego kodu można użyć tylko raz.",
+  "studio.libraryEmpty": "Brak sparowanych rozszerzeń.",
+  "studio.libraryLastUsed": "Ostatnio użyto: {time}",
+  "studio.libraryRevoke": "Unieważnij token",
+  "studio.libraryError": "Żądanie biblioteki nie powiodło się. Odśwież i spróbuj ponownie.",
+
   'studio.deployMissingHint': "Skonfiguruj własny token dostawcy w Ustawienia → Wdrożenie.",
   'studio.deployOwnerOnly': "Tylko właściciel projektu może wdrażać i zarządzać rekordami.",
 

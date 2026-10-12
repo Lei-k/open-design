@@ -1,3 +1,5 @@
+import type { StudioLibraryRuntime } from './studio-library.js';
+import { STUDIO_LIBRARY_TOOL_DESCRIPTORS } from '../services/studio-library-tools.js';
 import { StudioMcpRuntimeError, type StudioMcpRuntime } from '../mcp-client/studio-runtime.js';
 import { STUDIO_MCP_TOOL_DESCRIPTORS } from '../mcp-client/studio-tool-descriptors.js';
 import type { StudioMcpGrant } from '../tool-tokens.js';
@@ -363,6 +365,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   liveArtifacts?: StudioLiveArtifacts & { sourceRefresh?: StudioLiveArtifactSourceRefresh };
   connectors?: StudioConnectorRuntime;
   mcp?: StudioMcpRuntime;
+  library?: StudioLibraryRuntime;
   /** The verified personal bubblewrap boundary; company skill scripts run only inside it, offline. */
   scriptSandbox?: PersonalSandbox;
   repositoryRoot: string;
@@ -1287,6 +1290,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             const mediaUsage = { images: 0, speechCharacters: 0, videoSeconds: 0 };
             const connectorTools = request.critique === true ? null : connectorToolsFor(next, authorized);
             const mcpTools = request.critique === true ? null : mcpToolsFor(next, authorized);
+            const libraryTools = request.critique === true ? null : input.library?.tools(next.owner_account_id, next.project_id, authorized);
             let stageHistory = history;
             let stageCount = 0;
             const runSourceStage = async (directive: string, onText?: (text: string) => void, jury = false) => {
@@ -1297,6 +1301,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 // Every stage stays on the turn's own source and bill (#63).
                 ...(!jury && connectorTools ? { connectors: connectorTools } : {}),
                 ...(!jury && mcpTools ? { mcp: mcpTools } : {}),
+                ...(!jury && libraryTools ? { library: libraryTools } : {}),
                 systemPrompt: isJury ? stablePrompt : `${stablePrompt}${STUDIO_MEDIA_PROMPT}${input.liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : ''}`,
                 media: !isJury, projectReadOnly: isJury,
                 ...(input.liveArtifacts && !isJury ? { liveArtifacts: artifactToolsFor(next, authorized, (event) => projection.accept(event))! } : {}),
@@ -1537,6 +1542,7 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             const liveArtifacts = request?.critique === true ? null : artifactToolsFor(next, allowed, (event) => projection.accept(event));
             const connectorTools = request?.critique === true ? null : connectorToolsFor(next, allowed);
             const mcpTools = request?.critique === true ? null : mcpToolsFor(next, allowed);
+            const libraryTools = request?.critique === true ? null : input.library?.tools(owner, next.project_id, allowed);
             let resumeThreadId = request?.critique === true ? null : session.thread_id;
             let stageCount = 0;
             const runSourceStage = async (directive: string, onText?: (text: string) => void, jury = false) => {
@@ -1550,13 +1556,14 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 ...(skillRoot && !jury ? { skillPackages: skillRoot } : {}),
                 prompt: `${jury || stageCount === 1 ? prompt : userPrompt}${directive}`, resumeThreadId: jury ? null : resumeThreadId,
                 ...(projectTools ? { dynamicTools: projectTools.tools, onDynamicToolCall: projectTools.execute } : {}),
-                ...(!jury && (liveArtifacts || connectorTools || mcpTools) ? { dynamicToolsPrompt: liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : '',
+                ...(!jury && (liveArtifacts || connectorTools || mcpTools || libraryTools) ? { dynamicToolsPrompt: liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : '',
                   dynamicTools: [
                     ...(liveArtifacts ? STUDIO_LIVE_ARTIFACT_TOOLS.map(({ properties, required, ...tool }) => ({ ...tool,
                       inputSchema: { type: 'object', properties, required: [...required], additionalProperties: false } })) : []),
                     ...(connectorTools ? STUDIO_CONNECTOR_TOOL_DESCRIPTORS : []),
-                    ...(mcpTools ? STUDIO_MCP_TOOL_DESCRIPTORS : [])],
-                  onDynamicToolCall: (name: string, args: Record<string, unknown>) => name.startsWith('mcp_') ? mcpTools!.execute(name, args) : name.startsWith('connectors_')
+                    ...(mcpTools ? STUDIO_MCP_TOOL_DESCRIPTORS : []),
+                    ...(libraryTools ? STUDIO_LIBRARY_TOOL_DESCRIPTORS : [])],
+                  onDynamicToolCall: (name: string, args: Record<string, unknown>) => name.startsWith('library_') ? libraryTools!.execute(name, args) : name.startsWith('mcp_') ? mcpTools!.execute(name, args) : name.startsWith('connectors_')
                     ? connectorTools!.execute(name, args) : liveArtifacts!.execute(name, args) } : {}),
                 ...(isStudioCodexModel(request?.model) ? { model: request.model } : {}),
                 ...(isStudioCodexReasoning(request?.reasoning) ? { reasoning: request.reasoning } : {}),

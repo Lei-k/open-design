@@ -2,6 +2,22 @@ import type { Dict } from '../types';
 
 export const de: Dict = {
   'studio.catalogsUnavailable': "Diese Katalogaktion ist in Studio nicht verfügbar. Mitgelieferte Plugin-Vorschauen und Entwicklungsschleifen mit fester Iterationsgrenze werden unterstützt. Die Generierung von Designsystemen und nicht unterstützte Plugin-Atome oder Strategien stehen noch aus. Drittanbieter-Installationen, Marktplatzabrufe, doctor und die Vertrauensverwaltung bleiben nicht verfügbar.",
+  "studio.libraryPairTitle": "Web Clipper koppeln",
+  "studio.libraryStudioUrl": "Studio-Adresse",
+  "studio.libraryCopyUrl": "Studio-Adresse kopieren",
+  "studio.libraryUrlCopied": "Studio-Adresse kopiert.",
+  "studio.libraryUrlCopyFailed": "Kopieren fehlgeschlagen. Wählen Sie die Studio-Adresse aus und kopieren Sie sie manuell.",
+  "studio.libraryPairedExtensions": "Gekoppelte Erweiterungen",
+  "studio.libraryRevokeLabel": "Token für {label} widerrufen",
+  "studio.libraryHint": "Deine Bibliothek gehört zu deinem Konto. Dateisynchronisierung mit dem Host ist nicht verfügbar.",
+  "studio.libraryPair": "Kopplungscode erstellen",
+  "studio.libraryExpires": "Gültig bis {time}",
+  "studio.libraryPairInstructions": "Stelle diese Studio-URL in der Erweiterung ein und gib den Code innerhalb von fünf Minuten ein. Jeder Code gilt nur einmal.",
+  "studio.libraryEmpty": "Keine gekoppelten Erweiterungen.",
+  "studio.libraryLastUsed": "Zuletzt verwendet: {time}",
+  "studio.libraryRevoke": "Token widerrufen",
+  "studio.libraryError": "Bibliotheksanfrage fehlgeschlagen. Neu laden und erneut versuchen.",
+
   'studio.deployMissingHint': "Konfiguriere deinen eigenen Anbieter-Token unter Einstellungen → Bereitstellung.",
   'studio.deployOwnerOnly': "Nur der Projektbesitzer kann bereitstellen oder Bereitstellungsdatensätze verwalten.",
 

@@ -103,6 +103,8 @@ export type AuthRouteService = Pick<
   | 'assertAdmin'
 >;
 
+export type AuthSessionRevocationReason = 'logout' | 'password-reset' | 'sessions-revoked' | 'account-changed';
+
 export interface RegisterAuthRoutesDeps {
   auth: AuthRouteService;
   /**
@@ -112,7 +114,7 @@ export interface RegisterAuthRoutesDeps {
   bootstrapSecret: string | null;
   /** Exact browser origins allowed to make state-changing requests. */
   allowedOrigins: readonly string[];
-  onAccountSessionsRevoked?: (accountId: string) => void;
+  onAccountSessionsRevoked?: (accountId: string, reason: AuthSessionRevocationReason) => void;
   /** Server policy: whether personal-subscription runs can start at all. */
   personalRunsEnabled?: boolean;
   companyPoolAvailable?: () => boolean;
@@ -452,7 +454,7 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
     const { token } = readSessionCookie(req.headers.cookie);
     const accountId = token ? auth.resolveSession(token)?.accountId : null;
     if (token) auth.logout(token);
-    if (accountId) deps.onAccountSessionsRevoked?.(accountId);
+    if (accountId) deps.onAccountSessionsRevoked?.(accountId, 'logout');
     res.setHeader('Set-Cookie', clearedSessionCookie());
     res.status(204).end();
   }));
@@ -486,7 +488,7 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
       currentPassword: stringField(body, 'currentPassword'),
       newPassword: stringField(body, 'newPassword'),
     });
-    deps.onAccountSessionsRevoked?.(accountId);
+    deps.onAccountSessionsRevoked?.(accountId, 'password-reset');
     setSession(res, auth, session);
     res.status(200).json({ session: { expiresAt: session.expiresAt } });
   }));
@@ -536,14 +538,14 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
     if (!Number.isSafeInteger(body?.revision) || Number(body?.revision) < 0) throw new AuthError('VALIDATION');
     const account = auth.updateAccount(actor, String(req.params.id), (body ?? []) as UpdateAccountPatch);
     if (prior && (prior.role !== account.role || (prior.active && !account.active))) {
-      deps.onAccountSessionsRevoked?.(String(req.params.id));
+      deps.onAccountSessionsRevoked?.(String(req.params.id), 'account-changed');
     }
     res.status(200).json({ account });
   }));
 
   app.post(`${p}/users/:id/sessions/revoke`, requireSession, handle((req, res) => {
     const revoked = auth.revokeAccountSessions(actorOf(res), String(req.params.id));
-    deps.onAccountSessionsRevoked?.(String(req.params.id));
+    deps.onAccountSessionsRevoked?.(String(req.params.id), 'sessions-revoked');
     res.status(200).json({ revoked });
   }));
 
@@ -558,13 +560,13 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
     if (hasOwn(body, 'password')) {
       // LEGACY, TEST-ONLY: the admin sets the password directly (fixtures).
       await auth.resetPassword(actor, accountId, stringField(body, 'password'), revision);
-      deps.onAccountSessionsRevoked?.(accountId);
+      deps.onAccountSessionsRevoked?.(accountId, 'password-reset');
       res.status(204).end();
       return;
     }
     const setup = auth.issueSetupCredential(actor, accountId, revision);
     // A reset retired the owner's sessions: cancel their queued/active work.
-    deps.onAccountSessionsRevoked?.(accountId);
+    deps.onAccountSessionsRevoked?.(accountId, 'password-reset');
     res.status(201).json({ setup });
   }));
 

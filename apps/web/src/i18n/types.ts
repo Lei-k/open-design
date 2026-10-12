@@ -31,6 +31,22 @@ export const LOCALE_LABEL: Record<Locale, string> = {
 // offending string instead of a generic object mismatch.
 export interface Dict {
   'studio.catalogsUnavailable': string;
+  'studio.libraryPairTitle': string;
+  'studio.libraryStudioUrl': string;
+  'studio.libraryCopyUrl': string;
+  'studio.libraryUrlCopied': string;
+  'studio.libraryUrlCopyFailed': string;
+  'studio.libraryPairedExtensions': string;
+  'studio.libraryRevokeLabel': string;
+  'studio.libraryHint': string;
+  'studio.libraryPair': string;
+  'studio.libraryExpires': string;
+  'studio.libraryPairInstructions': string;
+  'studio.libraryEmpty': string;
+  'studio.libraryLastUsed': string;
+  'studio.libraryRevoke': string;
+  'studio.libraryError': string;
+
   'studio.capability.deployment': string;
   'studio.capability.settings': string;
   'studio.capability.notificationUnsupported': string;

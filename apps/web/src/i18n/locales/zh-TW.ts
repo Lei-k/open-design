@@ -2,6 +2,22 @@ import type { Dict } from "../types";
 
 export const zhTW: Dict = {
   'studio.catalogsUnavailable': "Studio 暫不支援此目錄操作。已發布的外掛預覽和具有固定迭代上限的開發循環已獲支援。設計系統生成及尚未支援的外掛原子或策略仍待開放。第三方安裝、市集擷取、doctor 和信任管理仍不可用。",
+  "studio.libraryPairTitle": "Web Clipper 配對",
+  "studio.libraryStudioUrl": "Studio 位址",
+  "studio.libraryCopyUrl": "複製 Studio 位址",
+  "studio.libraryUrlCopied": "已複製 Studio 位址。",
+  "studio.libraryUrlCopyFailed": "無法複製。請選取 Studio 位址並手動複製。",
+  "studio.libraryPairedExtensions": "已配對的擴充功能",
+  "studio.libraryRevokeLabel": "撤銷 {label} 的權杖",
+  "studio.libraryHint": "設計庫屬於你的帳號。不支援主機檔案同步。",
+  "studio.libraryPair": "建立配對碼",
+  "studio.libraryExpires": "{time} 到期",
+  "studio.libraryPairInstructions": "在擴充功能中設定此 Studio 網址，並於五分鐘內輸入配對碼。每個配對碼只能使用一次。",
+  "studio.libraryEmpty": "尚未配對任何擴充功能。",
+  "studio.libraryLastUsed": "上次使用：{time}",
+  "studio.libraryRevoke": "撤銷權杖",
+  "studio.libraryError": "設計庫請求失敗。請重新載入後重試。",
+
   'studio.deployMissingHint': "請先在設定 → 部署中設定自己的供應商 token。",
   'studio.deployOwnerOnly': "只有專案擁有者可以部署或操作部署記錄。",
 

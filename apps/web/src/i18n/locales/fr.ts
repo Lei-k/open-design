@@ -2,6 +2,22 @@ import type { Dict } from '../types';
 
 export const fr: Dict = {
   'studio.catalogsUnavailable': "Cette action du catalogue est indisponible dans Studio. Les aperçus fournis avec les plugins et les boucles de développement à nombre d’itérations limité sont pris en charge. La génération de systèmes de design et les atomes ou stratégies de plugins non pris en charge restent en attente. L’installation tierce, la récupération des catalogues, doctor et la gestion de confiance restent indisponibles.",
+  "studio.libraryPairTitle": "Appairage du Web Clipper",
+  "studio.libraryStudioUrl": "URL de Studio",
+  "studio.libraryCopyUrl": "Copier l’URL de Studio",
+  "studio.libraryUrlCopied": "URL de Studio copiée.",
+  "studio.libraryUrlCopyFailed": "Impossible de copier. Sélectionnez et copiez l’URL de Studio manuellement.",
+  "studio.libraryPairedExtensions": "Extensions appairées",
+  "studio.libraryRevokeLabel": "Révoquer le jeton de {label}",
+  "studio.libraryHint": "Votre bibliothèque appartient à votre compte. La synchronisation des fichiers de l’hôte est indisponible.",
+  "studio.libraryPair": "Créer un code d’association",
+  "studio.libraryExpires": "Expire à {time}",
+  "studio.libraryPairInstructions": "Définissez cette URL Studio dans l’extension et saisissez le code sous cinq minutes. Chaque code est à usage unique.",
+  "studio.libraryEmpty": "Aucune extension associée.",
+  "studio.libraryLastUsed": "Dernière utilisation : {time}",
+  "studio.libraryRevoke": "Révoquer le jeton",
+  "studio.libraryError": "La requête a échoué. Rechargez et réessayez.",
+
   'studio.deployMissingHint': "Configurez votre jeton fournisseur dans Paramètres → Déploiement.",
   'studio.deployOwnerOnly': "Seul le propriétaire du projet peut déployer ou gérer les enregistrements.",
 

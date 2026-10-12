@@ -2,6 +2,22 @@ import type { Dict } from '../types';
 
 export const fa: Dict = {
   'studio.catalogsUnavailable': "این عملیات فهرست در Studio در دسترس نیست. پیش‌نمایش‌های همراه افزونه‌ها و چرخه‌های توسعه با سقف ثابت تکرار پشتیبانی می‌شوند. تولید سیستم طراحی و اتم‌ها یا راهبردهای پشتیبانی‌نشدهٔ افزونه‌ها همچنان در انتظارند. نصب شخص ثالث، دریافت بازار، doctor و مدیریت اعتماد همچنان در دسترس نیستند.",
+  "studio.libraryPairTitle": "جفت‌سازی Web Clipper",
+  "studio.libraryStudioUrl": "نشانی Studio",
+  "studio.libraryCopyUrl": "کپی نشانی Studio",
+  "studio.libraryUrlCopied": "نشانی Studio کپی شد.",
+  "studio.libraryUrlCopyFailed": "کپی انجام نشد. نشانی Studio را انتخاب و به‌صورت دستی کپی کنید.",
+  "studio.libraryPairedExtensions": "افزونه‌های جفت‌شده",
+  "studio.libraryRevokeLabel": "لغو توکن {label}",
+  "studio.libraryHint": "کتابخانه متعلق به حساب شماست. همگام‌سازی فایل‌های میزبان در دسترس نیست.",
+  "studio.libraryPair": "ایجاد کد جفت‌سازی",
+  "studio.libraryExpires": "انقضا در {time}",
+  "studio.libraryPairInstructions": "این نشانی Studio را در افزونه تنظیم کنید و کد را ظرف پنج دقیقه وارد کنید. هر کد فقط یک بار قابل استفاده است.",
+  "studio.libraryEmpty": "هیچ افزونه‌ای جفت نشده است.",
+  "studio.libraryLastUsed": "آخرین استفاده: {time}",
+  "studio.libraryRevoke": "لغو توکن",
+  "studio.libraryError": "درخواست کتابخانه ناموفق بود. صفحه را دوباره بارگذاری و تلاش کنید.",
+
   'studio.deployMissingHint': "توکن ارائه‌دهنده خود را در تنظیمات ← استقرار تنظیم کنید.",
   'studio.deployOwnerOnly': "فقط مالک پروژه می‌تواند استقرار دهد یا رکوردها را مدیریت کند.",
 

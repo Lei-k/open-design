@@ -160,6 +160,14 @@ export function studioRequestAvailable(method: string, path: string,
       return connector[2] === '/connection' ? method === 'DELETE' : connector[2] ? method === 'POST' : method === 'GET';
     }
   }
+  if (usable('settings')) {
+    if (['/api/library/assets', '/api/library/connection', '/api/library/events', '/api/library/clipper-probe'].includes(path)) return method === 'GET';
+    if (['/api/library/pair', '/api/library/ingest'].includes(path)) return method === 'POST';
+    if (/^\/api\/library\/tokens\/[^/]+$/.test(path)) return method === 'DELETE';
+    if (/^\/api\/library\/assets\/[^/]+$/.test(path)) return method === 'GET' || method === 'DELETE';
+    if (/^\/api\/library\/assets\/[^/]+\/(raw|figma|element)$/.test(path)) return method === 'GET';
+    if (/^\/api\/library\/assets\/[^/]+\/(apply|edit-as-page)$/.test(path)) return method === 'POST';
+  }
   // S63: account deploy credentials and owner-only history/effects; daemon enforces ownership.
   const deployPath = path.replace(/^\/api\/multiuser\/deploy(?=\/)/, '/api/deploy').replace(/^\/api\/multiuser\/projects(?=\/)/, '/api/projects');
   if (usable('settings') && deployPath === '/api/deploy/config') return method === 'GET' || method === 'PUT';

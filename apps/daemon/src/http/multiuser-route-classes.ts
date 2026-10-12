@@ -1,6 +1,6 @@
 import type { ProjectShareRole } from '../storage/project-access.js';
 import { MULTIUSER_SHELL_PATHS, MULTIUSER_ASSET_PATHS, MULTIUSER_BUILD_ASSET_ROUTE, MULTIUSER_AGENT_ICON_ROUTE, MULTIUSER_EDITOR_ICON_ROUTE, publicMultiUserFile } from './multiuser-static.js';
-import { STUDIO_MCP_INSTALL_UNAVAILABLE_REASON } from '@open-design/contracts';
+import { STUDIO_MCP_INSTALL_UNAVAILABLE_REASON, STUDIO_LIBRARY_LIMITS } from '@open-design/contracts';
 
 // Multi-user route classification registry (issue #4) — declarative data.
 //
@@ -46,7 +46,7 @@ export type MultiUserRouteClass =
   | 'middleware';
 
 export type MultiUserBodyPolicy = 'project-create' | 'project-patch' | 'conversation-create' | 'conversation-patch' | 'message-write' | 'project-tabs' | 'active-context'
-  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'studio-memory-rules-suggest' | 'studio-memory-extract' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'catalog-share' | 'deploy-config' | 'studio-deploy' | 'provider-key' | 'composio-config' | 'connector-prepare' | 'studio-mcp-server' | 'studio-mcp-import' | 'studio-mcp-oauth' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'studio-plugin-apply' | 'studio-live-artifact' | 'empty' | 'multipart';
+  | 'folder-create' | 'folder-delete' | 'file-write' | 'file-rename' | 'file-version' | 'skill-write' | 'design-system-document' | 'company-openai' | 'studio-library-ingest' | 'studio-library-apply' | 'studio-settings' | 'studio-memory-entry' | 'studio-memory-index' | 'studio-memory-config' | 'studio-memory-rules-suggest' | 'studio-memory-extract' | 'archive-batch' | 'export-html' | 'export-render' | 'comment-upsert' | 'comment-status' | 'comment-anchor' | 'comment-reorder' | 'studio-routine' | 'automation-ingestion' | 'automation-proposal' | 'automation-proposal-reject' | 'research-search' | 'project-duplicate' | 'template-save' | 'project-share' | 'catalog-share' | 'deploy-config' | 'studio-deploy' | 'provider-key' | 'composio-config' | 'connector-prepare' | 'studio-mcp-server' | 'studio-mcp-import' | 'studio-mcp-oauth' | 'public-link-revoke' | 'presence-heartbeat' | 'presence-leave' | 'studio-plugin-apply' | 'studio-live-artifact' | 'empty' | 'multipart';
 
 /** Per-request ceilings for owner file writes (#58). Larger assets need a resumable upload lane. */
 export const MULTIUSER_UPLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -636,7 +636,6 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'POST /api/plugins/share-tasks/:id/wait',
   ]),
   ...blocked(R_SSE, [
-    'GET /api/library/events',
     'GET /api/workspace/events',
     'GET /api/plugins/events',
     'GET /api/plugins/events/snapshot',
@@ -652,8 +651,6 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'GET /api/tools/mcp/list', 'POST /api/tools/mcp/execute',
   ]),
   ...blocked(R_TOOL_TOKENS, [
-    'POST /api/tools/library/search',
-    'POST /api/tools/library/apply',
     'POST /api/tools/live-artifacts/create',
     'GET /api/tools/live-artifacts/list',
     'POST /api/tools/live-artifacts/update',
@@ -782,24 +779,21 @@ const CLASSIFICATION_ENTRIES: readonly MultiUserRouteClassification[] = [
     'POST /api/artifacts/lint',
     'POST /api/social-share',
   ]),
-  ...blocked('daemon-global clipper library, pairing and extension ingest', [
-    'POST /api/library/pair',
-    'OPTIONS /api/library/pair/confirm',
-    'POST /api/library/pair/confirm',
-    'GET /api/library/connection',
-    'OPTIONS /api/library/ingest',
-    'POST /api/library/ingest',
-    'GET /api/library/clipper-probe',
-    'GET /api/library/assets',
-    'POST /api/library/sync',
-    'GET /api/library/assets/:id',
-    'DELETE /api/library/assets/:id',
-    'GET /api/library/assets/:id/raw',
-    'GET /api/library/assets/:id/figma',
-    'GET /api/library/assets/:id/element',
-    'POST /api/library/assets/:id/apply',
-    'POST /api/library/assets/:id/edit-as-page',
+  ...group('auth', 'account pairing code exchange and extension preflight; handler verifies code/token, never cookie identity', [
+    'OPTIONS /api/library/pair/confirm', 'POST /api/library/pair/confirm', 'OPTIONS /api/library/ingest',
   ]),
+  ...group('actor-scoped', 'account-private library assets, extension tokens and events; no host reconcile or admin bypass', [
+    'POST /api/library/pair', 'GET /api/library/connection', 'DELETE /api/library/tokens/:id',
+    'POST /api/library/ingest', 'GET /api/library/clipper-probe', 'GET /api/library/assets', 'GET /api/library/events',
+    'GET /api/library/assets/:id', 'DELETE /api/library/assets/:id',
+    'GET /api/library/assets/:id/raw', 'GET /api/library/assets/:id/figma', 'GET /api/library/assets/:id/element',
+    'POST /api/library/assets/:id/apply', 'POST /api/library/assets/:id/edit-as-page',
+  ]).map((entry) => entry.method === 'POST' && entry.path.startsWith('/api/library/') ? {
+    ...entry, maxBodyBytes: entry.path.endsWith('/ingest') ? STUDIO_LIBRARY_LIMITS.manualRequestBytes : 16384,
+    bodyPolicy: entry.path.endsWith('/ingest') ? 'studio-library-ingest' as const : entry.path.endsWith('/apply') ? 'studio-library-apply' as const : 'empty' as const,
+  } : entry),
+  ...blocked('library tools use the in-process run owner; no HTTP grant is minted', ['POST /api/tools/library/search', 'POST /api/tools/library/apply']),
+  ...blocked('host filesystem library sync cannot enter an account library', ['POST /api/library/sync']).map((entry) => ({ ...entry, capabilityRefusal: 'library-sync' })),
   ...blocked('brand extraction writes the daemon-global brand library and runs agents', [
     'GET /api/brands',
     'POST /api/brands',

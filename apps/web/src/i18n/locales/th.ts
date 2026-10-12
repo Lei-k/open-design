@@ -2,6 +2,22 @@ import type { Dict } from '../types';
 
 export const th: Dict = {
   'studio.catalogsUnavailable': "การทำงานของแค็ตตาล็อกนี้ไม่พร้อมใช้งานใน Studio รองรับตัวอย่างที่มาพร้อมปลั๊กอินและวงรอบการพัฒนาที่มีจำนวนรอบสูงสุดคงที่แล้ว การสร้างระบบออกแบบและอะตอมหรือกลยุทธ์ปลั๊กอินที่ยังไม่รองรับยังอยู่ระหว่างรอ การติดตั้งจากบุคคลที่สาม การดึงข้อมูลมาร์เก็ตเพลซ doctor และการจัดการความเชื่อถือยังไม่พร้อมใช้งาน",
+  "studio.libraryPairTitle": "จับคู่ Web Clipper",
+  "studio.libraryStudioUrl": "URL ของ Studio",
+  "studio.libraryCopyUrl": "คัดลอก URL ของ Studio",
+  "studio.libraryUrlCopied": "คัดลอก URL ของ Studio แล้ว",
+  "studio.libraryUrlCopyFailed": "คัดลอกไม่ได้ โปรดเลือกและคัดลอก URL ของ Studio ด้วยตนเอง",
+  "studio.libraryPairedExtensions": "ส่วนขยายที่จับคู่แล้ว",
+  "studio.libraryRevokeLabel": "เพิกถอนโทเค็นของ {label}",
+  "studio.libraryHint": "คลังของคุณเป็นของบัญชีคุณ ไม่รองรับการซิงค์ไฟล์จากโฮสต์",
+  "studio.libraryPair": "สร้างรหัสจับคู่",
+  "studio.libraryExpires": "หมดอายุเวลา {time}",
+  "studio.libraryPairInstructions": "ตั้งค่า URL ของ Studio นี้ในส่วนขยาย แล้วใส่รหัสภายในห้านาที แต่ละรหัสใช้ได้ครั้งเดียว",
+  "studio.libraryEmpty": "ยังไม่มีส่วนขยายที่จับคู่",
+  "studio.libraryLastUsed": "ใช้ล่าสุด: {time}",
+  "studio.libraryRevoke": "เพิกถอนโทเค็น",
+  "studio.libraryError": "คำขอคลังล้มเหลว โปรดโหลดใหม่แล้วลองอีกครั้ง",
+
   'studio.deployMissingHint': "ตั้งค่าโทเคนผู้ให้บริการของคุณในการตั้งค่า → Deploy",
   'studio.deployOwnerOnly': "เฉพาะเจ้าของโปรเจกต์เท่านั้นที่ deploy หรือจัดการบันทึกได้",
 

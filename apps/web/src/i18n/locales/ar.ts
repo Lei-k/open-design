@@ -2,6 +2,22 @@ import type { Dict } from '../types';
 
 export const ar: Dict = {
   'studio.catalogsUnavailable': "إجراء الكتالوج هذا غير متاح في Studio. معاينات الإضافات المرفقة وحلقات التطوير ذات الحد الثابت للتكرارات مدعومة. لا يزال إنشاء أنظمة التصميم وعناصر الإضافات أو استراتيجياتها غير المدعومة قيد الانتظار. يظل تثبيت إضافات الجهات الخارجية وجلب السوق وdoctor وإدارة الثقة غير متاح.",
+  "studio.libraryPairTitle": "إقران Web Clipper",
+  "studio.libraryStudioUrl": "رابط Studio",
+  "studio.libraryCopyUrl": "نسخ رابط Studio",
+  "studio.libraryUrlCopied": "تم نسخ رابط Studio.",
+  "studio.libraryUrlCopyFailed": "تعذّر النسخ. حدّد رابط Studio وانسخه يدويًا.",
+  "studio.libraryPairedExtensions": "الإضافات المقترنة",
+  "studio.libraryRevokeLabel": "إلغاء رمز الوصول لـ {label}",
+  "studio.libraryHint": "مكتبتك تخص حسابك. مزامنة ملفات المضيف غير متاحة.",
+  "studio.libraryPair": "إنشاء رمز اقتران",
+  "studio.libraryExpires": "تنتهي صلاحيته عند {time}",
+  "studio.libraryPairInstructions": "اضبط عنوان Studio هذا في الإضافة وأدخل الرمز خلال خمس دقائق. يمكن استخدام كل رمز مرة واحدة فقط.",
+  "studio.libraryEmpty": "لا توجد إضافات مقترنة.",
+  "studio.libraryLastUsed": "آخر استخدام: {time}",
+  "studio.libraryRevoke": "إلغاء الرمز",
+  "studio.libraryError": "فشل طلب المكتبة. أعد التحميل وحاول مجددًا.",
+
   'studio.deployMissingHint': "اضبط رمز مزودك الخاص في الإعدادات ← النشر.",
   'studio.deployOwnerOnly': "مالك المشروع وحده يمكنه النشر أو إدارة سجلات النشر.",
 
