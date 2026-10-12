@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import type { StudioPluginRecord } from '@open-design/contracts';
 import type { LibraryPairingStartResponse, LibraryPairingConfirmResponse, StudioLibraryConnectionStatus } from '@open-design/contracts';
+import type { Page } from '@playwright/test';
 import { clusterTest as base, expect } from '@/playwright/suite';
 import { activeArtifactPreview, activeArtifactPreviewFrame } from '@/playwright/artifact-preview';
 import { clickDeckNextSlide, clickPreviewToolbarAction } from '@/playwright/workspace';
@@ -21,6 +22,22 @@ const test = base.extend<{ studio: StudioRuntime }>({
     }
   },
 });
+
+/** S74: the Composer source picker is a labelled trigger plus a dialog of source radios. */
+function composerSourceTrigger(page: Page) {
+  return page.getByTestId('studio-execution-source').getByRole('button', { name: /^Execution source/ });
+}
+async function chooseComposerSource(page: Page, name: string) {
+  const trigger = composerSourceTrigger(page);
+  await expect(trigger).toBeVisible({ timeout: T.long });
+  await trigger.click();
+  const dialog = page.getByRole('dialog', { name: 'Execution source' });
+  const radio = dialog.getByRole('radio', { name, exact: true });
+  await expect(radio).toBeEnabled({ timeout: T.long });
+  await radio.click();
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toContainText(name);
+}
 
 test('[P1] Studio Live Artifact create, refresh, edit and delete use isolated previews and current project authority', async ({ page, studio }, info) => {
   const projectId = studioProjectId();
@@ -743,9 +760,7 @@ test('[P1] admin configures the company pool and Studio runs and reloads on its 
   await page.locator('input[name="password"]').fill(studio.a.password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   const source = page.getByTestId('studio-execution-source');
-  const sourcePicker = source.getByRole('combobox', { name: 'Execution source', exact: true });
-  await expect(sourcePicker).toBeVisible({ timeout: T.long });
-  await sourcePicker.selectOption('openai');
+  await chooseComposerSource(page, 'OpenAI · company pool');
   const composer = page.getByTestId('chat-composer-input');
   await composer.fill('Create a company design.');
   const admitted = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/runs');
@@ -762,6 +777,7 @@ test('[P1] admin configures the company pool and Studio runs and reloads on its 
   await expect(source).toContainText('OpenAI · company pool');
   await expect(page.getByTestId('assistant-role').first()).toContainText('OpenAI');
   await expect(source.locator('select')).toHaveCount(0);
+  await expect(composerSourceTrigger(page)).toHaveAttribute('aria-label', /fixed for this conversation/);
   await composer.fill('Continue my company design.');
   const continued = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/runs');
   await page.getByTestId('chat-send').click();
@@ -806,9 +822,7 @@ test('[P1] Studio synthesis entry points on desktop and phone finalize on the co
   await page.locator('input[name="username"]').fill(studio.a.username);
   await page.locator('input[name="password"]').fill(studio.a.password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  const source = page.getByTestId('studio-execution-source').getByRole('combobox', { name: 'Execution source', exact: true });
-  await expect(source).toBeVisible({ timeout: T.long });
-  await source.selectOption('openai');
+  await chooseComposerSource(page, 'OpenAI · company pool');
   await page.getByTestId('chat-composer-input').fill('Create a calm company landing page to finalize.');
   const admitted = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/runs');
   await page.getByTestId('chat-send').click();
@@ -900,6 +914,145 @@ test('[P1] Studio synthesis entry points on desktop and phone finalize on the co
   await page.screenshot({ path: info.outputPath('studio-synthesis-finalize-result.png'), animations: 'disabled', fullPage: true });
 });
 
+test('[P1] Studio Composer source picker on desktop lists every source with its reason, opens Settings to fix it and keeps a pinned conversation', async ({ page, studio }, info) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const projectId = studioProjectId();
+  expect((await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Composer source picker' })).status).toBe(200);
+  await page.goto(`${studio.origin}/projects/${projectId}`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  const trigger = composerSourceTrigger(page);
+  await expect(trigger).toBeVisible({ timeout: T.long });
+  const dialog = page.getByRole('dialog', { name: 'Execution source' });
+  const row = (agentId: string) => dialog.locator(`[data-source-agent="${agentId}"]`);
+  await trigger.click();
+  // A fresh account: Codex not linked, the company pool not configured, no own key. All three stay listed.
+  await expect(row('codex').getByRole('radio')).toBeDisabled({ timeout: T.long });
+  await expect(row('codex')).toContainText('Link your Codex subscription to use this source.');
+  await expect(row('codex').getByRole('button', { name: 'Link Codex in Settings', exact: true })).toBeVisible();
+  await expect(row('openai').getByRole('radio')).toBeDisabled();
+  await expect(row('openai')).toContainText('The company pool is turned off by an administrator.');
+  await expect(row('openai').getByRole('button')).toHaveCount(0);
+  await expect(row('openai-byok').getByRole('radio')).toBeDisabled({ timeout: T.long });
+  await expect(row('openai-byok')).toContainText('Add your own OpenAI API key to use this source.');
+  await expect(trigger).toHaveAttribute('aria-label', /cannot be used now/);
+  await page.screenshot({ path: info.outputPath('studio-source-picker-desktop-unavailable.png'), animations: 'disabled' });
+  // The entry opens Settings → Agent accounts, where the key is saved write-only.
+  await row('openai-byok').getByRole('button', { name: 'Add key in Settings', exact: true }).click();
+  await expect(page.getByTestId('studio-provider-keys')).toBeVisible({ timeout: T.long });
+  const key = 'sk-browser-composer-source-key-0123456789Xy7Q';
+  await page.getByTestId('studio-provider-key-input').fill(key);
+  const saved = page.waitForResponse((response) => response.request().method() === 'PUT'
+    && new URL(response.url()).pathname === '/api/multiuser/settings/provider-keys/openai');
+  await page.getByTestId('studio-provider-key-save').click();
+  expect((await saved).status()).toBe(200);
+  // Codex links through its existing device flow (mock approval).
+  await studio.linkCodex(studio.a);
+  await page.goto(`${studio.origin}/projects/${projectId}`);
+  await expect(trigger).toBeVisible({ timeout: T.long });
+  await trigger.click();
+  await expect(row('openai-byok').getByRole('radio')).toBeEnabled({ timeout: T.long });
+  await expect(row('codex').getByRole('radio')).toBeEnabled({ timeout: T.long });
+  await expect(row('openai').getByRole('radio')).toBeDisabled();
+  await row('openai-byok').getByRole('radio').click();
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toContainText('OpenAI · your API key');
+  await page.getByTestId('chat-composer-input').fill('Create a design on the source I chose in the composer.');
+  const admitted = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/runs');
+  await page.getByTestId('chat-send').click();
+  const run = await admitted;
+  expect(run.status(), await run.text()).toBe(202);
+  expect(run.request().postDataJSON().agentId).toBe('openai-byok');
+  await expect(page.getByTestId('chat-log')).toContainText('Company browser design complete.', { timeout: T.long });
+  // The first run pins the conversation; there is no mid-conversation switch.
+  await expect(trigger).toHaveAttribute('aria-label', /fixed for this conversation/, { timeout: T.long });
+  await trigger.click();
+  await expect(dialog).toContainText('Fixed for this conversation');
+  await expect(dialog.getByRole('radio')).toHaveCount(0);
+  await expect(row('openai-byok')).toHaveAttribute('aria-current', 'true');
+  await expect(row('openai-byok').getByRole('button')).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath('studio-source-picker-desktop-pinned.png'), animations: 'disabled' });
+  const created = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === `/api/projects/${projectId}/conversations`);
+  await row('codex').getByRole('button', { name: 'New conversation with Codex · personal subscription', exact: true }).click();
+  expect((await created).ok()).toBe(true);
+  await expect(trigger).toContainText('Codex · personal subscription', { timeout: T.long });
+  await expect(trigger).not.toHaveAttribute('aria-label', /fixed for this conversation/);
+  expect((await studio.request('GET', `/api/runs/${(await run.json()).runId}`, studio.a.cookie)).json.executionSource).toBe('personal_api_key');
+  await page.screenshot({ path: info.outputPath('studio-source-picker-desktop-new-conversation.png'), animations: 'disabled' });
+});
+
+test('[P1] Studio Composer source picker at 390 px keeps labelled 40 px targets inside the viewport', async ({ page, studio }, info) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await studio.linkCodex(studio.a);
+  await studio.configureTurn(studio.a, { reply: 'Phone source turn complete.' });
+  // An own key makes a second source usable, so the pinned panel offers a new conversation.
+  expect((await studio.request('PUT', '/api/multiuser/settings/provider-keys/openai', studio.a.cookie,
+    { revision: 0, apiKey: 'sk-browser-phone-source-key-0123456789' })).status).toBe(200);
+  const projectId = studioProjectId();
+  expect((await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Composer source on a phone' })).status).toBe(200);
+  await page.goto(`${studio.origin}/projects/${projectId}`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  const trigger = composerSourceTrigger(page);
+  await expect(trigger).toBeVisible({ timeout: T.long });
+  const noOverflow = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
+  const target = async (locator: ReturnType<Page['locator']>) => {
+    const box = await locator.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.height).toBeGreaterThanOrEqual(40);
+    expect(box!.width).toBeGreaterThanOrEqual(40);
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(390);
+  };
+  await target(trigger);
+  await expect.poll(noOverflow, { timeout: T.long }).toBe(true);
+  await trigger.click();
+  const dialog = page.getByRole('dialog', { name: 'Execution source' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('[data-source-agent="codex"]').getByRole('radio')).toBeEnabled({ timeout: T.long });
+  const panel = await dialog.boundingBox();
+  expect(panel).not.toBeNull();
+  expect(panel!.x).toBeGreaterThanOrEqual(0);
+  expect(panel!.y).toBeGreaterThanOrEqual(0);
+  expect(panel!.x + panel!.width).toBeLessThanOrEqual(390);
+  for (const option of await dialog.locator('label').all()) await target(option);
+  for (const action of await dialog.getByRole('button').all()) await target(action);
+  expect(await noOverflow()).toBe(true);
+  await page.screenshot({ path: info.outputPath('studio-source-picker-phone-open.png'), animations: 'disabled' });
+  await dialog.getByRole('radio', { name: 'Codex · personal subscription', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  // The per-turn model picker stays labelled and touch-sized next to the source.
+  const model = page.getByTestId('studio-codex-model');
+  await expect(model).toHaveAccessibleName('Model');
+  await target(model);
+  await page.getByTestId('chat-composer-input').fill('A phone turn on my Codex subscription.');
+  const admitted = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/runs');
+  await page.getByTestId('chat-send').click();
+  const run = await admitted;
+  expect(run.status(), await run.text()).toBe(202);
+  expect(run.request().postDataJSON().agentId).toBe('codex');
+  await expect(page.getByTestId('chat-log')).toContainText('Phone source turn complete.', { timeout: T.long });
+  await expect(trigger).toHaveAttribute('aria-label', /fixed for this conversation/, { timeout: T.long });
+  await target(trigger);
+  await trigger.click();
+  await expect(dialog).toContainText('Fixed for this conversation');
+  await expect(dialog.getByRole('button', { name: 'New conversation with OpenAI · your API key', exact: true })).toBeVisible({ timeout: T.long });
+  await expect(dialog.getByRole('button', { name: /^New conversation with OpenAI · company pool/ })).toHaveCount(0);
+  for (const action of await dialog.getByRole('button').all()) await target(action);
+  const pinnedPanel = await dialog.boundingBox();
+  expect(pinnedPanel!.x).toBeGreaterThanOrEqual(0);
+  expect(pinnedPanel!.x + pinnedPanel!.width).toBeLessThanOrEqual(390);
+  expect(await noOverflow()).toBe(true);
+  await page.screenshot({ path: info.outputPath('studio-source-picker-phone-pinned.png'), animations: 'disabled' });
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
 test('[P1] Studio account saves its own OpenAI key write-only and runs a conversation pinned to it', async ({ page, studio }, info) => {
   await page.goto(`${studio.origin}/settings`);
   await page.locator('input[name="username"]').fill(studio.a.username);
@@ -927,9 +1080,7 @@ test('[P1] Studio account saves its own OpenAI key write-only and runs a convers
   expect((await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Own key browser acceptance' })).status).toBe(200);
   await page.goto(`${studio.origin}/projects/${projectId}`);
   const source = page.getByTestId('studio-execution-source');
-  const picker = source.getByRole('combobox', { name: 'Execution source', exact: true });
-  await expect(picker).toBeVisible({ timeout: T.long });
-  await picker.selectOption('openai-byok');
+  await chooseComposerSource(page, 'OpenAI · your API key');
   await page.getByTestId('chat-composer-input').fill('Create a design on my own key.');
   const admitted = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/runs');
   await page.getByTestId('chat-send').click();
@@ -941,6 +1092,7 @@ test('[P1] Studio account saves its own OpenAI key write-only and runs a convers
   await page.reload();
   await expect(source).toContainText('OpenAI · your API key', { timeout: T.long });
   await expect(source.locator('select')).toHaveCount(0);
+  await expect(composerSourceTrigger(page)).toHaveAttribute('aria-label', /fixed for this conversation/);
   await expect(page.getByTestId('assistant-role').first()).toContainText('OpenAI');
   await page.screenshot({ path: info.outputPath('studio-own-key-run.png') });
 });
@@ -1018,9 +1170,7 @@ test('[P1] Studio automatic memory learns from a company turn into the account m
   const projectId = studioProjectId();
   expect((await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Memory browser acceptance' })).status).toBe(200);
   await page.goto(`${studio.origin}/projects/${projectId}`);
-  const picker = page.getByTestId('studio-execution-source').getByRole('combobox', { name: 'Execution source', exact: true });
-  await expect(picker).toBeVisible({ timeout: T.long });
-  await picker.selectOption('openai');
+  await chooseComposerSource(page, 'OpenAI · company pool');
   await page.getByTestId('chat-composer-input').fill('Design an analytics page; I like dense dashboards.');
   const admitted = page.waitForResponse((result) => result.request().method() === 'POST' && new URL(result.url()).pathname === '/api/runs');
   await page.getByTestId('chat-send').click();

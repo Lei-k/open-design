@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { Button, VisuallyHidden } from '@open-design/components';
 import type { PersonalAccountStatus, PersonalAgentAccountsResponse, StudioProviderKeysResponse } from '@open-design/contracts';
 import { useT } from '../i18n';
@@ -127,7 +128,10 @@ export function StudioComposerSource({ agentId, pinned = false, mediaOnly = fals
     const panel = panelRef.current;
     (panel?.querySelector<HTMLElement>('input:checked:not(:disabled)')
       ?? panel?.querySelector<HTMLElement>('input:not(:disabled), button:not(:disabled)') ?? panel)?.focus();
-    const outside = (event: PointerEvent) => { if (!wrapRef.current?.contains(event.target as Node)) setOpen(false); };
+    const outside = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (!wrapRef.current?.contains(target) && !panelRef.current?.contains(target)) setOpen(false);
+    };
     document.addEventListener('pointerdown', outside);
     return () => document.removeEventListener('pointerdown', outside);
   }, [open]);
@@ -159,7 +163,9 @@ export function StudioComposerSource({ agentId, pinned = false, mediaOnly = fals
       <ChevronGlyph />
     </button>
     {selected === 'codex' && onModelChange ? <StudioCodexPickers modelChoice={modelChoice} onModelChange={onModelChange} /> : null}
-    {open ? <div ref={panelRef} id={panelId} role="dialog" aria-labelledby={titleId} tabIndex={-1} className={styles.panel}
+    {/* Portaled: composer ancestors with backdrop filters/transforms would otherwise
+        become the containing block of this fixed, viewport-bounded panel. */}
+    {open ? createPortal(<div ref={panelRef} id={panelId} role="dialog" aria-labelledby={titleId} tabIndex={-1} className={styles.panel}
       style={position} data-testid="studio-source-panel" onKeyDown={onKeyDown}>
       <h3 id={titleId} className={styles.title}>{t('multiuserRuns.source')}</h3>
       <p className={styles.hint}>{t(pinned ? 'studio.source.pinnedHint' : 'studio.source.chooseHint')}</p>
@@ -181,14 +187,16 @@ export function StudioComposerSource({ agentId, pinned = false, mediaOnly = fals
           <label className={styles.option}>
             <input type="radio" name={radioName} value={option.agentId} checked={option.agentId === selected} disabled={!option.available}
               aria-describedby={option.block ? `${reasonId}-${option.agentId}` : undefined}
-              onChange={() => { onChange(option.agentId); if (!arrowRef.current) close(); arrowRef.current = false; }} />
+              onChange={() => { onChange(option.agentId); if (!arrowRef.current) close(); arrowRef.current = false; }}
+              // Choosing the current source again fires no change; it still confirms and closes.
+              onClick={() => { if (option.agentId === selected) close(); }} />
             <span className={styles.name}>{label(option.agentId)}</span>
           </label>
           {reason(option)}
           {fix(option)}
         </div>)}
       </fieldset>}
-    </div> : null}
+    </div>, document.body) : null}
   </span>;
 }
 

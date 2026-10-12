@@ -5,6 +5,14 @@
   .workspace-shell[data-studio-pilot] .split { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
   .workspace-shell[data-studio-pilot] .split-resize-handle { display: none; }
   .workspace-shell[data-studio-pilot] .split > .studio-unavailable { grid-column: 1; grid-row: 2; margin: 0; padding: 8px 16px; font-size: 12px; }
+  /* S74: with a workspace present, the conversation (and its Composer) and the
+     workspace stack in the one column. Left at its desktop column 3, the
+     workspace created implicit tracks that squeezed the chat to 0px. */
+  .workspace-shell[data-studio-pilot] .split:has(> .workspace) { grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) auto; }
+  .workspace-shell[data-studio-pilot] .split.split-focus:has(> .workspace) { grid-template-rows: 0 minmax(0, 1fr) auto; }
+  .workspace-shell[data-studio-pilot] .split:has(> .workspace) > .split-chat-slot { grid-column: 1; grid-row: 1; }
+  .workspace-shell[data-studio-pilot] .split:has(> .workspace) > .workspace { grid-column: 1; grid-row: 2; }
+  .workspace-shell[data-studio-pilot] .split:has(> .workspace) > .studio-unavailable { grid-row: 3; }
 }
 
 /* Capability-state controls inside the shared project viewer; native styles stay owned by their components. */

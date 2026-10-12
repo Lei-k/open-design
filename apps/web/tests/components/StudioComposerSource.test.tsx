@@ -155,3 +155,13 @@ it('keeps the per-turn Codex model and effort pickers labelled on the Codex sour
   expect(onModelChange).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-6-sol' }));
   expect(screen.getByTestId('studio-codex-reasoning')).toBeTruthy();
 });
+
+it('closes when the already-selected source is chosen again, without a change', async () => {
+  const { onChange } = await mount({ agentId: 'openai' });
+  const dialog = await panel();
+  await waitFor(() => expect((within(row(dialog, 'openai')).getByRole('radio') as HTMLInputElement).checked).toBe(true));
+  fireEvent.click(within(row(dialog, 'openai')).getByRole('radio'));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(onChange).not.toHaveBeenCalled();
+  expect(document.activeElement).toBe(trigger());
+});
