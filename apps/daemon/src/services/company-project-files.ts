@@ -1,4 +1,5 @@
-import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, opendirSync, realpathSync, ftruncateSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, opendirSync, realpathSync, ftruncateSync, writeFileSync, fsyncSync, renameSync, unlinkSync, lstatSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { kindFor, projectDir, validateProjectPath } from '../projects.js';
 import { normalizeArtifactRuntimeImports } from '../artifacts/runtime-compat.js';
@@ -62,6 +63,30 @@ export function writeCompanyProjectFile(projectsRoot: string, projectId: string,
   if (typeof normalized !== 'string') throw new Error('project tool content refused');
   if (Buffer.byteLength(normalized) > FILE_LIMIT) throw new Error('project tool file limit');
   withFile(projectsRoot, projectId, name, true, (fd) => { ftruncateSync(fd, 0); writeFileSync(fd, normalized); });
+}
+
+/** Synthesis commits one bounded root document atomically through a held inode. */
+export function writeCompanyProjectDocument(projectsRoot: string, projectId: string, name: 'DESIGN.md' | 'HANDOFF.md', text: string): void {
+  if (Buffer.byteLength(text) > FILE_LIMIT) throw new Error('project tool file limit');
+  const expected = projectDir(projectsRoot, projectId);
+  const root = openSync(expected, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  const temporary = path.join(fdPath(root), `.synthesis-${randomUUID()}`);
+  let file: number | undefined;
+  try {
+    if (realpathSync(fdPath(root)) !== expected || path.dirname(expected) !== realpathSync(projectsRoot)) throw new Error('project tool root changed');
+    const destination = path.join(fdPath(root), name);
+    const existing = lstatSync(destination, { throwIfNoEntry: false });
+    if (existing && (!existing.isFile() || existing.nlink !== 1)) throw new Error('project tool file refused');
+    file = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+    writeFileSync(file, text); fsyncSync(file);
+    if (realpathSync(fdPath(root)) !== expected) throw new Error('project tool root changed');
+    renameSync(temporary, destination);
+    fsyncSync(root);
+  } finally {
+    if (file !== undefined) closeSync(file);
+    try { unlinkSync(temporary); } catch { /* already renamed or never created */ }
+    closeSync(root);
+  }
 }
 
 /** Bytes from an immutable captured package; text-like HTML still passes the

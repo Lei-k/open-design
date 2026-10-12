@@ -17,6 +17,16 @@ process.once('message', async (input: { dataRoot: string; appOrigin: string; pre
   // Mock only the external provider; all HTTP admission, authorization, file
   // functions, persistence and browser transports use the production daemon.
   const companyFetch: typeof fetch = async (url, init) => {
+    // S71 synthesis: provider-only mock; owned writes and receipts stay real.
+    if (String(url) === 'https://api.openai.com/v1/chat/completions') {
+      const body = JSON.parse(String(init?.body));
+      if (body.model !== 'gpt-5.1' || body.max_completion_tokens !== 16000 || 'max_tokens' in body) {
+        return Response.json({ error: { type: 'invalid_request_error', code: 'unsupported_parameter', param: 'max_tokens' } }, { status: 400 });
+      }
+      return Response.json({ model: body.model, choices: [{ finish_reason: 'stop', message: {
+        role: 'assistant', content: '# Studio company finalize\n\nA calm landing page, synthesized from the owner conversation and Company browser design.',
+      } }], usage: { prompt_tokens: 17, completion_tokens: 11 } });
+    }
     // Media endpoints (#63): a fixed valid PNG for images.
     if (String(url) === 'https://api.openai.com/v1/images/generations') {
       const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';

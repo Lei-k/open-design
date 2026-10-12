@@ -1,0 +1,63 @@
+.actions {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  max-height: 40vh;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  width: 100%;
+}
+.actions .source {
+  box-sizing: border-box;
+  flex: 1 1 15rem;
+  width: auto;
+  min-width: 0;
+  max-width: 24rem;
+  height: 40px;
+  min-height: 40px;
+  padding: 0 2rem 0 0.75rem;
+  font-size: var(--font-size-14, 14px);
+  line-height: normal;
+}
+.controls .button {
+  box-sizing: border-box;
+  height: auto;
+  min-height: 40px;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.prompt {
+  box-sizing: border-box;
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 100%;
+  min-height: 100px;
+}
+@media (max-width: 600px) {
+  .controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .actions .source {
+    grid-column: 1 / -1;
+    width: 100%;
+    max-width: 100%;
+  }
+}

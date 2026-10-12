@@ -1,3 +1,4 @@
+import { StudioSynthesisActions } from './StudioSynthesisActions';
 import { bindStudioPendingWrite } from '../runtime/studio-resources';
 import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioSetInterval as setInterval, studioFetch as fetch, studioWindowLocalStorage, studioWindowSessionStorage } from '../runtime/studio-transport';
 import { StudioDesignJury } from './Theater/StudioDesignJury';
@@ -14216,8 +14217,12 @@ export function ProjectView({
               {...(projectCollab.member ? { selfMemberId: projectCollab.member.memberId } : {})}
             />
           ) : null}
-          // Studio sharing (#65) is project-level, not tied to the open file's
-          // public-share state, so it sits with the project actions.
+          // Synthesis has one project-owned row, independent of the open file.
+          deliveryActions={!studio.hostServices ? (
+            <StudioSynthesisActions projectId={project.id} conversationId={activeConversationId}
+              canWrite={!projectMutationReadOnly} />
+          ) : undefined}
+          // Studio sharing stays with the compact project actions.
           headerActions={studioSharing.access ? (
             <>
               {projectCollab.enabled ? (
@@ -14228,7 +14233,7 @@ export function ProjectView({
                   {...(projectCollab.member ? { selfMemberId: projectCollab.member.memberId } : {})}
                 />
               ) : null}
-              <StudioShareButton sharing={studioSharing} onLeft={onBack} />
+              {studioSharing.access && <StudioShareButton sharing={studioSharing} onLeft={onBack} />}
             </>
           ) : undefined}
           chatConfig={config}

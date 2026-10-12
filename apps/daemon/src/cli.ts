@@ -8,6 +8,7 @@ import { runDaemonCliStartup, startDaemonRuntime } from './daemon-startup.js';
 import { runLiveArtifactsMcpServer } from './mcp-live-artifacts-server.js';
 import { runArtifactsCli } from './artifacts-cli.js';
 import { runResource } from './resource-cli.js';
+import { runStudioSynthesisCli, STUDIO_SYNTHESIS_USAGE } from './projects/synthesis-cli.js';
 import { runProjectHandoff } from './handoff-cli.js';
 import { runConnectorsToolCli } from './tools-connectors-cli.js';
 import { runConnectorsCli } from './connectors/connectors-cli.js';
@@ -7177,6 +7178,8 @@ async function runProject(args) {
   od project open-in <id> --editor <slug> Open the project's working directory
                                           in the chosen editor (cursor, zed,
                                           vscode, finder, terminal, …).
+  od project finalize|handoff|synthesis <id> --session-file <path> [--execution-source <source>] [--json]
+                    Studio synthesis on your stored OpenAI source; handoff requires --conversation.
   od project handoff <id> --conversation <id> --api-key <key> --model <model>
                     [--base-url <url>] [--max-tokens <n>]
                     Synthesize a resume-conversation handoff prompt.
@@ -7206,6 +7209,15 @@ Common options:
   // parser below so a malformed `od project handoff` invocation
   // (`--unknown`, `--max-tokens` with no value) hits handoff-cli's
   // machine-readable fail() path instead of throwing out of parseFlags.
+  if (remoteSessionFile && ['finalize', 'handoff', 'synthesis'].includes(sub)) {
+    const exitCode = await runStudioSynthesisCli([sub, ...rest]);
+    if (exitCode !== 0) process.exit(exitCode);
+    return;
+  }
+  if (sub === 'finalize' || sub === 'synthesis') {
+    console.error('Studio synthesis requires --session-file.\n' + STUDIO_SYNTHESIS_USAGE);
+    process.exit(2);
+  }
   if (sub === 'handoff') {
     const { exitCode } = await runProjectHandoff(rest);
     if (exitCode !== 0) process.exit(exitCode);

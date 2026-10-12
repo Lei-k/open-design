@@ -7233,7 +7233,7 @@ function ReactComponentViewer({
                   </div>
                 ) : null}
               </div>
-              {viewerOnly ? null : (
+              {!studio.hostServices || viewerOnly ? null : (
                 <HandoffButton
                   projectId={projectId}
                   projectKind={projectKind}
@@ -17558,7 +17558,7 @@ function HtmlViewer({
                   </AnchoredMenuShell>
                 ) : null}
               </div>
-              {viewerOnly ? null : (
+              {!studio.hostServices || viewerOnly ? null : (
                 <HandoffButton
                   projectId={projectId}
                   projectKind={projectKind}

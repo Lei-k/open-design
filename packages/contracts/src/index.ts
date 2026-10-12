@@ -124,3 +124,5 @@ export type { StudioProjectMetadata, StudioProjectCreateRequest, StudioTemplateS
 
 export { STUDIO_ARCHIVE_SHA256_HEADER } from './api/studio-projects.js';
 export * from './api/studio-deploy.js';
+
+export * from './api/studio-synthesis.js';

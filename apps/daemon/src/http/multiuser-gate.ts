@@ -593,6 +593,11 @@ export function multiUserBodyAllowed(policy: MultiUserBodyPolicy, body: unknown,
     && Object.values(body).every((value) => typeof value === 'string' && Buffer.byteLength(value) <= 64 * 1024 && !value.includes('\0'));
   if (policy === 'public-link-revoke') return only(['slug']) && (body.slug === undefined || typeof body.slug === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(body.slug));
   if (policy === 'deploy-config') return only(['providerId','revision','token','teamId','teamSlug','accountId','projectName','lastZoneId','lastZoneName','lastDomainPrefix']) && Number.isSafeInteger(body.revision);
+  if (policy === 'studio-synthesis') return only(['executionSource', 'conversationId', 'maxTokens', 'digest'])
+    && (body.executionSource === undefined || typeof body.executionSource === 'string' && ['personal_subscription', 'company_pool', 'personal_api_key'].includes(body.executionSource))
+    && (body.conversationId === undefined || typeof body.conversationId === 'string' && body.conversationId.length <= 128)
+    && (body.maxTokens === undefined || Number.isSafeInteger(body.maxTokens) && Number(body.maxTokens) >= 1 && Number(body.maxTokens) <= 16384)
+    && (body.digest === undefined || typeof body.digest === 'string' && /^[a-f0-9]{64}$/.test(body.digest));
   if (policy === 'studio-deploy') return only(['fileName','providerId','target','cloudflarePages']) && typeof body.fileName === 'string' && (body.target === undefined || body.target === 'preview' || body.target === 'production');
   if (policy === 'provider-key') return only(['revision', 'apiKey', 'model']) && Number.isSafeInteger(body.revision)
     && (body.apiKey === undefined || body.apiKey === null || typeof body.apiKey === 'string' && body.apiKey.length <= 4096)

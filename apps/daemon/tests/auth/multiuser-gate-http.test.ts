@@ -153,6 +153,11 @@ describe('route classification covers the real inventory', () => {
         ...['', '/events', '/transcript', '/artifact'].map((suffix) => `owner-scoped-run GET ${prefix}/:projectId/critique/:runId${suffix}`),
         `owner-scoped-run POST ${prefix}/:projectId/critique/:runId/interrupt`,
       ]),
+      ...['/api/projects', '/api/multiuser/projects'].flatMap((prefix) => [
+        `owner-scoped-project POST ${prefix}/:id/finalize/:provider`,
+        `owner-scoped-project POST ${prefix}/:id/handoff`,
+        `owner-scoped-project GET ${prefix}/:id/synthesis`,
+      ]),
       'actor-scoped GET /api/deploy/config',
       'actor-scoped PUT /api/deploy/config',
       'actor-scoped GET /api/multiuser/deploy/config',

@@ -42,6 +42,8 @@ import {
 } from '../projects.js';
 import { exportProjectTranscript } from '../transcript-export.js';
 import { googleGenerateContentUrl } from '../integrations/google-models.js';
+import { buildOpenAIChatTokenParam } from '../integrations/openai-chat-token-params.js';
+import { assertStudioChatCompletion } from '../services/studio-synthesis.js';
 
 // Re-export the request/response types so existing daemon-internal
 // imports (and the route handler) keep their referenced names. The
@@ -93,6 +95,14 @@ export interface FinalizeOptions {
   now?: () => Date;
   fetchImpl?: typeof globalThis.fetch;
   signal?: AbortSignal;
+  /** Studio supplies only owned captured inputs and a checked storage commit. */
+  studio?: {
+    directory: string;
+    transcript: { jsonl: string; messageCount: number };
+    designSystemBody: string | null;
+    artifact: ResolvedArtifact | null;
+    commit(designMd: string, usage: { inputTokens: number; outputTokens: number }): void;
+  };
   // Override the helper-internal upstream-call timeout. Production callers
   // omit this so the helper bounds at DEFAULT_TIMEOUT_MS; tests pass a
   // smaller value to exercise the AbortSignal.any composition without
@@ -280,7 +290,7 @@ export async function finalizeDesignPackage(
   // bare `projectDir` would silently land DESIGN.md in the hidden daemon
   // data dir for these projects (PR #832 P1 finding from @lefarcen).
   const projectMetadata = (project as { metadata?: { baseDir?: string } | null }).metadata ?? null;
-  const dir = resolveProjectDir(projectsRoot, projectId, projectMetadata ?? undefined);
+  const dir = options.studio?.directory ?? resolveProjectDir(projectsRoot, projectId, projectMetadata ?? undefined);
   // For imported-folder projects, `dir` is the user's own directory and
   // already exists; mkdirSync is a no-op (recursive:true is idempotent).
   // For native projects, it lazily creates `.od/projects/<id>`.
@@ -312,8 +322,9 @@ export async function finalizeDesignPackage(
     // Phase 3: export transcript via the PR #493 primitive. Returns the
     // disk path; we read the body and run it through the truncation
     // policy so a 4 MB transcript does not blow Anthropic's context.
-    const transcriptResult = exportProjectTranscript(db, projectsRoot, projectId, { now });
-    const transcriptJsonl = fs.readFileSync(transcriptResult.path, 'utf8');
+    const transcriptResult = options.studio?.transcript ?? exportProjectTranscript(db, projectsRoot, projectId, { now });
+    const transcriptJsonl = 'jsonl' in transcriptResult && typeof transcriptResult.jsonl === 'string'
+      ? transcriptResult.jsonl : fs.readFileSync((transcriptResult as { path: string }).path, 'utf8');
     const truncatedJsonl = truncateTranscriptForPrompt(transcriptJsonl);
 
     // Phase 4: design system. Project may not have one selected; readDesignSystem
@@ -323,14 +334,14 @@ export async function finalizeDesignPackage(
       typeof (project as { designSystemId?: unknown }).designSystemId === 'string'
         ? ((project as { designSystemId: string }).designSystemId)
         : null;
-    const designSystemBody = designSystemId
+    const designSystemBody = options.studio ? options.studio.designSystemBody : designSystemId
       ? await readDesignSystem(designSystemsRoot, designSystemId)
       : null;
 
     // Phase 5: current artifact (active tab → newest .artifact.json → null).
     // Thread metadata so imported-folder projects discover the real artifacts
     // under metadata.baseDir rather than the empty `.od/projects/<id>` dir.
-    const artifact = await resolveCurrentArtifact(
+    const artifact = options.studio ? options.studio.artifact : await resolveCurrentArtifact(
       db,
       projectsRoot,
       projectId,
@@ -380,6 +391,7 @@ export async function finalizeDesignPackage(
         ? AbortSignal.any([options.signal, timeoutController.signal])
         : timeoutController.signal;
       if (options.fetchImpl) callParams.fetchImpl = options.fetchImpl;
+      if (options.studio && protocol === 'openai') callParams.studioOpenAI = true;
       try {
         response = await callFinalizeProviderWithRetry(callParams);
       } catch (err: unknown) {
@@ -413,6 +425,7 @@ export async function finalizeDesignPackage(
         `upstream ${providerLabel(protocol)} returned non-JSON body: ${message}`,
       );
     }
+    if (options.studio && protocol === 'openai') assertStudioChatCompletion(payload);
     const designMd = extractDesignMd(payload, protocol);
     const { inputTokens, outputTokens } = extractTokenUsage(payload, protocol);
 
@@ -420,6 +433,12 @@ export async function finalizeDesignPackage(
     // reopen for fsync → rename. On any failure unlink tmp; rethrow so the
     // route handler maps the error.
     const encoded = Buffer.from(designMd, 'utf8');
+    if (options.studio) {
+      options.studio.commit(designMd, { inputTokens, outputTokens });
+      return { designMdPath: OUTPUT_FILENAME, bytesWritten: encoded.length, model: options.model,
+        inputTokens, outputTokens, artifact: artifact ? { name: artifact.name, updatedAt: null } : null,
+        transcriptMessageCount: transcriptResult.messageCount, designSystemId };
+    }
     try {
       fs.writeFileSync(tmpPath, encoded, { flag: 'wx' });
       const fsyncFd = fs.openSync(tmpPath, 'r+');
@@ -495,6 +514,8 @@ export interface FinalizeProviderCallParams {
   apiVersion?: string;
   signal?: AbortSignal;
   fetchImpl?: typeof globalThis.fetch;
+  /** Studio OpenAI uses model-compatible caps and exactly one paid request. */
+  studioOpenAI?: true;
   /** Test-only: skip the inter-attempt sleep so retries are instant. */
   _sleepMs?: (ms: number) => Promise<void>;
 }
@@ -568,7 +589,7 @@ function buildFinalizeProviderRequest(params: FinalizeProviderCallParams): Final
       body: {
         model: params.model,
         messages: payloadMessages,
-        max_tokens: params.maxTokens,
+        ...(params.studioOpenAI ? buildOpenAIChatTokenParam(params.model, params.maxTokens) : { max_tokens: params.maxTokens }),
         stream: false,
       },
     };
@@ -656,6 +677,7 @@ function providerLabel(protocol: FinalizeProviderProtocol): string {
  * "standard exponential backoff" answer was directional and a single
  * retry matches the existing daemon's posture (transcript export and
  * connectionTest do zero retries).
+ * Studio's admitted OpenAI jobs make one request, with no retry or fallback.
  */
 export async function callFinalizeProviderWithRetry(
   params: FinalizeProviderCallParams,
@@ -665,7 +687,8 @@ export async function callFinalizeProviderWithRetry(
   const request = buildFinalizeProviderRequest(params);
   const body = JSON.stringify(request.body);
 
-  for (let attempt = 0; attempt <= 1; attempt += 1) {
+  const retries = params.studioOpenAI ? 0 : 1;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
     const init: RequestInit = {
       method: 'POST',
       headers: request.headers,
@@ -677,7 +700,7 @@ export async function callFinalizeProviderWithRetry(
     if (response.ok) return response;
 
     const transient = response.status === 429 || response.status >= 500;
-    if (!transient || attempt === 1) {
+    if (!transient || attempt === retries) {
       const text = await response.text().catch(() => '');
       throw new FinalizeUpstreamError(
         response.status,
@@ -787,7 +810,7 @@ export function extractDesignMd(
   return out;
 }
 
-function extractTokenUsage(
+export function extractTokenUsage(
   payload: unknown,
   protocol: FinalizeProviderProtocol,
 ): { inputTokens: number; outputTokens: number } {
