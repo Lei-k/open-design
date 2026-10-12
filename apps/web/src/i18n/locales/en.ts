@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const en: Dict = {
+  'studio.catalogsUnavailable': "This catalog action is unavailable in Studio. Shipped plugin previews and devloops with a fixed iteration limit are supported. Design-system generation and unsupported plugin atoms or strategies remain pending. Third-party installs, marketplace fetch, doctor and trust remain unavailable.",
   'studio.deployMissingHint': "Configure your own provider token in Settings → Deploy before deploying.",
   'studio.deployOwnerOnly': "Only the project owner can deploy or operate deployment records.",
 

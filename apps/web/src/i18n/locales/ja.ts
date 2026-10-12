@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const ja: Dict = {
+  'studio.catalogsUnavailable': "このカタログ操作は Studio では利用できません。同梱のプラグインプレビューと、反復回数に上限のある開発ループに対応しています。デザインシステムの生成と未対応のプラグインアトムや戦略は引き続き準備中です。サードパーティーのインストール、マーケットプレイスの取得、doctor、信頼管理は利用できません。",
   'studio.deployMissingHint': "設定 → デプロイで自分のプロバイダートークンを設定してください。",
   'studio.deployOwnerOnly': "プロジェクト所有者のみがデプロイと記録操作を行えます。",
 

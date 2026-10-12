@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const fr: Dict = {
+  'studio.catalogsUnavailable': "Cette action du catalogue est indisponible dans Studio. Les aperçus fournis avec les plugins et les boucles de développement à nombre d’itérations limité sont pris en charge. La génération de systèmes de design et les atomes ou stratégies de plugins non pris en charge restent en attente. L’installation tierce, la récupération des catalogues, doctor et la gestion de confiance restent indisponibles.",
   'studio.deployMissingHint': "Configurez votre jeton fournisseur dans Paramètres → Déploiement.",
   'studio.deployOwnerOnly': "Seul le propriétaire du projet peut déployer ou gérer les enregistrements.",
 

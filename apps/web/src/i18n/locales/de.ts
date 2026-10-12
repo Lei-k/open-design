@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const de: Dict = {
+  'studio.catalogsUnavailable': "Diese Katalogaktion ist in Studio nicht verfügbar. Mitgelieferte Plugin-Vorschauen und Entwicklungsschleifen mit fester Iterationsgrenze werden unterstützt. Die Generierung von Designsystemen und nicht unterstützte Plugin-Atome oder Strategien stehen noch aus. Drittanbieter-Installationen, Marktplatzabrufe, doctor und die Vertrauensverwaltung bleiben nicht verfügbar.",
   'studio.deployMissingHint': "Konfiguriere deinen eigenen Anbieter-Token unter Einstellungen → Bereitstellung.",
   'studio.deployOwnerOnly': "Nur der Projektbesitzer kann bereitstellen oder Bereitstellungsdatensätze verwalten.",
 

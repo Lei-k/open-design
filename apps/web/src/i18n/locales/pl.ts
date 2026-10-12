@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const pl: Dict = {
+  'studio.catalogsUnavailable': "Ta operacja katalogu jest niedostępna w Studio. Obsługiwane są podglądy dołączone do wtyczek i pętle rozwoju ze stałym limitem iteracji. Generowanie systemów projektowych oraz nieobsługiwane atomy i strategie wtyczek pozostają w planach. Instalacje zewnętrzne, pobieranie z marketplace, doctor i zarządzanie zaufaniem pozostają niedostępne.",
   'studio.deployMissingHint': "Skonfiguruj własny token dostawcy w Ustawienia → Wdrożenie.",
   'studio.deployOwnerOnly': "Tylko właściciel projektu może wdrażać i zarządzać rekordami.",
 

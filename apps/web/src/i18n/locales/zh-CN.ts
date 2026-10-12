@@ -1,6 +1,7 @@
 import type { Dict } from "../types";
 
 export const zhCN: Dict = {
+  'studio.catalogsUnavailable': "Studio 暂不支持此目录操作。已发布的插件预览和具有固定迭代上限的开发循环已获支持。设计系统生成及尚未支持的插件原子或策略仍待开放。第三方安装、市场拉取、doctor 和信任管理仍不可用。",
   'studio.deployMissingHint': "请先在设置 → 部署中配置自己的供应商 token。",
   'studio.deployOwnerOnly': "只有项目所有者可以部署或操作部署记录。",
 

@@ -7,7 +7,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { InstalledPluginRecordSchema } from '@open-design/contracts';
+import { InstalledPluginRecordSchema, STUDIO_PARITY_LANES, type StudioRuntimeCapabilities } from '@open-design/contracts';
+import { CookieSession } from '../../src/multiuser/session';
+import { StudioCapabilitiesProvider } from '../../src/runtime/studio-capabilities';
 
 import { ExtensionsMarketplace } from '../../src/components/PluginsView';
 import { MarketplaceView } from '../../src/components/MarketplaceView';
@@ -220,4 +222,46 @@ describe('ExtensionsMarketplace installed plugin detail entry', () => {
       expect(container.querySelector('[data-testid="marketplace-view"]')).toBeTruthy();
     });
   });
+});
+
+// S70: Studio rows inspect bundled plugins in place. Desktop retains its route.
+it.each([{ action: 'click', applicable: true }, { action: 'Enter', applicable: true }, { action: 'click', applicable: false }] as const)(
+  'opens the Studio bundled row with $action / applicable=$applicable in its isolated preview without navigating or host actions', async ({ action, applicable }) => {
+    const actor = { id: 'A', username: 'alice', role: 'user', active: true, passwordState: 'set', createdAt: 1, updatedAt: 1 } as const;
+    const capabilities = { schemaVersion: 1, shell: 'studio', features: Object.fromEntries(STUDIO_PARITY_LANES.map(({ id }) =>
+      [id, { status: 'pilot', reason: 'Pilot' }])) } as StudioRuntimeCapabilities;
+    const installed = { ...INSTALLED_OFFICIAL, availability: { applicable, reasons: applicable ? [] : [{ code: 'context', subject: 'craft' }] }, manifest: {
+      ...INSTALLED_OFFICIAL.manifest, od: { kind: 'scenario', mode: 'prototype', useCase: { exampleOutputs: [{ path: './example.html' }] } },
+    } };
+    const network = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/auth/me') return jsonResponse({ account: actor, studio: capabilities, studioRevision: 1 });
+      if (url === '/api/plugins') return jsonResponse({ plugins: [installed] });
+      if (url === '/api/marketplaces') return jsonResponse({ marketplaces: [MARKETPLACES[0]] });
+      if (url === `/api/plugins/${installed.id}/example/example?variant=descriptor`) return jsonResponse({
+        pluginId: installed.id, entry: 'example.html', url: '/api/multiuser/plugin-preview/fixture/example.html',
+      });
+      return jsonResponse({ skills: [], ids: [], resources: [] });
+    });
+    vi.stubGlobal('fetch', network);
+    const session = new CookieSession(); await session.verify();
+    try {
+      render(<I18nProvider initial="en"><StudioCapabilitiesProvider session={session} generation={session.snapshot().generation}
+        actor={actor} capabilities={capabilities}><ExtensionsMarketplace /></StudioCapabilitiesProvider></I18nProvider>);
+      const row = await screen.findByTestId('plugins-card-official:open-design/build-test:0.1.0');
+      const badge = screen.getByTestId('plugin-web-availability-build-test');
+      expect(badge.getAttribute('data-applicable')).toBe(String(applicable));
+      if (!applicable) expect(badge.textContent).toContain('Needs: craft');
+      if (action === 'click') fireEvent.click(row); else fireEvent.keyDown(row, { key: 'Enter' });
+      const dialog = await screen.findByRole('dialog', { name: 'Build test preview' });
+      await waitFor(() => expect(dialog.querySelector('iframe')?.getAttribute('src')).toBe('/api/multiuser/plugin-preview/fixture/example.html'));
+      expect(dialog.querySelector('iframe')?.getAttribute('sandbox')).toBe('allow-scripts');
+      expect(window.location.pathname).toBe('/plugins');
+      expect(screen.queryByTestId('plugin-detail')).toBeNull();
+      expect(within(dialog).queryByRole('button', { name: /use plugin|install|uninstall|trust|doctor|refresh/i })).toBeNull();
+      expect(network.mock.calls.map(([url]) => String(url)).every((url) => !/install|uninstall|trust|doctor|refresh/.test(url))).toBe(true);
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(screen.getByTestId('plugin-web-availability-build-test').getAttribute('data-applicable')).toBe(String(applicable));
+    } finally { cleanup(); session.dispose(); vi.unstubAllGlobals(); }
 });

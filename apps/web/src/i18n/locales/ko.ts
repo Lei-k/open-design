@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const ko: Dict = {
+  'studio.catalogsUnavailable': "이 카탈로그 작업은 Studio에서 사용할 수 없습니다. 플러그인에 포함된 미리보기와 고정 반복 제한이 있는 개발 루프는 지원됩니다. 디자인 시스템 생성과 지원되지 않는 플러그인 아톰 또는 전략은 아직 준비 중입니다. 타사 설치, 마켓플레이스 가져오기, doctor 및 신뢰 관리는 계속 사용할 수 없습니다.",
   'studio.deployMissingHint': "설정 → 배포에서 자신의 공급자 토큰을 설정하세요.",
   'studio.deployOwnerOnly': "프로젝트 소유자만 배포와 배포 기록 작업을 할 수 있습니다.",
 

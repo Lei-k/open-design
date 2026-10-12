@@ -1,6 +1,7 @@
 import type { Dict } from "../types";
 
 export const zhTW: Dict = {
+  'studio.catalogsUnavailable': "Studio 暫不支援此目錄操作。已發布的外掛預覽和具有固定迭代上限的開發循環已獲支援。設計系統生成及尚未支援的外掛原子或策略仍待開放。第三方安裝、市集擷取、doctor 和信任管理仍不可用。",
   'studio.deployMissingHint': "請先在設定 → 部署中設定自己的供應商 token。",
   'studio.deployOwnerOnly': "只有專案擁有者可以部署或操作部署記錄。",
 

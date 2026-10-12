@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const id: Dict = {
+  'studio.catalogsUnavailable': "Tindakan katalog ini tidak tersedia di Studio. Pratinjau bawaan plugin dan siklus pengembangan dengan batas iterasi tetap didukung. Pembuatan sistem desain serta atom atau strategi plugin yang belum didukung masih tertunda. Instalasi pihak ketiga, pengambilan marketplace, doctor, dan pengelolaan kepercayaan tetap tidak tersedia.",
   'studio.deployMissingHint': "Atur token penyedia Anda di Pengaturan → Deploy.",
   'studio.deployOwnerOnly': "Hanya pemilik proyek dapat melakukan deploy atau mengelola catatannya.",
 

@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const tr: Dict = {
+  'studio.catalogsUnavailable': "Bu katalog işlemi Studio’da kullanılamıyor. Eklentilerle gelen önizlemeler ve sabit yineleme sınırı olan geliştirme döngüleri destekleniyor. Tasarım sistemi oluşturma ve desteklenmeyen eklenti atomları veya stratejileri henüz hazır değil. Üçüncü taraf kurulumları, pazar yeri getirme, doctor ve güven yönetimi kullanılamıyor.",
   'studio.deployMissingHint': "Ayarlar → Dağıtım bölümünde kendi sağlayıcı tokeninizi yapılandırın.",
   'studio.deployOwnerOnly': "Yalnızca proje sahibi dağıtabilir veya dağıtım kayıtlarını yönetebilir.",
 

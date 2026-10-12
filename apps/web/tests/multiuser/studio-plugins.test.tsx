@@ -7,7 +7,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { InstalledPluginRecordSchema, STUDIO_PARITY_LANES, type AuthAccount, type InstalledPluginRecord, type StudioRuntimeCapabilities } from '@open-design/contracts';
 import { CookieSession } from '../../src/multiuser/session';
-import { StudioCapabilitiesProvider } from '../../src/runtime/studio-capabilities';
+import { StudioCapabilitiesProvider, StudioUnavailable } from '../../src/runtime/studio-capabilities';
 import { studioRequestAvailable } from '../../src/runtime/studio-transport';
 import { studioAppliedPluginRestrictions, studioPluginAvailability, studioPluginOffered, studioPluginReasonTokens } from '../../src/runtime/studio-plugins';
 import { PluginWebAvailability } from '../../src/components/PluginWebAvailability';
@@ -140,4 +140,32 @@ it('reads an application\'s pinned source restrictions and drops anything malfor
   expect(studioAppliedPluginRestrictions(null)).toEqual([]);
   expect(studioAppliedPluginRestrictions({ sourceRestrictions: [{ source: 'desktop', reasons: [{ code: 'atom' }] },
     { source: 'company-openai', reasons: [{ nope: true }] }, { source: 'account-openai', reasons: 'x' }, ...pinned] })).toEqual(pinned);
+});
+
+
+it('uses localized current catalog limits for a partial Studio lane instead of stale pending devloops', async () => {
+  const advertised = capabilities(['catalogs']);
+  advertised.features.catalogs = { status: 'pilot', reason: 'plugin previews, devloops and unsupported atoms are pending' };
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ account, studio: advertised, studioRevision: 1 })));
+  const session = new CookieSession(); await session.verify();
+  try {
+    render(<StudioCapabilitiesProvider session={session} generation={session.snapshot().generation} actor={account} capabilities={advertised}>
+      <StudioUnavailable lane="catalogs" /></StudioCapabilitiesProvider>);
+    expect(screen.getByRole('status').textContent).toContain('iteration limit');
+    expect(screen.getByRole('status').textContent).toContain('Third-party');
+    expect(screen.getByRole('status').textContent).not.toContain('devloops and unsupported atoms are pending');
+  } finally { cleanup(); session.dispose(); }
+});
+
+
+it('retains the deployment refusal when the Studio catalogs lane is disabled', async () => {
+  const advertised = capabilities([]);
+  advertised.features.catalogs = { status: 'unavailable', reason: 'Catalog access disabled by this deployment' };
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ account, studio: advertised, studioRevision: 1 })));
+  const session = new CookieSession(); await session.verify();
+  try {
+    render(<StudioCapabilitiesProvider session={session} generation={session.snapshot().generation} actor={account} capabilities={advertised}>
+      <StudioUnavailable lane="catalogs" /></StudioCapabilitiesProvider>);
+    expect(screen.getByRole('status').textContent).toBe(advertised.features.catalogs.reason);
+  } finally { cleanup(); session.dispose(); }
 });

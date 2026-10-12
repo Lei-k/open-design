@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const hu: Dict = {
+  'studio.catalogsUnavailable': "Ez a katalógusművelet nem érhető el a Studióban. A bővítményekhez mellékelt előnézetek és a rögzített ismétlési korlátú fejlesztési ciklusok támogatottak. A tervezési rendszerek generálása, valamint a nem támogatott bővítményatomok és stratégiák még váratnak magukra. A külső telepítés, a piactér lekérése, a doctor és a bizalomkezelés továbbra sem érhető el.",
   'studio.deployMissingHint': "Állítsd be a saját szolgáltatói tokenedet a Beállítások → Telepítés alatt.",
   'studio.deployOwnerOnly': "Csak a projekt tulajdonosa telepíthet és kezelheti a telepítési rekordokat.",
 

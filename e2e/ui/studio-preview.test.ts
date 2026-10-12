@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import type { StudioPluginRecord } from '@open-design/contracts';
 import { clusterTest as base, expect } from '@/playwright/suite';
 import { activeArtifactPreview, activeArtifactPreviewFrame } from '@/playwright/artifact-preview';
 import { clickDeckNextSlide, clickPreviewToolbarAction } from '@/playwright/workspace';
@@ -1222,7 +1223,7 @@ test('[P1] Studio team catalogs: the owner shares a private skill and design doc
 });
 
 test('[P1] Studio bundled plugins: every plugin shows its Web availability, unavailable ones are neither offered nor applied, B cannot apply onto A', async ({ page, studio }, info) => {
-  // S42/S67: plugins whose atoms, context and captured steps all run in Studio turns are applicable.
+  // S70: bounded critique devloops are applicable; missing craft and desktop steps still fail closed.
   await studio.linkCodex(studio.a);
   await studio.configureTurn(studio.a, { reply: 'Plugin stage complete.' });
   await page.goto(`${studio.origin}/plugins`);
@@ -1232,21 +1233,41 @@ test('[P1] Studio bundled plugins: every plugin shows its Web availability, unav
   // The shared Plugins page lists the bundled catalog with server-computed availability.
   const search = page.getByRole('textbox', { name: 'Search expert suites' });
   await search.fill('Magazine Article', { timeout: T.long });
-  const unavailable = page.getByTestId('plugin-web-availability-example-article-magazine');
-  await expect(unavailable).toHaveAttribute('data-applicable', 'false', { timeout: T.long });
-  await expect(unavailable).toContainText('Not available on Web');
-  // S67: Live Artifacts run on Web; the critique devloop the apply pipeline adds still does not.
-  await expect(unavailable).toContainText('critique-theater');
-  // An unavailable generation plugin still has a readable, isolated shipped example.
-  const previewRead = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/plugins/example-article-magazine/preview'
-    && new URL(response.url()).searchParams.get('variant') === 'descriptor');
-  await page.getByTestId('plugins-home-details-example-article-magazine').click();
-  expect((await previewRead).status()).toBe(200);
+  const available = page.getByTestId('plugin-web-availability-example-article-magazine');
+  await expect(available).toHaveAttribute('data-applicable', 'true', { timeout: T.long });
+  await expect(available).toContainText('Apply it from a project composer');
+  await expect(available).toBeVisible();
+  // PluginsView exposes a keyboard-accessible list row, not a gallery overlay.
+  const magazineRow = page.getByRole('button').filter({ has: available });
+  await expect(magazineRow).toBeVisible();
+  await page.screenshot({ path: info.outputPath('studio-s70-plugins-devloop-entry.png'), animations: 'disabled' });
+  const desktopViewport = page.viewportSize() ?? { width: 1280, height: 900 };
+  await page.setViewportSize({ width: 390, height: 844 });
+  await available.scrollIntoViewIfNeeded();
+  await expect(available).toBeVisible();
+  await expect(available).toHaveAttribute('data-applicable', 'true');
+  await page.screenshot({ path: info.outputPath('studio-s70-plugins-devloop-phone.png'), animations: 'disabled' });
+  await page.setViewportSize(desktopViewport);
+  // The newly applicable plugin keeps its readable, isolated shipped example.
+  // Record the plugin reads the dialog performs; their exact path/variant is a
+  // preview implementation detail, but each must succeed for the owner.
+  const pluginReads: Array<{ path: string; status: number }> = [];
+  const recordRead = (response: { url(): string; status(): number }) => {
+    const path = new URL(response.url()).pathname;
+    if (path.startsWith('/api/plugins/example-article-magazine/') || path.startsWith('/api/multiuser/plugin-preview/')) pluginReads.push({ path, status: response.status() });
+  };
+  page.on('response', recordRead);
+  await magazineRow.click();
   const previewDialog = page.getByRole('dialog', { name: 'Magazine Article preview' });
+  await expect(previewDialog).toBeVisible({ timeout: T.long });
+  expect(new URL(page.url()).pathname).toBe('/plugins');
   const previewFrame = previewDialog.locator('iframe');
   await expect(previewFrame).toHaveAttribute('sandbox', 'allow-scripts');
   await expect(previewFrame).toHaveAttribute('src', /\/api\/multiuser\/plugin-preview\//);
   await expect(previewFrame.contentFrame().locator('h1')).toBeVisible({ timeout: T.long });
+  page.off('response', recordRead);
+  expect(pluginReads.length, JSON.stringify(pluginReads)).toBeGreaterThan(0);
+  expect(pluginReads.filter((read) => read.status !== 200), JSON.stringify(pluginReads)).toEqual([]);
   await page.screenshot({ path: info.outputPath('studio-bundled-plugin-preview-entry.png'), animations: 'disabled' });
   await previewDialog.getByRole('button', { name: 'Close', exact: true }).click();
   // Host flows are not offered: no create, no install, no Home hand-off.
@@ -1258,8 +1279,16 @@ test('[P1] Studio bundled plugins: every plugin shows its Web availability, unav
   await expect(share).toHaveAttribute('data-applicable', 'false', { timeout: T.long });
   await expect(share).toContainText('desktop:od-cli');
   await page.screenshot({ path: info.outputPath('studio-plugins-web-availability.png'), animations: 'disabled' });
+  // F1: valid craft syntax cannot substitute for a missing captured rulebook.
+  // Official rows search marketplace copy ("Kami Deck"), not the installed manifest title.
+  await search.fill('Kami Deck');
+  const missingCraft = page.getByTestId('plugin-web-availability-example-kami-deck');
+  await expect(missingCraft).toHaveAttribute('data-applicable', 'false', { timeout: T.long });
+  await expect(missingCraft).toContainText('Not available on Web');
+  await expect(missingCraft).toContainText('Needs: craft');
+  await expect(missingCraft).toHaveAttribute('title', 'craft');
 
-  // The shared composer does not offer it, and apply is refused without pinning anything.
+  // The shared composer does not offer unavailable plugins; apply cannot create a pin.
   const projectId = studioProjectId();
   const made = await studio.request('POST', '/api/projects', studio.a.cookie, { id: projectId, name: 'Plugin project' });
   expect(made.status, made.text).toBe(200);
@@ -1277,21 +1306,64 @@ test('[P1] Studio bundled plugins: every plugin shows its Web availability, unav
   const snapshotId = (await studio.request('GET', `/api/projects/${projectId}`, studio.a.cookie)).json.project.appliedPluginSnapshotId ?? null;
   expect(snapshotId).toBeNull();
 
-  // Unsupported plugins are still refused without changing the captured pin.
-  const magazine = await studio.request('POST', '/api/plugins/example-article-magazine/apply', studio.a.cookie, { projectId });
-  expect(magazine.status).toBe(403);
-  expect(magazine.json.error.code).toBe('MULTIUSER_CAPABILITY_UNAVAILABLE');
+  await composer.fill('@Turn a Study');
+  await expect(page.locator('.mention-item--plugin[role="option"]').filter({ hasText: 'Turn a Study into a Lab Meeting Deck' })).toHaveCount(0);
+  const craftApply = await studio.request('POST', '/api/plugins/example-kami-deck/apply', studio.a.cookie, { projectId });
+  expect(craftApply.status).toBe(403);
+  expect(craftApply.json.error.code).toBe('MULTIUSER_CAPABILITY_UNAVAILABLE');
+  expect(craftApply.json.error.details.reasons).toEqual([{ code: 'context', subject: 'craft' }]);
   expect((await studio.request('GET', `/api/projects/${projectId}`, studio.a.cookie)).json.project.appliedPluginSnapshotId ?? null).toBe(snapshotId);
+
+  // S70's Magazine Article is offered and applied through the actual composer.
+  await composer.fill('@Magazine');
+  // The catalog also contains a skill with this title; choose the plugin row.
+  const magazineOption = page.locator('.mention-item--plugin[role="option"]').filter({ hasText: 'Magazine Article' });
+  await expect(magazineOption).toBeVisible({ timeout: T.long });
+  const magazineApply = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/plugins/example-article-magazine/apply');
+  await magazineOption.click();
+  const magazine = await magazineApply;
+  expect(magazine.status(), await magazine.text()).toBe(200);
+  const applied = await magazine.json();
+  expect(applied.appliedPlugin.pluginId).toBe('example-article-magazine');
+  expect(applied.appliedPlugin.pipeline.stages).toContainEqual(expect.objectContaining({
+    id: 'critique', repeat: true, until: 'critique.score>=4 || iterations>=3',
+  }));
+  const chip = page.getByTestId('staged-contexts').locator('[data-staged-kind="plugin"]');
+  await expect(chip).toBeVisible({ timeout: T.long });
+  await expect(chip.getByRole('button', { name: 'Magazine Article', exact: true })).toBeVisible();
+  await expect(page.getByTestId('chat-send')).toBeEnabled();
+  expect((await studio.request('GET', `/api/projects/${projectId}`, studio.a.cookie)).json.project.appliedPluginSnapshotId).toBe(applied.snapshotId);
+  expect((await studio.request('GET', `/api/applied-plugins/${applied.snapshotId}`, studio.b.cookie)).status).toBe(404);
+  await page.screenshot({ path: info.outputPath('studio-s70-composer-applied-devloop.png'), animations: 'disabled' });
+  // A later refusal cannot replace the successfully captured plugin.
+  expect((await studio.request('POST', '/api/plugins/example-kami-deck/apply', studio.a.cookie, { projectId })).status).toBe(403);
+  expect((await studio.request('GET', `/api/projects/${projectId}`, studio.a.cookie)).json.project.appliedPluginSnapshotId).toBe(applied.snapshotId);
 
   // B sees the same catalog, and A's project is the same 404 as a missing one (ownership precedes availability).
   const missingProject = await studio.request('POST', '/api/plugins/od-share-to-community/apply', studio.b.cookie, { projectId: studioProjectId() });
   const foreign = await studio.request('POST', '/api/plugins/od-share-to-community/apply', studio.b.cookie, { projectId });
   expect(foreign.status).toBe(404);
   expect(foreign.text).toBe(missingProject.text);
-  const bCatalog = (await studio.request('GET', '/api/plugins', studio.b.cookie)).json.plugins as Array<{ availability: { applicable: boolean } }>;
-  expect(bCatalog.length).toBeGreaterThan(100);
-  // S67 + repair 1: ten runnable bundled media examples, each limited to the OpenAI sources.
-  expect(bCatalog.filter((plugin) => plugin.availability.applicable)).toHaveLength(10);
+  const bResponse = await studio.request('GET', '/api/plugins', studio.b.cookie);
+  expect(bResponse.status).toBe(200);
+  const bCatalog = bResponse.json.plugins as StudioPluginRecord[];
+  const aCatalog = (await studio.request('GET', '/api/plugins', studio.a.cookie)).json.plugins as StudioPluginRecord[];
+  expect(bCatalog.map(({ id, availability }) => ({ id, availability }))).toEqual(aCatalog.map(({ id, availability }) => ({ id, availability })));
+  // Production S70 recount: 460 listed, 309 applicable on at least one source.
+  // Eleven media packages retain Codex restrictions: 298 personal, 309 on either OpenAI source.
+  expect(bCatalog).toHaveLength(460);
+  expect(bCatalog.find((plugin) => plugin.id === 'example-article-magazine')?.availability).toEqual({ applicable: true, reasons: [] });
+  expect(bCatalog.find((plugin) => plugin.id === 'od-share-to-community')?.availability)
+    .toEqual({ applicable: false, reasons: [{ code: 'capability', subject: 'desktop:od-cli' }] });
+  expect(bCatalog.find((plugin) => plugin.id === 'example-kami-deck')?.availability)
+    .toEqual({ applicable: false, reasons: [{ code: 'context', subject: 'craft' }] });
+  const applicable = bCatalog.filter((plugin) => plugin.availability.applicable);
+  expect(applicable).toHaveLength(309);
+  expect(applicable.filter((plugin) => plugin.availability.sourceRestrictions?.some((restriction) => restriction.source === 'personal-codex'))).toHaveLength(11);
+  for (const [source, count] of [['personal-codex', 298], ['company-openai', 309], ['account-openai', 309]] as const) {
+    expect(applicable.filter((plugin) => !plugin.availability.sourceRestrictions?.some((restriction) => restriction.source === source))).toHaveLength(count);
+  }
 });
 
 test('[P1] Studio connectors: the administrator sets the company Composio key, an account connects and disconnects its own app', async ({ page, studio }, info) => {

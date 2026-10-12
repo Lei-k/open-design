@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const ptBR: Dict = {
+  'studio.catalogsUnavailable': "Esta ação do catálogo não está disponível no Studio. As prévias incluídas nos plugins e os ciclos de desenvolvimento com limite fixo de iterações são suportados. A geração de sistemas de design e os átomos ou estratégias de plugins não suportados continuam pendentes. Instalações de terceiros, busca no marketplace, doctor e gestão de confiança continuam indisponíveis.",
   'studio.deployMissingHint': "Configure seu próprio token do provedor em Configurações → Deploy.",
   'studio.deployOwnerOnly': "Somente o proprietário do projeto pode fazer deploy ou gerenciar os registros.",
 

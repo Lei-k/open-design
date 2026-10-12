@@ -515,3 +515,10 @@ describe('i18n locales', () => {
     }
   });
 });
+
+
+it.each(LOCALES)('explicitly localizes the current Studio catalog limits in %s', async (locale) => {
+  const dict = await loadDict(locale);
+  expect(explicitLocaleKeys(locale)).toContain('studio.catalogsUnavailable');
+  expect(dict['studio.catalogsUnavailable' as keyof Dict]?.trim().length).toBeGreaterThan(30);
+});
