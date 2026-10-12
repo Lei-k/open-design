@@ -4,6 +4,10 @@ import type { JsonValue } from './common.js';
 export const API_ERROR_CODES = [
   // Generic HTTP/API failures.
   'BAD_REQUEST',
+  'PAIRING_FAILED',
+  'INGEST_FAILED',
+  'INGEST_FETCH_FAILED',
+  'MULTIUSER_LIBRARY_LIMIT_REACHED',
   'UNAUTHORIZED',
   'FORBIDDEN',
   'NOT_FOUND',

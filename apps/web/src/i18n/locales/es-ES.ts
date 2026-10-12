@@ -1,6 +1,22 @@
 import type { Dict } from '../types';
 
 export const esES: Dict = {
+  "studio.libraryPairTitle": "Vinculación de Web Clipper",
+  "studio.libraryStudioUrl": "URL de Studio",
+  "studio.libraryCopyUrl": "Copiar URL de Studio",
+  "studio.libraryUrlCopied": "URL de Studio copiada.",
+  "studio.libraryUrlCopyFailed": "No se pudo copiar. Selecciona y copia la URL de Studio manualmente.",
+  "studio.libraryPairedExtensions": "Extensiones vinculadas",
+  "studio.libraryRevokeLabel": "Revocar el token de {label}",
+  "studio.libraryHint": "Tu biblioteca pertenece a tu cuenta. La sincronización de archivos del servidor no está disponible.",
+  "studio.libraryPair": "Crear código de vinculación",
+  "studio.libraryExpires": "Caduca a las {time}",
+  "studio.libraryPairInstructions": "Configura esta URL de Studio en la extensión e introduce el código en cinco minutos. Cada código solo se puede usar una vez.",
+  "studio.libraryEmpty": "No hay extensiones vinculadas.",
+  "studio.libraryLastUsed": "Último uso: {time}",
+  "studio.libraryRevoke": "Revocar token",
+  "studio.libraryError": "La solicitud de biblioteca ha fallado. Recarga e inténtalo de nuevo.",
+
   'studio.deployMissingHint': "Configura tu propio token del proveedor en Ajustes → Despliegue.",
   'studio.deployOwnerOnly': "Solo el propietario del proyecto puede desplegar o gestionar los registros.",
 

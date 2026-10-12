@@ -1,6 +1,22 @@
 import type { Dict } from "../types";
 
 export const zhCN: Dict = {
+  "studio.libraryPairTitle": "Web Clipper 配对",
+  "studio.libraryStudioUrl": "Studio 地址",
+  "studio.libraryCopyUrl": "复制 Studio 地址",
+  "studio.libraryUrlCopied": "已复制 Studio 地址。",
+  "studio.libraryUrlCopyFailed": "无法复制。请选中 Studio 地址并手动复制。",
+  "studio.libraryPairedExtensions": "已配对的扩展",
+  "studio.libraryRevokeLabel": "撤销 {label} 的令牌",
+  "studio.libraryHint": "设计库属于你的账号。不支持主机文件同步。",
+  "studio.libraryPair": "创建配对码",
+  "studio.libraryExpires": "{time} 到期",
+  "studio.libraryPairInstructions": "在扩展中设置此 Studio 地址，并在五分钟内输入配对码。每个配对码只能使用一次。",
+  "studio.libraryEmpty": "尚未配对任何扩展。",
+  "studio.libraryLastUsed": "上次使用：{time}",
+  "studio.libraryRevoke": "撤销令牌",
+  "studio.libraryError": "设计库请求失败。请重新加载后重试。",
+
   'studio.deployMissingHint': "请先在设置 → 部署中配置自己的供应商 token。",
   'studio.deployOwnerOnly': "只有项目所有者可以部署或操作部署记录。",
 

@@ -1,11 +1,8 @@
 // OpenDesign web clipper service worker.
 //
-// Zero-config: there is no pairing and no token. The daemon is loopback-bound,
-// and a web page cannot forge this extension's chrome-extension:// origin, so
-// the daemon auto-trusts our requests to /api/library/*. All we need is the
-// daemon URL (default below; overridable in the popup). host_permissions let
-// the service worker reach the loopback daemon without CORS friction.
-//
+// Local daemon connections remain automatic. Remote Studio connections use a
+// one-time Settings code and an account token scoped to the configured URL.
+
 // The popup and the on-page toolbar both message this worker rather than
 // talking to the daemon directly, so all daemon traffic lives in one place.
 
@@ -25,12 +22,33 @@ async function getDaemonUrl() {
   return daemonUrl || DEFAULT_DAEMON_URL;
 }
 
+function safeTokenDestination(raw) {
+  try { const url = new URL(raw); return !url.username && !url.password && (url.protocol === 'https:'
+    || url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)); } catch { return false; }
+}
+async function libraryHeaders(destination) {
+  const { daemonUrl, libraryToken, libraryTokenUrl } = await chrome.storage.local.get(['daemonUrl', 'libraryToken', 'libraryTokenUrl']);
+  return libraryToken && (daemonUrl || DEFAULT_DAEMON_URL) === destination && libraryTokenUrl === destination && safeTokenDestination(destination) ? { authorization: `Bearer ${libraryToken}` } : {};
+}
+async function pairAccount(code) {
+  const daemonUrl = await getDaemonUrl();
+  if (!safeTokenDestination(daemonUrl)) throw new Error(t('pairFailed'));
+  const resp = await fetch(`${daemonUrl}/api/library/pair/confirm`, { method: 'POST', credentials: 'omit',
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code, label: t('extensionName'), extensionOrigin: new URL(chrome.runtime.getURL('/')).origin === 'null'
+      ? chrome.runtime.getURL('/').replace(/\/$/, '') : new URL(chrome.runtime.getURL('/')).origin }) });
+  if (!resp.ok) throw new Error(t('pairFailed'));
+  const result = await resp.json(); if (typeof result.token !== 'string') throw new Error(t('pairFailed'));
+  // A concurrent URL change cannot bind a received token to another deployment.
+  if (await getDaemonUrl() !== daemonUrl) throw new Error(t('pairFailed'));
+  await chrome.storage.local.set({ libraryToken: result.token, libraryTokenUrl: daemonUrl });
+}
+
 // Is OpenDesign running and reachable? We probe the narrow clipper route the
 // daemon auto-trusts for extension origins and treat any 2xx as connected.
 async function probe() {
   const daemonUrl = await getDaemonUrl();
   try {
-    const resp = await fetch(`${daemonUrl}/api/library/clipper-probe`, { method: 'GET' });
+    const resp = await fetch(`${daemonUrl}/api/library/clipper-probe`, { method: 'GET', credentials: 'omit', headers: await libraryHeaders(daemonUrl) });
     return resp.ok;
   } catch {
     return false;
@@ -43,7 +61,8 @@ async function ingest(body) {
   try {
     resp = await fetch(`${daemonUrl}/api/library/ingest`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      credentials: 'omit',
+      headers: { 'content-type': 'application/json', ...await libraryHeaders(daemonUrl) },
       body: JSON.stringify(body),
     });
   } catch {
@@ -579,7 +598,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           sendResponse({ ok: true, connected, daemonUrl });
           break;
         }
+        case 'pairAccount': {
+          if (_sender?.tab) throw new Error(t('pairFailed'));
+          await pairAccount(String(msg.code || '')); sendResponse({ ok: true, connected: await probe() }); break;
+        }
         case 'setDaemonUrl': {
+          if ((msg.url || DEFAULT_DAEMON_URL) !== await getDaemonUrl()) await chrome.storage.local.remove(['libraryToken', 'libraryTokenUrl']);
           await chrome.storage.local.set({ daemonUrl: msg.url || DEFAULT_DAEMON_URL });
           const connected = await probe();
           sendResponse({ ok: true, connected });

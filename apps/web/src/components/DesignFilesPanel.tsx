@@ -1376,7 +1376,7 @@ export function DesignFilesPanel({
       {!studio.hostServices && studio.available('files') && studio.available('preview') && <button type="button" onClick={() => setArtifactEditor(true)} data-testid="studio-create-live-artifact">
         {t('common.create')} · {t('tasks.primitive.liveArtifacts.title')}
       </button>}
-      {LIBRARY_UI_VISIBLE && onSelectFromLibrary ? (
+      {(LIBRARY_UI_VISIBLE || !studio.hostServices && studio.available('settings')) && onSelectFromLibrary ? (
         <button
           type="button"
           data-testid="design-files-library-trigger"

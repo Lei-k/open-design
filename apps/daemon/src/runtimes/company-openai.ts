@@ -1,3 +1,4 @@
+import { STUDIO_LIBRARY_TOOL_DESCRIPTORS } from '../services/studio-library-tools.js';
 import { STUDIO_MCP_TOOL_DESCRIPTORS } from '../mcp-client/studio-tool-descriptors.js';
 import { StudioMcpRuntimeError } from '../mcp-client/studio-runtime.js';
 import { STUDIO_CONNECTOR_TOOL_DESCRIPTORS } from '../connectors/tool-descriptors.js';
@@ -80,6 +81,7 @@ export async function runCompanyOpenAITurn(input: {
   /** Jury profile: project context reads only, including forged tool calls. */
   projectReadOnly?: boolean;
   liveArtifacts?: StudioLiveArtifactTools;
+  library?: { execute(name: string, args: Record<string, unknown>): Promise<unknown> };
   mcp?: { execute(name: string, args: Record<string, unknown>): Promise<unknown> };
   connectors?: { execute(name: string, args: Record<string, unknown>): Promise<unknown> };
 }): Promise<CompanyOpenAITurnResult> {
@@ -87,6 +89,7 @@ export async function runCompanyOpenAITurn(input: {
   const offeredTools = input.projectReadOnly ? tools.filter((tool) => readTools.has(tool.name))
     : [...tools.filter((tool) => tool.name !== 'run_skill_script' || input.runSkillScript), ...(input.media ? mediaTools : []),
       ...(input.liveArtifacts ? artifactTools : []), ...(input.mcp ? STUDIO_MCP_TOOL_DESCRIPTORS.map(({ inputSchema, ...tool }) => ({ type: 'function', ...tool, parameters: inputSchema, strict: false })) : []),
+      ...(input.library ? STUDIO_LIBRARY_TOOL_DESCRIPTORS.map(({ inputSchema, ...tool }) => ({ type: 'function', ...tool, parameters: inputSchema, strict: false })) : []),
       ...(input.connectors ? STUDIO_CONNECTOR_TOOL_DESCRIPTORS.map(({ inputSchema, ...tool }) => ({ type: 'function', ...tool, parameters: inputSchema, strict: false })) : [])];
   const signal = AbortSignal.any([input.worker.abort.signal, AbortSignal.timeout(COMPANY_OPENAI_TURN_TIMEOUT_MS)]);
   const check = () => { signal.throwIfAborted(); if (!input.authorized()) throw new Error('company_authority_changed'); };
@@ -167,6 +170,8 @@ export async function runCompanyOpenAITurn(input: {
           emit({ type: 'tool_use', id: call.call_id, name: 'update_plan', input: { todos: args.todos } });
           planPublished = true;
           result = { updated: args.todos.length };
+        } else if (input.library && STUDIO_LIBRARY_TOOL_DESCRIPTORS.some((tool) => tool.name === call.name)) {
+          check(); result = await input.library.execute(call.name, args);
         } else if (input.mcp && STUDIO_MCP_TOOL_DESCRIPTORS.some((tool) => tool.name === call.name)) {
           check(); result = await input.mcp.execute(call.name, args);
         } else if (input.connectors && STUDIO_CONNECTOR_TOOL_DESCRIPTORS.some((tool) => tool.name === call.name)) {

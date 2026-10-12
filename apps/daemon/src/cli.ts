@@ -9876,6 +9876,8 @@ Commands:
   edit-as-page <id>         Turn a captured html asset into a new editable OD project (prints projectId).
   figma <id>                Export an html asset's OD Figma capture IR (clipper-captured pages).
   sync                      Pull design systems + agent-generated project artifacts into the Library.
+  tokens                    Studio: list your extension token metadata.
+  revoke <tokenId>          Studio: revoke one of your extension tokens.
   pair                      Mint a browser-extension pairing code.
 
 Options:
@@ -10091,6 +10093,17 @@ async function runLibrary(args) {
           `Synced ${data.total} new (${data.designSystems} design systems, ${data.projectAssets} project assets; ${data.deduped} already indexed).`,
         );
         return;
+      }
+      case 'tokens': {
+        const resp = await fetch(`${base}/api/library/connection`);
+        if (!resp.ok) return structuredHttpFailure(resp);
+        return writeJson(await resp.json());
+      }
+      case 'revoke': {
+        if (!pos[0]) { console.error('Usage: od library revoke <tokenId>'); process.exit(2); }
+        const resp = await fetch(`${base}/api/library/tokens/${encodeURIComponent(pos[0])}`, { method: 'DELETE' });
+        if (!resp.ok) return structuredHttpFailure(resp);
+        return writeJson(await resp.json());
       }
       case 'pair': {
         const resp = await fetch(`${base}/api/library/pair`, { method: 'POST' });

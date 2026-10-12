@@ -1,6 +1,22 @@
 import type { Dict } from '../types';
 
 export const id: Dict = {
+  "studio.libraryPairTitle": "Pemasangan Web Clipper",
+  "studio.libraryStudioUrl": "URL Studio",
+  "studio.libraryCopyUrl": "Salin URL Studio",
+  "studio.libraryUrlCopied": "URL Studio disalin.",
+  "studio.libraryUrlCopyFailed": "Tidak dapat menyalin. Pilih dan salin URL Studio secara manual.",
+  "studio.libraryPairedExtensions": "Ekstensi yang dipasangkan",
+  "studio.libraryRevokeLabel": "Cabut token untuk {label}",
+  "studio.libraryHint": "Pustaka ini milik akun Anda. Sinkronisasi berkas host tidak tersedia.",
+  "studio.libraryPair": "Buat kode pemasangan",
+  "studio.libraryExpires": "Kedaluwarsa pada {time}",
+  "studio.libraryPairInstructions": "Atur URL Studio ini di ekstensi dan masukkan kode dalam lima menit. Setiap kode hanya dapat digunakan sekali.",
+  "studio.libraryEmpty": "Belum ada ekstensi yang dipasangkan.",
+  "studio.libraryLastUsed": "Terakhir digunakan: {time}",
+  "studio.libraryRevoke": "Cabut token",
+  "studio.libraryError": "Permintaan pustaka gagal. Muat ulang dan coba lagi.",
+
   'studio.deployMissingHint': "Atur token penyedia Anda di Pengaturan → Deploy.",
   'studio.deployOwnerOnly': "Hanya pemilik proyek dapat melakukan deploy atau mengelola catatannya.",
 

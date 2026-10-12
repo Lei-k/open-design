@@ -1,3 +1,4 @@
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
 import {
   useEffect,
   useLayoutEffect,
@@ -352,6 +353,7 @@ export function ComposerPlusMenu({
   placementPreference = 'auto',
   openRequest,
 }: ComposerPlusMenuProps) {
+  const studio = useStudioCapabilities();
   const t = useT();
   const { locale } = useI18n();
   const [open, setOpen] = useState(false);
@@ -753,7 +755,7 @@ export function ComposerPlusMenu({
             </div>
           </PlusSubmenuRow>
           )}
-          {LIBRARY_UI_VISIBLE && onSelectFromLibrary ? (
+          {(LIBRARY_UI_VISIBLE || !studio.hostServices && studio.available('settings')) && onSelectFromLibrary ? (
             <button
               type="button"
               role="menuitem"
