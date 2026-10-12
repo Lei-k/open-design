@@ -1,6 +1,22 @@
 import type { Dict } from '../types';
 
 export const ja: Dict = {
+  "studio.libraryPairTitle": "Web Clipper のペアリング",
+  "studio.libraryStudioUrl": "Studio の URL",
+  "studio.libraryCopyUrl": "Studio の URL をコピー",
+  "studio.libraryUrlCopied": "Studio の URL をコピーしました。",
+  "studio.libraryUrlCopyFailed": "コピーできませんでした。Studio の URL を選択して手動でコピーしてください。",
+  "studio.libraryPairedExtensions": "ペアリング済みの拡張機能",
+  "studio.libraryRevokeLabel": "{label} のトークンを失効させる",
+  "studio.libraryHint": "ライブラリはあなたのアカウント専用です。ホストのファイル同期は利用できません。",
+  "studio.libraryPair": "ペアリングコードを作成",
+  "studio.libraryExpires": "{time} に期限切れ",
+  "studio.libraryPairInstructions": "拡張機能でこの Studio URL を設定し、5 分以内にコードを入力してください。各コードは一度だけ使用できます。",
+  "studio.libraryEmpty": "ペアリング済みの拡張機能はありません。",
+  "studio.libraryLastUsed": "最終使用: {time}",
+  "studio.libraryRevoke": "トークンを取り消す",
+  "studio.libraryError": "ライブラリのリクエストに失敗しました。再読み込みして再試行してください。",
+
   'studio.deployMissingHint': "設定 → デプロイで自分のプロバイダートークンを設定してください。",
   'studio.deployOwnerOnly': "プロジェクト所有者のみがデプロイと記録操作を行えます。",
 

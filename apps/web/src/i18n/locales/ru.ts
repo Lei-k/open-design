@@ -1,6 +1,22 @@
 import type { Dict } from '../types';
 
 export const ru: Dict = {
+  "studio.libraryPairTitle": "Сопряжение Web Clipper",
+  "studio.libraryStudioUrl": "Адрес Studio",
+  "studio.libraryCopyUrl": "Копировать адрес Studio",
+  "studio.libraryUrlCopied": "Адрес Studio скопирован.",
+  "studio.libraryUrlCopyFailed": "Не удалось скопировать. Выделите и скопируйте адрес Studio вручную.",
+  "studio.libraryPairedExtensions": "Сопряжённые расширения",
+  "studio.libraryRevokeLabel": "Отозвать токен для {label}",
+  "studio.libraryHint": "Библиотека принадлежит вашему аккаунту. Синхронизация файлов сервера недоступна.",
+  "studio.libraryPair": "Создать код сопряжения",
+  "studio.libraryExpires": "Истекает в {time}",
+  "studio.libraryPairInstructions": "Укажите этот URL Studio в расширении и введите код в течение пяти минут. Каждый код можно использовать один раз.",
+  "studio.libraryEmpty": "Нет подключённых расширений.",
+  "studio.libraryLastUsed": "Последнее использование: {time}",
+  "studio.libraryRevoke": "Отозвать токен",
+  "studio.libraryError": "Запрос к библиотеке не выполнен. Обновите страницу и повторите попытку.",
+
   'studio.deployMissingHint': "Настройте свой токен провайдера в Настройки → Развёртывание.",
   'studio.deployOwnerOnly': "Только владелец проекта может развёртывать и управлять записями.",
 

@@ -1,6 +1,22 @@
 import type { Dict } from '../types';
 
 export const it: Dict = {
+  "studio.libraryPairTitle": "Associazione di Web Clipper",
+  "studio.libraryStudioUrl": "URL di Studio",
+  "studio.libraryCopyUrl": "Copia URL di Studio",
+  "studio.libraryUrlCopied": "URL di Studio copiato.",
+  "studio.libraryUrlCopyFailed": "Impossibile copiare. Seleziona e copia manualmente l’URL di Studio.",
+  "studio.libraryPairedExtensions": "Estensioni associate",
+  "studio.libraryRevokeLabel": "Revoca il token di {label}",
+  "studio.libraryHint": "La libreria appartiene al tuo account. La sincronizzazione dei file dell’host non è disponibile.",
+  "studio.libraryPair": "Crea codice di associazione",
+  "studio.libraryExpires": "Scade alle {time}",
+  "studio.libraryPairInstructions": "Imposta questo URL Studio nell’estensione e inserisci il codice entro cinque minuti. Ogni codice può essere usato una sola volta.",
+  "studio.libraryEmpty": "Nessuna estensione associata.",
+  "studio.libraryLastUsed": "Ultimo utilizzo: {time}",
+  "studio.libraryRevoke": "Revoca token",
+  "studio.libraryError": "Richiesta alla libreria non riuscita. Ricarica e riprova.",
+
   'studio.deployMissingHint': "Configura il tuo token del fornitore in Impostazioni → Distribuzione.",
   'studio.deployOwnerOnly': "Solo il proprietario del progetto può distribuire o gestire i record.",
 

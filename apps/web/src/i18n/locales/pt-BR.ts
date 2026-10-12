@@ -1,6 +1,22 @@
 import type { Dict } from '../types';
 
 export const ptBR: Dict = {
+  "studio.libraryPairTitle": "Pareamento do Web Clipper",
+  "studio.libraryStudioUrl": "URL do Studio",
+  "studio.libraryCopyUrl": "Copiar URL do Studio",
+  "studio.libraryUrlCopied": "URL do Studio copiada.",
+  "studio.libraryUrlCopyFailed": "Não foi possível copiar. Selecione e copie a URL do Studio manualmente.",
+  "studio.libraryPairedExtensions": "Extensões pareadas",
+  "studio.libraryRevokeLabel": "Revogar token de {label}",
+  "studio.libraryHint": "Sua biblioteca pertence à sua conta. A sincronização de arquivos do servidor não está disponível.",
+  "studio.libraryPair": "Criar código de pareamento",
+  "studio.libraryExpires": "Expira às {time}",
+  "studio.libraryPairInstructions": "Defina esta URL do Studio na extensão e insira o código em cinco minutos. Cada código pode ser usado uma única vez.",
+  "studio.libraryEmpty": "Nenhuma extensão pareada.",
+  "studio.libraryLastUsed": "Último uso: {time}",
+  "studio.libraryRevoke": "Revogar token",
+  "studio.libraryError": "A solicitação da biblioteca falhou. Recarregue e tente novamente.",
+
   'studio.deployMissingHint': "Configure seu próprio token do provedor em Configurações → Deploy.",
   'studio.deployOwnerOnly': "Somente o proprietário do projeto pode fazer deploy ou gerenciar os registros.",
 

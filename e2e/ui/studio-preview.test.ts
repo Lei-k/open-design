@@ -1,5 +1,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import path from 'node:path';
+import type { LibraryPairingStartResponse, LibraryPairingConfirmResponse, StudioLibraryConnectionStatus } from '@open-design/contracts';
 import { clusterTest as base, expect } from '@/playwright/suite';
 import { activeArtifactPreview, activeArtifactPreviewFrame } from '@/playwright/artifact-preview';
 import { clickDeckNextSlide, clickPreviewToolbarAction } from '@/playwright/workspace';
@@ -288,6 +291,166 @@ test('[P1] Studio saves a private template in FileViewer and creates its capture
   const importedId = (await upload.json()).project.id as string;
   expect((await studio.request('GET', `/api/projects/${importedId}/files/assets/logo.svg`, studio.a.cookie)).text).toBe('<svg/>');
   expect((await studio.request('GET', `/api/projects/${importedId}`, studio.b.cookie)).status).toBe(404);
+});
+
+test('[P1] Studio Settings Library pairs an account clipper once, isolates its token and revokes ingest', async ({ page, browser, playwright, studio }, info) => {
+  const extensionOrigin = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop';
+  const label = 'Account A Web Clipper';
+  const digest = (secret: string) => createHash('sha256').update(secret).digest('hex');
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto(`${studio.origin}/settings`);
+  await page.locator('input[name="username"]').fill(studio.a.username);
+  await page.locator('input[name="password"]').fill(studio.a.password);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.getByTestId('studio-settings-nav-library').click();
+  const section = page.getByTestId('studio-library-settings');
+  const pairButton = page.getByTestId('studio-library-pair');
+  await expect(page.getByTestId('studio-settings-nav-library')).toHaveAttribute('aria-current', 'page');
+  await expect(section).toBeVisible();
+  await expect(section.getByRole('heading', { name: 'Web Clipper pairing', level: 2 })).toBeVisible();
+  await expect(section.getByRole('heading', { name: 'Paired extensions', level: 3 })).toBeVisible();
+  await expect(section.getByRole('textbox', { name: 'Studio URL', exact: true })).toHaveValue(studio.origin);
+  await expect(section.getByRole('button', { name: 'Copy Studio URL', exact: true })).toBeEnabled();
+  await expect(page.locator('.settings-content').getByText('Your library belongs to your account. Host filesystem sync is unavailable.', { exact: true })).toHaveCount(1);
+  const libraryHeading = page.getByRole('heading', { name: 'Library', exact: true, level: 1 });
+  expect(await libraryHeading.evaluate((heading) => {
+    const pairing = document.querySelector('[data-testid="studio-library-settings"]');
+    return Boolean(pairing && heading.compareDocumentPosition(pairing) & Node.DOCUMENT_POSITION_FOLLOWING);
+  })).toBe(true);
+  await expect(page.getByTestId('studio-library-empty')).toBeVisible();
+  await expect(pairButton).toBeEnabled();
+  const buttonBounds = await pairButton.boundingBox(); const sectionBounds = await section.boundingBox();
+  if (!buttonBounds || !sectionBounds) throw new Error('Missing Library pairing layout');
+  expect(buttonBounds.width).toBeLessThan(sectionBounds.width);
+  const startedAt = Date.now();
+  const created = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/library/pair');
+  await pairButton.click();
+  const creation = await created;
+  expect(creation.status()).toBe(200);
+  expect(creation.headers()['cache-control']).toBe('no-store');
+  const pairing = await creation.json() as LibraryPairingStartResponse;
+  expect(pairing.code).toMatch(/^[A-Za-z0-9_-]{16}$/);
+  expect(pairing.expiresAt).toBeGreaterThanOrEqual(startedAt + 5 * 60 * 1000);
+  expect(pairing.expiresAt).toBeLessThanOrEqual(Date.now() + 5 * 60 * 1000);
+  const displayedCode = section.getByTestId('studio-library-code').locator('code');
+  await expect(displayedCode).toHaveCount(1);
+  await expect(displayedCode).toHaveText(pairing.code);
+  await expect(section).toContainText('enter the code within five minutes. Each code can be used once.');
+  const expiryTime = await page.evaluate((time) => new Date(time).toLocaleTimeString(), pairing.expiresAt);
+  await expect(section.getByTestId('studio-library-code')).toContainText(`Expires at ${expiryTime}`);
+  const pendingMetadata = await studio.request('GET', '/api/library/connection', studio.a.cookie);
+  expect(pendingMetadata.status).toBe(200);
+  expect(pendingMetadata.json).toEqual({ paired: false, tokens: [] });
+  expect(pendingMetadata.text).not.toContain(pairing.code);
+  expect(pendingMetadata.text).not.toContain(digest(pairing.code));
+
+  const extension = await playwright.request.newContext({ baseURL: studio.origin, ignoreHTTPSErrors: true,
+    storageState: { cookies: [], origins: [] }, extraHTTPHeaders: { origin: extensionOrigin } });
+  try {
+    // Read only the fixture's database. Node 24's SQLite avoids daemon-private imports.
+    const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
+    const db = new DatabaseSync(path.join(studio.root, 'data', 'app.sqlite'), { readOnly: true });
+    try {
+      const pending = db.prepare('SELECT * FROM studio_library_pairing WHERE owner_account_id=?').get(studio.a.id);
+      expect(pending).toMatchObject({ owner_account_id: studio.a.id, code_hash: digest(pairing.code), expires_at: pairing.expiresAt });
+      expect(JSON.stringify(pending)).not.toContain(pairing.code);
+      await page.screenshot({ path: info.outputPath('studio-library-pairing-code-desktop.png'), animations: 'disabled' });
+
+      // This request context has no browser cookies and uses the actual extension exchange.
+      expect((await extension.storageState()).cookies).toEqual([]);
+      const exchangeBody = { code: pairing.code, extensionOrigin, label };
+      const webOrigin = await extension.post('/api/library/pair/confirm', { data: exchangeBody, headers: { origin: studio.origin } });
+      expect(webOrigin.status()).toBe(403);
+      const exchanged = await extension.post('/api/library/pair/confirm', { data: exchangeBody });
+      expect(exchanged.status()).toBe(200);
+      expect(exchanged.headers()['access-control-allow-origin']).toBe(extensionOrigin);
+      expect(exchanged.headers()['cache-control']).toBe('no-store');
+      const paired = await exchanged.json() as LibraryPairingConfirmResponse;
+      expect(paired.token).toMatch(/^odlt_[A-Za-z0-9_-]+$/);
+      expect(paired.label).toBe(label);
+      expect((await extension.storageState()).cookies).toEqual([]);
+      expect((await extension.post('/api/library/pair/confirm', { data: exchangeBody })).status()).toBe(401);
+      expect(db.prepare('SELECT * FROM studio_library_pairing WHERE owner_account_id=?').get(studio.a.id)).toBeUndefined();
+      const stored = db.prepare('SELECT * FROM studio_library_tokens WHERE owner_account_id=?').get(studio.a.id);
+      expect(stored).toMatchObject({ owner_account_id: studio.a.id, token_hash: digest(paired.token), label, extension_origin: extensionOrigin });
+      expect(JSON.stringify(stored)).not.toContain(paired.token);
+
+      await page.reload();
+      const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
+        && new URL(response.url()).pathname === '/api/library/connection');
+      await page.getByTestId('studio-settings-nav-library').click();
+      const connectionResponse = await loaded;
+      expect(connectionResponse.status()).toBe(200);
+      const connection = await connectionResponse.json() as StudioLibraryConnectionStatus;
+      expect(connection.paired).toBe(true);
+      expect(connection.tokens).toHaveLength(1);
+      const [token] = connection.tokens;
+      if (!token) throw new Error('Account A token metadata is missing');
+      expect(token).toMatchObject({ label, extensionOrigin });
+      expect(Object.keys(token).sort()).toEqual(['createdAt', 'extensionOrigin', 'id', 'label', 'lastUsedAt']);
+      const metadata = await connectionResponse.text();
+      for (const secret of [pairing.code, digest(pairing.code), paired.token, digest(paired.token)]) {
+        expect(metadata).not.toContain(secret);
+        expect(await page.content()).not.toContain(secret);
+      }
+      await expect(displayedCode).toHaveCount(0);
+      await expect(section).toContainText(label);
+      await expect(section).toContainText(extensionOrigin);
+      const revoke = page.getByTestId(`studio-library-revoke-${token.id}`);
+      await expect(revoke).toBeEnabled();
+      await expect(revoke).toHaveAccessibleName(`Revoke token for ${label}`);
+      await page.screenshot({ path: info.outputPath('studio-library-token-list-desktop.png'), animations: 'disabled' });
+
+      const foreign = await studio.request('GET', '/api/library/connection', studio.b.cookie);
+      expect(foreign.status).toBe(200);
+      expect(foreign.json).toEqual({ paired: false, tokens: [] });
+      expect(foreign.text).not.toContain(token.id);
+      const bContext = await browser.newContext({ ignoreHTTPSErrors: true });
+      try {
+        const bPage = await bContext.newPage();
+        await bPage.goto(`${studio.origin}/settings`);
+        await bPage.locator('input[name="username"]').fill(studio.b.username);
+        await bPage.locator('input[name="password"]').fill(studio.b.password);
+        await bPage.getByRole('button', { name: 'Sign in', exact: true }).click();
+        await bPage.getByTestId('studio-settings-nav-library').click();
+        await expect(bPage.getByTestId('studio-library-empty')).toBeVisible();
+        await expect(bPage.getByTestId('studio-library-settings')).not.toContainText(label);
+        await expect(bPage.getByTestId(`studio-library-revoke-${token.id}`)).toHaveCount(0);
+        expect(await bPage.content()).not.toContain(paired.token);
+      } finally { await bContext.close(); }
+
+      const capture = { text: 'Account A browser clipper capture', mime: 'text/plain' };
+      const tokenHeaders = { authorization: `Bearer ${paired.token}` };
+      const ingested = await extension.post('/api/library/ingest', { data: capture, headers: tokenHeaders });
+      expect(ingested.status()).toBe(200);
+      const assetId = (await ingested.json()).asset.id as string;
+      expect((await studio.request('GET', `/api/library/assets/${assetId}`, studio.a.cookie)).status).toBe(200);
+      expect((await studio.request('GET', `/api/library/assets/${assetId}`, studio.b.cookie)).status).toBe(404);
+
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.getByRole('button', { name: 'Collapse settings sidebar', exact: true }).click();
+      await expect(page.locator('#settings-sidebar')).toHaveAttribute('aria-hidden', 'true');
+      await pairButton.scrollIntoViewIfNeeded();
+      await expect(page.getByRole('heading', { name: 'Library', exact: true, level: 1 })).toBeVisible();
+      await expect(pairButton).toBeVisible();
+      await expect(revoke).toBeVisible();
+      await expect(section.getByRole('textbox', { name: 'Studio URL', exact: true })).toHaveValue(studio.origin);
+      await expect(revoke).toHaveAccessibleName(`Revoke token for ${label}`);
+      await expect(section).toContainText(label);
+      await page.screenshot({ path: info.outputPath('studio-library-section-phone.png'), animations: 'disabled' });
+
+      const revoked = page.waitForResponse((response) => response.request().method() === 'DELETE'
+        && new URL(response.url()).pathname === `/api/library/tokens/${token.id}`);
+      await revoke.click();
+      expect((await revoked).status()).toBe(200);
+      await expect(page.getByTestId('studio-library-empty')).toBeVisible();
+      await expect(revoke).toHaveCount(0);
+      expect((await extension.post('/api/library/ingest', { data: capture, headers: tokenHeaders })).status()).toBe(401);
+      expect((await studio.request('GET', '/api/library/connection', studio.a.cookie)).json).toEqual({ paired: false, tokens: [] });
+      expect(db.prepare('SELECT * FROM studio_library_tokens WHERE owner_account_id=?').get(studio.a.id)).toBeUndefined();
+    } finally { db.close(); }
+  } finally { await extension.dispose(); }
 });
 
 test('[P1] Studio saves private skills, instructions and memory in shared Settings and runs their captured text', async ({ page, studio }, info) => {

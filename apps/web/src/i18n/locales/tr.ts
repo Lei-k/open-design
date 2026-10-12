@@ -1,6 +1,22 @@
 import type { Dict } from '../types';
 
 export const tr: Dict = {
+  "studio.libraryPairTitle": "Web Clipper eşleştirme",
+  "studio.libraryStudioUrl": "Studio adresi",
+  "studio.libraryCopyUrl": "Studio adresini kopyala",
+  "studio.libraryUrlCopied": "Studio adresi kopyalandı.",
+  "studio.libraryUrlCopyFailed": "Kopyalanamadı. Studio adresini seçip elle kopyalayın.",
+  "studio.libraryPairedExtensions": "Eşleştirilmiş uzantılar",
+  "studio.libraryRevokeLabel": "{label} için belirteci iptal et",
+  "studio.libraryHint": "Kitaplığınız hesabınıza aittir. Ana makine dosya eşitlemesi kullanılamaz.",
+  "studio.libraryPair": "Eşleştirme kodu oluştur",
+  "studio.libraryExpires": "{time} saatinde sona erer",
+  "studio.libraryPairInstructions": "Uzantıda bu Studio URL’sini ayarlayın ve beş dakika içinde kodu girin. Her kod yalnızca bir kez kullanılabilir.",
+  "studio.libraryEmpty": "Eşleştirilmiş uzantı yok.",
+  "studio.libraryLastUsed": "Son kullanım: {time}",
+  "studio.libraryRevoke": "Belirteci iptal et",
+  "studio.libraryError": "Kitaplık isteği başarısız oldu. Yeniden yükleyip tekrar deneyin.",
+
   'studio.deployMissingHint': "Ayarlar → Dağıtım bölümünde kendi sağlayıcı tokeninizi yapılandırın.",
   'studio.deployOwnerOnly': "Yalnızca proje sahibi dağıtabilir veya dağıtım kayıtlarını yönetebilir.",
 
