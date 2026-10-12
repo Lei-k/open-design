@@ -374,6 +374,8 @@ interface Props {
   // portal that targets the same actions container.
   fileActionsBefore?: ReactNode;
   headerActions?: ReactNode;
+  /** Project delivery content has its own row, outside fixed-height tab chrome. */
+  deliveryActions?: ReactNode;
   /**
    * Read-only view of a team-shared project. A member who received a project
    * shared to the team sees it single-writer/read-only (they can view and
@@ -1398,6 +1400,7 @@ export function FileWorkspace({
   conversationId,
   fileActionsBefore,
   headerActions,
+  deliveryActions,
   viewerOnly = false,
   materializationPending = false,
   filesAuthoritative = true,
@@ -4206,6 +4209,7 @@ export function FileWorkspace({
           ) : null}
         </div>
       </div>
+      {!initialMaterializationPending ? deliveryActions : null}
       {!initialMaterializationPending && launcherOpen ? (
         <TabLauncherMenu
           anchor={launcherBtnRef.current}

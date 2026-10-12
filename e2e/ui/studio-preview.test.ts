@@ -659,26 +659,39 @@ test('[P1] Studio synthesis entry points on desktop and phone finalize on the co
   expect(messages.json.messages).toContainEqual(expect.objectContaining({ role: 'user', content: 'Create a calm company landing page to finalize.' }));
 
   await page.goto(`${studio.origin}/projects/${projectId}/files/company.html`);
-  const header = page.locator('.ws-tabs-project-actions').getByTestId('studio-synthesis-actions');
-  const duplicate = page.locator('.ws-tabs-file-actions').getByTestId('studio-synthesis-actions');
-  await expect(header.getByRole('button', { name: 'Finalize with AI', exact: true })).toBeEnabled({ timeout: T.long });
-  await expect(header.getByRole('button', { name: 'Create handoff prompt', exact: true })).toBeEnabled();
-  await expect(header.getByRole('combobox')).toHaveValue('company_pool');
-  // #104 followup: the FileViewer portal duplicates finalize beside the header.
-  // Capture current behavior deliberately; this test does not repair it.
-  await expect(duplicate.getByRole('button', { name: 'Finalize with AI', exact: true })).toBeVisible();
-  await expect(duplicate.getByRole('combobox')).toHaveValue('company_pool');
-  await expect(page.getByTestId('studio-synthesis-actions')).toHaveCount(2);
-  await expect(header.getByRole('button', { name: 'Finalize with AI', exact: true })).toBeInViewport();
-  await expect(duplicate.getByRole('button', { name: 'Finalize with AI', exact: true })).toBeInViewport();
-  await page.screenshot({ path: info.outputPath('studio-synthesis-desktop-entry-duplicate.png'), animations: 'disabled', fullPage: true });
-
-  await page.setViewportSize({ width: 390, height: 844 });
-  await header.getByRole('button', { name: 'Finalize with AI', exact: true }).scrollIntoViewIfNeeded();
-  await expect(header.getByRole('button', { name: 'Finalize with AI', exact: true })).toBeVisible();
-  await expect(header.getByRole('button', { name: 'Finalize with AI', exact: true })).toBeInViewport();
-  await expect(header.getByRole('button', { name: 'Create handoff prompt', exact: true })).toBeVisible();
-  await page.screenshot({ path: info.outputPath('studio-synthesis-phone-entry.png'), animations: 'disabled' });
+  const entry = page.getByTestId('studio-synthesis-actions');
+  const checkLayout = async () => {
+    await expect(entry).toHaveCount(1);
+    await expect(entry.getByRole('button', { name: 'Finalize with AI', exact: true })).toBeEnabled({ timeout: T.long });
+    await expect(entry.getByRole('button', { name: 'Create handoff prompt', exact: true })).toBeEnabled();
+    await expect(entry.getByRole('combobox')).toHaveValue('company_pool');
+    expect(await entry.evaluate((element) => element.closest('.ws-tabs-shell'))).toBeNull();
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    // Measure panel and select in one frame; a viewport change can leave the
+    // split-pane width animating, so poll until the geometry is contained.
+    await expect.poll(() => entry.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const select = element.querySelector('select')!.getBoundingClientRect();
+      return select.left >= box.left && select.top >= box.top && select.right <= box.right
+        && select.bottom <= box.bottom && box.left >= 0 && box.right <= window.innerWidth;
+    }), { timeout: T.long }).toBe(true);
+    // The text line plus native select padding/borders fits vertically.
+    expect(await entry.getByRole('combobox').evaluate((element) => {
+      const style = getComputedStyle(element);
+      return element.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) >= parseFloat(style.fontSize);
+    })).toBe(true);
+    await expect(entry.getByRole('button', { name: 'Finalize with AI', exact: true })).toBeInViewport();
+    await expect(entry.getByRole('button', { name: 'Create handoff prompt', exact: true })).toBeInViewport();
+  };
+  for (const [width, height, screenshot] of [
+    [1600, 1000, 'studio-synthesis-desktop-entry.png'],
+    [1280, 720, 'studio-synthesis-compact-entry.png'],
+    [390, 844, 'studio-synthesis-phone-entry.png'],
+  ] as const) {
+    await page.setViewportSize({ width, height });
+    await checkLayout();
+    await page.screenshot({ path: info.outputPath(screenshot), animations: 'disabled' });
+  }
   await page.setViewportSize({ width: 1600, height: 1000 });
 
   const before = await studio.request('GET', `/api/projects/${projectId}/synthesis`, studio.a.cookie);
@@ -686,7 +699,7 @@ test('[P1] Studio synthesis entry points on desktop and phone finalize on the co
   expect(before.json.defaultSource).toBe('company_pool');
   const finalized = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === `/api/projects/${projectId}/finalize/openai`);
-  await header.getByRole('button', { name: 'Finalize with AI', exact: true }).click();
+  await entry.getByRole('button', { name: 'Finalize with AI', exact: true }).click();
   const result = await finalized;
   expect(result.status(), await result.text()).toBe(200);
   expect(result.request().postDataJSON()).toEqual({ executionSource: 'company_pool', digest: before.json.digest });
@@ -712,10 +725,14 @@ test('[P1] Studio synthesis entry points on desktop and phone finalize on the co
     expect(foreign.status).toBe(404); expect(missing.status).toBe(404);
     expect(foreign.text).toBe(missing.text);
   }
-  const saved = header.locator('[data-synthesis-result="finalize"]');
+  const saved = entry.locator('[data-synthesis-result="finalize"]');
   await expect(saved).toHaveAttribute('data-current', 'true', { timeout: T.long });
   await expect(saved).toContainText('DESIGN.md');
-  await expect(duplicate.locator('[data-synthesis-result="finalize"]')).toHaveAttribute('data-current', 'true', { timeout: T.long });
+  for (const [width, height] of [[1600, 1000], [1280, 720], [390, 844]] as const) {
+    await page.setViewportSize({ width, height });
+    await checkLayout();
+  }
+  await page.setViewportSize({ width: 1600, height: 1000 });
   await page.screenshot({ path: info.outputPath('studio-synthesis-finalize-result.png'), animations: 'disabled', fullPage: true });
 });
 

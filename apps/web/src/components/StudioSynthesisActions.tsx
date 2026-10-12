@@ -93,18 +93,20 @@ function StudioSynthesisPanel({ projectId, conversationId, canWrite = true }: Pr
   const current = receipt && state?.results[receipt.action]?.id === receipt.id && state.results[receipt.action]?.current === true;
   const savedResults = Object.values(state?.results ?? {}).filter((result): result is StudioSynthesisResult => Boolean(result));
   return <div data-testid="studio-synthesis-actions" className={styles.actions}>
-    <select aria-label={t('multiuserRuns.source')} value={selected ?? ''} disabled={!!busy || !usable || !state}
-      className={styles.source} onChange={(event) => { setSelection(event.target.value as RunExecutionSource); setReceipt(null); setError(null); }}>
-      <option value="" disabled>{t('studio.synthesis.chooseSource')}</option>
-      {state?.sources.map((item) => <option key={item.executionSource} value={item.executionSource}>
-        {t(item.executionSource === 'company_pool' ? 'multiuser.executionSourceCompanyOpenAI'
-          : item.executionSource === 'personal_api_key' ? 'multiuser.executionSourcePersonalKey' : 'multiuser.executionSourcePersonalCodex')}
-      </option>)}
-    </select>
-    <Button className={styles.button} disabled={!enabled} aria-describedby={description} onClick={() => void perform('finalize')}>
-      {t('studio.synthesis.finalize')}
-    </Button>
-    {conversationId && <Button className={styles.button} disabled={!enabled} aria-describedby={description} onClick={() => void perform('handoff')}>{t('studio.synthesis.handoff')}</Button>}
+    <div data-synthesis-controls className={styles.controls}>
+      <select aria-label={t('multiuserRuns.source')} value={selected ?? ''} disabled={!!busy || !usable || !state}
+        className={styles.source} onChange={(event) => { setSelection(event.target.value as RunExecutionSource); setReceipt(null); setError(null); }}>
+        <option value="" disabled>{t('studio.synthesis.chooseSource')}</option>
+        {state?.sources.map((item) => <option key={item.executionSource} value={item.executionSource}>
+          {t(item.executionSource === 'company_pool' ? 'multiuser.executionSourceCompanyOpenAI'
+            : item.executionSource === 'personal_api_key' ? 'multiuser.executionSourcePersonalKey' : 'multiuser.executionSourcePersonalCodex')}
+        </option>)}
+      </select>
+      <Button className={styles.button} disabled={!enabled} aria-describedby={description} onClick={() => void perform('finalize')}>
+        {t('studio.synthesis.finalize')}
+      </Button>
+      {conversationId && <Button className={styles.button} disabled={!enabled} aria-describedby={description} onClick={() => void perform('handoff')}>{t('studio.synthesis.handoff')}</Button>}
+    </div>
     <span id={description} role="status" data-refusal={reason ?? undefined}>{busy ? t('common.loading') : reasonText}</span>
     {error && <span role="alert">{error}</span>}
     {savedResults.map((result) => <span key={result.id} role="status" data-synthesis-result={result.action} data-current={result.current}>

@@ -239,12 +239,13 @@ vi.mock('../../src/components/FileWorkspace', () => ({
     filesGeneration?: number;
     files?: ProjectFile[];
     headerActions?: ReactNode;
+    deliveryActions?: ReactNode;
     onRefreshFiles?: (options?: { fresh?: boolean }) => Promise<{
       acceptedGeneration: number | null;
     }>;
   }) => {
     fileWorkspaceSpy(props);
-    return <div data-testid="file-workspace"><div data-testid="workspace-header-actions">{props.headerActions}</div></div>;
+    return <div data-testid="file-workspace"><div data-testid="workspace-header-actions">{props.headerActions}</div><div data-testid="workspace-delivery-actions">{props.deliveryActions}</div></div>;
   },
 }));
 
@@ -1772,7 +1773,7 @@ describe('ProjectView pending prompt seeding', () => {
       expect(composerValue()).toBe('');
     });
   });
-  it('S71 exposes project finalize and conversation handoff on a Studio OpenAI source', async () => {
+  it('layout: S71 exposes one project delivery panel outside the tab header on a Studio OpenAI source', async () => {
     const account: AuthAccount = { id:'A',username:'A',role:'user',active:true,passwordState:'set',createdAt:1,updatedAt:1 };
     const capabilities = { schemaVersion:1,shell:'studio', executionSources:[{agentId:'openai-byok',source:'personal_api_key'}],
       features:Object.fromEntries(STUDIO_PARITY_LANES.map(({id}) => [id,{status:'pilot',reason:'Pilot'}])) } as StudioRuntimeCapabilities;
@@ -1789,6 +1790,9 @@ describe('ProjectView pending prompt seeding', () => {
     </StudioCapabilitiesProvider>);
     await waitFor(() => expect((screen.getByRole('button',{name:'studio.synthesis.finalize'}) as HTMLButtonElement).disabled).toBe(false));
     expect(await screen.findByRole('button',{name:'studio.synthesis.handoff'})).toBeTruthy();
+    expect(screen.getAllByTestId('studio-synthesis-actions')).toHaveLength(1);
+    expect(within(screen.getByTestId('workspace-header-actions')).queryByTestId('studio-synthesis-actions')).toBeNull();
+    expect(within(screen.getByTestId('workspace-delivery-actions')).getByTestId('studio-synthesis-actions')).toBeTruthy();
   });
 
   it.each(['openai-byok','openai','codex'])('C: shared editor viewing owner %s pin must explicitly select a synthesis source', async (agentId) => {
@@ -1811,7 +1815,7 @@ describe('ProjectView pending prompt seeding', () => {
       {projectViewElement(project('s71-editor'))}
     </StudioCapabilitiesProvider>);
     await waitFor(() => expect(latestChatPaneProps().messages).toContainEqual(expect.objectContaining({id:'owner-message'})));
-    const actions=within(screen.getByTestId('workspace-header-actions')).getByTestId('studio-synthesis-actions');
+    const actions=within(screen.getByTestId('workspace-delivery-actions')).getByTestId('studio-synthesis-actions');
     const finalize=within(actions).getByRole('button',{name:'studio.synthesis.finalize'}) as HTMLButtonElement;
     await waitFor(() => expect(actions.querySelector('[data-refusal]')?.getAttribute('data-refusal')).toBe('source-required'));
     expect(finalize.disabled).toBe(true);fireEvent.click(finalize);expect(posts).toEqual([]);

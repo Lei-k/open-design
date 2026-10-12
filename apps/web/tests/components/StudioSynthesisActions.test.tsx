@@ -151,3 +151,20 @@ it.each(['actor','source','project'])('C: %s transition discards a private hando
   }
   await waitFor(()=>expect(screen.queryByDisplayValue('Private actor prompt')).toBeNull());
 });
+
+it('layout: controls and private handoff output occupy separate rows outside file toolbar chrome', async () => {
+  const result = {id:'layout-job',projectId:'p',action:'handoff' as const,conversationId:'c',executionSource:'personal_api_key' as const,
+    fileName:'HANDOFF.md' as const,digest,current:true,createdAt:1,model:'fixture',inputTokens:1,outputTokens:2,transcriptMessageCount:1};
+  mock.fetch.mockImplementation(async (_url: string, init?: RequestInit) => {
+    if (init?.method === 'POST') { snapshot.results.handoff = result; return Response.json({...result,prompt:'Private layout prompt'}); }
+    return Response.json(snapshot);
+  });
+  render(<StudioSynthesisActions projectId="p" conversationId="c" />);
+  await waitFor(() => expect((screen.getByRole('button',{name:'Create handoff prompt'}) as HTMLButtonElement).disabled).toBe(false));
+  const controls = screen.getByRole('combobox').closest('[data-synthesis-controls]');
+  expect(controls).not.toBeNull();
+  fireEvent.click(screen.getByRole('button',{name:'Create handoff prompt'}));
+  const prompt = await screen.findByDisplayValue('Private layout prompt');
+  expect(controls!.contains(prompt)).toBe(false);
+  expect(screen.getByTestId('studio-synthesis-actions').contains(prompt)).toBe(true);
+});

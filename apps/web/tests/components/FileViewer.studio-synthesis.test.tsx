@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { STUDIO_PARITY_LANES, type AuthAccount, type StudioRuntimeCapabilities, type StudioSynthesisState } from '@open-design/contracts';
+import { StudioSynthesisActions } from '../../src/components/StudioSynthesisActions';
 import { FileViewer } from '../../src/components/FileViewer';
 import { CookieSession } from '../../src/multiuser/session';
 import { StudioCapabilitiesProvider } from '../../src/runtime/studio-capabilities';
@@ -27,6 +28,7 @@ async function mount(source: 'personal_api_key' | 'personal_subscription' | null
   }));
   const session = new CookieSession(); await session.verify(); const snap=session.snapshot();
   render(<StudioCapabilitiesProvider session={session} generation={snap.generation} actor={account} capabilities={snap.studio!}>
+    <StudioSynthesisActions projectId="p" conversationId="c" canWrite={!viewerOnly} />
     <FileViewer projectId="p" projectKind="prototype" viewerOnly={viewerOnly} liveHtml="<h1>Design</h1>"
       file={{name:'index.html',path:'index.html',type:'file',size:32,mtime:1,kind:'html',mime:'text/html',
         artifactManifest:{version:1,kind:'html',title:'Design',entry:'index.html',renderer:'html',exports:['html']}}} />
@@ -64,4 +66,10 @@ it('FileViewer keeps synthesis disabled for read-only project viewers', async ()
   expect(actions.getByRole('status').getAttribute('data-refusal')).toBe('project-read-only');
   expect((actions.getByRole('button',{name:'Finalize with AI'}) as HTMLButtonElement).disabled).toBe(true);
   expect(calls.some((call) => call.body?.executionSource)).toBe(false);
+});
+
+it('layout: a project delivery panel beside an HTML FileViewer owns exactly one source poller', async () => {
+  const calls = await mount('personal_api_key');
+  await waitFor(() => expect(calls.filter((call) => call.url.endsWith('/synthesis'))).toHaveLength(1));
+  expect(screen.getAllByTestId('studio-synthesis-actions')).toHaveLength(1);
 });
