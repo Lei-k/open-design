@@ -126,6 +126,10 @@ async function turn(id: number, params: Json): Promise<void> {
     notify('item/completed', { threadId, turnId, item: { type: 'commandExecution', id: 'failed-start',
       command: 'fixture-tool', status: 'failed', exitCode: null, aggregatedOutput: 'failed to spawn workspace tool' } });
   }
+  if (text.includes('[mock-code-mode-host-failure]')) {
+    notify('item/completed', { threadId, turnId, item: { type: 'functionCallOutput', id: 'host-failure', name: 'exec',
+      namespace: 'functions', output: 'failed to spawn code-mode host /opt/codex/bin/codex-code-mode-host: No such file or directory (os error 2)' } });
+  }
   if (text.includes('[mock-mcp-startup-failure]')) {
     notify('mcpServer/startupStatus/updated', { threadId, name: 'fixture', status: 'failed' });
   }

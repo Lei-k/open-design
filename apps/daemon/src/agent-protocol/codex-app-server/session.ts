@@ -444,6 +444,8 @@ export function attachCodexAppServerSession(
     if (opts.reportToolStartupFailures && frame.method === 'item/completed') {
       const params = isRecord(frame.params) ? frame.params : {};
       const item = isRecord(params.item) ? params.item : {};
+      if (item.type === 'functionCallOutput' && (terminalReceived || params.threadId !== threadId
+        || (activeTurnId && params.turnId !== activeTurnId))) return;
       if (!terminalReceived && params.threadId === threadId && (!activeTurnId || params.turnId === activeTurnId)
         && item.type === 'mcpToolCall' && item.status === 'failed' && item.result === null && typeof item.server === 'string') {
         onAgentEvent({ type: 'workspace_tool_failed_attempt', server: item.server, scope: startupScope });

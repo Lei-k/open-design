@@ -504,6 +504,7 @@ export const th: Dict = {
   "chat.runError.title.codexVersion": "ต้องอัปเดต Codex",
   "chat.runError.title.toolsUnavailable": "เครื่องมือพื้นที่ทำงานไม่พร้อมใช้งาน",
   "chat.runError.codexVersionMessage": "ขอให้ผู้ดูแลติดตั้ง Codex 0.162.1 หรือใหม่กว่า เซิร์ฟเวอร์ไม่สามารถยืนยันเวอร์ชันที่รองรับได้",
+  "chat.runError.codexHostMessage": "ขอให้ผู้ดูแลระบบติดตั้งแพ็กเกจรุ่น Codex แบบเต็มอีกครั้ง ไฟล์ปฏิบัติการเสริม codex-code-mode-host หายไปหรือไม่พร้อมใช้งาน",
   "chat.runError.toolsUnavailableMessage": "เครื่องมือพื้นที่ทำงานเริ่มไม่ได้และรอบนี้ไม่มีการเปลี่ยนแปลงหรือผลงาน โปรดติดต่อผู้ดูแล",
   'chat.runError.outputInvalidMessage': 'โปรดลองสร้างใหม่ หรือเปลี่ยนโมเดลแล้วลองอีกครั้ง หากยังเกิดปัญหาต่อเนื่อง โปรดติดต่อฝ่ายสนับสนุน',
   'chat.runError.runtimeConfigMessage': 'โปรดลองสร้างใหม่ หรือเปลี่ยนโมเดลแล้วลองอีกครั้ง หากยังเกิดปัญหาต่อเนื่อง โปรดติดต่อฝ่ายสนับสนุน',

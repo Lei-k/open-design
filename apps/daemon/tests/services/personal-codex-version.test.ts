@@ -1,19 +1,41 @@
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, utimesSync, existsSync, readdirSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, utimesSync, existsSync, readdirSync, symlinkSync, chmodSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { PersonalCodexAccounts, runPersonalCodexTurn } from '../../src/services/personal-codex-accounts.js';
-import { assertPersonalCodexVersion } from '../../src/services/personal-codex-version.js';
+import { assertPersonalCodexVersion, assertPersonalCodexHost } from '../../src/services/personal-codex-version.js';
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 function binary(version: string) {
   const root = mkdtempSync(path.join(tmpdir(), 's57-version-')); roots.push(root);
   const bin = path.join(root, 'codex'); const calls = path.join(root, 'calls');
   writeFileSync(bin, `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(calls)}, '1'); process.stdout.write(${JSON.stringify(version)});`, { mode: 0o700 });
+  writeFileSync(path.join(root, 'codex-code-mode-host'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
   return { bin, calls };
 }
 describe('personal Codex version floor', () => {
+  it.each(['missing', 'directory', 'not executable'])('refuses a %s companion host and recovers without changing codex', async (kind) => {
+    const { bin } = binary('codex-cli 0.162.1'); const root = path.dirname(bin);
+    const host = path.join(root, 'codex-code-mode-host');
+    await assertPersonalCodexHost(bin); // Inspect the valid package first.
+    rmSync(host);
+    if (kind === 'directory') mkdirSync(host);
+    if (kind === 'not executable') writeFileSync(host, 'host', { mode: 0o600 });
+    await expect(assertPersonalCodexHost(bin)).rejects.toMatchObject({ code: 'MULTIUSER_CODEX_HOST_UNAVAILABLE' });
+    rmSync(host, { recursive: true, force: true });
+    writeFileSync(host, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    await expect(assertPersonalCodexHost(bin)).resolves.toBeUndefined();
+  });
+  it('finds the host beside the resolved binary, not beside its configured symlink', async () => {
+    const { bin } = binary('codex-cli 0.162.1'); const root = path.dirname(bin);
+    const aliasDir = path.join(root, 'aliases'); mkdirSync(aliasDir);
+    const alias = path.join(aliasDir, 'codex'); symlinkSync(bin, alias);
+    await expect(assertPersonalCodexHost(alias)).resolves.toBeUndefined();
+    chmodSync(path.join(root, 'codex-code-mode-host'), 0o600);
+    writeFileSync(path.join(aliasDir, 'codex-code-mode-host'), 'host', { mode: 0o700 });
+    await expect(assertPersonalCodexHost(alias)).rejects.toMatchObject({ code: 'MULTIUSER_CODEX_HOST_UNAVAILABLE' });
+  });
   it('does not cache a timeout and re-probes the next request', async () => {
     const { bin, calls } = binary('');
     writeFileSync(bin, `#!${process.execPath}\nconst fs = require('node:fs'); fs.appendFileSync(${JSON.stringify(calls)}, '1');
@@ -66,7 +88,7 @@ fs.mkdirSync(path.join(process.env.CODEX_HOME, 'tmp', 'arg0'), { recursive: true
     const env = JSON.parse(readFileSync(trace, 'utf8'));
     expect(env.cwd).not.toBe(root); expect(path.dirname(env.cwd)).toBe(root);
     expect(env.home).toBe(env.cwd); expect(env.codexHome).toBe(env.cwd); expect(env.entries).toEqual([]);
-    expect(existsSync(env.cwd)).toBe(false); expect(readdirSync(root).sort()).toEqual(['codex', 'probe-env']);
+    expect(existsSync(env.cwd)).toBe(false); expect(readdirSync(root).sort()).toEqual(['codex', 'codex-code-mode-host', 'probe-env']);
   });
   it('shares an asynchronous probe across concurrent admissions', async () => {
     const { bin, calls } = binary('codex-cli 0.162.1');

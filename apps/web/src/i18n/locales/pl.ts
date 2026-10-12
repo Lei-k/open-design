@@ -375,6 +375,7 @@ export const pl: Dict = {
   "chat.runError.title.codexVersion": "Codex wymaga aktualizacji",
   "chat.runError.title.toolsUnavailable": "Narzędzia obszaru roboczego są niedostępne",
   "chat.runError.codexVersionMessage": "Poproś administratora o instalację Codex 0.162.1 lub nowszego. Serwer nie mógł potwierdzić obsługiwanej wersji.",
+  "chat.runError.codexHostMessage": "Poproś administratora o ponowną instalację pełnego pakietu Codex. Brakuje pomocniczego pliku wykonywalnego codex-code-mode-host lub jest on niedostępny.",
   "chat.runError.toolsUnavailableMessage": "Narzędzia obszaru roboczego nie uruchomiły się. Ta tura nie wprowadziła zmian ani nie utworzyła artefaktu. Skontaktuj się z administratorem.",
   'chat.runError.outputInvalidMessage': 'Spróbuj wygenerować ponownie albo zmień model i spróbuj jeszcze raz. Jeśli problem się powtarza, skontaktuj się z pomocą techniczną.',
   'chat.runError.runtimeConfigMessage': 'Spróbuj wygenerować ponownie albo zmień model i spróbuj jeszcze raz. Jeśli problem się powtarza, skontaktuj się z pomocą techniczną.',

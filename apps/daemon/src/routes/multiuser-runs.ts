@@ -1485,9 +1485,11 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           .sort((a, b) => (turns.get(a.owner_account_id) ?? 0) - (turns.get(b.owner_account_id) ?? 0) || Number(a.queue_seq) - Number(b.queue_seq))[0];
         if (!next) break;
         try {
-          try { await personal.assertSupportedVersion(); } catch {
+          try { await personal.assertSupportedVersion(); } catch (error) {
             if (storesClosed || shuttingDown) return;
-            if (row(next.id)?.status === 'queued') finish(next.id, 'failed', { reason: 'MULTIUSER_CODEX_UNSUPPORTED_VERSION' });
+            if (row(next.id)?.status === 'queued') finish(next.id, 'failed', {
+              reason: error instanceof PersonalAccountError ? error.code : 'MULTIUSER_CODEX_UNSUPPORTED_VERSION',
+            });
             continue;
           }
           if (storesClosed || shuttingDown) return;

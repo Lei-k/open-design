@@ -95,6 +95,8 @@ afterAll(async () => { await daemon?.close(); cleanupIsolatedDataRoot(); });
 describe('personal subscription run lane', () => {
   it.each([
     ['[mock-tool-startup-failure]', 'failed'],
+    ['[mock-code-mode-host-failure]', 'failed'],
+    ['[mock-code-mode-host-failure] [mock-write=recovered.html]', 'succeeded'],
     ['text-only answer', 'succeeded'],
     ['[mock-tool-startup-failure] [mock-write=recovered.html]', 'succeeded'],
     ['[mock-mcp-startup-failure] text-only answer', 'succeeded'],

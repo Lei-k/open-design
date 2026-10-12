@@ -8,6 +8,20 @@ const PROBE_TIMEOUT_MS = 5_000;
 /** Grace after the child-level timeout before the probe settles regardless of the child or its descendants. */
 const PROBE_DEADLINE_GRACE_MS = 1_000;
 
+/** Check the companion on every use, including when the version is cached. */
+export async function assertPersonalCodexHost(binary: string): Promise<void> {
+  try {
+    const resolved = await fs.realpath(binary);
+    const host = path.join(path.dirname(resolved), 'codex-code-mode-host');
+    if (!(await fs.stat(host)).isFile()) throw new Error('not a regular file');
+    await fs.access(host, fs.constants.X_OK);
+  } catch {
+    const message = 'codex-code-mode-host must be an executable regular file beside the resolved Codex binary; install the full Codex release package';
+    console.error(`[Studio] MULTIUSER_CODEX_HOST_UNAVAILABLE: ${message}`);
+    throw new PersonalAccountError(409, 'MULTIUSER_CODEX_HOST_UNAVAILABLE', message);
+  }
+}
+
 /**
  * Runs `<binary> --version` and always settles. The child is killed with
  * SIGKILL at `timeoutMs` (a binary that traps SIGTERM cannot keep it alive),
@@ -68,4 +82,5 @@ export async function assertPersonalCodexVersion(binary: string, dataRoot: strin
     console.error(`[Studio] MULTIUSER_CODEX_UNSUPPORTED_VERSION: Codex ${STUDIO_CODEX_MINIMUM_VERSION} or newer required; version discovery refused`);
     throw new PersonalAccountError(409, 'MULTIUSER_CODEX_UNSUPPORTED_VERSION', `Codex ${STUDIO_CODEX_MINIMUM_VERSION} or newer is required`);
   }
+  await assertPersonalCodexHost(binary);
 }

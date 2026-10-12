@@ -504,6 +504,7 @@ export const ar: Dict = {
   "chat.runError.title.codexVersion": "يحتاج Codex إلى تحديث",
   "chat.runError.title.toolsUnavailable": "أدوات مساحة العمل غير متاحة",
   "chat.runError.codexVersionMessage": "اطلب من المسؤول تثبيت Codex 0.162.1 أو أحدث. تعذر على الخادم التحقق من إصدار مدعوم.",
+  "chat.runError.codexHostMessage": "اطلب من المسؤول إعادة تثبيت حزمة إصدار Codex الكاملة. الملف التنفيذي المرافق codex-code-mode-host مفقود أو غير متاح.",
   "chat.runError.toolsUnavailableMessage": "تعذر بدء أدوات مساحة العمل ولم تنتج هذه الجولة تغييرات أو مخرجات. اتصل بالمسؤول.",
   'chat.runError.outputInvalidMessage': 'جرّب إعادة الإنشاء، أو غيّر النموذج ثم أعد المحاولة. إذا استمرت المشكلة، تواصل مع الدعم.',
   'chat.runError.runtimeConfigMessage': 'جرّب إعادة الإنشاء، أو غيّر النموذج ثم أعد المحاولة. إذا استمرت المشكلة، تواصل مع الدعم.',

@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { closeHttpServer } from './daemon-startup.js';
+import { assertPersonalCodexHost } from './services/personal-codex-version.js';
 import {
   MULTIUSER_NOT_LAUNCH_READY_ACK, MULTIUSER_STAGING_DEPLOYMENT_ACK, PERSONAL_CODEX_REAL_PROVIDER_ACK,
   type MultiUserModeOptions,
@@ -163,6 +164,9 @@ async function main(): Promise<void> {
     throw new MultiUserServeConfigError(`cannot read a JSON config from ${configPath}`);
   }
   const resolved = resolveMultiUserServeConfig(parsed);
+  if (resolved.multiUser.testPersonalCodexRealBinary) {
+    await assertPersonalCodexHost(resolved.multiUser.testPersonalCodexRealBinary.path);
+  }
   // Links the daemon builds for the browser point at the public origin, not at loopback.
   process.env.OD_PUBLIC_BASE_URL ??= resolved.publicOrigin;
   // server.ts resolves the data root when it is imported, so it is imported only now.
