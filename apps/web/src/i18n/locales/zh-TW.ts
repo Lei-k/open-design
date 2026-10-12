@@ -510,6 +510,7 @@ export const zhTW: Dict = {
   "chat.runError.title.codexVersion": "需要更新 Codex",
   "chat.runError.title.toolsUnavailable": "工作區工具無法使用",
   "chat.runError.codexVersionMessage": "請聯絡管理員安裝 Codex 0.162.1 或更新版本。伺服器無法確認受支援的版本。",
+  "chat.runError.codexHostMessage": "請聯絡管理員重新安裝完整的 Codex 發行套件。配套的 codex-code-mode-host 執行檔遺失或無法使用。",
   "chat.runError.toolsUnavailableMessage": "工作區工具無法啟動，本輪未產生修改或產物。請聯絡管理員。",
   "chat.runError.outputInvalidMessage": "請嘗試重新產生，或更換模型後重試。如果問題持續出現，請聯絡支援。",
   "chat.runError.runtimeConfigMessage": "請嘗試重新產生，或更換模型後重試。如果問題持續出現，請聯絡支援。",

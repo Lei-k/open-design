@@ -140,6 +140,10 @@ export class PersonalRunEvents {
   accept(event: Record<string, unknown>): void {
     stampToolTiming(event, this.clock);
     const type = event.type;
+    if (type === 'workspace_code_mode_host_failure') {
+      this.toolStartupFailed = true;
+      return; // No raw host path or orphan tool result crosses the privacy boundary.
+    }
     if (type === 'workspace_tool_startup_failure' && typeof event.server === 'string' && typeof event.scope === 'string') {
       const key = createHash('sha256').update(JSON.stringify([event.scope, event.server])).digest('hex');
       if (this.failedMcpServers.size < EVENT_LIMIT) this.failedMcpServers.add(key);

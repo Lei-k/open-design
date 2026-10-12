@@ -700,6 +700,7 @@ describe('resolveRunFailureUi', () => {
 
 it.each([
   ['MULTIUSER_CODEX_UNSUPPORTED_VERSION', 'chat.runError.codexVersionMessage'],
+  ['MULTIUSER_CODEX_HOST_UNAVAILABLE', 'chat.runError.codexHostMessage'],
   ['MULTIUSER_RUN_TOOLS_UNAVAILABLE', 'chat.runError.toolsUnavailableMessage'],
 ])('uses translated typed deployment failure copy for %s', (code, messageKey) => {
   expect(resolveRunFailureUi(code, null, 'codex')).toMatchObject({

@@ -375,6 +375,7 @@ export const fa: Dict = {
   "chat.runError.title.codexVersion": "Codex نیاز به به‌روزرسانی دارد",
   "chat.runError.title.toolsUnavailable": "ابزارهای فضای کاری در دسترس نیستند",
   "chat.runError.codexVersionMessage": "از مدیر بخواهید Codex 0.162.1 یا جدیدتر را نصب کند. سرور نتوانست نسخه پشتیبانی‌شده را تأیید کند.",
+  "chat.runError.codexHostMessage": "از مدیر بخواهید بستهٔ کامل انتشار Codex را دوباره نصب کند. فایل اجرایی همراه codex-code-mode-host وجود ندارد یا در دسترس نیست.",
   "chat.runError.toolsUnavailableMessage": "ابزارهای فضای کاری شروع نشدند و این نوبت هیچ تغییر یا خروجی ایجاد نکرد. با مدیر تماس بگیرید.",
   'chat.runError.outputInvalidMessage': 'دوباره تولید کنید یا مدل را عوض کرده و مجدداً تلاش کنید. اگر مشکل ادامه داشت، با پشتیبانی تماس بگیرید.',
   'chat.runError.runtimeConfigMessage': 'دوباره تولید کنید یا مدل را عوض کرده و مجدداً تلاش کنید. اگر مشکل ادامه داشت، با پشتیبانی تماس بگیرید.',

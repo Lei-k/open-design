@@ -375,6 +375,7 @@ export const ko: Dict = {
   "chat.runError.title.codexVersion": "Codex 업데이트가 필요합니다",
   "chat.runError.title.toolsUnavailable": "작업 공간 도구를 사용할 수 없음",
   "chat.runError.codexVersionMessage": "관리자에게 Codex 0.162.1 이상 설치를 요청하세요. 서버에서 지원 버전을 확인할 수 없습니다.",
+  "chat.runError.codexHostMessage": "관리자에게 전체 Codex 릴리스 패키지를 다시 설치하도록 요청하세요. 보조 실행 파일 codex-code-mode-host가 없거나 사용할 수 없습니다.",
   "chat.runError.toolsUnavailableMessage": "작업 공간 도구가 시작되지 않아 변경이나 결과물이 없습니다. 관리자에게 문의하세요.",
   'chat.runError.outputInvalidMessage': '다시 생성해 보거나 모델을 변경한 후 재시도하세요. 문제가 계속되면 지원팀에 문의하세요.',
   'chat.runError.runtimeConfigMessage': '다시 생성해 보거나 모델을 변경한 후 재시도하세요. 문제가 계속되면 지원팀에 문의하세요.',

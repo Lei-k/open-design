@@ -375,6 +375,7 @@ export const ja: Dict = {
   "chat.runError.title.codexVersion": "Codex の更新が必要です",
   "chat.runError.title.toolsUnavailable": "ワークスペースのツールを利用できません",
   "chat.runError.codexVersionMessage": "管理者に Codex 0.162.1 以降のインストールを依頼してください。対応バージョンを確認できませんでした。",
+  "chat.runError.codexHostMessage": "管理者に Codex の完全なリリースパッケージの再インストールを依頼してください。補助実行ファイル codex-code-mode-host が見つからないか、使用できません。",
   "chat.runError.toolsUnavailableMessage": "ワークスペースのツールを起動できず、変更や成果物がありません。管理者に連絡してください。",
   'chat.runError.outputInvalidMessage': 'もう一度生成するか、モデルを変更して再試行してください。繰り返し発生する場合は、サポートまでご連絡ください。',
   'chat.runError.runtimeConfigMessage': 'もう一度生成するか、モデルを変更して再試行してください。繰り返し発生する場合は、サポートまでご連絡ください。',

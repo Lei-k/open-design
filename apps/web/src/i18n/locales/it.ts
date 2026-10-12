@@ -504,6 +504,7 @@ export const it: Dict = {
   "chat.runError.title.codexVersion": "Codex deve essere aggiornato",
   "chat.runError.title.toolsUnavailable": "Strumenti dello spazio di lavoro non disponibili",
   "chat.runError.codexVersionMessage": "Chiedi all’amministratore di installare Codex 0.162.1 o successivo. Il server non ha potuto verificare una versione supportata.",
+  "chat.runError.codexHostMessage": "Chiedi all’amministratore di reinstallare il pacchetto completo di Codex. L’eseguibile ausiliario codex-code-mode-host è mancante o non disponibile.",
   "chat.runError.toolsUnavailableMessage": "Gli strumenti dell’area di lavoro non sono partiti e questo turno non ha prodotto modifiche né artefatti. Contatta l’amministratore.",
   'chat.runError.outputInvalidMessage': "Prova a rigenerare, oppure cambia modello e riprova. Se il problema persiste, contatta l’assistenza.",
   'chat.runError.runtimeConfigMessage': "Prova a rigenerare, oppure cambia modello e riprova. Se il problema persiste, contatta l’assistenza.",

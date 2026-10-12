@@ -504,6 +504,7 @@ export const ptBR: Dict = {
   "chat.runError.title.codexVersion": "O Codex precisa de uma atualização",
   "chat.runError.title.toolsUnavailable": "Ferramentas do espaço de trabalho indisponíveis",
   "chat.runError.codexVersionMessage": "Peça ao administrador para instalar o Codex 0.162.1 ou mais recente. O servidor não conseguiu verificar uma versão compatível.",
+  "chat.runError.codexHostMessage": "Peça ao administrador para reinstalar o pacote completo do Codex. O executável auxiliar codex-code-mode-host está ausente ou indisponível.",
   "chat.runError.toolsUnavailableMessage": "As ferramentas do espaço de trabalho não iniciaram e este turno não produziu alterações nem artefatos. Contate o administrador.",
   'chat.runError.outputInvalidMessage': 'Tente gerar novamente, ou troque de modelo e tente de novo. Se continuar acontecendo, entre em contato com o suporte.',
   'chat.runError.runtimeConfigMessage': 'Tente gerar novamente, ou troque de modelo e tente de novo. Se continuar acontecendo, entre em contato com o suporte.',
