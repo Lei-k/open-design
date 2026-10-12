@@ -504,6 +504,7 @@ export const hu: Dict = {
   "chat.runError.title.codexVersion": "A Codex frissítést igényel",
   "chat.runError.title.toolsUnavailable": "A munkaterület eszközei nem érhetők el",
   "chat.runError.codexVersionMessage": "Kérje a rendszergazdától a Codex 0.162.1 vagy újabb telepítését. A szerver nem tudta ellenőrizni a támogatott verziót.",
+  "chat.runError.codexHostMessage": "Kérje meg a rendszergazdát a teljes Codex-csomag újratelepítésére. A codex-code-mode-host kiegészítő futtatható fájl hiányzik vagy nem érhető el.",
   "chat.runError.toolsUnavailableMessage": "A munkaterület eszközei nem indultak el, és ez a kör nem hozott módosítást vagy eredményt. Forduljon a rendszergazdához.",
   'chat.runError.outputInvalidMessage': 'Próbáld újragenerálni, vagy válts modellt, és próbáld újra. Ha ez rendszeresen előfordul, fordulj az ügyfélszolgálathoz.',
   'chat.runError.runtimeConfigMessage': 'Próbáld újragenerálni, vagy válts modellt, és próbáld újra. Ha ez rendszeresen előfordul, fordulj az ügyfélszolgálathoz.',

@@ -3343,6 +3343,7 @@ export interface Dict {
   'chat.runError.title.codexVersion': string;
   'chat.runError.title.toolsUnavailable': string;
   'chat.runError.codexVersionMessage': string;
+  'chat.runError.codexHostMessage': string;
   'chat.runError.toolsUnavailableMessage': string;
   'chat.runError.outputInvalidMessage': string;
   'chat.runError.runtimeConfigMessage': string;

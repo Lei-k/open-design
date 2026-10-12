@@ -504,6 +504,7 @@ export const tr: Dict = {
   "chat.runError.title.codexVersion": "Codex güncellenmeli",
   "chat.runError.title.toolsUnavailable": "Çalışma alanı araçları kullanılamıyor",
   "chat.runError.codexVersionMessage": "Yöneticinizden Codex 0.162.1 veya daha yeni bir sürümü yüklemesini isteyin. Sunucu desteklenen bir sürümü doğrulayamadı.",
+  "chat.runError.codexHostMessage": "Yöneticinizden tam Codex sürüm paketini yeniden yüklemesini isteyin. Yardımcı codex-code-mode-host yürütülebilir dosyası eksik veya kullanılamıyor.",
   "chat.runError.toolsUnavailableMessage": "Çalışma alanı araçları başlatılamadı ve bu tur değişiklik veya çıktı üretmedi. Yöneticinizle iletişime geçin.",
   'chat.runError.outputInvalidMessage': 'Yeniden oluşturmayı deneyin ya da model değiştirip tekrar deneyin. Sorun devam ederse destek ekibiyle iletişime geçin.',
   'chat.runError.runtimeConfigMessage': 'Yeniden oluşturmayı deneyin ya da model değiştirip tekrar deneyin. Sorun devam ederse destek ekibiyle iletişime geçin.',

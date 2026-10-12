@@ -504,6 +504,7 @@ export const id: Dict = {
   "chat.runError.title.codexVersion": "Codex perlu diperbarui",
   "chat.runError.title.toolsUnavailable": "Alat ruang kerja tidak tersedia",
   "chat.runError.codexVersionMessage": "Minta administrator memasang Codex 0.162.1 atau lebih baru. Server tidak dapat memverifikasi versi yang didukung.",
+  "chat.runError.codexHostMessage": "Minta administrator memasang ulang paket rilis Codex lengkap. Berkas pendamping codex-code-mode-host yang dapat dieksekusi tidak ada atau tidak tersedia.",
   "chat.runError.toolsUnavailableMessage": "Alat ruang kerja tidak dapat dimulai dan giliran ini tidak menghasilkan perubahan atau artefak. Hubungi administrator.",
   'chat.runError.outputInvalidMessage': 'Coba buat ulang, atau ganti model lalu coba lagi. Jika terus terjadi, hubungi dukungan.',
   'chat.runError.runtimeConfigMessage': 'Coba buat ulang, atau ganti model lalu coba lagi. Jika terus terjadi, hubungi dukungan.',

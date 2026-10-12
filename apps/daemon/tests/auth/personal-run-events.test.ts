@@ -14,6 +14,9 @@ it.each([
   ['ordinary MCP error', [mcpAttempt, { type: 'tool_result', toolUseId: 'lookup', isError: true, content: 'timeout' }], 0, 0, false],
   ['successful MCP use after startup warning', [mcpStartup, { type: 'tool_result', toolUseId: 'lookup', isError: false, content: 'answer' }], 0, 0, false],
   ['failed workspace spawn', [{ type: 'tool_result', toolUseId: 'exec', startupFailed: true }], 0, 0, true],
+  ['failed code-mode host', [{ type: 'workspace_code_mode_host_failure' }], 0, 0, true],
+  ['code-mode host recovered file', [{ type: 'workspace_code_mode_host_failure' }], 1, 0, false],
+  ['code-mode host recovered artifact', [{ type: 'workspace_code_mode_host_failure' }], 0, 1, false],
   ['later changed file', [mcpStartup, mcpAttempt], 1, 0, false],
   ['later artifact', [mcpStartup, mcpAttempt], 0, 1, false],
 ] as const)('Studio delivery rule: %s', (_label, events, files, artifacts, unavailable) => {

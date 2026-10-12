@@ -504,6 +504,7 @@ export const en: Dict = {
   "chat.runError.title.codexVersion": "Codex needs an update",
   "chat.runError.title.toolsUnavailable": "Workspace tools unavailable",
   "chat.runError.codexVersionMessage": "Ask your administrator to install Codex 0.162.1 or newer. The server could not verify a supported version.",
+  "chat.runError.codexHostMessage": "Ask your administrator to reinstall the full Codex release package. The executable codex-code-mode-host companion is missing or unavailable.",
   "chat.runError.toolsUnavailableMessage": "Workspace tools could not start and this turn produced no changes or artifact. Contact your administrator.",
   'chat.runError.outputInvalidMessage': 'Try generating again, or switch models and retry. If this keeps happening, contact support.',
   'chat.runError.runtimeConfigMessage': 'Try generating again, or switch models and retry. If this keeps happening, contact support.',

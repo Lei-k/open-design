@@ -504,6 +504,7 @@ export const uk: Dict = {
   "chat.runError.title.codexVersion": "Потрібне оновлення Codex",
   "chat.runError.title.toolsUnavailable": "Інструменти робочого простору недоступні",
   "chat.runError.codexVersionMessage": "Попросіть адміністратора встановити Codex 0.162.1 або новіший. Сервер не зміг підтвердити підтримувану версію.",
+  "chat.runError.codexHostMessage": "Попросіть адміністратора перевстановити повний пакет Codex. Допоміжний виконуваний файл codex-code-mode-host відсутній або недоступний.",
   "chat.runError.toolsUnavailableMessage": "Інструменти робочої області не запустилися, і цей хід не створив змін чи артефактів. Зверніться до адміністратора.",
   'chat.runError.outputInvalidMessage': 'Спробуйте згенерувати ще раз або змініть модель і повторіть. Якщо це повторюється, зверніться до підтримки.',
   'chat.runError.runtimeConfigMessage': 'Спробуйте згенерувати ще раз або змініть модель і повторіть. Якщо це повторюється, зверніться до підтримки.',

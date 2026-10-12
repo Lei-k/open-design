@@ -323,6 +323,7 @@ export type RunFailureMessageKey =
   | 'chat.runError.personalUnavailableMessage'
   | 'chat.runError.personalRunFailedMessage'
   | 'chat.runError.codexVersionMessage'
+  | 'chat.runError.codexHostMessage'
   | 'chat.runError.toolsUnavailableMessage'
   | 'chat.runError.personalKeyMessage'
   | 'chat.runError.personalKeyLimitedMessage'
@@ -1051,6 +1052,7 @@ const PERSONAL_SUBSCRIPTION_FAILURE_UI: Record<string, RunFailureUi> = {
   MULTIUSER_RUN_REQUEST_INVALID: personalUnavailableFailure,
   MULTIUSER_PERSONAL_RUN_FAILED: personalRunFailure,
   MULTIUSER_CODEX_UNSUPPORTED_VERSION: failureCard({}, 'chat.runError.title.codexVersion', 'chat.runError.codexVersionMessage'),
+  MULTIUSER_CODEX_HOST_UNAVAILABLE: failureCard({}, 'chat.runError.title.toolsUnavailable', 'chat.runError.codexHostMessage'),
   MULTIUSER_RUN_TOOLS_UNAVAILABLE: failureCard({}, 'chat.runError.title.toolsUnavailable', 'chat.runError.toolsUnavailableMessage'),
   // The account's own provider key (#62/#63): fixed in Settings, never by switching payer.
   MULTIUSER_PROVIDER_KEY_MISSING: failureCard({}, 'chat.runError.title.personalKey', 'chat.runError.personalKeyMessage'),

@@ -136,7 +136,8 @@ CMD ["node", "apps/daemon/dist/cli.js", "--no-open"]
 #
 # The CLI comes from the official release, verified by sha256. A local build
 # can supply an already-verified standalone release directory instead:
-#   --build-context codex-release=<dir containing bin/codex>
+#   --build-context codex-release=<dir containing bin/codex, bin/codex-code-mode-host,
+#     codex-path/rg and codex-package.json>
 FROM ${NODE_IMAGE} AS codex-download
 # Keep this current: the model catalog and the app-server tool protocol move
 # with the CLI. A Codex this image pins too far back cannot start its workspace
@@ -144,15 +145,16 @@ FROM ${NODE_IMAGE} AS codex-download
 # does not accept the app-server dynamic tools Studio advertises, so a turn
 # reports that its tools failed to start and changes nothing.
 ARG CODEX_VERSION=0.162.1
-ARG CODEX_SHA256=86f268d81b898f3e144c5ecff2ad2fda2c5802e042d6195b72538fe0fa125057
+ARG CODEX_SHA256=a676f5722aae0d86cbe3764332f08eab1fdd89dc0a300b3ad4ffbf48611fa3e3
 RUN set -eu; \
     [ "$(uname -m)" = "x86_64" ] || { echo "the multiuser target pins the x86_64 Codex release" >&2; exit 1; }; \
     mkdir -p /out/bin; \
-    wget -qO /tmp/codex.tgz "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-x86_64-unknown-linux-musl.tar.gz"; \
+    wget -qO /tmp/codex.tgz "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-package-x86_64-unknown-linux-musl.tar.gz"; \
     echo "${CODEX_SHA256}  /tmp/codex.tgz" | sha256sum -c -; \
-    tar -xzf /tmp/codex.tgz -C /tmp; \
-    mv /tmp/codex-x86_64-unknown-linux-musl /out/bin/codex; \
-    chmod 0755 /out/bin/codex
+    tar --no-same-owner -xzf /tmp/codex.tgz -C /out bin/codex bin/codex-code-mode-host codex-path/rg codex-package.json; \
+    for binary in /out/bin/codex /out/bin/codex-code-mode-host /out/codex-path/rg; do \
+      [ -f "$binary" ] && [ -x "$binary" ] || { echo "missing or non-executable Codex package binary: $binary" >&2; exit 1; }; \
+    done
 
 FROM scratch AS codex-release
 COPY --from=codex-download /out/ /
@@ -163,7 +165,13 @@ USER root
 # fonts keep Chinese/Japanese/Korean artifacts from rendering as tofu.
 RUN apk add --no-cache bubblewrap ca-certificates chromium font-noto font-noto-cjk font-noto-emoji
 COPY --from=codex-release / /opt/codex/
-RUN chmod -R a+rX /opt/codex && /opt/codex/bin/codex --version
+# Also validate an operator-supplied codex-release build context. Do not repair
+# missing execute bits here: an incomplete context must fail the build.
+RUN test -f /opt/codex/bin/codex && test -x /opt/codex/bin/codex && \
+    test -f /opt/codex/bin/codex-code-mode-host && test -x /opt/codex/bin/codex-code-mode-host && \
+    test -f /opt/codex/codex-path/rg && test -x /opt/codex/codex-path/rg && \
+    test -f /opt/codex/codex-package.json && \
+    chmod -R a+rX /opt/codex && /opt/codex/bin/codex --version
 # Editable PPTX engine (vendored browser bundle) for the export renderer.
 COPY --from=build --chown=open-design:open-design /app/apps/desktop/vendor/dom-to-pptx/dom-to-pptx.bundle.js.gz /opt/open-design/dom-to-pptx.bundle.js.gz
 # The daemon binds loopback only; the proxy shares this network namespace.
