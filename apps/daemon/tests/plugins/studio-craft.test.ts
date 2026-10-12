@@ -3,6 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { captureStudioCraft } from '../../src/plugins/studio-craft.js';
+import { evaluateStudioPluginAvailability } from '../../src/plugins/studio-availability.js';
+import type { InstalledPluginRecord } from '@open-design/contracts';
 
 let root: string;
 beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'studio-craft-')); });
@@ -62,4 +64,20 @@ it('refuses a rulebook changed while its bytes are captured', () => {
     return count;
   }) as typeof fs.readSync);
   expect(() => captureStudioCraft(root, ['color'])).toThrow('plugin craft content changed');
+});
+
+it.each(['missing', 'empty', 'invalid-utf8', 'oversized', 'symlink', 'hardlink', 'directory'])('availability shares the bounded craft capture refusal: %s', (shape) => {
+  const file = path.join(root, 'color.md');
+  if (shape === 'empty') fs.writeFileSync(file, ' ');
+  if (shape === 'invalid-utf8') fs.writeFileSync(file, Buffer.from([0xff]));
+  if (shape === 'oversized') fs.writeFileSync(file, 'x'.repeat(128 * 1024 + 1));
+  if (shape === 'directory') fs.mkdirSync(file);
+  if (shape === 'symlink' || shape === 'hardlink') {
+    fs.writeFileSync(path.join(root, 'source.md'), 'rules');
+    if (shape === 'symlink') fs.symlinkSync(path.join(root, 'source.md'), file);
+    else fs.linkSync(path.join(root, 'source.md'), file);
+  }
+  const plugin = { sourceKind: 'bundled', manifest: { od: { kind: 'scenario', context: { craft: ['color'] } } } } as InstalledPluginRecord;
+  expect(evaluateStudioPluginAvailability(plugin, [], undefined, [], root))
+    .toEqual({ applicable: false, reasons: [{ code: 'context', subject: 'craft' }] });
 });

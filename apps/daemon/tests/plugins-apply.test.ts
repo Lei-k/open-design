@@ -11,6 +11,23 @@ import { applyPlugin, MissingInputError } from '../src/plugins/apply.js';
 import { defaultRegistryRoots } from '../src/plugins/registry.js';
 import { TRUSTED_DEFAULT_CAPABILITIES } from '../src/plugins/trust.js';
 import type { ContextItem, InstalledPluginRecord } from '@open-design/contracts';
+import { adaptAgentSkill, mergeManifests } from '@open-design/plugin-runtime';
+
+it.each([
+  { declaration: 'requires: false', expected: undefined },
+  { declaration: 'requires: true', expected: 'active-brand' },
+  { declaration: 'requires: false\n    primary: true', expected: 'active-brand' },
+  { declaration: 'requires: false\n    ref: explicit-brand', expected: 'explicit-brand' },
+])('desktop apply honors the skill design declaration $declaration with an active project brand', ({ declaration, expected }) => {
+  const adapter = adaptAgentSkill(`---\nname: desktop-fixture\nod:\n  design_system:\n    ${declaration}\n---\n# Design\nCreate a design.`, { folderId: 'desktop-fixture' }).manifest;
+  const manifest = mergeManifests({ adapters: [adapter] });
+  const computed = applyPlugin({ plugin: pluginFixture({ manifest }), inputs: {}, activeProjectDesignSystem: { id: 'active-brand' },
+    registry: { skills: [], craft: [], atoms: [], designSystems: [{ id: 'active-brand' }, { id: 'explicit-brand' }] } });
+  expect(computed.result.projectMetadata.designSystemId).toBe(expected);
+  expect(computed.result.appliedPlugin.resolvedContext.items.filter((item) => item.kind === 'design-system').map((item) => item.id))
+    .toEqual(expected ? [expected] : []);
+  expect(Boolean(manifest.od?.context?.designSystem)).toBe(Boolean(expected));
+});
 
 function pluginFixture(extra: Partial<InstalledPluginRecord> = {}): InstalledPluginRecord {
   return {

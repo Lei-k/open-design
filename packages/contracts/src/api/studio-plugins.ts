@@ -24,7 +24,8 @@ export interface StudioPluginPreviewResponse {
 /** Upper bound on an ordered Studio plugin pipeline (finite stage runner, S42). */
 export const STUDIO_PIPELINE_MAX_STAGES = 32;
 
-/** The finite, ordered pipeline subset executed on every Studio source. */
+/** Structural Studio subset. The daemon additionally proves each devloop
+ * with the canonical until parser before admission or execution (S70). */
 export function isStudioOrderedPipeline(value: unknown): value is PluginPipeline {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const stages = (value as Record<string, unknown>).stages;
@@ -37,9 +38,10 @@ export function isStudioOrderedPipeline(value: unknown): value is PluginPipeline
     ids.add(stage.id);
     return Array.isArray(stage.atoms) && stage.atoms.length <= 32
       && stage.atoms.every((atom) => typeof atom === 'string' && STUDIO_WEB_PLUGIN_CAPABILITIES.atoms.includes(atom))
-      && (stage.repeat === undefined || stage.repeat === false) && stage.until === undefined
+      && (stage.repeat === undefined || typeof stage.repeat === 'boolean')
+      && (stage.until === undefined || typeof stage.until === 'string')
       && (stage.onFailure === undefined || stage.onFailure === 'abort')
-      && Object.keys(stage).every((key) => ['id', 'atoms', 'repeat', 'onFailure'].includes(key));
+      && Object.keys(stage).every((key) => ['id', 'atoms', 'repeat', 'until', 'onFailure'].includes(key));
   });
 }
 
@@ -49,6 +51,8 @@ export interface StudioPipelineProgress {
   stageIndex: number;
   stageCount: number;
   awaitingInput: boolean;
+  /** Zero-based unfinished iteration, authored by the daemon (S70). */
+  iteration?: number;
 }
 
 /**
@@ -61,11 +65,11 @@ export interface StudioPipelineProgress {
  *   Plans use native Codex updates or the bounded OpenAI `update_plan` tool,
  *   both persisted and rendered through the shared todo event contract.
  * - `capabilities`: manifest `od.capabilities` entries the turn honours.
- * - `pipelines`: a finite ordered stage runner. Every stage invokes the
- *   turn's pinned provider with prior-stage context and renders its active
+ * - `pipelines`: a finite ordered stage runner with bounded devloops. Every
+ *   stage invokes the turn's pinned provider with prior-stage context and renders its active
  *   stage in the standard transcript. Questions pause at that stage.
- * - `pipelineDevloop`: repeat/until stages need the devloop scheduler and
- *   stage workers, which Studio turns do not run.
+ * - `pipelineDevloop`: repeat/until stages run only after the daemon proves
+ *   an unconditional iteration bound within its spend ceiling.
  * - `context`: captured into the immutable apply snapshot. Only the plugin's
  *   own SKILL.md files, authorized catalog skills, bundled side files,
  *   requested craft rulebooks and design documents/packages are captured at apply.
@@ -104,10 +108,10 @@ const STUDIO_MEDIA_ATOMS = ['media-audio', 'media-image', 'media-video'] as cons
 const STUDIO_MEDIA_CAPABILITIES = ['media:audio', 'media:image', 'media:video'] as const;
 
 export const STUDIO_WEB_PLUGIN_CAPABILITIES: StudioWebPluginCapabilities = {
-  atoms: ['discovery-question-form', 'file-edit', 'file-read', 'file-write', 'live-artifact', ...STUDIO_MEDIA_ATOMS, 'todo-write'],
+  atoms: ['critique-theater', 'discovery-question-form', 'file-edit', 'file-read', 'file-write', 'live-artifact', ...STUDIO_MEDIA_ATOMS, 'todo-write'],
   capabilities: ['fs:read', 'fs:write', ...STUDIO_MEDIA_CAPABILITIES, 'prompt:inject'],
   pipelines: true,
-  pipelineDevloop: false,
+  pipelineDevloop: true,
   strategy: false,
   genui: false,
   connectors: false,
@@ -253,7 +257,9 @@ export function isStudioPluginDesignSystemReference(value: unknown): value is { 
  * - `unknown-atom`: an atom the first-party catalog does not define.
  * - `pipeline`: apply would run a pipeline (declared or scenario fallback)
  *   while the capability registry disables its runner. Stage atoms are reported too.
- * - `pipeline-devloop`: a repeat/until stage (`subject` = stage id).
+ * - `pipeline-devloop`: this deployment has no loop runner (`subject` = stage id).
+ * - `pipeline-devloop-unbounded`: no unconditional iteration bound within the ceiling.
+ * - `pipeline-devloop-signal`: a signal Studio does not produce (`subject` = signal).
  * - `strategy`: an OD Next strategy binding.
  * - `genui`: a declared or derived GenUI surface (`subject` = surface id).
  * - `connector` / `mcp`: a connector or MCP server (`subject` = id/name).
@@ -268,7 +274,7 @@ export function isStudioPluginDesignSystemReference(value: unknown): value is { 
  * - `source`: not a bundled plugin (`subject` = source kind).
  */
 export type StudioPluginUnavailableCode =
-  | 'atom' | 'unknown-atom' | 'pipeline' | 'pipeline-devloop' | 'strategy' | 'genui'
+  | 'atom' | 'unknown-atom' | 'pipeline' | 'pipeline-devloop' | 'pipeline-devloop-unbounded' | 'pipeline-devloop-signal' | 'strategy' | 'genui'
   | 'connector' | 'mcp' | 'capability' | 'context' | 'manifest' | 'source';
 
 export interface StudioPluginUnavailableReason {

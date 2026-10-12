@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const ja: Dict = {
+  'studio.catalogsUnavailable': "このカタログ操作は Studio では利用できません。同梱のプラグインプレビューと、反復回数に上限のある開発ループに対応しています。デザインシステムの生成と未対応のプラグインアトムや戦略は引き続き準備中です。サードパーティーのインストール、マーケットプレイスの取得、doctor、信頼管理は利用できません。",
   "studio.libraryPairTitle": "Web Clipper のペアリング",
   "studio.libraryStudioUrl": "Studio の URL",
   "studio.libraryCopyUrl": "Studio の URL をコピー",
@@ -5750,6 +5751,7 @@ export const ja: Dict = {
   'chat.record.thinking': "思考中",
   'chat.record.thinkingTokens': "{count} トークン",
   'chat.record.thoughts': "思考プロセス",
+  'chat.pipeline.iteration': '反復 {iteration} / {max}',
   'chat.record.done': "完了",
   'chat.record.failedTurn': "実行失敗",
   'chat.record.plan': "実行計画 · {count} ステップ",

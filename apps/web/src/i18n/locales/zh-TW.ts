@@ -1,6 +1,7 @@
 import type { Dict } from "../types";
 
 export const zhTW: Dict = {
+  'studio.catalogsUnavailable': "Studio 暫不支援此目錄操作。已發布的外掛預覽和具有固定迭代上限的開發循環已獲支援。設計系統生成及尚未支援的外掛原子或策略仍待開放。第三方安裝、市集擷取、doctor 和信任管理仍不可用。",
   "studio.libraryPairTitle": "Web Clipper 配對",
   "studio.libraryStudioUrl": "Studio 位址",
   "studio.libraryCopyUrl": "複製 Studio 位址",
@@ -6203,6 +6204,7 @@ export const zhTW: Dict = {
   'chat.record.thinking': "思考中",
   'chat.record.thinkingTokens': "{count} tokens",
   'chat.record.thoughts': "思考過程",
+  'chat.pipeline.iteration': '第 {iteration} / {max} 輪',
   'chat.record.done': "已完成",
   'chat.record.failedTurn': "執行失敗",
   'chat.record.plan': "執行計畫 · {count} 步",

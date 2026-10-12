@@ -18,11 +18,12 @@ function record(od: Record<string, unknown>, extra: Partial<InstalledPluginRecor
     manifest: { name: 'fixture', version: '1.0.0', od } as InstalledPluginRecord['manifest'], ...extra,
   };
 }
-const noRunner = { ...STUDIO_WEB_PLUGIN_CAPABILITIES, pipelines: false };
+const noRunner = { ...STUDIO_WEB_PLUGIN_CAPABILITIES, pipelines: false, pipelineDevloop: false,
+  atoms: STUDIO_WEB_PLUGIN_CAPABILITIES.atoms.filter((atom) => atom !== 'critique-theater') };
 const scenarios = [{ id: 'od-new-generation', taskKind: 'new-generation' as const, pipeline: { stages: [
   { id: 'discovery', atoms: ['discovery-question-form'] }, { id: 'plan', atoms: ['todo-write'] },
   { id: 'generate', atoms: ['file-write', 'live-artifact'] },
-  { id: 'critique', atoms: ['critique-theater'], repeat: true, until: 'critique.score>=4' }] } }];
+  { id: 'critique', atoms: ['critique-theater'], repeat: true, until: 'critique.score>=4 || iterations>=3' }] } }];
 
 describe('evaluateStudioPluginAvailability', () => {
   it('admits a plugin whose every declaration runs in Studio turns: no pipeline, its own SKILL.md, Web capabilities', () => {
@@ -84,7 +85,7 @@ describe('evaluateStudioPluginAvailability', () => {
     // A stage runner alone opens a plain pipeline of Web atoms; the devloop stays its own capability.
     const plain = record({ kind: 'scenario', capabilities: ['fs:read', 'fs:write'],
       pipeline: { stages: [{ id: 'inspect', atoms: ['file-read'] }, { id: 'package', atoms: ['file-write'] }] } });
-    const runner: StudioWebPluginCapabilities = { ...STUDIO_WEB_PLUGIN_CAPABILITIES, pipelines: true };
+    const runner: StudioWebPluginCapabilities = { ...STUDIO_WEB_PLUGIN_CAPABILITIES, pipelines: true, pipelineDevloop: false };
     expect(evaluateStudioPluginAvailability(plain, scenarios, runner)).toEqual({ applicable: true, reasons: [] });
     expect(evaluateStudioPluginAvailability(plain, scenarios)).toEqual({ applicable: true, reasons: [] });
     expect(evaluateStudioPluginAvailability(template, scenarios, { ...runner, atoms: landed.atoms }).reasons)
@@ -239,7 +240,7 @@ describe('S67 Studio atoms with per-source availability', () => {
       .toEqual({ applicable: false, reasons: [{ code: 'atom', subject: 'media-image' }] });
     // Unavailable plugins carry no restriction list.
     expect(evaluateStudioPluginAvailability(generate(['media-image', 'critique-theater']), scenarios))
-      .toEqual({ applicable: false, reasons: [{ code: 'atom', subject: 'critique-theater' }] });
+      .toEqual({ applicable: true, reasons: [], sourceRestrictions: [{ source: 'personal-codex', reasons: [{ code: 'atom', subject: 'media-image' }] }] });
   });
 });
 
@@ -265,7 +266,53 @@ describe('S67 repair 1: captured-package desktop steps', () => {
   it('refuses a pinned requirement no Studio source runs on every source', () => {
     for (const source of ['personal-codex', 'company-openai', 'account-openai'] as const) {
       expect(studioPluginSourceReasons({ atoms: ['critique-theater', 'file-write'], capabilities: ['desktop:media-scaffold', 'fs:write'] }, source))
-        .toEqual([{ code: 'atom', subject: 'critique-theater' }, { code: 'capability', subject: 'desktop:media-scaffold' }]);
+        .toEqual([{ code: 'capability', subject: 'desktop:media-scaffold' }]);
     }
+  });
+});
+
+describe('S70 bounded Studio devloop admission', () => {
+  const fixture = (until?: string) => record({ kind: 'scenario', pipeline: { stages: [{ id: 'review', atoms: ['critique-theater'], repeat: true, until }] } });
+  it('opens a bounded critique loop without changing pinned media source restrictions', () => {
+    expect(evaluateStudioPluginAvailability(fixture('critique.score>=4 || iterations>=3'), scenarios)).toEqual({ applicable: true, reasons: [] });
+  });
+  it.each([undefined, 'critique.score>=4', 'critique.score>=4 && iterations>=3', 'iterations>=9', 'iterations>8'])('refuses an unproved bound %s with a typed reason', (until) => {
+    expect(evaluateStudioPluginAvailability(fixture(until), scenarios).reasons).toContainEqual({ code: 'pipeline-devloop-unbounded', subject: 'review' });
+  });
+  it.each(['build.passing', 'tests.passing', 'user.confirmed', 'preview.ok'])('refuses unsupported signal %s even with a bound', (signal) => {
+    expect(evaluateStudioPluginAvailability(fixture(`${signal}==true || iterations>=3`), scenarios).reasons)
+      .toContainEqual({ code: 'pipeline-devloop-signal', subject: signal });
+  });
+  it.each(['iterations>=8', 'iterations>7', 'iterations>=2.5'])('proves the integer termination count for %s', (until) => {
+    expect(evaluateStudioPluginAvailability(fixture(until), scenarios)).toEqual({ applicable: true, reasons: [] });
+  });
+});
+
+describe('S70 pinned admission reuses the bounded policy and S67 requirements', () => {
+  it.each(['scripts/extract_pptx.py "deck.pptx" > dump.json', 'python3.12 "scripts/last30days.py" topic'])(
+    'refuses old pinned script instructions on every source: %s', async (command) => {
+      const { studioPinnedPluginSourceReasons } = await import('../src/plugins/studio-pinned-requirements.js');
+      const { buildStudioSkillPackage } = await import('../src/services/studio-skill-packages.js');
+      const pin = { requirements: { atoms: [], capabilities: [] }, resourcePackage: buildStudioSkillPackage('studio-plugin:old@1.0.0', [
+        { path: 'SKILL.md', bytes: Buffer.from(`Run \`${command}\`.`), executable: false },
+      ]) };
+      for (const source of ['personal-codex', 'company-openai', 'account-openai'] as const) {
+        expect(studioPinnedPluginSourceReasons(pin, source, { liveArtifacts: true }))
+          .toEqual([{ code: 'capability', subject: 'desktop:local-script' }]);
+      }
+    });
+  it.each(['personal-codex', 'company-openai', 'account-openai'] as const)('refuses an old unbounded pin on %s', async (source) => {
+    const { studioPinnedPluginSourceReasons } = await import('../src/plugins/studio-pinned-requirements.js');
+    const pin = { pipeline: { stages: [{ id: 'critique', atoms: ['critique-theater'], repeat: true, until: 'critique.score>=4' }] } };
+    expect(studioPinnedPluginSourceReasons(pin, source, { liveArtifacts: true }))
+      .toContainEqual({ code: 'pipeline-devloop-unbounded', subject: 'critique' });
+  });
+  it('retains the media and desktop refusals on a bounded pin', async () => {
+    const { studioPinnedPluginSourceReasons } = await import('../src/plugins/studio-pinned-requirements.js');
+    const pin = { requirements: { atoms: ['critique-theater', 'media-image'], capabilities: ['desktop:od-cli'] },
+      pipeline: { stages: [{ id: 'critique', atoms: ['critique-theater'], repeat: true, until: 'critique.score>=4 || iterations>=3' }] } };
+    expect(studioPinnedPluginSourceReasons(pin, 'personal-codex', { liveArtifacts: true })).toEqual([
+      { code: 'atom', subject: 'media-image' }, { code: 'capability', subject: 'desktop:od-cli' }]);
+    expect(studioPinnedPluginSourceReasons(pin, 'account-openai', { liveArtifacts: true })).toEqual([{ code: 'capability', subject: 'desktop:od-cli' }]);
   });
 });

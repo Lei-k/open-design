@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, type ReactNode } from 'react';
 import type { AuthAccount, StudioRuntimeCapabilities, StudioParityLaneId } from '@open-design/contracts';
+import { useI18n } from '../i18n';
 import type { CookieSession } from '../multiuser/session';
 import { activateStudioTransport, studioRequestAvailable } from './studio-transport';
 
@@ -46,7 +47,12 @@ export function useStudioRequestAvailable() {
 }
 export function StudioUnavailable({ lane }: { lane: StudioParityLaneId }) {
   const studio = useStudioCapabilities();
-  return <p role="status" className="studio-unavailable muted">{studio.reason(lane)}</p>;
+  const { t } = useI18n();
+  // A usable partial lane can still refuse individual host actions. Keep
+  // deployment/actor refusals intact, and localize the current partial limits.
+  const reason = lane === 'catalogs' && studio.available(lane)
+    ? t('studio.catalogsUnavailable') : studio.reason(lane);
+  return <p role="status" className="studio-unavailable muted">{reason}</p>;
 }
 export function StudioLane({ lane, children }: { lane: StudioParityLaneId; children: ReactNode }) {
   return useStudioCapabilities().available(lane) ? <>{children}</> : <StudioUnavailable lane={lane} />;

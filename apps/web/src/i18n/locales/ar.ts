@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const ar: Dict = {
+  'studio.catalogsUnavailable': "إجراء الكتالوج هذا غير متاح في Studio. معاينات الإضافات المرفقة وحلقات التطوير ذات الحد الثابت للتكرارات مدعومة. لا يزال إنشاء أنظمة التصميم وعناصر الإضافات أو استراتيجياتها غير المدعومة قيد الانتظار. يظل تثبيت إضافات الجهات الخارجية وجلب السوق وdoctor وإدارة الثقة غير متاح.",
   "studio.libraryPairTitle": "إقران Web Clipper",
   "studio.libraryStudioUrl": "رابط Studio",
   "studio.libraryCopyUrl": "نسخ رابط Studio",
@@ -5751,6 +5752,7 @@ export const ar: Dict = {
   'chat.record.thinking': "يفكّر",
   'chat.record.thinkingTokens': "{count} رمز",
   'chat.record.thoughts': "مسار التفكير",
+  'chat.pipeline.iteration': 'التكرار {iteration} / {max}',
   'chat.record.done': "تم",
   'chat.record.failedTurn': "فشل التشغيل",
   'chat.record.plan': "الخطة · {count} خطوات",

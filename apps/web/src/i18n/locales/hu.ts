@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const hu: Dict = {
+  'studio.catalogsUnavailable': "Ez a katalógusművelet nem érhető el a Studióban. A bővítményekhez mellékelt előnézetek és a rögzített ismétlési korlátú fejlesztési ciklusok támogatottak. A tervezési rendszerek generálása, valamint a nem támogatott bővítményatomok és stratégiák még váratnak magukra. A külső telepítés, a piactér lekérése, a doctor és a bizalomkezelés továbbra sem érhető el.",
   "studio.libraryPairTitle": "Web Clipper párosítása",
   "studio.libraryStudioUrl": "Studio URL-címe",
   "studio.libraryCopyUrl": "Studio URL-cím másolása",
@@ -5751,6 +5752,7 @@ export const hu: Dict = {
   'chat.record.thinking': "Gondolkodik",
   'chat.record.thinkingTokens': "{count} token",
   'chat.record.thoughts': "Gondolatmenet",
+  'chat.pipeline.iteration': 'ismétlés {iteration} / {max}',
   'chat.record.done': "Kész",
   'chat.record.failedTurn': "A futtatás hibára futott",
   'chat.record.plan': "Terv · {count} lépés",

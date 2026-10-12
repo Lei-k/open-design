@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const tr: Dict = {
+  'studio.catalogsUnavailable': "Bu katalog işlemi Studio’da kullanılamıyor. Eklentilerle gelen önizlemeler ve sabit yineleme sınırı olan geliştirme döngüleri destekleniyor. Tasarım sistemi oluşturma ve desteklenmeyen eklenti atomları veya stratejileri henüz hazır değil. Üçüncü taraf kurulumları, pazar yeri getirme, doctor ve güven yönetimi kullanılamıyor.",
   "studio.libraryPairTitle": "Web Clipper eşleştirme",
   "studio.libraryStudioUrl": "Studio adresi",
   "studio.libraryCopyUrl": "Studio adresini kopyala",
@@ -5751,6 +5752,7 @@ export const tr: Dict = {
   'chat.record.thinking': "Düşünüyor",
   'chat.record.thinkingTokens': "{count} token",
   'chat.record.thoughts': "Düşünce süreci",
+  'chat.pipeline.iteration': 'yineleme {iteration} / {max}',
   'chat.record.done': "Tamamlandı",
   'chat.record.failedTurn': "Çalıştırma başarısız",
   'chat.record.plan': "Plan · {count} adım",

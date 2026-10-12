@@ -30,6 +30,7 @@ export const LOCALE_LABEL: Record<Locale, string> = {
 // flat (not deeply nested) so missing-key TS errors point straight at the
 // offending string instead of a generic object mismatch.
 export interface Dict {
+  'studio.catalogsUnavailable': string;
   'studio.libraryPairTitle': string;
   'studio.libraryStudioUrl': string;
   'studio.libraryCopyUrl': string;
@@ -6020,6 +6021,7 @@ export interface Dict {
   /** 思考行右边那个槽:「3.3k tokens」。`{count}` 已由 `formatThinkingTokens` 写好 */
   'chat.record.thinkingTokens': string;
   'chat.record.thoughts': string;
+  'chat.pipeline.iteration': string;
   'chat.record.done': string;
   'chat.record.canceled': string;
   'chat.record.pending': string;

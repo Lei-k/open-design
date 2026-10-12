@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const uk: Dict = {
+  'studio.catalogsUnavailable': "Ця дія каталогу недоступна у Studio. Підтримуються попередні перегляди, що постачаються з плагінами, та цикли розробки з фіксованою межею ітерацій. Генерація дизайн-систем і непідтримувані атоми чи стратегії плагінів ще очікуються. Встановлення сторонніх плагінів, завантаження маркетплейсу, doctor та керування довірою залишаються недоступними.",
   "studio.libraryPairTitle": "Сполучення Web Clipper",
   "studio.libraryStudioUrl": "Адреса Studio",
   "studio.libraryCopyUrl": "Копіювати адресу Studio",
@@ -5751,6 +5752,7 @@ export const uk: Dict = {
   'chat.record.thinking': "Думає",
   'chat.record.thinkingTokens': "{count} токенів",
   'chat.record.thoughts': "Хід думок",
+  'chat.pipeline.iteration': 'ітерація {iteration} / {max}',
   'chat.record.done': "Готово",
   'chat.record.failedTurn': "Запуск не вдався",
   'chat.record.plan': "План · {count} кроків",

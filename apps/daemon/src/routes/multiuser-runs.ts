@@ -44,7 +44,8 @@ import type { MultiUserDesignRoutes } from './multiuser-design.js';
 import { CompanyOpenAIConfigError, CompanyOpenAIStore } from '../storage/company-openai.js';
 import { CompanyOpenAIWorker, runCompanyOpenAITurn } from '../runtimes/company-openai.js';
 import { registerStudioCritiqueRoutes } from './studio-critique.js';
-import { runStudioCritique, studioCritiqueProjectTools } from '../critique/studio.js';
+import { runStudioCritique, runStudioPipelineCritique, studioCritiqueProjectTools } from '../critique/studio.js';
+import { studioDevloop } from '../plugins/studio-devloop.js';
 import { runStudioPipeline } from '../services/studio-pipeline.js';
 import { createStudioChatInvalidation } from '../services/studio-chat-invalidation.js';
 import { observeStudioProjectDefaults, studioProjectDefaultsUnchanged, type StudioProjectDefaultsObservation } from '../services/studio-project-defaults.js';
@@ -595,13 +596,17 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       { details: JSON.parse(JSON.stringify(details)) });
     return true;
   };
-  const pipelineContinuation = (question: RunRow | undefined, plugin: PluginSnapshot | null): { pipelineResumeStage?: number } | false => {
+  const pipelineContinuation = (question: RunRow | undefined, plugin: PluginSnapshot | null): { pipelineResumeStage?: number; pipelineResumeIteration?: number } | false => {
     if (!question || !plugin?.pipeline?.stages.length) return {};
     const progress = (storedJson(question.output) as { pipeline?: import('@open-design/contracts').StudioPipelineProgress } | null)?.pipeline;
+    const iteration = progress?.iteration ?? 0;
+    const stage = progress && plugin.pipeline.stages[progress.stageIndex];
+    const loop = stage ? studioDevloop(stage) : null;
     return progress?.snapshotId === plugin.snapshotId && progress.awaitingInput === true
       && progress.stageCount === plugin.pipeline.stages.length && Number.isInteger(progress.stageIndex)
       && progress.stageIndex >= 0 && progress.stageIndex < progress.stageCount
-      ? { pipelineResumeStage: progress.stageIndex } : false;
+      && loop && !loop.reasons.length && Number.isInteger(iteration) && iteration >= 0 && iteration < loop.max
+      ? { pipelineResumeStage: progress.stageIndex, pipelineResumeIteration: iteration } : false;
   };
   const withPlugin = (prompt: string, plugin: PluginSnapshot | null) => plugin ? `${prompt}\n\n---\n\n${plugin.prompt}` : prompt;
   const selectSkills = (fields: PersonalRunFields, fixed: boolean, question: boolean, defaults: StudioProjectDefaultsObservation): string[] => {
@@ -611,9 +616,12 @@ export function registerMultiUserRunRoutes(app: Express, input: {
   };
 
   const artifactBlobs = createChatArtifactBlobStore({ dataDir: dataRoot });
-  /** Jury effects retain the live session that admitted this turn. */
-  const critiqueSessionCurrent = (request: Record<string, unknown> | null) => request?.critique !== true
-    || Boolean(request.liveArtifactActor && input.sessionCurrent?.(request.liveArtifactActor as AuthActor));
+  /** Plugin and Jury workers retain the live session that admitted this turn. */
+  const critiqueSessionCurrent = (request: Record<string, unknown> | null) => {
+    if (request?.critique !== true && !request?.pluginSnapshot) return true;
+    const actor = request?.liveArtifactActor as AuthActor | undefined;
+    return actor ? Boolean(input.sessionCurrent?.(actor)) : request?.critique !== true;
+  };
   /**
    * The admitting account session of an interactive turn (S62). An agent may refresh a
    * connector/MCP Live Artifact source only within its run owner's authority AND that
@@ -1089,7 +1097,12 @@ export function registerMultiUserRunRoutes(app: Express, input: {
       else if (ship?.status === 'interrupted') status = 'canceled';
       else if (ship?.status === 'timed_out') status = 'failed';
     }
+    const quotaFailure = status === 'failed' && output && typeof output === 'object'
+      && (output as { reason?: unknown }).reason === 'MULTIUSER_QUOTA_EXHAUSTED';
     status = critiqueRoutes?.finish(id, status) ?? status;
+    // A Jury worker interrupted by quota is still a failed paid turn. Keep
+    // durable SHIP precedence, and keep real user/authority cancellation.
+    if (quotaFailure && status === 'canceled') status = 'failed';
     if ((existing.status === 'active' || recoveringCritique) && isCompany(existing)) closeLedgerSpan(existing, status);
     const projection = projections.get(id);
     projection?.flush();
@@ -1238,6 +1251,30 @@ export function registerMultiUserRunRoutes(app: Express, input: {
           }, 1000);
           quotaWatch.unref();
           worker.once('close', () => clearInterval(quotaWatch));
+          const usage = { inputTokens: 0, outputTokens: 0 };
+          const authorityCurrent = () => !storesClosed && !shuttingDown && !cancelPending.has(next.id) && row(next.id)?.status === 'active'
+            && accounts.getAccountById(next.owner_account_id)?.active === true && projects.canWrite(next.project_id, next.owner_account_id)
+            && key.current() && critiqueSessionCurrent(request);
+          const quotaCurrent = () => {
+            if (storesClosed) return false;
+            if (!isCompany(next) || ledger.balance(next.owner_account_id).remainingMs > 0) return true;
+            failurePending.add(next.id); return false;
+          };
+          const authorized = () => authorityCurrent() && quotaCurrent();
+          // Explicit interruption/revocation retains priority over quota. A
+          // quota refusal is a failed paid turn even before the watchdog fires.
+          const stopResult = (authorityLossCancels = true) => {
+            if (storesClosed || shuttingDown || cancelPending.has(next.id) || authorityLossCancels && !authorityCurrent()) {
+              return { status: 'canceled' as const, reason: 'MULTIUSER_RUN_FAILED' };
+            }
+            if (!quotaCurrent() || failurePending.has(next.id)) return { status: 'failed' as const, reason: 'MULTIUSER_QUOTA_EXHAUSTED' };
+            return null;
+          };
+          const finishStopped = () => {
+            const stopped = stopResult();
+            if (!stopped) return false;
+            finish(next.id, stopped.status, { reason: stopped.reason, usage }); return true;
+          };
           try {
             const history = JSON.parse(request.critique === true ? '[]' : key.history) as Record<string, unknown>[];
             if (!Array.isArray(history)) throw new Error('invalid company history');
@@ -1250,56 +1287,61 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             const skillPackages = studioRunResourcePackages(request);
             const skillRoot = input.scriptSandbox && request?.critique !== true ? stageStudioSkillPackages(runHome, skillPackages) : undefined;
             artifactBaselines.set(next.id, { cwd: realCwd, before: snapshotProjectArtifacts(realCwd) });
-            const authorized = () => {
-              if (storesClosed) return false;
-              return !storesClosed && !shuttingDown && !cancelPending.has(next.id) && row(next.id)?.status === 'active'
-                && accounts.getAccountById(next.owner_account_id)?.active === true && projects.canWrite(next.project_id, next.owner_account_id)
-                && key.current() && critiqueSessionCurrent(request);
-            };
-            const usage = { inputTokens: 0, outputTokens: 0 };
             const mediaUsage = { images: 0, speechCharacters: 0, videoSeconds: 0 };
             const connectorTools = request.critique === true ? null : connectorToolsFor(next, authorized);
             const mcpTools = request.critique === true ? null : mcpToolsFor(next, authorized);
             const libraryTools = request.critique === true ? null : input.library?.tools(next.owner_account_id, next.project_id, authorized);
             let stageHistory = history;
             let stageCount = 0;
+            const runSourceStage = async (directive: string, onText?: (text: string) => void, jury = false) => {
+              const isJury = request?.critique === true || jury;
+              if (!jury && stageCount++) { projection.accept({ type: 'text_delta', delta: '\n\n' }); projection.flush(); }
+              let text = '';
+              const result = await runCompanyOpenAITurn({ apiKey: key.apiKey, model: key.model,
+                // Every stage stays on the turn's own source and bill (#63).
+                ...(!jury && connectorTools ? { connectors: connectorTools } : {}),
+                ...(!jury && mcpTools ? { mcp: mcpTools } : {}),
+                ...(!jury && libraryTools ? { library: libraryTools } : {}),
+                systemPrompt: isJury ? stablePrompt : `${stablePrompt}${STUDIO_MEDIA_PROMPT}${input.liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : ''}`,
+                media: !isJury, projectReadOnly: isJury,
+                ...(input.liveArtifacts && !isJury ? { liveArtifacts: artifactToolsFor(next, authorized, (event) => projection.accept(event))! } : {}),
+                prompt: `${userPrompt}${attached}${renderCommentAttachmentHint(normalizeCommentAttachments(Array.isArray(request.commentAttachments) ? request.commentAttachments : []))}${focused}${directive}`,
+                history: jury ? [] : stageHistory, skillPackages, projectsRoot, projectId: next.project_id, worker, authorized,
+                onUsage: (delta) => { usage.inputTokens += delta.inputTokens; usage.outputTokens += delta.outputTokens; },
+                ...(skillRoot && input.scriptSandbox && !isJury ? { runSkillScript: createStudioSkillScriptRunner({ sandbox: input.scriptSandbox,
+                  packages: skillPackages, skillRoot, runHome, cwd: realCwd }) } : {}),
+                onAgentEvent: (event) => {
+                  if (event.type === 'text_delta' && typeof event.delta === 'string') text += event.delta;
+                  if (isJury) { if (event.type === 'text_delta' && typeof event.delta === 'string') onText?.(event.delta); }
+                  else projection.accept(event);
+                }, ...(input.companyFetch ? { fetch: input.companyFetch } : {}),
+              });
+              if (!jury) stageHistory = result.input;
+              mediaUsage.images += result.media.images; mediaUsage.speechCharacters += result.media.speechCharacters;
+              mediaUsage.videoSeconds += result.media.videoSeconds;
+              return { value: result, ok: result.ok, text, tokensUsed: result.usage.inputTokens + result.usage.outputTokens };
+            };
             const execute = request.critique === true ? (args: Parameters<typeof runStudioPipeline<Awaited<ReturnType<typeof runCompanyOpenAITurn>>>>[0]) =>
               runStudioCritique({ db, dataRootCanonical: input.dataRootCanonical, owner: next.owner_account_id, projectId: next.project_id, conversationId: next.conversation_id, runId: next.id,
                 authorized, cancel: () => { worker.kill('SIGTERM'); }, emit: (event) => critiqueRoutes!.emit(next.id, event), runStage: args.runStage }) : runStudioPipeline;
-            void execute({ db, runId: next.id, snapshot: pluginSnapshotOf(request), resumeStage: request.pipelineResumeStage,
+            void execute({ db, runId: next.id, snapshot: pluginSnapshotOf(request), resumeStage: request.pipelineResumeStage, resumeIteration: request.pipelineResumeIteration,
               check: () => { worker.abort.signal.throwIfAborted(); if (!authorized()) throw new Error('company_authority_changed'); },
               emit: (stage) => { projection.flush(); emit(next.id, 'agent', { type: 'pipeline_stage', stage }); },
-              runStage: async (directive, onText) => {
-                if (stageCount++) { projection.accept({ type: 'text_delta', delta: '\n\n' }); projection.flush(); }
-                let text = '';
-                const result = await runCompanyOpenAITurn({ apiKey: key.apiKey, model: key.model,
-                  // Every stage stays on the turn's own source and bill (#63).
-                  ...(connectorTools ? { connectors: connectorTools } : {}),
-                  ...(mcpTools ? { mcp: mcpTools } : {}),
-                  ...(libraryTools ? { library: libraryTools } : {}),
-                  systemPrompt: request.critique === true ? stablePrompt : `${stablePrompt}${STUDIO_MEDIA_PROMPT}${input.liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : ''}`,
-                  media: request.critique !== true, projectReadOnly: request.critique === true,
-                  ...(input.liveArtifacts && request.critique !== true ? { liveArtifacts: artifactToolsFor(next, authorized, (event) => projection.accept(event))! } : {}),
-                  prompt: `${userPrompt}${attached}${renderCommentAttachmentHint(normalizeCommentAttachments(Array.isArray(request.commentAttachments) ? request.commentAttachments : []))}${focused}${directive}`,
-                  history: stageHistory, skillPackages, projectsRoot, projectId: next.project_id, worker, authorized,
-                  ...(skillRoot && input.scriptSandbox && request.critique !== true ? { runSkillScript: createStudioSkillScriptRunner({ sandbox: input.scriptSandbox,
-                    packages: skillPackages, skillRoot, runHome, cwd: realCwd }) } : {}),
-                  onAgentEvent: (event) => {
-                    if (event.type === 'text_delta' && typeof event.delta === 'string') text += event.delta;
-                    if (request.critique === true) { if (event.type === 'text_delta' && typeof event.delta === 'string') onText?.(event.delta); }
-                    else projection.accept(event);
-                  }, ...(input.companyFetch ? { fetch: input.companyFetch } : {}),
-                });
-                stageHistory = result.input;
-                usage.inputTokens += result.usage.inputTokens; usage.outputTokens += result.usage.outputTokens;
-                mediaUsage.images += result.media.images; mediaUsage.speechCharacters += result.media.speechCharacters;
-                mediaUsage.videoSeconds += result.media.videoSeconds;
-                return { value: result, ok: result.ok, text, tokensUsed: result.usage.inputTokens + result.usage.outputTokens };
+              runStage: runSourceStage,
+              runCritique: async (directive, cursor) => {
+                const result = await runStudioPipelineCritique({ db, dataRootCanonical: input.dataRootCanonical,
+                  owner: next.owner_account_id, projectId: next.project_id, conversationId: next.conversation_id, runId: next.id,
+                  authorized, cancel: () => { worker.kill('SIGTERM'); }, emit: () => {},
+                  runStage: (panel, onText) => runSourceStage(`${panel}${directive}`, onText, true),
+                }, cursor);
+                if (authorized() && result.text && emittedRenderableQuestionForm(result.text)) projection.accept({ type: 'text_delta', delta: `\n\n${result.text}` });
+                return result;
               },
             }).then(async ({ value: result, progress }) => {
-              if (!authorized()) { finish(next.id, 'canceled', { usage }); return; }
+              if (finishStopped()) return;
+              if (!result.ok) { finish(next.id, 'failed', { usage, reason: 'MULTIUSER_RUN_FAILED' }); return; }
               const after = await snapshotProjectArtifactsAsync(realCwd);
-              if (!authorized()) { finish(next.id, 'canceled', { usage }); return; }
+              if (finishStopped()) return;
               const files = diffRunArtifacts(artifactBaselines.get(next.id)!.before, after).touchedPaths
                 .map((file) => path.relative(realCwd, file).replaceAll('\\', '/')).filter((file) => file && !file.startsWith('../')).slice(0, 128);
               const producedFiles = files.flatMap((name) => {
@@ -1309,8 +1351,8 @@ export function registerMultiUserRunRoutes(app: Express, input: {
               const messageId = studioMessages.ids(next.id).assistantMessageId;
               if (getMessage(db, messageId)?.runId === next.id) await captureRunChatArtifactSnapshots({ db, blobs: artifactBlobs },
                 { projectId: next.project_id, messageId, runId: next.id, projectRoot: realCwd, touchedPaths: files.map((file) => path.join(realCwd, file)) });
-              if (!authorized()) { finish(next.id, 'canceled', { usage }); return; }
-              if (request.critique !== true) key.saveHistory(JSON.stringify(result.input));
+              if (finishStopped()) return;
+              if (request.critique !== true) key.saveHistory(JSON.stringify(stageHistory));
               if (workspaceToolsUnavailable(projection.toolStartupFailed, files.length, projection.artifactCount)) {
                 finish(next.id, 'failed', { reason: 'MULTIUSER_RUN_TOOLS_UNAVAILABLE', files, producedFiles, usage }); return;
               }
@@ -1318,12 +1360,18 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                 ...(mediaUsage.images || mediaUsage.speechCharacters || mediaUsage.videoSeconds ? { media: mediaUsage } : {}) });
             }).catch((error: unknown) => {
               const cause = error instanceof Error ? error.message : '';
-              finish(next.id, cancelPending.has(next.id) || shuttingDown || request.critique === true && !authorized() ? 'canceled' : 'failed', { reason: failurePending.has(next.id) ? 'MULTIUSER_QUOTA_EXHAUSTED'
-                : isByok(next) && cause === 'provider_auth_rejected' ? 'MULTIUSER_PROVIDER_KEY_REJECTED'
-                : isByok(next) && cause === 'provider_rate_limited' ? 'MULTIUSER_PROVIDER_RATE_LIMITED' : 'MULTIUSER_RUN_FAILED' });
+              const stopped = stopResult(Boolean(request.critique === true || request.pluginSnapshot));
+              finish(next.id, stopped?.status ?? 'failed', { reason: stopped?.reason
+                ?? (isByok(next) && cause === 'provider_auth_rejected' ? 'MULTIUSER_PROVIDER_KEY_REJECTED'
+                : isByok(next) && cause === 'provider_rate_limited' ? 'MULTIUSER_PROVIDER_RATE_LIMITED' : 'MULTIUSER_RUN_FAILED'), usage });
             })
               .finally(() => worker.close(!storesClosed && row(next.id)?.status === 'succeeded'));
-          } catch (error) { finish(next.id, cancelPending.has(next.id) ? 'canceled' : 'failed', { reason: (error instanceof StudioConnectorRuntimeError || error instanceof StudioMcpRuntimeError) ? error.code : 'MULTIUSER_RUN_START_FAILED' }); worker.close(false); }
+          } catch (error) {
+            const stopped = stopResult(Boolean(request.critique === true || request.pluginSnapshot));
+            finish(next.id, stopped?.status ?? 'failed', { usage, reason: stopped?.reason
+              ?? ((error instanceof StudioConnectorRuntimeError || error instanceof StudioMcpRuntimeError) ? error.code : 'MULTIUSER_RUN_START_FAILED') });
+            worker.close(false);
+          }
           continue;
         }
         if (!mockAgentScript) { closeLedgerSpan(next, 'failed'); finish(next.id, 'failed', { reason: 'MULTIUSER_PROVIDER_DISABLED' }); continue; }
@@ -1495,59 +1543,70 @@ export function registerMultiUserRunRoutes(app: Express, input: {
             const connectorTools = request?.critique === true ? null : connectorToolsFor(next, allowed);
             const mcpTools = request?.critique === true ? null : mcpToolsFor(next, allowed);
             const libraryTools = request?.critique === true ? null : input.library?.tools(owner, next.project_id, allowed);
-            const juryTools = request?.critique === true ? studioCritiqueProjectTools(projectsRoot, next.project_id, allowed) : null;
             let resumeThreadId = request?.critique === true ? null : session.thread_id;
             let stageCount = 0;
+            const runSourceStage = async (directive: string, onText?: (text: string) => void, jury = false) => {
+              const isJury = request?.critique === true || jury;
+              const projectTools = isJury ? studioCritiqueProjectTools(projectsRoot, next.project_id, allowed) : null;
+              if (!jury && stageCount++) { projection.accept({ type: 'text_delta', delta: '\n\n' }); projection.flush(); }
+              const turn = await runPersonalCodexTurn({
+                reportToolStartupFailures: true,
+                beforeSpawn: () => { if (!allowed()) throw new Error('personal_authority_changed'); },
+                command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
+                ...(skillRoot && !jury ? { skillPackages: skillRoot } : {}),
+                prompt: `${jury || stageCount === 1 ? prompt : userPrompt}${directive}`, resumeThreadId: jury ? null : resumeThreadId,
+                ...(projectTools ? { dynamicTools: projectTools.tools, onDynamicToolCall: projectTools.execute } : {}),
+                ...(!jury && (liveArtifacts || connectorTools || mcpTools || libraryTools) ? { dynamicToolsPrompt: liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : '',
+                  dynamicTools: [
+                    ...(liveArtifacts ? STUDIO_LIVE_ARTIFACT_TOOLS.map(({ properties, required, ...tool }) => ({ ...tool,
+                      inputSchema: { type: 'object', properties, required: [...required], additionalProperties: false } })) : []),
+                    ...(connectorTools ? STUDIO_CONNECTOR_TOOL_DESCRIPTORS : []),
+                    ...(mcpTools ? STUDIO_MCP_TOOL_DESCRIPTORS : []),
+                    ...(libraryTools ? STUDIO_LIBRARY_TOOL_DESCRIPTORS : [])],
+                  onDynamicToolCall: (name: string, args: Record<string, unknown>) => name.startsWith('library_') ? libraryTools!.execute(name, args) : name.startsWith('mcp_') ? mcpTools!.execute(name, args) : name.startsWith('connectors_')
+                    ? connectorTools!.execute(name, args) : liveArtifacts!.execute(name, args) } : {}),
+                ...(isStudioCodexModel(request?.model) ? { model: request.model } : {}),
+                ...(isStudioCodexReasoning(request?.reasoning) ? { reasoning: request.reasoning } : {}),
+                // A real personal provider always runs inside the per-run bubblewrap
+                // boundary. Its filesystem already contains only this account's
+                // CODEX_HOME, run HOME/TMPDIR and project cwd, with system paths
+                // read-only. Do not ask Codex to create a second Linux sandbox
+                // inside it: unprivileged container hosts commonly reject that
+                // nested sandbox and every file/command tool then fails to start.
+                // `danger-full-access` is scoped to the outer boundary, not the
+                // daemon container or host. Mock-only unsandboxed test lanes keep
+                // the normal platform/operator-resolved Codex policy.
+                sandboxMode: isJury ? 'read-only' : launch.sandbox ? 'danger-full-access' : codexResolvedSandboxMode(),
+                readOnlyCwd: isJury, ephemeral: isJury,
+                onThread: (threadId) => { if (allowed() && !isJury) db.prepare(`UPDATE multiuser_personal_sessions SET thread_id = ?, updated_at = ?
+                  WHERE conversation_id = ? AND personal_account_id = ?`).run(threadId, now(), next.conversation_id, accountId); },
+                onAgentEvent: (event) => { if (allowed()) {
+                  if (isJury) { if (event.type === 'text_delta' && typeof event.delta === 'string') onText?.(event.delta); }
+                  else projection.accept(event);
+                } },
+              });
+              children.set(runId, turn.child);
+              interrupts.set(runId, turn.interrupt);
+              const result = await turn.done;
+              personal.secureHome(owner);
+              if (!jury) resumeThreadId = result.threadId;
+              return { value: result, ok: result.ok, text: result.text };
+            };
             const execute = request?.critique === true ? (args: Parameters<typeof runStudioPipeline<PersonalTurnResult>>[0]) =>
               runStudioCritique({ db, dataRootCanonical: input.dataRootCanonical, owner, projectId: next.project_id, conversationId: next.conversation_id, runId, authorized: allowed,
                 cancel: () => { interrupts.get(runId)?.(); children.get(runId)?.kill('SIGTERM'); }, emit: (event) => critiqueRoutes!.emit(runId, event), runStage: args.runStage }) : runStudioPipeline;
-            void execute({ db, runId, snapshot: pluginSnapshotOf(request), resumeStage: request?.pipelineResumeStage,
+            void execute({ db, runId, snapshot: pluginSnapshotOf(request), resumeStage: request?.pipelineResumeStage, resumeIteration: request?.pipelineResumeIteration,
               check: () => { if (!allowed()) throw new Error('personal_authority_changed'); },
               emit: (stage) => { projection.flush(); emit(runId, 'agent', { type: 'pipeline_stage', stage }); },
-              runStage: async (directive, onText) => {
-                if (stageCount++) { projection.accept({ type: 'text_delta', delta: '\n\n' }); projection.flush(); }
-                const turn = await runPersonalCodexTurn({
-                  reportToolStartupFailures: true,
-                  beforeSpawn: () => { if (!allowed()) throw new Error('personal_authority_changed'); },
-                  command: launch.command, sandbox: launch.sandbox, codexHome: account.codexHome, home: runHome, temp, cwd: realCwd, dataRoot,
-                  ...(skillRoot ? { skillPackages: skillRoot } : {}),
-                  prompt: `${stageCount === 1 ? prompt : userPrompt}${directive}`, resumeThreadId,
-                  ...(juryTools ? { dynamicTools: juryTools.tools, onDynamicToolCall: juryTools.execute } : {}),
-                  ...(liveArtifacts || connectorTools || mcpTools || libraryTools ? { dynamicToolsPrompt: liveArtifacts ? STUDIO_LIVE_ARTIFACT_PROMPT : '',
-                    dynamicTools: [
-                      ...(liveArtifacts ? STUDIO_LIVE_ARTIFACT_TOOLS.map(({ properties, required, ...tool }) => ({ ...tool,
-                        inputSchema: { type: 'object', properties, required: [...required], additionalProperties: false } })) : []),
-                      ...(connectorTools ? STUDIO_CONNECTOR_TOOL_DESCRIPTORS : []),
-                      ...(mcpTools ? STUDIO_MCP_TOOL_DESCRIPTORS : []),
-                      ...(libraryTools ? STUDIO_LIBRARY_TOOL_DESCRIPTORS : [])],
-                    onDynamicToolCall: (name: string, args: Record<string, unknown>) => name.startsWith('library_') ? libraryTools!.execute(name, args) : name.startsWith('mcp_') ? mcpTools!.execute(name, args) : name.startsWith('connectors_')
-                      ? connectorTools!.execute(name, args) : liveArtifacts!.execute(name, args) } : {}),
-                  ...(isStudioCodexModel(request?.model) ? { model: request.model } : {}),
-                  ...(isStudioCodexReasoning(request?.reasoning) ? { reasoning: request.reasoning } : {}),
-                  // A real personal provider always runs inside the per-run bubblewrap
-                  // boundary. Its filesystem already contains only this account's
-                  // CODEX_HOME, run HOME/TMPDIR and project cwd, with system paths
-                  // read-only. Do not ask Codex to create a second Linux sandbox
-                  // inside it: unprivileged container hosts commonly reject that
-                  // nested sandbox and every file/command tool then fails to start.
-                  // `danger-full-access` is scoped to the outer boundary, not the
-                  // daemon container or host. Mock-only unsandboxed test lanes keep
-                  // the normal platform/operator-resolved Codex policy.
-                  sandboxMode: request?.critique === true ? 'read-only' : launch.sandbox ? 'danger-full-access' : codexResolvedSandboxMode(),
-                  readOnlyCwd: request?.critique === true, ephemeral: request?.critique === true,
-                  onThread: (threadId) => { if (allowed() && request?.critique !== true) db.prepare(`UPDATE multiuser_personal_sessions SET thread_id = ?, updated_at = ?
-                    WHERE conversation_id = ? AND personal_account_id = ?`).run(threadId, now(), next.conversation_id, accountId); },
-                  onAgentEvent: (event) => { if (allowed()) {
-                    if (request?.critique === true) { if (event.type === 'text_delta' && typeof event.delta === 'string') onText?.(event.delta); }
-                    else projection.accept(event);
-                  } },
-                });
-                children.set(runId, turn.child);
-                interrupts.set(runId, turn.interrupt);
-                const result = await turn.done;
-                personal.secureHome(owner);
-                resumeThreadId = result.threadId;
-                return { value: result, ok: result.ok, text: result.text };
+              runStage: runSourceStage,
+              runCritique: async (directive, cursor) => {
+                const result = await runStudioPipelineCritique({ db, dataRootCanonical: input.dataRootCanonical,
+                  owner, projectId: next.project_id, conversationId: next.conversation_id, runId,
+                  authorized: allowed, cancel: () => { interrupts.get(runId)?.(); children.get(runId)?.kill('SIGTERM'); }, emit: () => {},
+                  runStage: (panel, onText) => runSourceStage(`${panel}${directive}`, onText, true),
+                }, cursor);
+                if (allowed() && result.text && emittedRenderableQuestionForm(result.text)) projection.accept({ type: 'text_delta', delta: `\n\n${result.text}` });
+                return result;
               },
             }).then(async ({ value: result, progress }) => {
               personal.secureHome(owner);
@@ -1594,11 +1653,11 @@ export function registerMultiUserRunRoutes(app: Express, input: {
                   return finish(runId, 'failed', { reason: 'MULTIUSER_RUN_TOOLS_UNAVAILABLE', files, producedFiles });
                 }
                 projection.flush();
-                if (request?.critique !== true && includeStable && stablePromptHash) {
+                if (request?.critique !== true && stageCount > 0 && includeStable && stablePromptHash) {
                   db.prepare(`UPDATE multiuser_personal_sessions SET stable_prompt_hash = ?, updated_at = ?
                     WHERE conversation_id = ? AND personal_account_id = ?`).run(stablePromptHash, now(), next.conversation_id, accountId);
                 }
-                return finish(runId, 'succeeded', { text: projection.text, textTruncated: projection.truncated, files, producedFiles, threadId: result.threadId, ...(progress ? { pipeline: progress } : {}) });
+                return finish(runId, 'succeeded', { text: projection.text, textTruncated: projection.truncated, files, producedFiles, threadId: request?.critique === true ? result.threadId : resumeThreadId, ...(progress ? { pipeline: progress } : {}) });
               }
               if (result.problem) personal.recordProblem(owner, accountId, result.problem);
               finish(runId, 'failed', { reason: result.problem ? PROBLEM_ERRORS[result.problem].code : 'MULTIUSER_PERSONAL_RUN_FAILED', files, producedFiles });

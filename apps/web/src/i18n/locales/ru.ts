@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const ru: Dict = {
+  'studio.catalogsUnavailable': "Это действие каталога недоступно в Studio. Поддерживаются поставляемые с плагинами предпросмотры и циклы разработки с фиксированным пределом итераций. Генерация дизайн-систем и неподдерживаемые атомы или стратегии плагинов ещё ожидаются. Установка сторонних плагинов, загрузка маркетплейса, doctor и управление доверием остаются недоступными.",
   "studio.libraryPairTitle": "Сопряжение Web Clipper",
   "studio.libraryStudioUrl": "Адрес Studio",
   "studio.libraryCopyUrl": "Копировать адрес Studio",
@@ -5751,6 +5752,7 @@ export const ru: Dict = {
   'chat.record.thinking': "Думает",
   'chat.record.thinkingTokens': "{count} токенов",
   'chat.record.thoughts': "Ход мыслей",
+  'chat.pipeline.iteration': 'итерация {iteration} / {max}',
   'chat.record.done': "Готово",
   'chat.record.failedTurn': "Запуск не удался",
   'chat.record.plan': "План · {count} шагов",
