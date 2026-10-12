@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const th: Dict = {
+  'studio.catalogsUnavailable': "การทำงานของแค็ตตาล็อกนี้ไม่พร้อมใช้งานใน Studio รองรับตัวอย่างที่มาพร้อมปลั๊กอินและวงรอบการพัฒนาที่มีจำนวนรอบสูงสุดคงที่แล้ว การสร้างระบบออกแบบและอะตอมหรือกลยุทธ์ปลั๊กอินที่ยังไม่รองรับยังอยู่ระหว่างรอ การติดตั้งจากบุคคลที่สาม การดึงข้อมูลมาร์เก็ตเพลซ doctor และการจัดการความเชื่อถือยังไม่พร้อมใช้งาน",
   "studio.libraryPairTitle": "จับคู่ Web Clipper",
   "studio.libraryStudioUrl": "URL ของ Studio",
   "studio.libraryCopyUrl": "คัดลอก URL ของ Studio",
@@ -5751,6 +5752,7 @@ export const th: Dict = {
   'chat.record.thinking': "กำลังคิด",
   'chat.record.thinkingTokens': "{count} โทเคน",
   'chat.record.thoughts': "กระบวนการคิด",
+  'chat.pipeline.iteration': 'รอบที่ {iteration} / {max}',
   'chat.record.done': "เสร็จแล้ว",
   'chat.record.failedTurn': "รันไม่สำเร็จ",
   'chat.record.plan': "แผน · {count} ขั้น",

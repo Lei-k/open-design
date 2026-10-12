@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const id: Dict = {
+  'studio.catalogsUnavailable': "Tindakan katalog ini tidak tersedia di Studio. Pratinjau bawaan plugin dan siklus pengembangan dengan batas iterasi tetap didukung. Pembuatan sistem desain serta atom atau strategi plugin yang belum didukung masih tertunda. Instalasi pihak ketiga, pengambilan marketplace, doctor, dan pengelolaan kepercayaan tetap tidak tersedia.",
   "studio.libraryPairTitle": "Pemasangan Web Clipper",
   "studio.libraryStudioUrl": "URL Studio",
   "studio.libraryCopyUrl": "Salin URL Studio",
@@ -5751,6 +5752,7 @@ export const id: Dict = {
   'chat.record.thinking': "Berpikir",
   'chat.record.thinkingTokens': "{count} token",
   'chat.record.thoughts': "Proses berpikir",
+  'chat.pipeline.iteration': 'iterasi {iteration} / {max}',
   'chat.record.done': "Selesai",
   'chat.record.failedTurn': "Gagal dijalankan",
   'chat.record.plan': "Rencana · {count} langkah",

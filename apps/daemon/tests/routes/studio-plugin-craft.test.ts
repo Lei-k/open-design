@@ -12,6 +12,7 @@ import { registerStudioPluginRoutes, type StudioPlugins } from '../../src/routes
 import { getInstalledPlugin, upsertInstalledPlugin } from '../../src/plugins/registry.js';
 import { AuthStore } from '../../src/storage/auth-store.js';
 import { ProjectAccessStore } from '../../src/storage/project-access.js';
+import { studioPinnedPluginSourceReasons } from '../../src/plugins/studio-pinned-requirements.js';
 
 let root: string; let craftRoot: string; let db: Database.Database; let service: StudioPlugins;
 const routes = new Map<string, (req: Request, res: Response) => Promise<void>>();
@@ -72,9 +73,17 @@ it('refuses incomplete craft capture without inserting a snapshot or replacing a
   const before = service.projectPin('project', 'A');
   const count = db.prepare('SELECT count(*) AS n FROM applied_plugin_snapshots').get();
   install(['typography', 'missing']);
-  expect(await apply()).toMatchObject({ status: 409, body: { error: { code: 'CONFLICT' } } });
+  const response = internalMultiUserResponse({ accountId: 'A', username: 'A', role: 'user', sessionId: 'fixture', sessionExpiresAt: Date.now() + 60_000 }, () => true);
+  await routes.get('GET /api/multiuser/catalog/plugins')!({ query: {} } as Request, response.res);
+  expect((response.result()!.body as any).plugins.find((plugin: any) => plugin.id === 'craft-fixture').availability)
+    .toMatchObject({ applicable: false, reasons: [{ code: 'context', subject: 'craft' }] });
+  expect(await apply()).toMatchObject({ status: 403, body: { error: { code: 'MULTIUSER_CAPABILITY_UNAVAILABLE',
+    details: { reasons: [{ code: 'context', subject: 'craft' }] } } } });
   expect(db.prepare('SELECT count(*) AS n FROM applied_plugin_snapshots').get()).toEqual(count);
   expect(service.projectPin('project', 'A')).toEqual(before);
+  for (const source of ['personal-codex', 'company-openai', 'account-openai'] as const) {
+    expect(studioPinnedPluginSourceReasons(before!, source, { liveArtifacts: true })).toEqual([]);
+  }
 });
 it('reopens the persisted capture without the catalog or craft resources', async () => {
   expect((await apply()).status).toBe(200);

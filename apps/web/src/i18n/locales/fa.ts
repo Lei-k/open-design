@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const fa: Dict = {
+  'studio.catalogsUnavailable': "این عملیات فهرست در Studio در دسترس نیست. پیش‌نمایش‌های همراه افزونه‌ها و چرخه‌های توسعه با سقف ثابت تکرار پشتیبانی می‌شوند. تولید سیستم طراحی و اتم‌ها یا راهبردهای پشتیبانی‌نشدهٔ افزونه‌ها همچنان در انتظارند. نصب شخص ثالث، دریافت بازار، doctor و مدیریت اعتماد همچنان در دسترس نیستند.",
   "studio.libraryPairTitle": "جفت‌سازی Web Clipper",
   "studio.libraryStudioUrl": "نشانی Studio",
   "studio.libraryCopyUrl": "کپی نشانی Studio",
@@ -5745,6 +5746,7 @@ export const fa: Dict = {
   'chat.record.thinking': "در حال فکر کردن",
   'chat.record.thinkingTokens': "{count} توکن",
   'chat.record.thoughts': "روند تفکر",
+  'chat.pipeline.iteration': 'تکرار {iteration} / {max}',
   'chat.record.done': "انجام شد",
   'chat.record.failedTurn': "اجرا ناموفق بود",
   'chat.record.plan': "برنامه · {count} مرحله",

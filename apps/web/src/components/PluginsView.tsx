@@ -1181,7 +1181,9 @@ export function ExtensionsMarketplace({
     });
     setMenuId(null);
     setConfirmUninstallId(null);
-    if (detail.kind === 'plugin') {
+    // Studio inspects through the existing isolated preview dialog. The
+    // full-page installed-extension route remains a desktop entry point.
+    if (detail.kind === 'plugin' && hostPluginInstall) {
       navigate({ kind: 'marketplace-detail', pluginId: detail.record.id });
       return;
     }

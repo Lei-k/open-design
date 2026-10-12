@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const ko: Dict = {
+  'studio.catalogsUnavailable': "이 카탈로그 작업은 Studio에서 사용할 수 없습니다. 플러그인에 포함된 미리보기와 고정 반복 제한이 있는 개발 루프는 지원됩니다. 디자인 시스템 생성과 지원되지 않는 플러그인 아톰 또는 전략은 아직 준비 중입니다. 타사 설치, 마켓플레이스 가져오기, doctor 및 신뢰 관리는 계속 사용할 수 없습니다.",
   "studio.libraryPairTitle": "Web Clipper 페어링",
   "studio.libraryStudioUrl": "Studio 주소",
   "studio.libraryCopyUrl": "Studio 주소 복사",
@@ -5750,6 +5751,7 @@ export const ko: Dict = {
   'chat.record.thinking': "생각 중",
   'chat.record.thinkingTokens': "{count} 토큰",
   'chat.record.thoughts': "사고 과정",
+  'chat.pipeline.iteration': '반복 {iteration} / {max}',
   'chat.record.done': "완료",
   'chat.record.failedTurn': "실행 실패",
   'chat.record.plan': "실행 계획 · {count}단계",

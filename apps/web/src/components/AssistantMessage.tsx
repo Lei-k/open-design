@@ -1308,11 +1308,12 @@ function AssistantMessageImpl({
       data-assistant-message-id={message.id}
     >
       {pipelineStage && (pipelineStage.kind === 'pipeline_stage_started' || pipelineStage.kind === 'pipeline_stage_completed') ? (
-        <StatusPill label={pipelineStage.kind === 'pipeline_stage_completed'
+        <StatusPill label={pipelineStage.kind === 'pipeline_stage_completed' && pipelineStage.converged !== false
           ? t('chat.record.done') : streaming || message.runStatus === 'running' || message.runStatus === 'queued' ? t('chat.record.running')
             : message.runStatus === 'canceled' ? t('chat.record.canceled')
             : message.runStatus === 'failed' ? t('chat.record.failedTurn') : t('assistant.awaitingReplyLabel')}
-          detail={pipelineStage.stageId} />
+          detail={pipelineStage.maxIterations === undefined ? pipelineStage.stageId
+            : `${pipelineStage.stageId} · ${t('chat.pipeline.iteration', { iteration: pipelineStage.iteration + 1, max: pipelineStage.maxIterations })}`} />
       ) : null}
       {showRole ? (
         <div className="role" data-testid="assistant-role">

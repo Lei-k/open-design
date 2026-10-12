@@ -4,7 +4,7 @@
 // restriction exactly as the Plugins page and CLI do: in the picker row (part
 // of the focusable item's accessible name), in its preview, and on the
 // applied-plugin chip. Ported from the reviewer's composer reproducer.
-import { createRef } from 'react';
+import { createRef, type ComponentProps } from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { STUDIO_PARITY_LANES, type StudioRuntimeCapabilities } from '@open-design/contracts';
@@ -38,7 +38,7 @@ const applied = { ok: true, query: '', contextItems: [], inputs: [], assets: [],
 let session: CookieSession | null = null;
 afterEach(() => { cleanup(); session?.dispose(); session = null; vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-type Fixture = { plugins: unknown[]; pinned?: Record<string, unknown> };
+type Fixture = { plugins: unknown[]; pinned?: Record<string, unknown>; applyResponse?: typeof applied; onSend?: ComponentProps<typeof ChatComposer>['onSend'] };
 async function mountComposer(fixture: Fixture = { plugins: [media, everywhere] }) {
   const handle = await mountComposerHandle(fixture);
   act(() => handle.current?.openPluginsPanel());
@@ -46,14 +46,14 @@ async function mountComposer(fixture: Fixture = { plugins: [media, everywhere] }
   return screen.getByTestId('composer-plugins-popup');
 }
 
-async function mountComposerHandle({ plugins, pinned = {} }: Fixture) {
+async function mountComposerHandle({ plugins, pinned = {}, applyResponse = applied, onSend = vi.fn() }: Fixture) {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === '/api/auth/me') return Response.json({ account: actor, studio: capabilities, studioRevision: 1 });
     if (url === '/api/plugins') return Response.json({ plugins });
     const snapshot = /^\/api\/applied-plugins\/([^/?]+)$/.exec(url)?.[1];
     if (snapshot) return pinned[snapshot] ? Response.json(pinned[snapshot]) : Response.json({ error: { code: 'NOT_FOUND' } }, { status: 404 });
-    if (url === '/api/plugins/review-media/apply' && init?.method === 'POST') return Response.json(applied);
+    if (/^\/api\/plugins\/[^/]+\/apply$/.test(url) && init?.method === 'POST') return Response.json(applyResponse);
     if (url === '/api/mcp/servers') return Response.json({ servers: [], templates: [] });
     if (url === '/api/connectors') return Response.json({ connectors: [] });
     if (url === '/api/projects') return Response.json({ projects: [] });
@@ -64,7 +64,7 @@ async function mountComposerHandle({ plugins, pinned = {} }: Fixture) {
   const ref = createRef<ChatComposerHandle>();
   render(<StudioCapabilitiesProvider session={session} generation={session.snapshot().generation} actor={actor as never} capabilities={capabilities}>
     <ChatComposer ref={ref} projectId="review-project" projectFiles={[]} streaming={false} onEnsureProject={async () => 'review-project'}
-      onSend={vi.fn()} onStop={vi.fn()} onOpenMcpSettings={vi.fn()} skills={[]} />
+      onSend={onSend} onStop={vi.fn()} onOpenMcpSettings={vi.fn()} skills={[]} />
   </StudioCapabilitiesProvider>);
   return ref;
 }
@@ -171,4 +171,28 @@ it('restored pin retries stop after three attempts and retain unknown restrictio
   await act(async () => { await new Promise((resolve) => setTimeout(resolve, 3300)); });
   expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url) === '/api/applied-plugins/snap-media-v1')).toHaveLength(3);
   expect(chip.textContent).toContain('Restrictions unknown');
+});
+
+// S70: entry-point component witness paired with the daemon catalog/HTTP
+// specimens of these three newly applicable bundled plugins.
+it.each(['example-article-magazine', 'example-dashboard', 'example-ve-terminal-mono'])('applies newly available %s and sends its pinned pipeline from Web', async (id) => {
+  const plugin = { ...everywhere, id, title: id, source: `bundled:${id}`, manifest: { ...everywhere.manifest, name: id, title: id } };
+  const pipeline = { stages: [{ id: 'generate', atoms: ['file-write', 'live-artifact'] },
+    { id: 'critique', atoms: ['critique-theater'], repeat: true, until: 'critique.score>=4 || iterations>=3' }] };
+  const response = { ...applied, query: 'Create the design', snapshotId: `snap-${id}`, sourceRestrictions: [],
+    appliedPlugin: { ...applied.appliedPlugin, pluginId: id, pluginTitle: id, snapshotId: `snap-${id}`, pipeline } };
+  const onSend = vi.fn();
+  const ref = await mountComposerHandle({ plugins: [plugin], applyResponse: response, onSend });
+  act(() => ref.current?.openPluginsPanel());
+  const picker = await waitFor(() => screen.getByTestId('composer-plugins-popup'));
+  const item = await waitFor(() => within(picker).getByRole('menuitem', { name: new RegExp(id) }));
+  fireEvent.click(item);
+  const chip = await pluginChip();
+  expect(chip.textContent).toContain(id); expect(chip.textContent).not.toContain('Not available');
+  await waitFor(() => expect((screen.getByTestId('chat-send') as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByTestId('chat-send'));
+  await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+  const meta = onSend.mock.calls[0]![3];
+  expect(meta.appliedPluginSnapshotId).toBe(`snap-${id}`);
+  expect(meta.appliedPluginSnapshot.pipeline).toEqual(pipeline);
 });

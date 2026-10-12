@@ -1,6 +1,7 @@
 import type { Dict } from '../types';
 
 export const de: Dict = {
+  'studio.catalogsUnavailable': "Diese Katalogaktion ist in Studio nicht verfügbar. Mitgelieferte Plugin-Vorschauen und Entwicklungsschleifen mit fester Iterationsgrenze werden unterstützt. Die Generierung von Designsystemen und nicht unterstützte Plugin-Atome oder Strategien stehen noch aus. Drittanbieter-Installationen, Marktplatzabrufe, doctor und die Vertrauensverwaltung bleiben nicht verfügbar.",
   "studio.libraryPairTitle": "Web Clipper koppeln",
   "studio.libraryStudioUrl": "Studio-Adresse",
   "studio.libraryCopyUrl": "Studio-Adresse kopieren",
@@ -5751,6 +5752,7 @@ export const de: Dict = {
   'chat.record.thinking': "Denkt nach",
   'chat.record.thinkingTokens': "{count} Tokens",
   'chat.record.thoughts': "Gedankengang",
+  'chat.pipeline.iteration': 'Iteration {iteration} / {max}',
   'chat.record.done': "Fertig",
   'chat.record.failedTurn': "Lauf fehlgeschlagen",
   'chat.record.plan': "Plan · {count} Schritte",

@@ -522,9 +522,11 @@ describe('same Studio APIs through remote od sessions', () => {
     expect(listed.total).toBeGreaterThan(100);
     // S67 opens the runnable Live Artifact examples; repair 1 closes plugins whose
     // captured skill needs a desktop-only core step, including the S42 pipeline plugin.
+    // S70 review repair 3 closes plugins with missing craft or uncaptured local scripts (309).
     const applicable = listed.plugins.filter((plugin: { availability: { applicable: boolean } }) => plugin.availability.applicable).map((plugin: { id: string }) => plugin.id);
     expect(applicable).toEqual(expect.arrayContaining(['example-image-poster', 'example-frame-glitch-title']));
-    expect(applicable).toHaveLength(10);
+    expect(applicable).toHaveLength(309);
+    expect(applicable).toEqual(expect.arrayContaining(['example-article-magazine', 'example-dashboard', 'example-ve-terminal-mono']));
     const share = listed.plugins.find((plugin: { id: string }) => plugin.id === PIPELINE_ONLY_PLUGIN_ID);
     expect(share).toMatchObject({ fsPath: '', availability: { applicable: false, reasons: [{ code: 'capability', subject: 'desktop:od-cli' }] } });
     expect(success(await cli(['plugin', 'info', 'example-hatch-pet', '--session-file', aFile, '--json'])).availability)
