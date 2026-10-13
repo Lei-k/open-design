@@ -1,6 +1,18 @@
 /* The Studio account control lives in the shared rail / workspace chrome (StudioAccountMenu). */
 .workspace-shell[data-studio-pilot] .split > .studio-unavailable { grid-column: 3; padding: 16px; min-width: 0; }
 .workspace-shell[data-studio-pilot] .split-chat-collapse { display: none; }
+/* Studio can put Jury content above the split. Anchor the comment card to the
+   workspace's grid area, below its 44px tab/Share row, rather than a viewport
+   offset that can cover that row. Desktop retains its fixed floating card. */
+.workspace-shell[data-studio-pilot] .split { position: relative; }
+.workspace-shell[data-studio-pilot] .split > .comment-float-host {
+  position: absolute;
+  grid-area: 1 / 3 / 2 / 4;
+  top: 56px;
+}
+.workspace-shell[data-studio-pilot] .split > .comment-float-host:not(:has(.comment-side-rail)) {
+  width: min(360px, calc(100% - 32px));
+}
 @media (max-width: 600px) {
   .workspace-shell[data-studio-pilot] .split { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
   .workspace-shell[data-studio-pilot] .split-resize-handle { display: none; }
@@ -13,6 +25,7 @@
   .workspace-shell[data-studio-pilot] .split:has(> .workspace) > .split-chat-slot { grid-column: 1; grid-row: 1; }
   .workspace-shell[data-studio-pilot] .split:has(> .workspace) > .workspace { grid-column: 1; grid-row: 2; }
   .workspace-shell[data-studio-pilot] .split:has(> .workspace) > .studio-unavailable { grid-row: 3; }
+  .workspace-shell[data-studio-pilot] .split > .comment-float-host { grid-area: 2 / 1 / 3 / 2; }
 }
 
 /* Capability-state controls inside the shared project viewer; native styles stay owned by their components. */
