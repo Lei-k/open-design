@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { LiveArtifact } from '@open-design/contracts';
 import { StudioLiveArtifactEditor } from '../../src/components/StudioLiveArtifactEditor';
 import { studioRequestAvailable } from '../../src/runtime/studio-transport';
 import styles from '../../src/components/StudioLiveArtifactEditor.module.css';
+import { fetchLiveArtifacts } from '../../src/providers/registry';
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const artifact: LiveArtifact = { schemaVersion: 1, id: 'live-fixture', projectId: 'project', title: 'Sales', slug: 'sales', pinned: false,
@@ -60,6 +61,39 @@ it('scrolls only the field body and keeps the title and Cancel/Create footer out
     expect(getComputedStyle(header).flexShrink).toBe('0');
     expect(getComputedStyle(footer).flexShrink).toBe('0');
   } finally { style.remove(); }
+});
+
+it.each(['create', 'edit', 'delete'] as const)('invalidates the accepted list before the %s callback refreshes the workspace', async (operation) => {
+  vi.useFakeTimers();
+  const before = operation === 'create' ? [] : [artifact];
+  const after = operation === 'delete' ? [] : [{ ...artifact, title: 'Changed' }];
+  let list = before;
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url === '/api/live-artifacts?projectId=project' && !init?.method) return Response.json({ artifacts: list });
+    if (!init?.method) return new Response('<h1>{{data.total}}</h1>');
+    list = after;
+    return Response.json({ artifact: after[0] }, { status: operation === 'create' ? 201 : 200 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  let refreshed: unknown;
+  let done!: () => void;
+  const completed = new Promise<void>((resolve) => { done = resolve; });
+  const refresh = async () => { refreshed = await fetchLiveArtifacts('project'); done(); };
+  try {
+    expect(await fetchLiveArtifacts('project')).toEqual(before);
+    await act(async () => {
+      render(<StudioLiveArtifactEditor projectId="project" artifact={operation === 'create' ? undefined : artifact}
+        onClose={vi.fn()} onSaved={refresh} onDeleted={refresh} toolSources={{ connectors: false, mcp: false }} />);
+    });
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Changed' } });
+    if (operation === 'delete') fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: operation === 'create' ? 'Create' : operation === 'edit' ? 'Save' : 'Delete' }));
+      await completed;
+    });
+    expect(refreshed).toEqual(after);
+    expect(fetchMock.mock.calls.filter(([url, init]) => url === '/api/live-artifacts?projectId=project' && !init?.method)).toHaveLength(2);
+  } finally { vi.useRealTimers(); }
 });
 
 it('creates an artifact from editable template/data and explicitly granted project JSON source', async () => {

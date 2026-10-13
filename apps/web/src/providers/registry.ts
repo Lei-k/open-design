@@ -2333,6 +2333,16 @@ export async function deleteProjectFolder(
   }
 }
 
+function liveArtifactsCacheKey(projectId: string, workspaceContext?: WorkspaceCollabContext | null): string {
+  return `live-artifacts:${workspaceIdentityCacheKey(workspaceContext)}:${projectId}`;
+}
+
+/** A successful canonical mutation must not reuse a pre-write list, including
+ * an in-flight read. Keep invalidation scoped to the same project authority. */
+export function invalidateLiveArtifactsCache(projectId: string, workspaceContext?: WorkspaceCollabContext | null): void {
+  evictCoalescedGet(liveArtifactsCacheKey(projectId, workspaceContext));
+}
+
 export async function fetchLiveArtifacts(
   projectId: string,
   options?: {
@@ -2369,7 +2379,7 @@ export async function fetchLiveArtifacts(
   // during a reopen.
   if (options?.signal) return run();
   return coalescedGet(
-    `live-artifacts:${workspaceIdentityCacheKey(options?.workspaceContext)}:${projectId}`,
+    liveArtifactsCacheKey(projectId, options?.workspaceContext),
     run,
   );
 }
@@ -2444,7 +2454,9 @@ export async function refreshLiveArtifact(
     throw new LiveArtifactRefreshError(errorBody.message, resp.status, errorBody.code);
   }
 
-  return (await resp.json()) as LiveArtifactRefreshResult;
+  const result = (await resp.json()) as LiveArtifactRefreshResult;
+  invalidateLiveArtifactsCache(projectId, workspaceContext);
+  return result;
 }
 
 export async function fetchLiveArtifactRefreshes(
@@ -2508,6 +2520,7 @@ export async function updateLiveArtifact(
   const json = (await resp.json()) as { artifact?: LiveArtifact; liveArtifact?: LiveArtifact };
   const artifact = json.liveArtifact ?? json.artifact;
   if (!artifact) throw new LiveArtifactRefreshError('Update response did not include a live artifact.', resp.status);
+  invalidateLiveArtifactsCache(projectId, workspaceContext);
   return artifact;
 }
 
@@ -2527,6 +2540,7 @@ export async function deleteLiveArtifact(
         ...(workspaceContext ? { headers: workspaceProjectHeaders(workspaceContext) } : {}),
       },
     );
+    if (resp.ok) invalidateLiveArtifactsCache(projectId, workspaceContext);
     return resp.ok;
   } catch {
     return false;

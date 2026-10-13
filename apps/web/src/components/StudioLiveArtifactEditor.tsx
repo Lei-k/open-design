@@ -5,6 +5,8 @@ import type { BoundedJsonObject, LiveArtifact, LiveArtifactSource, StudioLiveArt
 import { useT } from '../i18n';
 import type { Dict } from '../i18n/types';
 import { studioFetch, studioRequestAvailable } from '../runtime/studio-transport';
+import { useProjectCollabContext } from '../collab/collab-context';
+import { invalidateLiveArtifactsCache } from '../providers/registry';
 import styles from './StudioLiveArtifactEditor.module.css';
 
 type SourceKind = 'file' | 'connector' | 'mcp';
@@ -26,6 +28,7 @@ export function StudioLiveArtifactEditor({ projectId, artifact, onClose, onSaved
   /** Which tool-source kinds this deployment/actor offers; defaults to the Studio transport's availability. */
   toolSources?: { connectors: boolean; mcp: boolean };
 }) {
+  const { workspaceContext } = useProjectCollabContext();
   const t = useT();
   const existing = artifact?.document.sourceJson;
   const offered = toolSources ?? {
@@ -131,7 +134,10 @@ export function StudioLiveArtifactEditor({ projectId, artifact, onClose, onSaved
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error?.message || t('studio.liveArtifact.saveFailed'));
-      if (alive.current) onSaved(result.artifact);
+      if (alive.current) {
+        invalidateLiveArtifactsCache(projectId, workspaceContext);
+        onSaved(result.artifact);
+      }
     } catch (failure) { if (alive.current) setError(failure instanceof Error ? failure.message : t('studio.liveArtifact.saveFailed')); }
     finally { submitting.current = false; if (alive.current) setBusy(false); }
   };
@@ -141,7 +147,10 @@ export function StudioLiveArtifactEditor({ projectId, artifact, onClose, onSaved
     try {
       const response = await studioFetch(`/api/live-artifacts/${encodeURIComponent(artifact.id)}?projectId=${encodeURIComponent(projectId)}`, { method: 'DELETE' });
       if (!response.ok) throw new Error(t('studio.liveArtifact.saveFailed'));
-      if (alive.current) onDeleted();
+      if (alive.current) {
+        invalidateLiveArtifactsCache(projectId, workspaceContext);
+        onDeleted();
+      }
     } catch (failure) { if (alive.current) setError(failure instanceof Error ? failure.message : t('studio.liveArtifact.saveFailed')); }
     finally { submitting.current = false; if (alive.current) setBusy(false); }
   };
