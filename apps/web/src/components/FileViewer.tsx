@@ -113,8 +113,8 @@ import {
 import {
   canPublishPublicFile,
   publicFileManualRevokePublication,
-  publicFilePublishFailureKey,
-  type PublicFilePublishFailureKey,
+  publicFilePublishFailure,
+  type PublicFilePublishFailure,
 } from '../collab/public-file-publish';
 import { moveWorkspaceProject } from '../state/projects';
 import { MoveToTeamConfirmDialog, moveConfirmSkipped } from './MoveToTeamConfirmDialog';
@@ -6509,10 +6509,10 @@ function ReactComponentViewer({
   const [publishLinkFeedback, setPublishLinkFeedback] = useState<'copied' | 'failed' | null>(null);
   const [publishedClipboardFailed, setPublishedClipboardFailed] = useState(false);
   const publishedClipboardState = useStudioCapabilityState('clipboard', { ...(publishedClipboardFailed ? { failure: 'permission' } : {}) });
-  // Why a publish/unpublish attempt failed, as a message key. `publishLinkFeedback`
+  // Why a publish/unpublish attempt failed, as a message key (plus any refused file). `publishLinkFeedback`
   // only renders inside the already-published branch, so a failed FIRST publish
   // used to leave no trace on screen at all — the button simply returned to idle.
-  const [publishFailureKey, setPublishFailureKey] = useState<PublicFilePublishFailureKey | null>(null);
+  const [publishFailure, setPublishFailure] = useState<PublicFilePublishFailure | null>(null);
   const filePublished = publishedFileUrl.length > 0;
   // Public links need a signed-in workspace (any type); see canPublishPublicFile.
   const canPublishPublic = canPublishPublicFile(workspaceContext);
@@ -6629,7 +6629,7 @@ function ReactComponentViewer({
     setPublishedFileSlug('');
     setPublishingPublicFile(false);
     setPublishLinkFeedback(null);
-    setPublishFailureKey(null);
+    setPublishFailure(null);
     // Off-team the read can only 409; don't spend a request per file open on it.
     if (!canPublishPublic) return;
     // A readonly viewer's publish surface is disabled outright, and the daemon
@@ -6721,7 +6721,7 @@ function ReactComponentViewer({
     const publishRequestId = analytics.newRequestId();
     setPublishingPublicFile(true);
     setPublishLinkFeedback(null);
-    setPublishFailureKey(null);
+    setPublishFailure(null);
     try {
       const response = await publishProjectFilePublic(
         requestProjectId,
@@ -6760,10 +6760,10 @@ function ReactComponentViewer({
           setPublishedFileUrl(recoveryPublication.url);
           setPublishedFileSlug(recoveryPublication.slug);
           setPublishLinkFeedback(null);
-          setPublishFailureKey(null);
+          setPublishFailure(null);
         } else {
           setPublishLinkFeedback('failed');
-          setPublishFailureKey(publicFilePublishFailureKey(error));
+          setPublishFailure(publicFilePublishFailure(error));
         }
       }
     } finally {
@@ -6781,7 +6781,7 @@ function ReactComponentViewer({
     const unpublishRequestId = analytics.newRequestId();
     setPublishingPublicFile(true);
     setPublishLinkFeedback(null);
-    setPublishFailureKey(null);
+    setPublishFailure(null);
     try {
       await unpublishProjectFilePublic(
         requestProjectId,
@@ -6817,7 +6817,7 @@ function ReactComponentViewer({
       }, unpublishRequestId);
       if (publicFileRequestSeqRef.current === requestSeq) {
         setPublishLinkFeedback('failed');
-        setPublishFailureKey(publicFilePublishFailureKey(error));
+        setPublishFailure(publicFilePublishFailure(error));
       }
     } finally {
       if (publicFileRequestSeqRef.current === requestSeq) setPublishingPublicFile(false);
@@ -7171,9 +7171,9 @@ function ReactComponentViewer({
                             <span>{publishingPublicFile ? t('fileViewer.publishingFile') : t('fileViewer.publishSingleFileTitle')}</span>
                           </button>
                         ) }
-                        {publishFailureKey ? (
+                        {publishFailure ? (
                           <p className="chrome-publish-error" role="status">
-                            {t(publishFailureKey)}
+                            {t(publishFailure.key, { path: publishFailure.path ?? '' })}
                           </p>
                         ) : null}
                         </>
@@ -7962,10 +7962,10 @@ function HtmlViewer({
   const [publishLinkFeedback, setPublishLinkFeedback] = useState<'copied' | 'failed' | null>(null);
   const [publishedClipboardFailed, setPublishedClipboardFailed] = useState(false);
   const publishedClipboardState = useStudioCapabilityState('clipboard', { ...(publishedClipboardFailed ? { failure: 'permission' } : {}) });
-  // Why a publish/unpublish attempt failed, as a message key. `publishLinkFeedback`
+  // Why a publish/unpublish attempt failed, as a message key (plus any refused file). `publishLinkFeedback`
   // only renders inside the already-published branch, so a failed FIRST publish
   // used to leave no trace on screen at all — the button simply returned to idle.
-  const [publishFailureKey, setPublishFailureKey] = useState<PublicFilePublishFailureKey | null>(null);
+  const [publishFailure, setPublishFailure] = useState<PublicFilePublishFailure | null>(null);
   const filePublished = publishedFileUrl.length > 0;
   // Public links need a signed-in workspace (any type); see canPublishPublicFile.
   // Studio publishes deployment-local links for the project owner (#66).
@@ -8083,7 +8083,7 @@ function HtmlViewer({
     setPublishedFileSlug('');
     setPublishingPublicFile(false);
     setPublishLinkFeedback(null);
-    setPublishFailureKey(null);
+    setPublishFailure(null);
     if (!workspaceActive) return;
     // Off-team the read can only 409; don't spend a request per file open on it.
     if (!canPublishPublic) return;
@@ -8184,7 +8184,7 @@ function HtmlViewer({
     const publishRequestId = analytics.newRequestId();
     setPublishingPublicFile(true);
     setPublishLinkFeedback(null);
-    setPublishFailureKey(null);
+    setPublishFailure(null);
     try {
       const response = await publishProjectFilePublic(
         requestProjectId,
@@ -8223,10 +8223,10 @@ function HtmlViewer({
           setPublishedFileUrl(recoveryPublication.url);
           setPublishedFileSlug(recoveryPublication.slug);
           setPublishLinkFeedback(null);
-          setPublishFailureKey(null);
+          setPublishFailure(null);
         } else {
           setPublishLinkFeedback('failed');
-          setPublishFailureKey(publicFilePublishFailureKey(error));
+          setPublishFailure(publicFilePublishFailure(error));
         }
       }
     } finally {
@@ -8244,7 +8244,7 @@ function HtmlViewer({
     const unpublishRequestId = analytics.newRequestId();
     setPublishingPublicFile(true);
     setPublishLinkFeedback(null);
-    setPublishFailureKey(null);
+    setPublishFailure(null);
     try {
       await unpublishProjectFilePublic(
         requestProjectId,
@@ -8280,7 +8280,7 @@ function HtmlViewer({
       }, unpublishRequestId);
       if (publicFileRequestSeqRef.current === requestSeq) {
         setPublishLinkFeedback('failed');
-        setPublishFailureKey(publicFilePublishFailureKey(error));
+        setPublishFailure(publicFilePublishFailure(error));
       }
     } finally {
       if (publicFileRequestSeqRef.current === requestSeq) setPublishingPublicFile(false);
@@ -9101,7 +9101,7 @@ function HtmlViewer({
     setPublishedFileSlug('');
     setPublishingPublicFile(false);
     setPublishLinkFeedback(null);
-    setPublishFailureKey(null);
+    setPublishFailure(null);
     setDeployment(null);
     setDeploymentsByProvider({});
     setDeployResult(null);
@@ -17345,9 +17345,9 @@ function HtmlViewer({
                           <span>{publishingPublicFile ? t('fileViewer.publishingFile') : t('fileViewer.publishSingleFileTitle')}</span>
                         </button>
                       ) }
-                      {publishFailureKey ? (
+                      {publishFailure ? (
                         <p className="chrome-publish-error" role="status">
-                          {t(publishFailureKey)}
+                          {t(publishFailure.key, { path: publishFailure.path ?? '' })}
                         </p>
                       ) : null}
                       </>

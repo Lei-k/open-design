@@ -2,6 +2,7 @@ import { registerStudioReset } from '../runtime/studio-resources';
 import { studioUsesLocalServices, studioFetch as fetch, studioLaneUsable } from '../runtime/studio-transport';
 import {
   PUBLIC_FILE_MANUAL_REVOKE_REQUIRED,
+  PUBLIC_LINK_FILE_REFUSED,
   workspaceContextHasTeamIdentity,
   type PublicFileManualRevokeRequiredData,
   type PublicProjectFilePublication,
@@ -2030,6 +2031,7 @@ export async function publishProjectFilePublic(
         recoveryData?.projectId === projectId && recoveryData.fileName === fileName
           ? recoveryData
           : undefined,
+        code === PUBLIC_LINK_FILE_REFUSED ? structuredError?.data : undefined,
       ),
       { failure: payload?.failure, daemonErrorCode: code },
     );
