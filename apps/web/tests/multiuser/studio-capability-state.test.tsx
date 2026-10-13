@@ -227,6 +227,23 @@ it('FileViewer keeps manual copy after brief button feedback expires', async () 
   expect(screen.getByLabelText('Select the text and copy it manually.')).toBeTruthy();
   expect(screen.getAllByRole('status').some((status) => status.textContent?.includes('Clipboard access was refused.'))).toBe(true);
 });
+it('FileViewer names the refused file and reason when a Studio share link is refused (#119)', async () => {
+  const ordinaryFetch = fetch;
+  vi.stubGlobal('fetch', vi.fn(async (input, init) => {
+    if (!String(input).includes('publish-public')) return ordinaryFetch(input, init);
+    if (init?.method !== 'POST') return Response.json({ publication: null });
+    return Response.json({ error: { code: 'PUBLIC_LINK_FILE_REFUSED', message: 'img/leak.svg cannot be published (symlink)',
+      data: { path: 'img/leak.svg', reason: 'symlink' } } }, { status: 409 });
+  }));
+  const file = { name: 'index.html', path: 'index.html', type: 'file' as const, size: 10, mtime: 1, kind: 'html' as const, mime: 'text/html' };
+  await mount(<FileViewer projectId="p" projectKind="prototype" file={file} liveHtml="<html><body>Hi</body></html>" />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Share' }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: /Get a share link/i }));
+  const message = await screen.findByText(/img\/leak\.svg/);
+  expect(message.getAttribute('role')).toBe('status');
+  expect(message.textContent).toMatch(/symbolic link/i);
+  expect(message.textContent).not.toMatch(/try again|PUBLIC_LINK_FILE_REFUSED|symlink\)/i);
+});
 it('narrow alternatives still render when media-query subscription APIs are absent', async () => {
   vi.stubGlobal('matchMedia', () => ({ matches: true }));
   function Probe() { return <StudioCapabilityMessage state={useStudioCapabilityState('pet')} />; }

@@ -1,7 +1,9 @@
 import {
   PUBLIC_FILE_MANUAL_REVOKE_REQUIRED,
+  PUBLIC_LINK_FILE_REFUSED,
   workspaceContextHasWorkspaceIdentity,
   type PublicFileManualRevokeRequiredData,
+  type PublicLinkFileRefusalReason,
   type PublicProjectFilePublication,
   type WorkspaceCollabContext,
 } from '@open-design/contracts';
@@ -12,6 +14,8 @@ export class PublicFilePublishError extends Error {
     readonly status: number,
     readonly code?: string,
     readonly data?: PublicFileManualRevokeRequiredData,
+    /** Raw `error.data` of a `PUBLIC_LINK_FILE_REFUSED` answer; validated by `publicFilePublishFailure`. */
+    readonly refusalData?: unknown,
   ) {
     super(message);
     this.name = 'PublicFilePublishError';
@@ -69,7 +73,26 @@ export function canPublishPublicFile(
 /** Dict keys this module may return; keeps the i18n contract explicit. */
 export type PublicFilePublishFailureKey =
   | 'fileViewer.publishFileRequiresWorkspace'
-  | 'fileViewer.publishFileFailed';
+  | 'fileViewer.publishFileFailed'
+  | (typeof REFUSED_FILE_KEYS)[PublicLinkFileRefusalReason];
+
+/** One sentence per refusal reason; each names the file through `{path}`. */
+const REFUSED_FILE_KEYS = {
+  symlink: 'fileViewer.publishFileRefusedSymlink',
+  hard_link: 'fileViewer.publishFileRefusedHardLink',
+  not_regular: 'fileViewer.publishFileRefusedNotRegular',
+  too_large: 'fileViewer.publishFileRefusedTooLarge',
+  bundle_too_large: 'fileViewer.publishFileRefusedBundleTooLarge',
+  changed: 'fileViewer.publishFileRefusedChanged',
+  invalid_path: 'fileViewer.publishFileRefusedInvalidPath',
+} as const satisfies Record<PublicLinkFileRefusalReason, string>;
+
+/** What the share menu says about a failed publish: a message key, plus the
+ *  project-relative file it names when the daemon refused a specific file. */
+export interface PublicFilePublishFailure {
+  key: PublicFilePublishFailureKey;
+  path?: string;
+}
 
 /**
  * Map a publish/unpublish failure to the message key the user should read.
@@ -87,8 +110,32 @@ export type PublicFilePublishFailureKey =
  * chasing a workspace they did not need.
  */
 export function publicFilePublishFailureKey(error: unknown): PublicFilePublishFailureKey {
+  return publicFilePublishFailure(error).key;
+}
+
+/**
+ * Like `publicFilePublishFailureKey`, plus the file a Studio publish refused
+ * (#119). `PUBLIC_LINK_FILE_REFUSED` names the project-relative file and a
+ * reason the owner can act on (a symlink, a hard link, a file that is too
+ * large…), so the menu says which file and why instead of "try again". A
+ * malformed refusal falls back to the generic sentence; the code itself never
+ * reaches the screen.
+ */
+export function publicFilePublishFailure(error: unknown): PublicFilePublishFailure {
+  if (error instanceof PublicFilePublishError && error.code === PUBLIC_LINK_FILE_REFUSED) {
+    const data = error.refusalData as { path?: unknown; reason?: unknown } | null | undefined;
+    if (
+      data && typeof data === 'object'
+      && typeof data.path === 'string' && data.path.length > 0 && data.path.length <= 1024
+      && typeof data.reason === 'string' && Object.hasOwn(REFUSED_FILE_KEYS, data.reason)
+    ) {
+      return { key: REFUSED_FILE_KEYS[data.reason as PublicLinkFileRefusalReason], path: data.path };
+    }
+  }
   const message = error instanceof Error ? error.message : String(error ?? '');
-  return message.includes('WORKSPACE_IDENTITY_REQUIRED')
-    ? 'fileViewer.publishFileRequiresWorkspace'
-    : 'fileViewer.publishFileFailed';
+  return {
+    key: message.includes('WORKSPACE_IDENTITY_REQUIRED')
+      ? 'fileViewer.publishFileRequiresWorkspace'
+      : 'fileViewer.publishFileFailed',
+  };
 }

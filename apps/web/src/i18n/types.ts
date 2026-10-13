@@ -4580,6 +4580,14 @@ export interface Dict {
   'fileViewer.publishFileRequiresTeam': string;
   'fileViewer.publishFileRequiresWorkspace': string;
   'fileViewer.publishFileFailed': string;
+  /** A Studio public link refused one file (#119); `{path}` is project-relative. */
+  'fileViewer.publishFileRefusedSymlink': string;
+  'fileViewer.publishFileRefusedHardLink': string;
+  'fileViewer.publishFileRefusedNotRegular': string;
+  'fileViewer.publishFileRefusedTooLarge': string;
+  'fileViewer.publishFileRefusedBundleTooLarge': string;
+  'fileViewer.publishFileRefusedChanged': string;
+  'fileViewer.publishFileRefusedInvalidPath': string;
   'fileViewer.workspaceShareSuccess': string;
   'fileViewer.workspaceShareFailed': string;
   'fileViewer.workspaceUnshareSuccess': string;

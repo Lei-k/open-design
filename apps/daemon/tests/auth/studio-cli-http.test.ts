@@ -749,6 +749,12 @@ it('publishes, lists and revokes a deployment-local public link through od proje
   expect(success(await cli(['project', 'revoke-public-link', id, '--path', 'page.html', '--url', published.url, '--session-file', session, '--json'])))
     .toMatchObject({ ok: true, slug: published.slug });
   expect(success(await cli(['project', 'public-links', id, '--session-file', session, '--json'])).links).toEqual([]);
+  // A refused file (#119) reaches the CLI as the daemon's code, project-relative path and reason.
+  symlinkSync(path.join(root, 'app.sqlite'), path.join(root, 'projects', id, 'linked.html'));
+  const refused = await cli(['project', 'publish-public-link', id, '--path', 'linked.html', '--session-file', session, '--json']);
+  expect(refused.code).not.toBe(0);
+  expect(JSON.parse(refused.stderr).error).toMatchObject({ code: 'PUBLIC_LINK_FILE_REFUSED', data: { path: 'linked.html', reason: 'symlink' } });
+  expect(refused.stderr).not.toContain(root);
 });
 
 it('edits account instructions and manual profile through stdin and isolates B', async () => {

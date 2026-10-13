@@ -290,6 +290,9 @@ export const API_ERROR_CODES = [
   'LIVE_ARTIFACT_SOURCE_NOT_READ_ONLY',
   'LIVE_ARTIFACT_REFRESH_AUTHORITY_CHANGED',
   'LIVE_ARTIFACT_SOURCE_RECONFIRM_REQUIRED',
+  // A file a deployment-local public link would publish is refused (#119);
+  // `data` names the project-relative path and the reason.
+  'PUBLIC_LINK_FILE_REFUSED',
   'INTERNAL_ERROR',
   'LAST_ADMIN',
   'USERNAME_TAKEN',
