@@ -87,8 +87,10 @@ process.once('message', async (input: { dataRoot: string; appOrigin: string; pre
         results: [{ title: 'Palette trends', url: 'https://example.test/palette-trends', content: 'Muted greens and warm greys.' }] }),
       testComposioFetch: composioFetch,
       testPersonalCodexAppServer: path.join(input.workspaceRoot, 'mocks/personal-codex-app-server.ts'),
-      // Server-rendered exports through Playwright's managed Chromium; no external asset hosts in tests.
-      studioRenderer: { assetHosts: [],
+      // Use the same managed Chromium and OS-sandbox policy as the Playwright
+      // test browser on hosts without user namespaces. Production capture and
+      // request isolation remain real; there are no external asset hosts.
+      studioRenderer: { sandbox: false, assetHosts: [],
         domToPptxBundlePath: path.join(input.workspaceRoot, 'apps/desktop/vendor/dom-to-pptx/dom-to-pptx.bundle.js.gz') } },
   });
   if (!started || typeof started !== 'object' || !('server' in started)) throw new Error('Missing daemon test host');

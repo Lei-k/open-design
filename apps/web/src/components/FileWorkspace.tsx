@@ -4410,7 +4410,11 @@ export function FileWorkspace({
               }
               openFile(name);
             }}
-            onOpenLiveArtifact={(tabId) => openFile(tabId)}
+            onOpenLiveArtifact={(tabId) => {
+              // Creation opens a server-accepted id before this callback's
+              // entry snapshot includes it. Persist that explicit tab now.
+              openFile(tabId, { forcePersist: true });
+            }}
             onRenameFile={handleRename}
             onDeleteFile={(name) => {
               trackFileManagerClick(analytics.track, {

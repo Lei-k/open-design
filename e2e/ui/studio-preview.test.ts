@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import type { StudioPluginRecord } from '@open-design/contracts';
+import { STUDIO_CODEX_MODELS } from '@open-design/contracts';
 import type { LibraryPairingStartResponse, LibraryPairingConfirmResponse, StudioLibraryConnectionStatus } from '@open-design/contracts';
 import type { Page } from '@playwright/test';
 import { clusterTest as base, expect } from '@/playwright/suite';
@@ -53,8 +54,10 @@ test('[P1] Studio Live Artifact create, refresh, edit and delete use isolated pr
   await entry.click();
   const editor = page.getByRole('dialog');
   await editor.getByLabel('Title', { exact: true }).fill('Sales');
-  await editor.getByLabel('Template HTML', { exact: true }).fill('<h1>{{data.total}}</h1>');
-  await editor.getByLabel('Data', { exact: true }).fill('{"total":3}');
+  // Wrapped textarea labels include their initial text for getByLabel;
+  // use the control's accessible name, which excludes that editable content.
+  await editor.getByRole('textbox', { name: 'Template HTML', exact: true }).fill('<h1>{{data.total}}</h1>');
+  await editor.getByRole('textbox', { name: 'Data', exact: true }).fill('{"total":3}');
   await editor.getByLabel('Document source', { exact: true }).fill('sales.json');
   const created = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/live-artifacts');
   await editor.getByRole('button', { name: 'Create', exact: true }).click();
@@ -71,8 +74,8 @@ test('[P1] Studio Live Artifact create, refresh, edit and delete use isolated pr
   await viewer.getByRole('button', { name: 'Refresh history', exact: true }).click();
   await expect(viewer).toContainText('succeeded');
   await viewer.getByRole('button', { name: 'Edit', exact: true }).click();
-  await expect(editor.getByLabel('Template HTML', { exact: true })).toHaveValue('<h1>{{data.total}}</h1>');
-  await editor.getByLabel('Data', { exact: true }).fill('{"total":11}');
+  await expect(editor.getByRole('textbox', { name: 'Template HTML', exact: true })).toHaveValue('<h1>{{data.total}}</h1>');
+  await editor.getByRole('textbox', { name: 'Data', exact: true }).fill('{"total":11}');
   await editor.getByRole('button', { name: 'Save', exact: true }).click();
   await viewer.getByRole('button', { name: 'Preview', exact: true }).click();
   await expect(frame.getByRole('heading', { name: '11', exact: true })).toBeVisible({ timeout: T.long });
@@ -99,8 +102,10 @@ test('[P1] Studio run renders its immutable image immediately and retains histor
   const composer = page.getByTestId('chat-composer-input');
   await expect(composer).toBeVisible({ timeout: T.long });
   // Personal Codex model/effort: an account preference sent with the standard request.
+  const model = STUDIO_CODEX_MODELS.find((choice) => choice !== 'default')!;
+  expect(model).toBeDefined();
   const preferenceSaved = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === '/api/app-config');
-  await page.getByTestId('studio-codex-model').selectOption('gpt-5.4');
+  await page.getByTestId('studio-codex-model').selectOption(model);
   expect((await preferenceSaved).status()).toBe(200);
   const effortSaved = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === '/api/app-config');
   await page.getByTestId('studio-codex-reasoning').selectOption('high');
@@ -111,13 +116,13 @@ test('[P1] Studio run renders its immutable image immediately and retains histor
   await page.getByTestId('chat-send').click();
   const admission = await admitted;
   expect(admission.status()).toBe(202);
-  expect(admission.request().postDataJSON()).toMatchObject({ model: 'gpt-5.4', reasoning: 'high' });
+  expect(admission.request().postDataJSON()).toMatchObject({ model, reasoning: 'high' });
   const image = page.getByTestId('artifact-card-hero.png').locator('img');
   await expect(image).toBeVisible({ timeout: T.long });
   await expect(image).toHaveAttribute('src', /\/chat-artifact-snapshots\/[^/]+\/content$/);
   await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(1);
-  expect(await studio.turnEvidence(studio.a)).toMatchObject({ model: 'gpt-5.4', effort: 'high' });
-  expect((await studio.request('GET', '/api/app-config', studio.a.cookie)).json.config.codexModel).toEqual({ model: 'gpt-5.4', reasoning: 'high' });
+  expect(await studio.turnEvidence(studio.a)).toMatchObject({ model, effort: 'high' });
+  expect((await studio.request('GET', '/api/app-config', studio.a.cookie)).json.config.codexModel).toEqual({ model, reasoning: 'high' });
   expect((await studio.request('GET', '/api/app-config', studio.b.cookie)).json.config.codexModel).toEqual({ model: 'default', reasoning: 'default' });
   const snapshotUrl = await image.getAttribute('src');
   expect(snapshotUrl).toBeTruthy();
@@ -489,7 +494,12 @@ test('[P1] Studio saves private skills, instructions and memory in shared Settin
   await expect(page.getByTestId('studio-settings-nav-agentAccounts')).toHaveClass(/active/, { timeout: T.long });
   await page.screenshot({ path: info.outputPath('studio-settings-navigation-entry.png'), animations: 'disabled' });
   await page.getByTestId('studio-settings-nav-integrations').click();
-  await expect(page.locator('.settings-content .studio-unavailable')).toBeVisible();
+  const hostInstall = page.getByTestId('studio-mcp-install-unavailable');
+  await expect(hostInstall.getByRole('note')).toHaveText('Installing OpenDesign as an MCP server for a coding agent changes the server’s own configuration and is not available on Web.');
+  await expect(hostInstall.getByRole('button')).toHaveCount(0);
+  const hostInfo = await studio.request('GET', '/api/mcp/install-info', studio.a.cookie);
+  expect(hostInfo.status).toBe(403);
+  expect(hostInfo.json).toMatchObject({ error: { code: 'MULTIUSER_CAPABILITY_UNAVAILABLE' } });
   // Media is usable on an OpenAI source (accounts' own keys are on): models and billing, no host provider form.
   await page.getByTestId('studio-settings-nav-media').click();
   await expect(page.getByTestId('studio-media')).toContainText('gpt-image-1');
@@ -697,7 +707,10 @@ test('[P1] Studio deck navigation and manual edits survive reload under owner co
   const pdfResponse = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === `/api/projects/${projectId}/export/pdf-image`);
   const pdfDownload = page.waitForEvent('download');
   await exportMenu.getByRole('menuitem', { name: 'Export as PDF' }).click();
-  expect((await pdfResponse).status()).toBe(200);
+  const pdfReply = await pdfResponse;
+  expect(pdfReply.status(), await pdfReply.text().catch(() => '')).toBe(200);
+  expect(pdfReply.headers()['content-type']).toContain('application/pdf');
+  expect(pdfReply.headers()['cache-control']).toBe('no-store');
   expect((await pdfDownload).suggestedFilename()).toMatch(/\.pdf$/);
   await page.getByRole('button', { name: 'Export', exact: true }).click();
   await exportMenu.getByRole('menuitem', { name: 'Export as PPTX' }).click();
@@ -729,6 +742,9 @@ test('[P1] Studio deck navigation and manual edits survive reload under owner co
     const foreign = await other.request.get(`${studio.origin}/api/projects/${projectId}/files/deck.html`);
     expect(foreign.status()).toBe(404);
     expect((await other.request.post(`${studio.origin}/api/projects/${projectId}/export/html`, { data: { fileName: 'deck.html' } })).status()).toBe(404);
+    for (const format of ['pdf-image', 'pptx']) {
+      expect((await other.request.post(`${studio.origin}/api/projects/${projectId}/export/${format}`, { data: { fileName: 'deck.html', deck: true } })).status()).toBe(404);
+    }
   } finally { await other.close(); }
 });
 
@@ -1296,10 +1312,23 @@ test('[P1] Studio automation templates, crystallize and proposal review stay on 
   await page.locator('input[name="username"]').fill(studio.a.username);
   await page.locator('input[name="password"]').fill(studio.a.password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  // Connector-only templates stay visible but disabled with the reason.
+  // S59 opens manual/scheduled connector templates; saving still requires the
+  // account's current connector grants. An enabled card grants no authority.
   const connector = page.getByTestId('automation-template-connector-digest-design-context');
-  await expect(connector).toBeDisabled({ timeout: T.long });
-  await expect(connector).toContainText('Needs connectors');
+  await expect(connector).toBeEnabled({ timeout: T.long });
+  await connector.click();
+  const connectorModal = page.getByTestId('automation-modal');
+  await expect(connectorModal.getByTestId('automation-modal-title')).toHaveValue('Connector digest to design context');
+  await connectorModal.getByTestId('studio-execution-source').locator('select').selectOption('openai-byok');
+  const refused = page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/routines');
+  await connectorModal.locator('button[type="submit"]').click();
+  const refusal = await refused;
+  expect(refusal.status()).toBe(403);
+  expect(await refusal.json()).toMatchObject({ error: { code: 'CONNECTOR_NOT_GRANTED' } });
+  await expect(connectorModal.getByRole('alert')).toContainText('routine connectors unavailable');
+  expect((await studio.request('GET', '/api/routines', studio.a.cookie)).json.routines).toEqual([]);
+  expect((await studio.request('GET', '/api/routines', studio.b.cookie)).json.routines).toEqual([]);
+  await connectorModal.getByRole('button', { name: 'Cancel', exact: true }).click();
   const template = page.getByTestId('automation-template-compress-project-context');
   await template.scrollIntoViewIfNeeded();
   await page.screenshot({ path: info.outputPath('studio-automation-templates.png'), animations: 'disabled' });
@@ -1565,6 +1594,11 @@ test('[P1] Studio owner shares a project with another account: badge, presence, 
     // A commenter cannot change files; the server refuses even a direct write.
     expect((await studio.request('POST', `/api/projects/${projectId}/files`, studio.b.cookie, { name: 'index.html', content: 'x', overwrite: true })).status).toBe(404);
     // The owner revokes: the member's open project closes back to Home.
+    const shareBounds = await page.getByTestId('studio-share-button').boundingBox();
+    const commentBounds = await page.getByTestId('comment-float-host').boundingBox();
+    expect(shareBounds).not.toBeNull();
+    expect(commentBounds).not.toBeNull();
+    expect(commentBounds!.y).toBeGreaterThanOrEqual(shareBounds!.y + shareBounds!.height);
     await page.getByTestId('studio-share-button').click();
     await page.getByTestId('studio-share-dialog').getByTestId('studio-share-revoke').click();
     await expect(page.getByTestId('studio-share-dialog').getByTestId('studio-share-member')).toHaveCount(1, { timeout: T.medium });
