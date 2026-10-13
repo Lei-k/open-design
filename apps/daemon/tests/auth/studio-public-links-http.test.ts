@@ -3,9 +3,21 @@ import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { linkSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { afterAll, beforeAll, expect, it } from 'vitest';
+import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { cleanupIsolatedDataRoot, loadIsolatedServerModule, multiUserOptions, provisionAccounts,
   startMultiUserDaemon, type Principal, type StartedMultiUserDaemon } from './multiuser-harness.js';
+
+// Counts the selected-file capture's per-component lookups (it lstats each
+// path component through a held directory descriptor); pass-through otherwise.
+const fsProbe = vi.hoisted(() => ({ heldLstats: 0 }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const lstatSync = ((target: Parameters<typeof actual.lstatSync>[0], options?: Parameters<typeof actual.lstatSync>[1]) => {
+    if (String(target).startsWith('/proc/self/fd/')) fsProbe.heldLstats++;
+    return actual.lstatSync(target, options as never);
+  }) as typeof actual.lstatSync;
+  return { ...actual, lstatSync };
+});
 
 // Deployment-local public links (#66): owner-published captures served from the
 // cookie-free preview origin, never from the app origin, never a live file.
@@ -112,6 +124,10 @@ const plant = (id: string, name: string, bytes: string | Buffer) => {
   mkdirSync(path.dirname(onDisk(id, name)), { recursive: true });
   writeFileSync(onDisk(id, name), bytes);
 };
+/** GET a path next to the published entry exactly as written: `new URL()`
+ * would resolve `..` before the request is sent. */
+const rawPublicGet = (url: string, relative: string) =>
+  daemon.request({ path: new URL(url).pathname.replace(/index\.html$/, '') + relative, headers: { host: previewHost() } });
 const publish = (id: string, name: string, user = c) =>
   daemon.request({ method: 'POST', path: `/api/projects/${id}/files/${encodeURIComponent(name)}/publish-public`, cookie: user.cookie });
 const expectRefused = (response: Awaited<ReturnType<typeof publish>>, status: number, refusedPath: string, reason: string) => {
@@ -136,8 +152,9 @@ it('ignores unsafe and oversized files the page does not reference, and never se
   const { url } = published.json;
   expect((await publicGet(url)).status).toBe(200);
   expect((await publicGet(url.replace(/index\.html$/, 'img/logo.svg'))).status).toBe(200);
-  for (const unreachable of ['img/leak.svg', 'linked-dir/x', '../notes/draft.txt', '../notes/draft-hardlink.txt', '../secret.txt', '../recordings/session.webm', '../venv/bin/python']) {
-    expect((await publicGet(url.replace(/index\.html$/, unreachable))).status, unreachable).toBe(404);
+  for (const unreachable of ['img/leak.svg', 'linked-dir/x', '../notes/draft.txt', '../notes/draft-hardlink.txt', '../recordings/session.webm',
+    '../venv/bin/python', '%2e%2e/notes/draft.txt', '../../../app.sqlite']) {
+    expect((await rawPublicGet(url, unreachable)).status, unreachable).toBe(404);
   }
 });
 
@@ -176,17 +193,56 @@ it('refuses a referenced asset that is unsafe or too large, and still skips outs
   expectRefused(await publish(id, 'site/index.html'), 413, 'site/b.png', 'bundle_too_large');
   // References outside the project, to reserved/hidden paths or to nothing
   // never block publishing and are never published.
-  plant(id, 'outside.txt', 'OUTSIDE');
+  plant(id, 'above-entry.txt', 'ABOVE_ENTRY');
   plant(id, 'site/node_modules/lib.js', 'DEPENDENCY');
   plant(id, 'site/.hidden.css', 'HIDDEN');
   plant(id, 'site/page.artifact.json', '{}');
-  expect((await page('<img src="img/logo.svg"><a href="../outside.txt">o</a><a href="../../../app.sqlite">d</a><script src="node_modules/lib.js"></script>'
+  expect((await page('<img src="img/logo.svg"><a href="../above-entry.txt">o</a><a href="../../../app.sqlite">d</a><script src="node_modules/lib.js"></script>'
     + '<link href=".hidden.css"><a href="page.artifact.json">m</a><img src="gone.png">')).status).toBe(200);
   const published = await publish(id, 'site/index.html');
   expect(published.status, published.text).toBe(200);
   const { url } = published.json;
   expect((await publicGet(url.replace(/index\.html$/, 'img/logo.svg'))).status).toBe(200);
-  for (const unreachable of ['../outside.txt', 'node_modules/lib.js', '.hidden.css', 'page.artifact.json', 'a.png', 'twin.css']) {
-    expect((await publicGet(url.replace(/index\.html$/, unreachable))).status, unreachable).toBe(404);
+  for (const unreachable of ['node_modules/lib.js', '.hidden.css', 'page.artifact.json', 'a.png', 'twin.css', '../../../app.sqlite', '../../app.sqlite', '../secret.txt']) {
+    expect((await rawPublicGet(url, unreachable)).status, unreachable).toBe(404);
   }
+  // Legacy S35 behavior, unchanged: a referenced same-project file above the
+  // entry's folder is captured into the bundle. A browser cannot reach it (it
+  // resolves `..` away from the slug), but a client sending the path as
+  // written can.
+  expect((await publicGet(url.replace(/index\.html$/, '../above-entry.txt'))).status).toBe(404);
+  expect((await rawPublicGet(url, '../above-entry.txt')).text).toBe('ABOVE_ENTRY');
+});
+
+it('reads a bounded number of references, found or not (#119 review F1)', async () => {
+  const id = await project(c);
+  const missing = Array.from({ length: 5_000 }, (_, index) => `<img src="missing/m${index}.png">`).join('');
+  // The first asset is published; one placed after the bound is not considered.
+  expect((await daemon.request({ method: 'POST', path: `/api/projects/${id}/files`, cookie: c.cookie,
+    body: { name: 'site/index.html', content: `<img src="img/logo.svg">${missing}<link href="style.css">` } })).status).toBe(200);
+  const { PUBLIC_LINK_REFERENCES_CONSIDERED } = await import('../../src/routes/studio-public-links.js');
+  fsProbe.heldLstats = 0;
+  const published = await publish(id, 'site/index.html');
+  const lookups = fsProbe.heldLstats;
+  expect(published.status, published.text).toBe(200);
+  // One lookup per path component: the entry (site/index.html) 2, the logo
+  // (site/img/logo.svg) 3, each other considered reference (site/missing/…) 2.
+  // Unbounded, the 5,000 missing references alone would cost 10,000.
+  expect(lookups).toBeGreaterThan(PUBLIC_LINK_REFERENCES_CONSIDERED);
+  expect(lookups).toBeLessThanOrEqual(2 + 3 + 2 * (PUBLIC_LINK_REFERENCES_CONSIDERED - 1));
+  expect((await publicGet(published.json.url.replace(/index\.html$/, 'img/logo.svg'))).status).toBe(200);
+  expect((await publicGet(published.json.url.replace(/index\.html$/, 'style.css'))).status).toBe(404);
+});
+
+it('treats a reference that cannot exist on the filesystem as missing (#119 review F2)', async () => {
+  const id = await project(c);
+  const tooLong = `${'a'.repeat(256)}.png`;
+  expect((await daemon.request({ method: 'POST', path: `/api/projects/${id}/files`, cookie: c.cookie, body: { name: 'site/index.html',
+    content: `<img src="img/logo.svg"><img src="${tooLong}"><img src="style.css/x.png"><img src="${'d/'.repeat(40)}x.png">` } })).status).toBe(200);
+  const published = await publish(id, 'site/index.html');
+  expect(published.status, published.text).toBe(200);
+  expect((await publicGet(published.json.url.replace(/index\.html$/, 'img/logo.svg'))).status).toBe(200);
+  expect((await rawPublicGet(published.json.url, tooLong)).status).toBe(404);
+  // The same impossible name as the entry is simply not found.
+  expect((await publish(id, `site/${tooLong}`)).json.error.code).toBe('FILE_NOT_FOUND');
 });

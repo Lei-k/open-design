@@ -16,6 +16,9 @@ export const PUBLIC_LINKS_TABLE = 'multiuser_public_links';
 const LINKS_PER_ACCOUNT = 100;
 const BUNDLE_BYTES = 32 * 1024 * 1024;
 const ASSETS_PER_LINK = 200;
+/** Distinct references considered per publish, found or not: bounds the
+ * synchronous filesystem work one request can cause (#119 review F1). */
+export const PUBLIC_LINK_REFERENCES_CONSIDERED = 5 * ASSETS_PER_LINK;
 const ASSET_REF = /(?:src|href|poster)\s*=\s*["']([^"'#?]+)(?:[?#][^"']*)?["']|url\(\s*["']?([^"')#?]+)/giu;
 /** Public bytes run on the preview origin under a sandbox; no cookies, no session, no app access. */
 const PUBLIC_CSP = ["sandbox allow-scripts allow-forms allow-popups", "default-src 'self' data: blob:", "img-src 'self' data: blob: https:",
@@ -26,7 +29,8 @@ interface LinkRow { slug: string; project_id: string; owner_account_id: string; 
 
 /** Relative same-project paths an HTML entry references explicitly, in
  * document order; nothing else is ever read or published with it. Paths that
- * leave the project or are not valid project paths are dropped here. */
+ * leave the project or are not valid project paths are dropped here, and only
+ * the first `PUBLIC_LINK_REFERENCES_CONSIDERED` distinct paths are kept. */
 function referencedPaths(entry: string, html: string): string[] {
   const base = path.posix.dirname(entry);
   const found = new Set<string>();
@@ -39,6 +43,7 @@ function referencedPaths(entry: string, html: string): string[] {
     if (name.startsWith('../') || name === '..' || name === entry) continue;
     try { if (validateProjectPath(name) !== name) continue; } catch { continue; }
     found.add(name);
+    if (found.size >= PUBLIC_LINK_REFERENCES_CONSIDERED) break;
   }
   return [...found];
 }

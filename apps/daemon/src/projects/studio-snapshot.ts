@@ -62,8 +62,9 @@ function captureStudioTree(expected: string, limits: { files: number; bytes: num
           const before = fstatSync(child);
           if (before.isDirectory()) walk(child, name + '/', depth + 1);
           else {
-            if (files.length >= limits.files) throw new Error('Project snapshot limit exceeded');
-            const bytes = readHeldProjectFile(child, before, { expected, name, limits, total, assertParent: () => assertDirectory(fd) });
+            // Whole-project callers keep their original plain errors.
+            const bytes = readHeldProjectFile(child, before, { expected, name, limits, total, fileLimitReached: files.length >= limits.files,
+              refuse: (_reason, message) => new Error(message), assertParent: () => assertDirectory(fd), resolveHeld: (held) => realpathSync(fdPath(held)) });
             total += bytes.length;
             files.push({ name, bytes, executable: Boolean(before.mode & 0o111) });
           }
@@ -86,18 +87,23 @@ export class StudioCaptureRefusal extends Error {
 }
 
 /** The one read discipline for a project file already opened no-follow and
- * fstat'ed: regular, single-link, bounded (per file and running total), read
- * in bounded chunks, unchanged while read, and still at its expected path. */
+ * fstat'ed: regular, single-link, bounded (file count, per file and running
+ * total), read in bounded chunks, unchanged while read, and still at its
+ * expected path. Checks run in the original whole-project order (file kind
+ * before limits); the caller chooses the error each refusal becomes and how a
+ * held descriptor's path is resolved. */
 function readHeldProjectFile(child: number, before: Stats, input: {
-  expected: string; name: string; limits: { fileBytes: number; bytes: number }; total: number; assertParent: () => void;
+  expected: string; name: string; limits: { fileBytes: number; bytes: number }; total: number; fileLimitReached?: boolean;
+  refuse: (reason: StudioCaptureRefusalReason, message: string) => Error; assertParent: () => void; resolveHeld: (fd: number) => string;
 }): Buffer {
-  const { name, limits, total } = input;
-  if (!before.isFile()) throw new StudioCaptureRefusal(name, 'not_regular', 'Project file refused');
-  if (before.nlink !== 1) throw new StudioCaptureRefusal(name, 'hard_link', 'Project file refused');
+  const { name, limits, total, refuse } = input;
+  if (!before.isFile()) throw refuse('not_regular', 'Project file refused');
+  if (before.nlink !== 1) throw refuse('hard_link', 'Project file refused');
   const tooLarge = (size: number) => size > limits.fileBytes
-    ? new StudioCaptureRefusal(name, 'too_large', 'Project snapshot limit exceeded')
-    : total + size > limits.bytes ? new StudioCaptureRefusal(name, 'bundle_too_large', 'Project snapshot limit exceeded') : null;
-  const early = tooLarge(before.size); if (early) throw early;
+    ? refuse('too_large', 'Project snapshot limit exceeded')
+    : total + size > limits.bytes ? refuse('bundle_too_large', 'Project snapshot limit exceeded') : null;
+  const early = input.fileLimitReached ? refuse('bundle_too_large', 'Project snapshot limit exceeded') : tooLarge(before.size);
+  if (early) throw early;
   // Read in bounded chunks: growth after fstat must not allocate unbounded memory.
   const chunks: Buffer[] = [];
   let size = 0;
@@ -112,14 +118,14 @@ function readHeldProjectFile(child: number, before: Stats, input: {
   const after = fstatSync(child);
   input.assertParent();
   if (after.nlink !== 1 || before.size !== size || after.size !== size || before.mtimeMs !== after.mtimeMs
-    || before.ctimeMs !== after.ctimeMs) throw new StudioCaptureRefusal(name, 'changed', 'Project file changed during capture');
-  const actual = realpathSync(fdPath(child));
-  if (actual !== path.join(input.expected, name)) throw new StudioCaptureRefusal(name, 'changed', 'Project file changed during capture');
+    || before.ctimeMs !== after.ctimeMs) throw refuse('changed', 'Project file changed during capture');
+  const actual = input.resolveHeld(child);
+  if (actual !== path.join(input.expected, name)) throw refuse('changed', 'Project file changed during capture');
   return Buffer.concat(chunks, size);
 }
 
 export interface StudioProjectSelection {
-  /** Bytes of one project-relative file, or null when it does not exist or is
+  /** Bytes of one project-relative file, or null when it does not (or cannot) exist or is
    * a directory or a path the project capture never copies (dot segments,
    * `node_modules`, `*.artifact.json`). Throws `StudioCaptureRefusal` for a
    * file that exists but may not be captured. */
@@ -150,7 +156,12 @@ export function openStudioProjectSelection(projectsRoot: string, projectId: stri
   }
   if (root !== null && realpathSync(fdPath(root)) !== expected) { closeSync(root); throw new Error('Project directory changed'); }
   let total = 0;
-  const absent = (error: unknown) => ['ENOENT', 'ENOTDIR'].includes(String((error as NodeJS.ErrnoException).code));
+  // A path that cannot exist on this filesystem (missing, under a file, or a
+  // component longer than NAME_MAX) is simply unavailable, like a missing one.
+  const absent = (error: unknown) => ['ENOENT', 'ENOTDIR', 'ENAMETOOLONG'].includes(String((error as NodeJS.ErrnoException).code));
+  // A held descriptor whose path can no longer be resolved (its directory was
+  // removed or replaced mid-read) is a change, never an untyped failure.
+  const within = (fd: number) => { try { return heldWithin(expected, fd); } catch { return false; } };
   const openChild = (dir: number, segment: string, rel: string, flags: number): number | null => {
     try { return openSync(path.join(fdPath(dir), segment), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | flags); }
     catch (error) {
@@ -170,7 +181,6 @@ export function openStudioProjectSelection(projectsRoot: string, projectId: stri
       const segments = safe.split('/');
       // Internal manifests, versions and dependency caches are never copied.
       if (segments.some((segment) => segment.startsWith('.') || segment === 'node_modules' || segment.endsWith('.artifact.json'))) return null;
-      if (segments.length - 1 > limits.depth) throw new StudioCaptureRefusal(safe, 'invalid_path', 'Project directory depth exceeded');
       if (root === null) return null;
       const held: number[] = [];
       try {
@@ -186,11 +196,13 @@ export function openStudioProjectSelection(projectsRoot: string, projectId: stri
           if (entry.isDirectory()) {
             // A directory is not a publishable file.
             if (last) return null;
+            // Deeper than the project capture walks; only an existing path gets here.
+            if (index + 1 > limits.depth) throw new StudioCaptureRefusal(safe, 'invalid_path', 'Project directory depth exceeded');
             const child = openChild(dir, segment, rel, constants.O_DIRECTORY);
             if (child === null) return null;
             held.push(child);
             const opened = fstatSync(child);
-            if (!opened.isDirectory() || opened.ino !== entry.ino || opened.dev !== entry.dev || !heldWithin(expected, child)) {
+            if (!opened.isDirectory() || opened.ino !== entry.ino || opened.dev !== entry.dev || !within(child)) {
               throw new StudioCaptureRefusal(rel, 'changed', 'Project directory changed');
             }
             dir = child;
@@ -206,9 +218,11 @@ export function openStudioProjectSelection(projectsRoot: string, projectId: stri
           const before = fstatSync(child);
           if (before.ino !== entry.ino || before.dev !== entry.dev) throw new StudioCaptureRefusal(rel, 'changed', 'Project file changed during capture');
           const parentDir = dir;
-          const bytes = readHeldProjectFile(child, before, { expected, name: safe, limits, total, assertParent: () => {
-            if (!heldWithin(expected, parentDir)) throw new StudioCaptureRefusal(safe, 'changed', 'Project directory changed');
-          } });
+          const changed = () => new StudioCaptureRefusal(safe, 'changed', 'Project file changed during capture');
+          const bytes = readHeldProjectFile(child, before, { expected, name: safe, limits, total,
+            refuse: (reason, message) => new StudioCaptureRefusal(safe, reason, message),
+            assertParent: () => { if (!within(parentDir)) throw changed(); },
+            resolveHeld: (held) => { try { return realpathSync(fdPath(held)); } catch { throw changed(); } } });
           total += bytes.length;
           return bytes;
         }
