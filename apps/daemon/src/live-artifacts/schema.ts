@@ -177,6 +177,8 @@ const DAEMON_OWNED_INPUT_FIELDS = new Set([
   'schemaVersion',
   'refreshStatus',
   'lastRefreshedAt',
+  'studioRevision',
+  'studioProvenance',
 ]);
 
 const FORBIDDEN_JSON_KEYS = new Set([
@@ -550,11 +552,46 @@ function validateMappingPath(value: string, path: string, issues: LiveArtifactVa
     return;
   }
   for (const segment of normalized.split('.')) {
-    if (!SAFE_MAPPING_SEGMENT.test(segment) || UNSAFE_MAPPING_SEGMENTS.has(segment)) {
+    if (!SAFE_MAPPING_SEGMENT.test(segment) || UNSAFE_MAPPING_SEGMENTS.has(segment)
+      || /^\d+$/.test(segment) && (!Number.isSafeInteger(Number(segment)) || Number(segment) >= LIVE_ARTIFACT_BOUNDED_JSON_CONSTRAINTS.maxArrayLength)) {
       issues.push({ path, message: `${path} contains unsupported JSON path segment: ${segment}` });
       return;
     }
   }
+}
+
+/** The declarative `outputMapping` of a refresh source (shared by desktop and Studio sources). */
+export function validateLiveArtifactOutputMapping(value: unknown, path: string, issues: LiveArtifactValidationIssue[]): LiveArtifactSource['outputMapping'] {
+  if (!isPlainObject(value)) {
+    issues.push({ path, message: `${path} must be an object` });
+    return undefined;
+  }
+  validateOnlyAllowedKeys(value, OUTPUT_MAPPING_KEYS, `${path}`, issues);
+  const mapping: NonNullable<LiveArtifactSource['outputMapping']> = {};
+  if (value.dataPaths !== undefined) {
+    if (!Array.isArray(value.dataPaths) || value.dataPaths.length > MAX_MAPPING_PATHS) {
+      issues.push({ path: `${path}.dataPaths`, message: `${path}.dataPaths must be a bounded array` });
+    } else {
+      mapping.dataPaths = [];
+      value.dataPaths.forEach((item, index) => {
+        const itemPath = `${path}.dataPaths.${index}`;
+        if (!isPlainObject(item)) {
+          issues.push({ path: itemPath, message: `${itemPath} must be an object` });
+          return;
+        }
+        const from = asString(item.from, `${itemPath}.from`, issues, MAX_PATH_LENGTH);
+        const to = asString(item.to, `${itemPath}.to`, issues, MAX_PATH_LENGTH);
+        if (from !== undefined) validateMappingPath(from, `${itemPath}.from`, issues);
+        if (to !== undefined) validateMappingPath(to, `${itemPath}.to`, issues);
+        if (from !== undefined && to !== undefined) mapping.dataPaths?.push({ from, to });
+      });
+    }
+  }
+  if (value.transform !== undefined) {
+    const transform = validateEnum(value.transform, OUTPUT_TRANSFORMS, `${path}.transform`, issues);
+    if (transform !== undefined) mapping.transform = transform;
+  }
+  return mapping;
 }
 
 function validateSource(value: unknown, path: string, issues: LiveArtifactValidationIssue[]): LiveArtifactSource | undefined {
@@ -593,39 +630,7 @@ function validateSource(value: unknown, path: string, issues: LiveArtifactValida
     }
   }
 
-  let outputMapping: LiveArtifactSource['outputMapping'];
-  if (value.outputMapping !== undefined) {
-    if (!isPlainObject(value.outputMapping)) {
-      issues.push({ path: `${path}.outputMapping`, message: `${path}.outputMapping must be an object` });
-    } else {
-      validateOnlyAllowedKeys(value.outputMapping, OUTPUT_MAPPING_KEYS, `${path}.outputMapping`, issues);
-      const mapping: NonNullable<LiveArtifactSource['outputMapping']> = {};
-      if (value.outputMapping.dataPaths !== undefined) {
-        if (!Array.isArray(value.outputMapping.dataPaths) || value.outputMapping.dataPaths.length > MAX_MAPPING_PATHS) {
-          issues.push({ path: `${path}.outputMapping.dataPaths`, message: `${path}.outputMapping.dataPaths must be a bounded array` });
-        } else {
-          mapping.dataPaths = [];
-          value.outputMapping.dataPaths.forEach((item, index) => {
-            const itemPath = `${path}.outputMapping.dataPaths.${index}`;
-            if (!isPlainObject(item)) {
-              issues.push({ path: itemPath, message: `${itemPath} must be an object` });
-              return;
-            }
-            const from = asString(item.from, `${itemPath}.from`, issues, MAX_PATH_LENGTH);
-            const to = asString(item.to, `${itemPath}.to`, issues, MAX_PATH_LENGTH);
-            if (from !== undefined) validateMappingPath(from, `${itemPath}.from`, issues);
-            if (to !== undefined) validateMappingPath(to, `${itemPath}.to`, issues);
-            if (from !== undefined && to !== undefined) mapping.dataPaths?.push({ from, to });
-          });
-        }
-      }
-      if (value.outputMapping.transform !== undefined) {
-        const transform = validateEnum(value.outputMapping.transform, OUTPUT_TRANSFORMS, `${path}.outputMapping.transform`, issues);
-        if (transform !== undefined) mapping.transform = transform;
-      }
-      outputMapping = mapping;
-    }
-  }
+  const outputMapping = value.outputMapping === undefined ? undefined : validateLiveArtifactOutputMapping(value.outputMapping, `${path}.outputMapping`, issues);
 
   const refreshPermission = validateEnum(value.refreshPermission, REFRESH_PERMISSIONS, `${path}.refreshPermission`, issues);
   if (type === 'connector_tool' && connector === undefined) {

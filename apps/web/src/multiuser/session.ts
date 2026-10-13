@@ -1,6 +1,6 @@
-import type { AuthAccount } from '@open-design/contracts';
+import { parseStudioRuntimeCapabilities, type AuthAccount, type AuthSessionResponse, type StudioRuntimeCapabilities } from '@open-design/contracts';
 
-export type SessionState = { generation: number; status: 'checking' | 'anonymous' | 'ready' | 'error'; account: AuthAccount | null; outcomeUnknown: boolean };
+export type SessionState = { generation: number; status: 'checking' | 'anonymous' | 'ready' | 'error'; account: AuthAccount | null; outcomeUnknown: boolean; studio?: StudioRuntimeCapabilities; studioRevision?: number; studioMessageIdPrefix?: string };
 export class RequestFailure extends Error {
   constructor(readonly status: number, readonly code: string | null = null) { super('Request failed'); }
 }
@@ -50,16 +50,23 @@ export class CookieSession {
   private hasPendingMutation() {
     return [...this.pendingMutations.values()].includes(this.state.generation);
   }
+  /** Shared App and legacy transports enroll writes in the same withdrawal ledger. */
+  beginMutation(generation: number): () => void {
+    if (generation !== this.state.generation) throw new DOMException('Stale request', 'AbortError');
+    const operation = Symbol();
+    this.pendingMutations.set(operation, generation);
+    this.verificationRevision++;
+    if (this.checking) this.recheckRequested = true;
+    return () => {
+      this.pendingMutations.delete(operation);
+      if (this.recheckRequested && !this.hasPendingMutation() && !this.mutation && !this.externalMutation && !this.checking) void this.verify();
+    };
+  }
   async request<T>(url: string, init?: RequestInit, generation = this.state.generation): Promise<T> {
     if (generation !== this.state.generation) throw new DOMException('Stale request', 'AbortError');
     const signal = init?.signal ? AbortSignal.any([this.abort.signal, init.signal]) : this.abort.signal;
     const ownedMutation = !['GET', 'HEAD'].includes((init?.method ?? 'GET').toUpperCase()) && !['/api/auth/login', '/api/auth/logout', '/api/auth/setup'].includes(url);
-    const operation = Symbol();
-    if (ownedMutation) {
-      this.pendingMutations.set(operation, generation);
-      this.verificationRevision++; // A check started before this write cannot publish over it.
-      if (this.checking) this.recheckRequested = true;
-    }
+    const finish = ownedMutation ? this.beginMutation(generation) : () => {};
     try {
       const response = await fetch(url, { ...init, credentials: 'same-origin', cache: 'no-store', signal,
         headers: { 'Content-Type': 'application/json', ...init?.headers } });
@@ -77,15 +84,14 @@ export class CookieSession {
       }
       return body as T;
     } finally {
-      this.pendingMutations.delete(operation);
-      if (this.recheckRequested && !this.hasPendingMutation() && !this.mutation && !this.externalMutation && !this.checking) void this.verify();
+      finish();
     }
   }
   /** Stream transport uses the same generation fence and cookie as JSON requests. */
-  async stream(url: string, mountSignal: AbortSignal, generation: number): Promise<Response> {
+  async stream(url: string, mountSignal: AbortSignal, generation: number, lastEventId?: string): Promise<Response> {
     if (generation !== this.state.generation) throw new DOMException('Stale stream', 'AbortError');
     const signal = AbortSignal.any([this.abort.signal, mountSignal]);
-    const response = await fetch(url, { credentials: 'same-origin', cache: 'no-store', signal, headers: { Accept: 'text/event-stream' } });
+    const response = await fetch(url, { credentials: 'same-origin', cache: 'no-store', signal, headers: { Accept: 'text/event-stream', ...(lastEventId ? { 'Last-Event-ID': lastEventId } : {}) } });
     if (signal.aborted || generation !== this.state.generation) {
       await response.body?.cancel();
       throw new DOMException('Stale stream', 'AbortError');
@@ -97,6 +103,21 @@ export class CookieSession {
     }
     return response;
   }
+  /** A mount owns its resources; session withdrawal aborts them synchronously. */
+  bindResource(release: () => void, generation: number): () => void {
+    const signal = this.abort.signal;
+    let released = false;
+    const cleanup = () => {
+      if (released) return;
+      released = true;
+      signal.removeEventListener('abort', cleanup);
+      release();
+    };
+    if (signal.aborted || generation !== this.state.generation) cleanup();
+    else signal.addEventListener('abort', cleanup, { once: true });
+    return cleanup;
+  }
+
   /** A mount owns its resources; session withdrawal aborts them synchronously. */
   bindMount(controller: AbortController, generation: number): () => void {
     const signal = this.abort.signal;
@@ -127,16 +148,32 @@ export class CookieSession {
     const revision = this.verificationRevision;
     const duringWrite = this.hasPendingMutation();
     try {
-      const result = await this.request<{ account: AuthAccount }>('/api/auth/me');
+      const result = await this.request<Partial<AuthSessionResponse>>('/api/auth/me');
       if (generation !== this.state.generation || revision !== this.verificationRevision || this.abort.signal.aborted) return;
       const a = result?.account;
       if (!a || typeof a.id !== 'string' || typeof a.username !== 'string' || typeof a.active !== 'boolean' || !['admin', 'user'].includes(a.role)) {
         this.withdraw(); this.publish('error'); return;
       }
       if (!a.active) { this.withdraw(); this.publish('anonymous'); return; }
+      // Older daemons without the authenticated capability contract stay in the
+      // legacy shell. A malformed advertised contract never enables Studio.
+      const studio = result.studio === undefined ? undefined : parseStudioRuntimeCapabilities(result.studio);
+      if ((result.studio !== undefined || result.studioRevision !== undefined) && (!studio
+        || !Number.isSafeInteger(result.studioRevision) || result.studioRevision! < 0)) {
+        this.withdraw(); this.publish('error'); return;
+      }
+      // A pilot that can send must also name its transcript-id namespace.
+      const prefix = result.studioMessageIdPrefix;
+      if ((prefix !== undefined && (typeof prefix !== 'string' || !/^mua_[0-9a-f]{24}_$/.test(prefix)))
+        || (prefix === undefined && studio?.features.execution.status === 'pilot')) {
+        this.withdraw(); this.publish('error'); return;
+      }
       const previous = this.state.account;
-      const changed = previous !== null && (previous.id !== a.id || previous.role !== a.role || previous.active !== a.active);
+      const changed = previous !== null && (previous.id !== a.id || previous.role !== a.role || previous.active !== a.active
+        || this.state.studioRevision !== result.studioRevision
+        || JSON.stringify(this.state.studio) !== JSON.stringify(studio) || this.state.studioMessageIdPrefix !== prefix);
       if (changed) this.withdraw();
+      this.state = { ...this.state, studio: studio ?? undefined, studioRevision: result.studioRevision, studioMessageIdPrefix: prefix };
       this.publish('ready', a);
       // An overlapping write may take effect after this read; confirm once it settles.
       if (duringWrite && !changed) this.recheckRequested = true;

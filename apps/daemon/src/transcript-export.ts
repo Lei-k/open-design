@@ -136,6 +136,10 @@ type Block =
 
 export interface TranscriptExportOptions {
   now?: () => Date;
+  /** Studio holds a no-follow managed-directory descriptor for the operation. */
+  directory?: string;
+  /** Capture the same JSONL under the existing lock without writing a mirror. */
+  captureOnly?: boolean;
   /**
    * When set, restricts the export to a single conversation. The handoff
    * flow scopes to the one conversation the user is resuming; project-wide
@@ -149,6 +153,7 @@ export interface TranscriptExportResult {
   conversationCount: number;
   messageCount: number;
   bytesWritten: number;
+  jsonl?: string;
 }
 
 export class TranscriptExportLockedError extends Error {
@@ -164,7 +169,7 @@ export function exportProjectTranscript(
   projectId: string,
   options: TranscriptExportOptions = {},
 ): TranscriptExportResult {
-  const dir = projectDir(projectsRoot, projectId);
+  const dir = options.directory ?? projectDir(projectsRoot, projectId);
   // The project may have DB rows but no on-disk directory yet (a synthesis
   // caller can hit this immediately after `insertProject`). mkdirSync with
   // recursive is idempotent; cheaper than guarding via existsSync.
@@ -327,6 +332,9 @@ export function exportProjectTranscript(
     }
 
     const encoded = Buffer.from(lines.join('\n') + '\n', 'utf8');
+
+    if (options.captureOnly) return { path: '', conversationCount: conversations.length, messageCount,
+      bytesWritten: encoded.length, jsonl: encoded.toString('utf8') };
 
     // Atomic write: writeFileSync with the 'wx' flag loops internally until
     // the entire buffer is written or it throws. We then reopen the file

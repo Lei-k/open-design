@@ -1,3 +1,4 @@
+import { studioUsesLocalServices, studioFetch as fetch, studioLocalStorage } from '../runtime/studio-transport';
 import type { AppConfigPrefs } from '@open-design/contracts';
 import { MEDIA_PROVIDERS } from '../media/models';
 import { isOpenAICompatible } from '../providers/openai-compatible';
@@ -680,7 +681,7 @@ function migrateRetiredKnownProviderModel(
 
 export function loadConfig(): AppConfig {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = studioLocalStorage().getItem(STORAGE_KEY);
     if (!raw) {
       return {
         ...DEFAULT_CONFIG,
@@ -1053,7 +1054,7 @@ export function saveConfig(config: AppConfig): void {
   for (const key of RETIRED_SECURE_BYOK_KEYS) {
     delete (sanitized as unknown as Record<string, unknown>)[key];
   }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
+  studioLocalStorage().setItem(STORAGE_KEY, JSON.stringify(sanitized));
 }
 
 /**
@@ -1282,6 +1283,9 @@ export async function syncConfigToDaemon(
     allowOnboardingReset?: boolean;
   },
 ): Promise<void> {
+  // Account preferences are saved explicitly with their observed revision.
+  // A broad local-mode autosave must never overwrite them.
+  if (!studioUsesLocalServices()) return;
   const prefs: AppConfigPrefs = {
     ...(config.onboardingCompleted === true
       ? { onboardingCompleted: true }

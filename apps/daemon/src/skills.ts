@@ -751,7 +751,7 @@ function inferMode(body: unknown, description: unknown): SkillMode {
   return "prototype";
 }
 
-function normalizeMode(value: unknown, body: unknown, description: unknown): SkillMode {
+export function normalizeMode(value: unknown, body: unknown, description: unknown): SkillMode {
   if (
     value === "image" || value === "video" || value === "audio" || value === "deck" ||
     value === "design-system" || value === "template" || value === "prototype"

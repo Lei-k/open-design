@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@open-design/components';
 import { ArrowLeft } from 'lucide-react';
-import type { ConversationsResponse, MultiUserDesignCatalogResponse, MultiUserDesignSelectionResponse, MultiUserPreviewRenewResponse, MultiUserPreviewUrlResponse, MultiUserRun, MultiUserRunOutput, MultiUserRunProgressEvent, MultiUserRunRequest, MultiUserRunResponse, MultiUserRunsResponse, PersonalAgentAccountsResponse, ProjectDetailResponse, ProjectFile, ProjectFilesResponse, RunExecutionSource } from '@open-design/contracts';
+import type { DaemonAgentPayload, ConversationsResponse, MultiUserDesignCatalogResponse, MultiUserDesignSelectionResponse, MultiUserPreviewRenewResponse, MultiUserPreviewUrlResponse, MultiUserRun, MultiUserRunOutput, MultiUserRunProgressEvent, MultiUserRunRequest, MultiUserRunResponse, MultiUserRunsResponse, PersonalAgentAccountsResponse, ProjectDetailResponse, ProjectFile, ProjectFilesResponse, RunExecutionSource } from '@open-design/contracts';
 import { useI18n, useT } from '../i18n';
 import { splitOnQuestionForms } from '../artifacts/question-form';
 import { QuestionFormView } from '../components/QuestionForm';
 import { useOwnedRequest, useOwnedResource, type OwnedSession } from './owned';
 import { RunComposer } from './RunComposer';
+import { runProgress } from './run-progress';
 import { watchRunEvents } from './run-stream';
 import { isAbort, runErrorKey } from './run-errors';
 import styles from './Runs.module.css';
@@ -58,21 +59,29 @@ function RunCard({ initial, interactive, submitAnswer, onTerminal, ...owner }: O
   const active = activeRun(run);
   useEffect(() => {
     if (!active) return;
+    const tools = new Map<string, { name: string; path?: string }>();
+    let accumulated = '';
+    let reason: unknown = null;
+    let truncated = false;
     return watchRunEvents(owner, initial.id, (frame) => {
       if (frame.event === 'queued') setRun((current) => ({ ...current, status: 'queued' }));
       if (frame.event === 'start') setRun((current) => ({ ...current, status: 'running', queuePosition: null }));
-      if (frame.event === 'agent') setText((current) => current + outputText(frame.data));
-      if (frame.event === 'progress') setProgress((current) => [...current.slice(-19), frame.data as MultiUserRunProgressEvent]);
+      if (frame.event === 'agent') {
+        const event = frame.data as unknown as DaemonAgentPayload;
+        if (event.type === 'text_delta') { accumulated += event.delta; setText(outputText({ text: accumulated })); }
+        const next = runProgress(event, tools);
+        if (next.length) setProgress((current) => [...current.slice(-19), ...next]);
+      }
+      if (frame.event === 'error') reason = (frame.data.error as { code?: unknown } | undefined)?.code;
+      if (frame.event === 'diagnostic' && frame.data.type === 'personal_event_budget') truncated = true;
       if (frame.event === 'end') {
         const status = frame.data.status;
         if (status !== 'succeeded' && status !== 'failed' && status !== 'canceled') return;
-        const streamedOutput = frame.data.output && typeof frame.data.output === 'object'
-          ? frame.data.output as Record<string, unknown>
-          : runRef.current.output;
+        const streamedOutput = { text: accumulated, files: frame.data.artifactPaths ?? [], textTruncated: truncated, ...(reason ? { reason } : {}) };
         const next: MultiUserRun = { ...runRef.current, status, queuePosition: null, output: streamedOutput };
         setRun(next);
         onTerminal(next);
-        const finalText = outputText(frame.data.output);
+        const finalText = outputText(streamedOutput);
         if (finalText) setText(finalText);
         setReconnecting(false);
       }
@@ -163,9 +172,9 @@ export function ConversationRuns(props: OwnedSession & { projectId: string; conv
     finally { if (request.active()) setLoadingOlder(false); }
   }
   function retry() { setOlder(null); setOlderError(null); setRevision((n) => n + 1); }
-  async function send(message: string, executionSource: RunExecutionSource) {
+  async function send(message: string, executionSource: RunExecutionSource, sourceRunId?: string) {
     if (!design.data) throw new Error('design selection unavailable');
-    const body: MultiUserRunRequest = { projectId: props.projectId, conversationId: props.conversationId, message, executionSource, agentId: executionSource === 'company_pool' ? 'test-mock' : 'codex',
+    const body: MultiUserRunRequest = { ...(sourceRunId ? { analyticsHints: { entryFrom: 'question_answer', sourceRunId } } : {}), projectId: props.projectId, conversationId: props.conversationId, message, executionSource, agentId: executionSource === 'company_pool' ? 'test-mock' : 'codex',
       skillId: design.data.design.skillId, designSystemId: design.data.design.designSystemId };
     const result = await request<MultiUserRunResponse>('/api/runs', { method: 'POST', body: JSON.stringify(body) });
     if (request.active()) setAdded((current) => [...current, result.run]);
@@ -193,7 +202,7 @@ export function ConversationRuns(props: OwnedSession & { projectId: string; conv
             {nextCursor && <div className={styles.older}><Button disabled={loadingOlder} onClick={() => void loadOlder()}>{t('multiuserRuns.loadOlder')}</Button></div>}
             {Boolean(olderError) && <p role="alert" className={styles.error}>{t(runErrorKey(olderError))}</p>}
             {runs.length === 0 ? <p>{t('multiuserRuns.noRuns')}</p> : <ol className={styles.history}>{runs.map((run) => <RunCard key={run.id} initial={run} session={props.session} generation={props.generation}
-              interactive={run.id === latestRunId && run.status === 'succeeded'} submitAnswer={(message) => send(message, 'personal_subscription')} onTerminal={onTerminal} />)}</ol>}
+              interactive={run.id === latestRunId && run.status === 'succeeded'} submitAnswer={(message) => send(message, 'personal_subscription', run.id)} onTerminal={onTerminal} />)}</ol>}
             {Boolean(accounts.error) && <p role="alert" className={styles.error}>{t(runErrorKey(accounts.error))}</p>}
             <RunComposer accounts={accounts.data} pinnedSource={pinnedSource} pinStale={pinStale} personalOnly send={send} />
           </section>

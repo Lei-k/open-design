@@ -1,3 +1,4 @@
+import { studioWindowSetTimeout, studioFetch as fetch } from '../runtime/studio-transport';
 // Reusable "invite teammates" dialog for the team workspace.
 //
 // Opened from the team dropdown in the left rail. Ported VERBATIM (markup +
@@ -324,7 +325,7 @@ export function InviteDialog({
       }, { requestId });
       setSuccess(true);
       onSubmit?.(valid);
-      autoCloseTimerRef.current = window.setTimeout(() => {
+      autoCloseTimerRef.current = studioWindowSetTimeout(() => {
         autoCloseTimerRef.current = null;
         onClose();
         setRows([{ email: '', role: DEFAULT_ROLE }]);

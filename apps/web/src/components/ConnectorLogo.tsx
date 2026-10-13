@@ -1,3 +1,4 @@
+import { studioUsesLocalServices } from '../runtime/studio-transport';
 import {
   useEffect,
   useRef,
@@ -31,7 +32,8 @@ function composioLogoUrl(
   theme: 'light' | 'dark',
 ): string | null {
   const slug = composioLogoSlug(connector);
-  if (!slug) return null;
+  // Web accounts (#62, S58): the deployment does not proxy third-party logos; initials render instead.
+  if (!slug || !studioUsesLocalServices()) return null;
   return `/api/connectors/logos/${encodeURIComponent(slug)}?theme=${theme}`;
 }
 

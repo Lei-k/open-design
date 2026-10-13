@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
-import type { Brand } from '@open-design/contracts';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { STUDIO_PARITY_LANES, type Brand, type AuthAccount, type StudioRuntimeCapabilities } from '@open-design/contracts';
+import { CookieSession } from '../../src/multiuser/session';
+import { StudioCapabilitiesProvider } from '../../src/runtime/studio-capabilities';
 import type { ComponentProps, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -73,15 +75,17 @@ type MockChatPaneProps = {
   continueBrandExtractionBusy?: boolean;
   onContinueBrandAgentExtraction?: () => void;
   continueBrandAgentExtractionBusy?: boolean;
+  composerFooterAccessory?: ReactNode;
 };
 
+const translation = vi.hoisted(() => ({ t: (key: string) => key }));
 vi.mock('../../src/i18n', () => ({
   useI18n: () => ({
     locale: 'en',
     setLocale: () => undefined,
-    t: (key: string) => key,
+    t: translation.t,
   }),
-  useT: () => (key: string) => key,
+  useT: () => translation.t,
 }));
 
 vi.mock('../../src/router', () => ({
@@ -235,12 +239,14 @@ vi.mock('../../src/components/FileWorkspace', () => ({
     filesRefreshKey?: number;
     filesGeneration?: number;
     files?: ProjectFile[];
+    headerActions?: ReactNode;
+    deliveryActions?: ReactNode;
     onRefreshFiles?: (options?: { fresh?: boolean }) => Promise<{
       acceptedGeneration: number | null;
     }>;
   }) => {
     fileWorkspaceSpy(props);
-    return <div data-testid="file-workspace" />;
+    return <div data-testid="file-workspace"><div data-testid="workspace-header-actions">{props.headerActions}</div><div data-testid="workspace-delivery-actions">{props.deliveryActions}</div></div>;
   },
 }));
 
@@ -262,6 +268,7 @@ vi.mock('../../src/components/ChatPane', () => ({
           readOnly
           value={props.initialDraft ?? ''}
         />
+        <div data-testid="composer-footer-accessory">{props.composerFooterAccessory}</div>
       </>
     );
   },
@@ -1768,6 +1775,141 @@ describe('ProjectView pending prompt seeding', () => {
       expect(composerValue()).toBe('');
     });
   });
+  it('layout: S71 exposes one project delivery panel outside the tab header on a Studio OpenAI source', async () => {
+    const account: AuthAccount = { id:'A',username:'A',role:'user',active:true,passwordState:'set',createdAt:1,updatedAt:1 };
+    const capabilities = { schemaVersion:1,shell:'studio', executionSources:[{agentId:'openai-byok',source:'personal_api_key'}],
+      features:Object.fromEntries(STUDIO_PARITY_LANES.map(({id}) => [id,{status:'pilot',reason:'Pilot'}])) } as StudioRuntimeCapabilities;
+    vi.stubGlobal('fetch', vi.fn(async (input) => {
+      const url=String(input);
+      if (url === '/api/auth/me') return Response.json({account,studio:capabilities,studioRevision:1,studioMessageIdPrefix:'mua_0123456789abcdef01234567_'});
+      if (url.endsWith('/synthesis')) return Response.json({digest:'a'.repeat(64),defaultSource:'personal_api_key',sources:[{executionSource:'personal_api_key',available:true,reason:null}],results:{}});
+      if (url.endsWith('/access')) { const member={accountId:'A',username:'A',role:'owner'}; return Response.json({projectId:'s71-project',role:'owner',shared:false,self:member,owner:member,members:[member]}); }
+      return Response.json({runs:[],questions:[],files:[],present:[],comments:[]});
+    }));
+    const session = new CookieSession(); await session.verify(); const snapshot = session.snapshot();
+    render(<StudioCapabilitiesProvider session={session} generation={snapshot.generation} actor={account} capabilities={snapshot.studio!}>
+      {projectViewElement(project('s71-project'))}
+    </StudioCapabilitiesProvider>);
+    await waitFor(() => expect((screen.getByRole('button',{name:'studio.synthesis.finalize'}) as HTMLButtonElement).disabled).toBe(false));
+    expect(await screen.findByRole('button',{name:'studio.synthesis.handoff'})).toBeTruthy();
+    expect(screen.getAllByTestId('studio-synthesis-actions')).toHaveLength(1);
+    expect(within(screen.getByTestId('workspace-header-actions')).queryByTestId('studio-synthesis-actions')).toBeNull();
+    expect(within(screen.getByTestId('workspace-delivery-actions')).getByTestId('studio-synthesis-actions')).toBeTruthy();
+  });
+
+  it.each(['openai-byok','openai','codex'])('C: shared editor viewing owner %s pin must explicitly select a synthesis source', async (agentId) => {
+    const account: AuthAccount = {id:'editor',username:'editor',role:'user',active:true,passwordState:'set',createdAt:1,updatedAt:1};
+    const capabilities = {schemaVersion:1,shell:'studio',executionSources:[{agentId:'openai-byok',source:'personal_api_key'},{agentId:'openai',source:'company_pool'}],
+      features:Object.fromEntries(STUDIO_PARITY_LANES.map(({id}) => [id,{status:'pilot',reason:'Pilot'}]))} as StudioRuntimeCapabilities;
+    const ownerMessage: ChatMessage = {id:'owner-message',role:'assistant',content:'Owner pinned conversation',createdAt:1,agentId,runId:'owner-run'};
+    mockedListMessages.mockResolvedValue([ownerMessage]);
+    const posts: Array<Record<string,unknown>> = [];
+    vi.stubGlobal('fetch',vi.fn(async (input,init) => {
+      const url=String(input);
+      if(url==='/api/auth/me') return Response.json({account,studio:capabilities,studioRevision:1,studioMessageIdPrefix:'mua_0123456789abcdef01234567_'});
+      if(url.endsWith('/synthesis')) return Response.json({digest:'a'.repeat(64),defaultSource:null,sources:[{executionSource:'personal_api_key',available:true,reason:null},{executionSource:'company_pool',available:true,reason:null},{executionSource:'personal_subscription',available:false,reason:'personal-codex'}],results:{}});
+      if(url.endsWith('/access')) {const self={accountId:'editor',username:'editor',role:'edit'},owner={accountId:'owner',username:'owner',role:'owner'};return Response.json({projectId:'s71-editor',role:'edit',shared:true,self,owner,members:[self,owner]});}
+      if(url.endsWith('/finalize/openai')&&init?.method==='POST') {posts.push(JSON.parse(String(init.body)));return Response.json({error:{code:'MULTIUSER_SYNTHESIS_STALE'}},{status:409});}
+      return Response.json({runs:[],questions:[],files:[],present:[],comments:[]});
+    }));
+    const session=new CookieSession();await session.verify();const snapshot=session.snapshot();
+    render(<StudioCapabilitiesProvider session={session} generation={snapshot.generation} actor={account} capabilities={snapshot.studio!}>
+      {projectViewElement(project('s71-editor'))}
+    </StudioCapabilitiesProvider>);
+    await waitFor(() => expect(latestChatPaneProps().messages).toContainEqual(expect.objectContaining({id:'owner-message'})));
+    const actions=within(screen.getByTestId('workspace-delivery-actions')).getByTestId('studio-synthesis-actions');
+    const finalize=within(actions).getByRole('button',{name:'studio.synthesis.finalize'}) as HTMLButtonElement;
+    await waitFor(() => expect(actions.querySelector('[data-refusal]')?.getAttribute('data-refusal')).toBe('source-required'));
+    expect(finalize.disabled).toBe(true);fireEvent.click(finalize);expect(posts).toEqual([]);
+    fireEvent.change(within(actions).getByRole('combobox'),{target:{value:'company_pool'}});
+    await waitFor(() => expect(finalize.disabled).toBe(false));fireEvent.click(finalize);
+    await waitFor(() => expect(posts).toEqual([{executionSource:'company_pool',digest:'a'.repeat(64)}]));
+  });
+
+  describe('S74 Composer execution source', () => {
+    const account: AuthAccount = {id:'A',username:'A',role:'user',active:true,passwordState:'set',createdAt:1,updatedAt:1};
+    const capabilities = {schemaVersion:1,shell:'studio',executionSources:[{agentId:'codex',source:'personal_subscription'},{agentId:'openai',source:'company_pool'},{agentId:'openai-byok',source:'personal_api_key'}],
+      features:Object.fromEntries(STUDIO_PARITY_LANES.map(({id}) => [id,{status:'pilot',reason:'Pilot'}]))} as StudioRuntimeCapabilities;
+    async function mountStudio(id: string, messages: ChatMessage[], overrides: Partial<ComponentProps<typeof ProjectView>> = {}, defaultSource: string | null = 'personal_api_key') {
+      mockedListConversations.mockImplementation(async (projectId) => [{...conversation(projectId), studioCanWrite: true}]);
+      mockedListMessages.mockResolvedValue(messages);
+      mockedCreateConversation.mockImplementation(async (projectId) => ({...conversation(projectId), id:`fresh-${projectId}`, studioCanWrite: true}));
+      vi.stubGlobal('fetch', vi.fn(async (input) => {
+        const url = String(input);
+        if (url === '/api/auth/me') return Response.json({account,studio:capabilities,studioRevision:1,studioMessageIdPrefix:'mua_0123456789abcdef01234567_'});
+        if (url.endsWith('/synthesis')) return Response.json({digest:'a'.repeat(64),defaultSource,sources:[{executionSource:'personal_subscription',available:false,reason:'personal-codex'},
+          {executionSource:'company_pool',available:true,reason:null},{executionSource:'personal_api_key',available:true,reason:null}],results:{}});
+        if (url.endsWith('/access')) { const member={accountId:'A',username:'A',role:'owner'}; return Response.json({projectId:id,role:'owner',shared:false,self:member,owner:member,members:[member]}); }
+        return Response.json({runs:[],questions:[],files:[],present:[],comments:[]});
+      }));
+      const session = new CookieSession(); await session.verify(); const snapshot = session.snapshot();
+      const handlers = { onAgentChange: vi.fn(), onOpenSettings: vi.fn() };
+      render(<StudioCapabilitiesProvider session={session} generation={snapshot.generation} actor={account} capabilities={snapshot.studio!}>
+        {projectViewElement(project(id), vi.fn(), {...handlers, ...overrides})}
+      </StudioCapabilitiesProvider>);
+      return handlers;
+    }
+    const sourceTrigger = () => within(screen.getByTestId('composer-footer-accessory')).getByRole('button', {name:/^studio\.source\.trigger/});
+    // The synthesis panel remounts when the active conversation resolves; always re-query it.
+    const synthesisSource = () => within(within(screen.getByTestId('workspace-delivery-actions')).getByTestId('studio-synthesis-actions'))
+      .getByRole('combobox') as HTMLSelectElement;
+    const sourceRow = (agentId: string) => screen.getByRole('dialog').querySelector(`[data-source-agent="${agentId}"]`) as HTMLElement;
+
+    it('unpinned: the Composer picker selects the next conversation source', async () => {
+      const { onAgentChange } = await mountStudio('s74-unpinned', [], { config: {...config, mode:'daemon', agentId:'openai'} });
+      await waitFor(() => expect(sourceTrigger()).toBeTruthy());
+      fireEvent.click(sourceTrigger());
+      expect(within(screen.getByRole('dialog')).getAllByRole('radio')).toHaveLength(3);
+      fireEvent.click(within(sourceRow('openai-byok')).getByRole('radio'));
+      expect(onAgentChange).toHaveBeenCalledWith('openai-byok');
+    });
+
+    it('pinned: keeps the conversation source, says it is fixed and starts a new conversation preselected with another', async () => {
+      const pinned: ChatMessage = {id:'m1',role:'assistant',content:'Pinned on company',createdAt:1,agentId:'openai',runId:'run-1'};
+      const { onAgentChange } = await mountStudio('s74-pinned', [pinned], { config: {...config, mode:'daemon', agentId:'codex'} });
+      await waitFor(() => expect(sourceTrigger().textContent).toContain('multiuser.executionSourceCompanyOpenAI'));
+      fireEvent.click(sourceTrigger());
+      const dialog = screen.getByRole('dialog');
+      expect(dialog.textContent).toContain('studio.source.pinnedHint');
+      expect(within(dialog).queryAllByRole('radio')).toHaveLength(0);
+      expect(sourceRow('openai').getAttribute('aria-current')).toBe('true');
+      const before = mockedCreateConversation.mock.calls.length;
+      fireEvent.click(within(sourceRow('openai-byok')).getByRole('button'));
+      expect(onAgentChange).toHaveBeenCalledWith('openai-byok');
+      await waitFor(() => expect(mockedCreateConversation.mock.calls.length).toBe(before + 1));
+      await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('fresh-s74-pinned'));
+    });
+
+    it('synthesis defaults to the Composer source of the actor\'s own conversation when it can synthesize', async () => {
+      const pinned: ChatMessage = {id:'m1',role:'assistant',content:'Pinned on company',createdAt:1,agentId:'openai',runId:'run-1'};
+      await mountStudio('s74-synthesis', [pinned]);
+      await waitFor(() => expect(synthesisSource().value).toBe('company_pool'));
+    });
+
+    it('synthesis keeps the server default when the Composer source is personal Codex', async () => {
+      const pinned: ChatMessage = {id:'m1',role:'assistant',content:'Pinned on Codex',createdAt:1,agentId:'codex',runId:'run-1'};
+      await mountStudio('s74-synthesis-codex', [pinned]);
+      await waitFor(() => expect(latestChatPaneProps().messages).toContainEqual(expect.objectContaining({id:'m1'})));
+      await waitFor(() => expect(sourceTrigger().textContent).toContain('multiuser.executionSourcePersonalCodex'));
+      await waitFor(() => expect(synthesisSource().value).toBe('personal_api_key'));
+    });
+
+    it('media-only projects keep personal Codex out of the Composer picker (#63)', async () => {
+      mockedListConversations.mockImplementation(async (projectId) => [{...conversation(projectId), studioCanWrite: true}]);
+      await mountStudio('s74-media', [], { project: {...project('s74-media'), metadata: { kind: 'image' }} as Project });
+      await waitFor(() => expect(sourceTrigger()).toBeTruthy());
+      fireEvent.click(sourceTrigger());
+      expect(sourceRow('codex')).toBeNull();
+      expect(within(screen.getByRole('dialog')).getAllByRole('radio').map((radio) => (radio as HTMLInputElement).value)).toEqual(['openai', 'openai-byok']);
+    });
+
+    it('desktop single-user keeps its agent menu and renders no Studio source picker', async () => {
+      renderProjectView(project('s74-desktop'));
+      await waitFor(() => expect(screen.getByTestId('composer-footer-accessory')).toBeTruthy());
+      expect(screen.queryByTestId('studio-execution-source')).toBeNull();
+    });
+  });
+
 });
 
 function composerValue(): string {

@@ -1024,10 +1024,20 @@ describe('binary project/design-system downloads', () => {
       fallbackTitle: 'Fallback Project',
     });
 
-    expect(ok).toBe(true);
+    expect(ok).toEqual({ status: 'started' });
     expect(fetch).toHaveBeenCalledWith('/api/projects/project%20123/archive');
     expect(capturedFilename).toBe('Project.zip');
     expect(await capturedBlob!.text()).toContain('project-zip');
+  });
+
+  it.each(['http', 'network', 'NotAllowedError', 'SecurityError'])('distinguishes project archive %s failures', async (failure) => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      if (failure === 'network') throw new TypeError('Network failed');
+      return new Response('zip', { status: failure === 'http' ? 503 : 200 });
+    }));
+    if (failure.endsWith('Error')) vi.spyOn(URL, 'createObjectURL').mockImplementation(() => { throw new DOMException('Blocked', failure); });
+    expect(await downloadProjectArchive({ projectId: 'p', fallbackTitle: 'Project' }))
+      .toEqual({ status: failure.endsWith('Error') ? 'browser-blocked' : 'request-failed' });
   });
 
   it('passes an optional root when downloading a project subfolder archive', async () => {
@@ -1044,7 +1054,7 @@ describe('binary project/design-system downloads', () => {
       root: '/system/',
     });
 
-    expect(ok).toBe(true);
+    expect(ok).toEqual({ status: 'started' });
     expect(fetch).toHaveBeenCalledWith('/api/projects/project-1/archive?root=system');
     expect(capturedFilename).toBe('system.zip');
   });

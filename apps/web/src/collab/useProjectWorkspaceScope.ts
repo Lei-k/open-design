@@ -1,3 +1,4 @@
+import { studioUsesLocalServices, studioSetTimeout as setTimeout, studioFetch as fetch } from '../runtime/studio-transport';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isSameWorkspacePrincipal } from '@open-design/contracts';
 import type {
@@ -562,6 +563,7 @@ export function useProjectWorkspaceScope(
   }, [revalidateAfterIdentityChange, revalidateInBackground]);
 
   useEffect(() => {
+    if (!studioUsesLocalServices()) return;
     const epoch = ++epochRef.current;
     const controller = new AbortController();
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -748,6 +750,8 @@ export function useProjectWorkspaceScope(
     callerIdentityKey,
     initialScopeCanSeed,
   ]);
+
+  if (!studioUsesLocalServices()) return { scope: null, loading: false, failure: 'unsupported' };
 
   // React preserves hook state across a ProjectView A→B prop change until the
   // effect above runs. Never expose A's already-resolved scope during that

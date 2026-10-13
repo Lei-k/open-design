@@ -1,3 +1,4 @@
+import { studioSetTimeout as setTimeout, studioFetch as fetch } from './studio-transport';
 // `useMemoryWrittenCard` — surface the memory component (design draft
 // `body-components.html`, 组件 8 「记忆组件」) after a turn actually writes
 // long-term memory.

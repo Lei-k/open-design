@@ -1,5 +1,8 @@
+import { registerStudioReset } from '../runtime/studio-resources';
+import { studioUsesLocalServices, studioFetch as fetch, studioLaneUsable } from '../runtime/studio-transport';
 import {
   PUBLIC_FILE_MANUAL_REVOKE_REQUIRED,
+  PUBLIC_LINK_FILE_REFUSED,
   workspaceContextHasTeamIdentity,
   type PublicFileManualRevokeRequiredData,
   type PublicProjectFilePublication,
@@ -35,6 +38,7 @@ import type {
   SocialShareRequest,
   SocialShareResponse,
   WorkspaceCollabContext,
+  StudioPluginPreviewResponse,
 } from '@open-design/contracts';
 import type {
   AgentInfo,
@@ -468,6 +472,23 @@ export async function importSkill(
         message: err instanceof Error ? err.message : 'Import request failed.',
       },
     };
+  }
+}
+
+// Studio: upload a selected folder (SKILL.md plus side files) as one
+// account-private package. Paths are folder-relative; the daemon refuses
+// hidden, dependency, traversal and oversized entries as a whole.
+export async function importSkillFolder(
+  files: readonly File[],
+): Promise<{ skill: SkillSummary } | { error: SkillImportError }> {
+  const form = new FormData();
+  for (const file of files) form.append('files', file, file.webkitRelativePath || file.name);
+  try {
+    const resp = await fetch('/api/skills/import-files', { method: 'POST', body: form });
+    if (!resp.ok) return { error: await readSkillOperationError(resp) };
+    return (await resp.json()) as { skill: SkillSummary };
+  } catch (err) {
+    return { error: { code: 'network_error', message: err instanceof Error ? err.message : 'Import request failed.' } };
   }
 }
 
@@ -1382,6 +1403,14 @@ function popupBlockedMessage(): string {
 }
 
 export async function openExternalUrl(url: string): Promise<boolean> {
+  // A Web account has no daemon-side browser: open a new tab, keep the Studio page.
+  if (!studioUsesLocalServices()) {
+    try {
+      const opened = window.open(url, '_blank');
+      if (opened) opened.opener = null;
+      return opened !== null;
+    } catch { return false; }
+  }
   const bridgedUrl = await bridgeFirstPartyUrl(url);
   const targetUrl = bridgedUrl ?? url;
   if (isOpenDesignHostAvailable()) {
@@ -2002,6 +2031,7 @@ export async function publishProjectFilePublic(
         recoveryData?.projectId === projectId && recoveryData.fileName === fileName
           ? recoveryData
           : undefined,
+        code === PUBLIC_LINK_FILE_REFUSED ? structuredError?.data : undefined,
       ),
       { failure: payload?.failure, daemonErrorCode: code },
     );
@@ -2147,6 +2177,7 @@ export async function fetchProjectFiles(
     requireAuthoritative?: boolean;
   },
 ): Promise<ProjectFile[]> {
+  if (!studioLaneUsable('files')) return [];
   // Every reader of the same project's file list shares one request
   // (Batch A §4.3). Cancellable callers (project-card cover scans aborted
   // when Home unmounts) detach individually; the shared request is aborted
@@ -2304,6 +2335,16 @@ export async function deleteProjectFolder(
   }
 }
 
+function liveArtifactsCacheKey(projectId: string, workspaceContext?: WorkspaceCollabContext | null): string {
+  return `live-artifacts:${workspaceIdentityCacheKey(workspaceContext)}:${projectId}`;
+}
+
+/** A successful canonical mutation must not reuse a pre-write list, including
+ * an in-flight read. Keep invalidation scoped to the same project authority. */
+export function invalidateLiveArtifactsCache(projectId: string, workspaceContext?: WorkspaceCollabContext | null): void {
+  evictCoalescedGet(liveArtifactsCacheKey(projectId, workspaceContext));
+}
+
 export async function fetchLiveArtifacts(
   projectId: string,
   options?: {
@@ -2311,6 +2352,7 @@ export async function fetchLiveArtifacts(
     workspaceContext?: WorkspaceCollabContext | null;
   },
 ): Promise<LiveArtifactSummary[]> {
+  if (!studioLaneUsable('files')) return [];
   const run = async () => {
     try {
       const url = workspaceResourceUrl(
@@ -2339,7 +2381,7 @@ export async function fetchLiveArtifacts(
   // during a reopen.
   if (options?.signal) return run();
   return coalescedGet(
-    `live-artifacts:${workspaceIdentityCacheKey(options?.workspaceContext)}:${projectId}`,
+    liveArtifactsCacheKey(projectId, options?.workspaceContext),
     run,
   );
 }
@@ -2414,7 +2456,9 @@ export async function refreshLiveArtifact(
     throw new LiveArtifactRefreshError(errorBody.message, resp.status, errorBody.code);
   }
 
-  return (await resp.json()) as LiveArtifactRefreshResult;
+  const result = (await resp.json()) as LiveArtifactRefreshResult;
+  invalidateLiveArtifactsCache(projectId, workspaceContext);
+  return result;
 }
 
 export async function fetchLiveArtifactRefreshes(
@@ -2478,6 +2522,7 @@ export async function updateLiveArtifact(
   const json = (await resp.json()) as { artifact?: LiveArtifact; liveArtifact?: LiveArtifact };
   const artifact = json.liveArtifact ?? json.artifact;
   if (!artifact) throw new LiveArtifactRefreshError('Update response did not include a live artifact.', resp.status);
+  invalidateLiveArtifactsCache(projectId, workspaceContext);
   return artifact;
 }
 
@@ -2497,6 +2542,7 @@ export async function deleteLiveArtifact(
         ...(workspaceContext ? { headers: workspaceProjectHeaders(workspaceContext) } : {}),
       },
     );
+    if (resp.ok) invalidateLiveArtifactsCache(projectId, workspaceContext);
     return resp.ok;
   } catch {
     return false;
@@ -2598,6 +2644,11 @@ function previewCapabilityHref(pathname: string): string {
   return new URL(pathname, runtimeHref).href;
 }
 
+/** Scope path prefix: the standard daemon's, or the multi-user preview capability's. */
+function previewScopePrefix(projectId: string, capability: boolean): string {
+  return `/api/${capability ? 'multiuser/' : ''}projects/${encodeURIComponent(projectId)}/preview/`;
+}
+
 export async function fetchProjectPreviewBaseHref(
   projectId: string,
   name: string,
@@ -2612,9 +2663,13 @@ export async function fetchProjectPreviewBaseHref(
     });
     if (!response.ok) return null;
     const body = (await response.json()) as ProjectPreviewUrlResponse;
-    if (typeof body.url !== 'string' || !body.url.startsWith('/')) return null;
+    if (typeof body.url !== 'string') return null;
+    // A multi-user daemon answers with an absolute capability on its separate
+    // preview origin (owner/session bound); everything else stays root-relative.
+    const capability = /^https:\/\//.test(body.url);
+    if (!capability && !body.url.startsWith('/')) return null;
     const parsed = new URL(body.url, 'http://open-design.local');
-    const expectedPrefix = `/api/projects/${encodeURIComponent(projectId)}/preview/`;
+    const expectedPrefix = previewScopePrefix(projectId, capability);
     if (!parsed.pathname.startsWith(expectedPrefix)) return null;
     const directoryEnd = parsed.pathname.lastIndexOf('/') + 1;
     if (directoryEnd <= expectedPrefix.length) return null;
@@ -2626,7 +2681,7 @@ export async function fetchProjectPreviewBaseHref(
       // <base> is ignored in a Blob document, leaving document.baseURI on the
       // Blob and breaking lazy or script-created relative assets. Resolve the
       // capability against the host document while it still has a real origin.
-      href: previewCapabilityHref(parsed.pathname.slice(0, directoryEnd)),
+      href: capability ? `${parsed.origin}${parsed.pathname.slice(0, directoryEnd)}` : previewCapabilityHref(parsed.pathname.slice(0, directoryEnd)),
       expiresAt,
     };
   } catch {
@@ -2640,7 +2695,8 @@ export async function renewProjectPreviewBaseScope(
 ): Promise<number | null> {
   try {
     const parsed = new URL(href, 'http://open-design.local');
-    const expectedPrefix = `/api/projects/${encodeURIComponent(projectId)}/preview/`;
+    const capability = parsed.protocol === 'https:' && parsed.origin !== globalThis.location?.origin;
+    const expectedPrefix = previewScopePrefix(projectId, capability);
     if (!parsed.pathname.startsWith(expectedPrefix)) return null;
     const scopeEnd = parsed.pathname.indexOf('/', expectedPrefix.length);
     if (scopeEnd <= expectedPrefix.length) return null;
@@ -2651,7 +2707,8 @@ export async function renewProjectPreviewBaseScope(
       {
         method: 'POST',
         cache: 'no-store',
-        headers: { 'x-od-preview-scope-renewal': '1' },
+        // The multi-user renewal reads the non-`x-od` header (client identity headers are stripped).
+        headers: { 'x-od-preview-scope-renewal': '1', 'preview-scope-renewal': '1' },
       },
     );
     if (!response.ok) return null;
@@ -3587,6 +3644,15 @@ export async function fetchPluginPreviewHtml(
   }
 }
 
+/** The detail modal loads an isolated frame; source consumers keep the plain HTML helper. */
+export async function fetchStudioPluginPreview(id: string, exampleStem?: string | null): Promise<StudioPluginPreviewResponse | null> {
+  const suffix = exampleStem ? `example/${encodeURIComponent(exampleStem)}` : 'preview';
+  const response = await fetch(`/api/plugins/${encodeURIComponent(id)}/${suffix}?variant=descriptor`);
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
 // Fetch a single example output by stem (matches the basename of the
 // `od.useCase.exampleOutputs[].path` minus its extension). 404 is
 // mapped to `unavailable` for the same reason as fetchPluginPreviewHtml.
@@ -4064,3 +4130,5 @@ export async function fetchLibraryConnection(): Promise<LibraryConnectionStatus 
     return null;
   }
 }
+
+registerStudioReset(() => { projectFilesCacheGenerations.clear(); connectorDiscoveryCache = null; connectorDiscoveryPromise = null; designSystemCatalogMutationGeneration++; });

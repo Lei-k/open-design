@@ -1,3 +1,4 @@
+import { studioSetTimeout as setTimeout, studioFetch as fetch, studioLocalStorage } from '../runtime/studio-transport';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { getOpenDesignHost } from "@open-design/host";
@@ -61,7 +62,7 @@ const displayedKey = (subject: string, activity: string) =>
 /** Local impressions gate automatic presentation only, independently of publication. */
 function wasDisplayed(subject: string, activity: string): boolean {
 	try {
-		return localStorage.getItem(displayedKey(subject, activity)) === "1";
+		return studioLocalStorage().getItem(displayedKey(subject, activity)) === "1";
 	} catch {
 		return false;
 	}
@@ -69,7 +70,7 @@ function wasDisplayed(subject: string, activity: string): boolean {
 
 function recordDisplayed(subject: string, activity: string): void {
 	try {
-		localStorage.setItem(displayedKey(subject, activity), "1");
+		studioLocalStorage().setItem(displayedKey(subject, activity), "1");
 	} catch {
 		// Storage may be unavailable or full; presentation and dismissal still work.
 	}

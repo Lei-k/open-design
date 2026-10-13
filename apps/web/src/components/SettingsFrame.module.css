@@ -1,0 +1,37 @@
+.accountControl { position: absolute; top: 14px; inset-inline-end: 64px; z-index: 10; max-width: min(200px, 50vw); }
+@media (max-width: 760px) {
+  .surface:global(.modal-settings.settings-page-surface) { padding-top: 64px; }
+  .surface:global(.modal-settings) :global(.modal-body) { position: static; }
+  .surface:global(.modal-settings) :global(.modal-head) { padding-top: 64px; }
+  .surface:global(.modal-settings) :global(.settings-nav-item) {
+    width: max-content;
+    min-width: max-content;
+    min-height: 44px;
+    flex: 0 0 auto;
+    grid-template-columns: 18px max-content;
+  }
+  .surface:global(.modal-settings) :global(.settings-sidebar-toggle),
+  .surface:global(.modal-settings) :global(.settings-sidebar-toggle:hover),
+  .surface:global(.modal-settings) :global(.settings-sidebar-toggle:focus-visible) {
+    display: inline-flex;
+    top: 10px;
+    left: 18px;
+    width: 44px;
+    height: 44px;
+    opacity: 1;
+    transform: none;
+  }
+  .surface:global(.modal-settings.settings-sidebar-collapsed) :global(.settings-sidebar) { display: none; }
+}
+.studio { min-width: 0; max-width: 100%; }
+@media (max-width: 600px) {
+  .studio :global(.settings-content) { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+  .studio :global(.settings-sidebar) { min-width: 0; max-width: 100%; }
+  .studio :global(.settings-notify-card-header) { flex-wrap: wrap; }
+  .studio :global(.seg-control) { max-width: 100%; grid-template-columns: repeat(auto-fit, minmax(60px, 1fr)); }
+  .studio :global(.settings-about-list) { min-width: 0; overflow-wrap: anywhere; }
+  .studio button, .studio input, .studio select { min-height: 40px; max-width: 100%; }
+  .studio :global(.pet-grid) { max-width: 100%; }
+  .studio :global(.pet-tabs-top-row) { flex-wrap: wrap; }
+  .studio :global(.pet-wake-controls) { max-width: 100%; }
+}

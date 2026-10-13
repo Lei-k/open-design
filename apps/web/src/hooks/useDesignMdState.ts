@@ -1,3 +1,4 @@
+import { studioUsesLocalServices, studioFetch as fetch } from '../runtime/studio-transport';
 // Drives the Continue in CLI button's existence + staleness chip without
 // a daemon-side endpoint. Fetches the project's file list to detect
 // DESIGN.md, downloads its body to parse the `## Provenance` section,
@@ -90,6 +91,7 @@ export function useDesignMdState(
       signal?: AbortSignal,
       options?: { revalidate?: boolean },
     ): Promise<void> => {
+      if (!studioUsesLocalServices()) return;
       const projectIdEnc = encodeURIComponent(projectId);
       setState((prev) => ({ ...prev, loading: true, error: null }));
       try {

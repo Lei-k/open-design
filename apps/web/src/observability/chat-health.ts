@@ -1,3 +1,4 @@
+import { registerStudioReset } from '../runtime/studio-resources';
 // Chat panel runtime-health monitor.
 //
 // The chat panel is the one surface a user keeps open for hours while it
@@ -576,3 +577,5 @@ export function __resetChatHealthForTest(): void {
   pendingIntent = null;
   firedHeapBands.clear();
 }
+
+registerStudioReset(() => { __resetChatHealthForTest(); });

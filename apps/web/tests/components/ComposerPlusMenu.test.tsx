@@ -72,6 +72,13 @@ function expectPickRowPreventsMousedown(name: RegExp) {
 }
 
 describe('ComposerPlusMenu pick-row caret protection', () => {
+  it('S59 explains why account connector selection is disabled', () => {
+    renderMenu({ connectors: [], connectorUnavailableReason: 'Ask an administrator to configure the company key' } as never);
+    fireEvent.click(screen.getByTestId('plus-trigger'));
+    const row = screen.getByTestId('composer-plus-connectors') as HTMLButtonElement;
+    expect(row.disabled).toBe(true);
+    expect(row.title).toBe('Ask an administrator to configure the company key');
+  });
   it('cancels mousedown on the connector / plugin / MCP pick rows', () => {
     renderMenu();
     fireEvent.click(screen.getByTestId('plus-trigger'));

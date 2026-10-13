@@ -8,6 +8,8 @@ export const LIVE_ARTIFACT_GENERATED_PREVIEW_ENTRY = 'index.html' as const;
 export interface LiveArtifactRenderInput {
   templateHtml: string;
   dataJson: BoundedJsonObject;
+  /** Optional caller-owned UTF-8 output ceiling, checked during expansion. */
+  maxRenderedBytes?: number;
 }
 
 export interface LiveArtifactRenderOutput {
@@ -99,8 +101,27 @@ function childResolver(parent: BindingResolver, varName: string, item: unknown):
   };
 }
 
-function interpolateScalars(fragment: string, resolve: BindingResolver): string {
-  return fragment.replace(TEMPLATE_INTERPOLATION, (_match, rawBinding: string) => resolve(rawBinding.trim()));
+interface RenderBudget { remaining: number }
+export class LiveArtifactRenderLimitError extends Error {
+  constructor() { super('live artifact rendered preview is too large'); }
+}
+
+function interpolateScalars(fragment: string, resolve: BindingResolver, budget?: RenderBudget): string {
+  if (!budget) return fragment.replace(TEMPLATE_INTERPOLATION, (_match, rawBinding: string) => resolve(rawBinding.trim()));
+  let out = ''; let cursor = 0;
+  const append = (value: string) => {
+    const bytes = Buffer.byteLength(value, 'utf8');
+    if (bytes > budget.remaining) throw new LiveArtifactRenderLimitError();
+    budget.remaining -= bytes; out += value;
+  };
+  // Resolve one binding at a time: a rejected fragment cannot allocate all later
+  // replacements first. Repeat recursion shares this same budget without charging twice.
+  for (const match of fragment.matchAll(TEMPLATE_INTERPOLATION)) {
+    append(fragment.slice(cursor, match.index)); append(resolve(match[1]!.trim()));
+    cursor = match.index + match[0].length;
+  }
+  append(fragment.slice(cursor));
+  return out;
 }
 
 /** Index of the `>` that closes the tag opening at `start`, respecting quotes. */
@@ -223,13 +244,13 @@ function findRepeatDirective(
   return null;
 }
 
-function renderFragment(html: string, resolve: BindingResolver, readArray: ArrayReader): string {
+function renderFragment(html: string, resolve: BindingResolver, readArray: ArrayReader, budget?: RenderBudget): string {
   let out = '';
   let cursor = 0;
   while (cursor < html.length) {
     const directive = findRepeatDirective(html, cursor);
     if (!directive) {
-      out += interpolateScalars(html.slice(cursor), resolve);
+      out += interpolateScalars(html.slice(cursor), resolve, budget);
       break;
     }
     const { openTagStart, tagName } = directive;
@@ -253,9 +274,9 @@ function renderFragment(html: string, resolve: BindingResolver, readArray: Array
       throw new Error('nested data-od-repeat is not supported');
     }
 
-    out += interpolateScalars(html.slice(cursor, openTagStart), resolve);
+    out += interpolateScalars(html.slice(cursor, openTagStart), resolve, budget);
     for (const item of readArray(arrayPath)) {
-      out += renderFragment(itemTemplate, childResolver(resolve, varName, item), readArray);
+      out += renderFragment(itemTemplate, childResolver(resolve, varName, item), readArray, budget);
     }
     cursor = elementEnd;
   }
@@ -263,6 +284,9 @@ function renderFragment(html: string, resolve: BindingResolver, readArray: Array
 }
 
 export function renderHtmlTemplateV1(input: LiveArtifactRenderInput): LiveArtifactRenderOutput {
+  if (input.maxRenderedBytes !== undefined && (!Number.isSafeInteger(input.maxRenderedBytes) || input.maxRenderedBytes < 1)) {
+    throw new Error('invalid live artifact render budget');
+  }
   validateHtmlTemplateV1Security(input.templateHtml);
 
   if (RAW_TEMPLATE_INTERPOLATION.test(input.templateHtml)) {
@@ -276,5 +300,6 @@ export function renderHtmlTemplateV1(input: LiveArtifactRenderInput): LiveArtifa
     return value;
   };
 
-  return { html: renderFragment(input.templateHtml, resolve, readArray) };
+  return { html: renderFragment(input.templateHtml, resolve, readArray,
+    input.maxRenderedBytes === undefined ? undefined : { remaining: input.maxRenderedBytes }) };
 }

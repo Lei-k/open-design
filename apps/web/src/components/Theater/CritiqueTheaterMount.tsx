@@ -1,3 +1,4 @@
+import { studioFetch as fetch } from '../../runtime/studio-transport';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { WorkspaceCollabContext } from '@open-design/contracts';
 

@@ -1,3 +1,4 @@
+import { StudioConnectorRuntimeError, type StudioConnectorRuntime } from './studio-runtime.js';
 import net from 'node:net';
 
 import type { Express, Request, RequestHandler, Response } from 'express';
@@ -45,7 +46,7 @@ const composioLogoInflight = new Map<string, Promise<CachedComposioLogo | null>>
 export type ConnectorApiErrorSender = (
   res: Response,
   status: number,
-  code: ConnectorApiErrorCode,
+  code: ConnectorApiErrorCode | import('@open-design/contracts').ApiErrorCode,
   message: string,
   init?: { details?: unknown; retryable?: boolean; requestId?: string; taskId?: string },
 ) => Response;
@@ -54,6 +55,7 @@ export interface RegisterConnectorRoutesOptions {
   service?: ConnectorService;
   sendApiError: ConnectorApiErrorSender;
   projectsRoot?: string;
+  studioRuntime?: StudioConnectorRuntime;
   authorizeToolRequest?: (req: Request, res: Response, operation: string) => ToolTokenGrant | null;
   requireLocalDaemonRequest?: RequestHandler;
   composio?: {
@@ -62,6 +64,8 @@ export interface RegisterConnectorRoutesOptions {
 }
 
 function sendConnectorRouteError(res: Response, err: unknown, sendApiError: ConnectorApiErrorSender): Response {
+  if (err instanceof StudioConnectorRuntimeError) { return sendApiError(res, err.status, err.code, 'account connector call refused'); }
+
   if (err instanceof ConnectorServiceError) {
     return sendApiError(res, err.status, err.code, err.message, err.details === undefined ? {} : { details: err.details });
   }
@@ -729,6 +733,10 @@ export function registerConnectorRoutes(app: Express, options: RegisterConnector
       }
       const grant = options.authorizeToolRequest?.(req, res, 'connectors:list');
       if (!grant) return;
+      if (options.studioRuntime) {
+        if (Object.keys(req.query).some((key) => key !== 'useCase')) return options.sendApiError(res, 400, 'BAD_REQUEST', 'unsupported connector query');
+        return void res.json(await options.studioRuntime.list(grant, req.query.useCase));
+      }
       const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : undefined;
       if (projectId && projectId !== grant.projectId) {
         options.sendApiError(res, 403, 'FORBIDDEN', 'projectId is derived from the tool token', {
@@ -760,6 +768,7 @@ export function registerConnectorRoutes(app: Express, options: RegisterConnector
       }
       const grant = options.authorizeToolRequest?.(req, res, 'connectors:execute');
       if (!grant) return;
+      if (options.studioRuntime) return void res.json(await options.studioRuntime.execute(grant, req.body ?? {}));
       if (!options.projectsRoot) {
         options.sendApiError(res, 500, 'CONNECTOR_EXECUTION_FAILED', 'connector tool routes are not configured');
         return;

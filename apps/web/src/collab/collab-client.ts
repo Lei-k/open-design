@@ -1,3 +1,4 @@
+import { studioFetch } from '../runtime/studio-transport';
 // Team collaboration client integration. Ties the daemon collab capabilities
 // together for a shared-project session: heartbeat presence, poll the published
 // head version (so a member knows when to pull), and report author-side changes
@@ -178,7 +179,7 @@ export class CollabClient {
     this.projectId = options.projectId;
     this.member = options.member;
     this.workspaceContext = options.workspaceContext;
-    this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
+    this.fetchImpl = options.fetch ?? ((...args: Parameters<typeof fetch>) => studioFetch(...args));
     this.baseUrl = options.baseUrl ?? '';
     this.heartbeatMs = Math.max(1_000, options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS);
     this.statusPollMs = Math.max(1_000, options.statusPollMs ?? DEFAULT_STATUS_POLL_MS);
@@ -824,7 +825,7 @@ export function fetchProjectCollabStatus(
   },
 ): Promise<Record<string, unknown> | null> {
   const baseUrl = options?.baseUrl ?? '';
-  const fetchImpl = options?.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const fetchImpl = options?.fetchImpl ?? ((...args: Parameters<typeof fetch>) => studioFetch(...args));
   const identity = workspaceIdentityCacheKey(options?.workspaceContext);
   return coalescedGet(`collab-status:${baseUrl}|${identity}|${projectId}`, async () => {
     const response = await fetchImpl(

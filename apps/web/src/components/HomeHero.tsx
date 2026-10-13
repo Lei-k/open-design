@@ -1,3 +1,4 @@
+import { studioWindowSetTimeout, studioFetch as fetch } from '../runtime/studio-transport';
 // Lovart-style centered hero for the entry Home view.
 //
 // The prompt textarea is the canonical creation surface: the user
@@ -161,6 +162,7 @@ interface Props {
   activePluginIsExplicit?: boolean;
   activePluginRecord?: InstalledPluginRecord | null;
   activeChipId: string | null;
+  taskTypeUnavailableReason?: (chip: HomeHeroChip) => string | undefined;
   // Prototype's selected second-level scene is owned by HomeView so action
   // metadata and persistence stay aligned with the visible filter selection.
   activePrototypeSubtypeId?: string | null;
@@ -363,6 +365,7 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
     activeSkillTitle = null,
     activeSkillRecord = null,
     activeChipId,
+    taskTypeUnavailableReason,
     onClearActivePlugin,
     onClearActiveChip = onClearActivePlugin,
     onClearActiveSkill = () => undefined,
@@ -875,8 +878,8 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
       setGuidePulseChipId(null);
       return;
     }
-    const arm = window.setTimeout(() => setGuidePulseChipId('prototype'), 900);
-    const disarm = window.setTimeout(() => setGuidePulseChipId(null), 3600);
+    const arm = studioWindowSetTimeout(() => setGuidePulseChipId('prototype'), 900);
+    const disarm = studioWindowSetTimeout(() => setGuidePulseChipId(null), 3600);
     return () => {
       window.clearTimeout(arm);
       window.clearTimeout(disarm);
@@ -910,11 +913,11 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
     const hasExampleCards =
       filteredExamplePlugins.length > 0 || activePromptExamples.length > 0;
     if (!activeChipId || !hasExampleCards) return;
-    const arm = window.setTimeout(() => {
+    const arm = studioWindowSetTimeout(() => {
       setGuidePulseFirstPreset(true);
       writeHomeGuideStage('done');
     }, 500);
-    const disarm = window.setTimeout(() => setGuidePulseFirstPreset(false), 3200);
+    const disarm = studioWindowSetTimeout(() => setGuidePulseFirstPreset(false), 3200);
     return () => {
       window.clearTimeout(arm);
       window.clearTimeout(disarm);
@@ -2354,6 +2357,7 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
               onPick={handlePickTaskChip}
               disabled={pluginsLoading || typeSelectionPending || pendingChipId !== null || pendingPluginId !== null}
               activeChipId={activeChipId}
+              unavailableReason={taskTypeUnavailableReason}
               labelFor={(id) => homeHeroChipLabel(id, t)}
             />
             {libraryPickerOpen ? (

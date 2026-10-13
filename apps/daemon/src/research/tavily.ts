@@ -93,7 +93,12 @@ export async function tavilySearch(
       resp.status,
     );
   }
-  const json = (await resp.json()) as TavilyRawResponse;
+  return tavilyOutputFrom(await resp.json());
+}
+
+/** Normalize one Tavily `/search` response body (shared with the Studio research service). */
+export function tavilyOutputFrom(raw: unknown): TavilySearchOutput {
+  const json = (raw && typeof raw === 'object' ? raw : {}) as TavilyRawResponse;
   const answer = typeof json.answer === 'string' ? json.answer : '';
   const rawResults = Array.isArray(json.results) ? json.results : [];
   const sources: ResearchSource[] = [];

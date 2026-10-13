@@ -15,6 +15,12 @@ export interface InlineMentionEntity {
   title?: string;
 }
 
+/** Identity and text range of one serialized pill, in occurrence order. */
+export interface InlineMentionOccurrence extends InlineMentionEntity {
+  start: number;
+  end: number;
+}
+
 export type InlineMentionPart =
   | {
       kind: 'text';
@@ -30,15 +36,28 @@ export function inlineMentionToken(label: string): string {
   return label.startsWith('@') ? label : `@${label}`;
 }
 
+export interface BuildInlineMentionPartsOptions {
+  highlightUnknown?: boolean;
+  /**
+   * Entities that may claim an ambiguous token (one that two ids of the same
+   * kind share, e.g. an account's own `brand-voice` skill and another
+   * account's shared one). Each occurrence takes the first unclaimed entry
+   * with that kind and token, in order; an occurrence nothing claims stays
+   * plain text. Unambiguous tokens ignore this list.
+   */
+  prefer?: readonly InlineMentionEntity[];
+}
+
 export function buildInlineMentionParts(
   text: string,
   entities: InlineMentionEntity[],
-  options: { highlightUnknown?: boolean } = {},
+  options: BuildInlineMentionPartsOptions = {},
 ): InlineMentionPart[] | null {
   if (!text) return null;
   if (!text.includes('@')) return null;
   const highlightUnknown = options.highlightUnknown ?? true;
   const known = getMentionTokenIndex(entities);
+  const claimable = [...(options.prefer ?? [])];
   const parts: InlineMentionPart[] = [];
   let scanStart = 0;
   let copiedUntil = 0;
@@ -52,7 +71,7 @@ export function buildInlineMentionParts(
       continue;
     }
 
-    const knownMatch = findKnownMentionAt(text, known, start);
+    const knownMatch = claimAmbiguous(findKnownMentionAt(text, known, start), claimable);
     const unknownMatch = highlightUnknown ? findUnknownMentionAt(text, start) : null;
     const match =
       knownMatch && (!unknownMatch || knownMatch.token.length >= unknownMatch.token.length)
@@ -84,10 +103,77 @@ export function buildInlineMentionParts(
   return found ? coalesceTextParts(parts) : null;
 }
 
+/**
+ * Occurrences, in text order, of known tokens that do not name one entity:
+ * two different ids of the same kind share the token. The parser leaves them
+ * unresolved, so a caller that tracks selections by id (the Composer's staged
+ * skills) can match them against its own selection instead of guessing.
+ */
+export function ambiguousMentionTokens(
+  text: string,
+  entities: InlineMentionEntity[],
+): Array<{ kind: InlineMentionKind; token: string }> {
+  if (!text || !text.includes('@')) return [];
+  const known = getMentionTokenIndex(entities);
+  const found: Array<{ kind: InlineMentionKind; token: string }> = [];
+  let scanStart = 0;
+  while (scanStart < text.length) {
+    const start = text.indexOf('@', scanStart);
+    if (start === -1) break;
+    if (!isMentionBoundary(text, start)) {
+      scanStart = start + 1;
+      continue;
+    }
+    const match = findKnownMentionAt(text, known, start);
+    if (match?.ambiguousKind) found.push({ kind: match.ambiguousKind, token: match.token });
+    scanStart = match ? start + match.token.length : start + 1;
+  }
+  return found;
+}
+
+/**
+ * The selections (staged skills, MCP servers, connectors, workspace items)
+ * the editor text still references, decided by id:
+ * - a selection whose `kind:id` is present (an atomic pill or an unambiguous
+ *   plain token) stays;
+ * - each ambiguous occurrence keeps the first not-yet-kept selection of that
+ *   kind whose token it is, so the account's own choice survives instead of
+ *   being swapped for another entry with the same name;
+ * - everything else is dropped.
+ */
+export function retainMentionedSelections<T extends { id: string }>(
+  selected: readonly T[],
+  kind: InlineMentionKind,
+  presentKeys: ReadonlySet<string>,
+  ambiguous: ReadonlyArray<{ kind: InlineMentionKind; token: string }>,
+  tokensOf: (item: T) => readonly string[],
+): T[] {
+  const kept = new Set<string>();
+  for (const item of selected) if (presentKeys.has(`${kind}:${item.id}`)) kept.add(item.id);
+  for (const occurrence of ambiguous) {
+    if (occurrence.kind !== kind) continue;
+    const claim = selected.find((item) => !kept.has(item.id) && tokensOf(item).includes(occurrence.token));
+    if (claim) kept.add(claim.id);
+  }
+  return selected.filter((item) => kept.has(item.id));
+}
+
+/** An ambiguous match becomes the first preferred entity with its kind and token, or no match. */
+function claimAmbiguous(match: MentionMatch | null, claimable: InlineMentionEntity[]): MentionMatch | null {
+  if (!match?.ambiguousKind) return match;
+  const index = claimable.findIndex((entity) =>
+    entity.kind === match.ambiguousKind && (entity.token ?? inlineMentionToken(entity.label)) === match.token);
+  if (index === -1) return null;
+  const [entity] = claimable.splice(index, 1);
+  return { start: match.start, token: match.token, entity: entity! };
+}
+
 interface MentionTrieNode {
   children: Map<string, MentionTrieNode>;
   entity?: InlineMentionEntity;
   token?: string;
+  /** Set when two ids of the winning entity's kind share this token. */
+  ambiguousKind?: InlineMentionKind;
 }
 
 interface MentionTokenIndex {
@@ -101,7 +187,10 @@ function getMentionTokenIndex(entities: InlineMentionEntity[]): MentionTokenInde
   if (cached) return cached;
 
   const root: MentionTrieNode = { children: new Map() };
-  const seen = new Set<string>();
+  // The first id kept for each kind:token; a different id with the same
+  // kind:token makes that token ambiguous instead of silently losing to it.
+  const firstId = new Map<string, string>();
+  const ambiguous = new Set<string>();
   const normalized = entities
     .map((entity) => {
       const token = entity.token ?? inlineMentionToken(entity.label);
@@ -116,8 +205,12 @@ function getMentionTokenIndex(entities: InlineMentionEntity[]): MentionTokenInde
     .filter((entity) => {
       if (!entity.token || entity.token === '@') return false;
       const key = `${entity.kind}:${entity.token}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
+      const first = firstId.get(key);
+      if (first !== undefined) {
+        if (first !== entity.id) ambiguous.add(key);
+        return false;
+      }
+      firstId.set(key, entity.id);
       return true;
     })
     .sort((a, b) => (b.token?.length ?? 0) - (a.token?.length ?? 0));
@@ -137,6 +230,7 @@ function getMentionTokenIndex(entities: InlineMentionEntity[]): MentionTokenInde
     if (!node.entity) {
       node.entity = entity;
       node.token = token;
+      if (ambiguous.has(`${entity.kind}:${token}`)) node.ambiguousKind = entity.kind;
     }
   }
 
@@ -156,7 +250,8 @@ function findKnownMentionAt(
     node = node.children.get(text[i] ?? '');
     if (!node) break;
     if (node.entity && node.token && isMentionRightBoundary(text, i + 1)) {
-      best = { start, token: node.token, entity: node.entity };
+      best = { start, token: node.token, entity: node.entity,
+        ...(node.ambiguousKind ? { ambiguousKind: node.ambiguousKind } : {}) };
     }
   }
   return best;
@@ -230,6 +325,8 @@ interface MentionMatch {
   start: number;
   token: string;
   entity: InlineMentionEntity;
+  /** The token names more than one id of this kind; `entity` is only the first listed. */
+  ambiguousKind?: InlineMentionKind;
 }
 
 /**

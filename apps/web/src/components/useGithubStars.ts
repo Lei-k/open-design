@@ -1,3 +1,4 @@
+import { studioUsesLocalServices, studioFetch as fetch, studioWindowLocalStorage } from '../runtime/studio-transport';
 // Shared GitHub star-count hook backing the topbar pill
 // (`GithubStarBadge`). The browser talks only to the local daemon,
 // which caches GitHub metadata and can return stale-on-error values
@@ -29,7 +30,7 @@ let memoryFailureAt: number | null = null;
 function readPersistedCache(): CachedStars | null {
   if (typeof window === 'undefined') return null;
   try {
-    const raw = window.localStorage.getItem(LS_KEY);
+    const raw = studioWindowLocalStorage().getItem(LS_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<CachedStars>;
     if (typeof parsed.count !== 'number' || typeof parsed.ts !== 'number') {
@@ -44,7 +45,7 @@ function readPersistedCache(): CachedStars | null {
 function writePersistedCache(value: CachedStars): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(LS_KEY, JSON.stringify(value));
+    studioWindowLocalStorage().setItem(LS_KEY, JSON.stringify(value));
   } catch {
     // Quota errors are fine to swallow — the in-memory cache still
     // keeps subsequent renders cheap within this tab.
@@ -54,7 +55,7 @@ function writePersistedCache(value: CachedStars): void {
 function readPersistedFailureAt(): number | null {
   if (typeof window === 'undefined') return null;
   try {
-    const raw = window.localStorage.getItem(FAILURE_LS_KEY);
+    const raw = studioWindowLocalStorage().getItem(FAILURE_LS_KEY);
     if (!raw) return null;
     const ts = Number(raw);
     return Number.isFinite(ts) && ts > 0 ? ts : null;
@@ -66,7 +67,7 @@ function readPersistedFailureAt(): number | null {
 function writePersistedFailureAt(ts: number): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(FAILURE_LS_KEY, String(ts));
+    studioWindowLocalStorage().setItem(FAILURE_LS_KEY, String(ts));
   } catch {
     // Same as the star cache: storage failures should not turn a
     // quiet offline badge into a renderer error source.
@@ -76,7 +77,7 @@ function writePersistedFailureAt(ts: number): void {
 function clearPersistedFailureAt(): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.removeItem(FAILURE_LS_KEY);
+    studioWindowLocalStorage().removeItem(FAILURE_LS_KEY);
   } catch {
     // Ignore storage failures; the in-memory cooldown still covers
     // this renderer session.
@@ -106,6 +107,7 @@ export function useGithubStars(): number | null {
   });
 
   useEffect(() => {
+    if (!studioUsesLocalServices()) return;
     const now = Date.now();
     const cached = memoryCache ?? readPersistedCache();
     if (cached && now - cached.ts < CACHE_TTL_MS) {

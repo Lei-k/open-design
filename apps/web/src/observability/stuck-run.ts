@@ -1,3 +1,4 @@
+import { registerStudioReset } from '../runtime/studio-resources';
 // Stuck-run watchdog.
 //
 // Emits `client_run_stuck` when a run that we've seen `run_created` for
@@ -106,3 +107,5 @@ export function __resetStuckRunWatchdog(): void {
   }
   runs.clear();
 }
+
+registerStudioReset(() => { __resetStuckRunWatchdog(); });

@@ -1,3 +1,5 @@
+import { studioUsesLocalServices, studioFetch as fetch, studioSetTimeout as setTimeout } from '../runtime/studio-transport';
+import { registerStudioReset } from '../runtime/studio-resources';
 import {
   CLIENT_EXPERIENCE_DIAGNOSTIC_EVENT,
   parseClientExperienceDiagnostic,
@@ -14,7 +16,7 @@ const token = (value: unknown): string | undefined => typeof value === 'string'
   && /^[a-zA-Z0-9_.:-]{1,128}$/.test(value) ? value : undefined;
 
 export function reportExperienceFailure(input: Omit<ClientExperienceDiagnostic, 'occurrenceId' | 'observedAt'>, occurrence?: string): void {
-  if (typeof window === 'undefined') return;
+  if (typeof window === 'undefined' || !studioUsesLocalServices()) return;
   const now = Date.now();
   const key = occurrence ?? [input.category, input.runId ?? input.projectId ?? '', input.errorCode, input.surface].join(':');
   const last = seen.get(key);
@@ -29,6 +31,7 @@ export function reportExperienceFailure(input: Omit<ClientExperienceDiagnostic, 
 }
 
 async function deliver(payload: ClientExperienceDiagnostic, attempt: number): Promise<void> {
+  if (!studioUsesLocalServices()) return;
   inFlight++;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5_000);
@@ -80,3 +83,5 @@ export function reportProjectFailure(project: { id: string; status?: { value: st
 export function resetExperienceDiagnosticsForTests(): void {
   seen.clear(); for (const timer of pending) clearTimeout(timer); pending.clear();
 }
+
+registerStudioReset(resetExperienceDiagnosticsForTests);

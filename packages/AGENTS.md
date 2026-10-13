@@ -5,6 +5,7 @@ Follow the root `AGENTS.md` first. This file only records module-level boundarie
 ## Package responsibilities
 
 - `packages/agui-adapter`: pure TypeScript adapter between persisted OpenDesign agent/GenUI/plugin-pipeline events and the AG-UI event protocol. Keep transport and filesystem concerns out; daemon producers and web/CopilotKit consumers share this conversion boundary.
+- `packages/artifact-capture`: artifact slide/page capture pipeline (deck slides, page stitching, printable-content waits, editable PPTX) shared by the desktop renderer and the daemon's headless-Chromium renderer. It drives an injected `CaptureRuntime` (window + image surface); hosts own browser creation, sandboxing and network policy. It must not import Electron or daemon internals.
 - `packages/contracts`: web/daemon app contract layer. Keep it pure TypeScript; it must not depend on Next.js, Express, Node filesystem/process APIs, browser APIs, SQLite, daemon internals, or the sidecar control-plane protocol.
 - `packages/components`: shared React UI primitives and primitive CSS. It may depend on React types/runtime only; keep product workflows and app-specific layout/styling in the apps.
 - `packages/diagnostics`: shared diagnostics export primitives for log collection, redaction, manifests, crash-report discovery, and zip packaging used by daemon and desktop.
@@ -38,6 +39,8 @@ Follow the root `AGENTS.md` first. This file only records module-level boundarie
 ```bash
 pnpm --filter @open-design/agui-adapter typecheck
 pnpm --filter @open-design/agui-adapter test
+pnpm --filter @open-design/artifact-capture typecheck
+pnpm --filter @open-design/artifact-capture test
 pnpm --filter @open-design/contracts typecheck
 pnpm --filter @open-design/diagnostics typecheck
 pnpm --filter @open-design/diagnostics test

@@ -1,3 +1,4 @@
+import { studioSetTimeout as setTimeout, studioFetch as fetch } from '../runtime/studio-transport';
 // Wraps POST /api/projects/:id/finalize/<provider> for the Finalize
 // design package button (#451). The daemon route runs synchronously for
 // 60–120 s, so the hook owns:

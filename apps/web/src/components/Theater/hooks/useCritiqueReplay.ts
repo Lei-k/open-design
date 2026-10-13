@@ -1,3 +1,4 @@
+import { studioFetch as fetch } from '../../../runtime/studio-transport';
 import { useEffect, useReducer, useRef, useState } from 'react';
 import type { Dispatch } from 'react';
 

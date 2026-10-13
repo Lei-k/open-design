@@ -46,3 +46,13 @@
 }
 
 .operationNotice { padding: 16px 28px; border-bottom: 1px solid var(--border); background: var(--bg-panel); color: var(--text-strong); }
+
+/* Studio admin sections reuse forms/lists inside the shared Settings frame. */
+.admin { min-width: 0; line-height: 1.5; }
+.admin label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.admin input, .admin select { width: 100%; min-width: 0; min-height: 44px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-panel); color: var(--text-strong); padding: 10px 12px; font: inherit; }
+.admin button { min-height: 44px; }
+.admin :focus-visible { outline: 2px solid var(--text-strong); outline-offset: 3px; }
+.admin h1 { font-size: 24px; color: var(--text-strong); }
+.admin dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+@media (max-width: 640px) { .admin input, .admin select { font-size: 16px; } }

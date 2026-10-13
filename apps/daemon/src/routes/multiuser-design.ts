@@ -1,5 +1,4 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
@@ -14,9 +13,9 @@ import { getConversation, getProject, insertConversation } from '../db.js';
 import { sendApiError } from '../http/api-errors.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
 import { composeSystemPrompt } from '../prompts/system.js';
-import { listFiles, resolveProjectFilePath } from '../projects.js';
+import { listFiles, openProjectReadStreamNoFollow, resolveProjectDir, resolveProjectFilePath } from '../projects.js';
 import { AuthStore } from '../storage/auth-store.js';
-import { ProjectOwnershipStore } from '../storage/project-ownership.js';
+import { ProjectAccessStore } from '../storage/project-access.js';
 import type { SkillInfo } from '../skills.js';
 import type { DesignSystemSummary } from '../design-systems/index.js';
 
@@ -48,6 +47,7 @@ type SelectionRow = {
 
 type PreviewCapability = {
   projectId: string;
+  /** The account the capability was issued to: the owner or a grantee (#65). */
   ownerAccountId: string;
   sessionId: string;
   expiresAt: number;
@@ -78,8 +78,19 @@ function setPrivateFileHeaders(res: Response): void {
 
 function setPreviewHeaders(res: Response): void {
   setPrivateFileHeaders(res);
+  // The Studio viewer's opaque srcDoc frame loads fonts and fetches relative
+  // assets from here; the bytes are already readable by any holder of this
+  // bearer URL, and no credentials are ever honored on the preview origin.
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Content-Security-Policy', PREVIEW_CSP);
   res.setHeader('Referrer-Policy', 'no-referrer');
+}
+
+export interface MultiUserDesignCapture {
+  skill: { id: string; name: string; body: string; mode?: Parameters<typeof composeSystemPrompt>[0]['skillMode'] };
+  design: { id: string } & Pick<Parameters<typeof composeSystemPrompt>[0],
+    'designSystemBody' | 'designSystemTitle' | 'designSystemUsageMd' | 'designSystemTokensCss' |
+    'designSystemComponentsManifest' | 'designSystemFixtureHtml' | 'designSystemPullIndex' | 'designSystemImportMode'>;
 }
 
 export interface MultiUserDesignRoutes {
@@ -88,6 +99,12 @@ export interface MultiUserDesignRoutes {
     conversationId: string;
     ownerId: string;
     projectId: string;
+    userInstructions?: string;
+    memoryBody?: string;
+    /** The account's own memory hooks (#62), captured with `memoryBody`; absent means the prompt defaults. */
+    memoryHooks?: Parameters<typeof composeSystemPrompt>[0]['memoryHooks'];
+    /** Conversation-captured revisions; the live bundled tree is never read. */
+    captured: MultiUserDesignCapture;
   }): Promise<{ prompt: string; hash: string; selection: MultiUserDesignSelection } | null>;
   invalidateOwnerCapabilities(ownerId: string): void;
   close(): void;
@@ -100,20 +117,12 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
   previewOrigin: string;
   listBuiltInSkills: () => Promise<SkillInfo[]>;
   listBuiltInDesignSystems: () => Promise<DesignSystemSummary[]>;
-  readBuiltInDesignSystem: (id: string) => Promise<string | null>;
-  readBuiltInDesignSystemAssets: (id: string) => Promise<{
-    usageMd?: string;
-    tokensCss?: string;
-    componentsManifest?: string;
-    fixtureHtml?: string;
-    pullIndex?: string;
-    importMode?: 'normalized' | 'hybrid' | 'verbatim';
-  }>;
   clock?: () => number;
 }): MultiUserDesignRoutes {
   const { db, projectsRoot } = input;
-  const owners = new ProjectOwnershipStore(db);
+  // Preview reads need any project role; new design conversations and run prompts need write access (#65).
   const auth = AuthStore.open({ dataRoot: input.dataRoot });
+  const projects = new ProjectAccessStore(db, { accountActive: (id) => auth.getAccountById(id)?.active === true });
   const now = input.clock ?? Date.now;
   const capabilities = new Map<string, PreviewCapability>();
   let closed = false;
@@ -188,7 +197,7 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
   app.post('/api/multiuser/projects/:id/conversations', async (req, res) => {
     const ownerId = actorId(res);
     const project = getProject(db, req.params.id);
-    if (!project || !ownerId || !owners.isOwnedBy(project.id, ownerId)) {
+    if (!project || !ownerId || !projects.canWrite(project.id, ownerId)) {
       return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
     }
     const body = req.body as Record<string, unknown> | null;
@@ -217,6 +226,7 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
         createdAt,
         updatedAt: createdAt,
       });
+      projects.bindConversationAuthor(conversationId, ownerId);
       db.prepare(`INSERT INTO multiuser_design_selections
         (conversation_id, owner_account_id, skill_id, design_system_id, locale, created_at)
         VALUES (?, ?, ?, ?, ?, ?)`).run(conversationId, ownerId, skillId, designSystemId, locale, createdAt);
@@ -261,8 +271,10 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
       const forcedDownload = req.query.download === '1' || EXECUTABLE_MIME_RE.test(meta.mime);
       res.setHeader('Content-Type', forcedDownload ? 'application/octet-stream' : meta.mime);
       res.setHeader('Content-Disposition', `${forcedDownload ? 'attachment' : 'inline'}; filename="${safeDispositionName(meta.name)}"`);
-      fs.createReadStream(meta.filePath).on('error', () => res.destroy()).pipe(res);
+      const stream = await openProjectReadStreamNoFollow(resolveProjectDir(projectsRoot, project.id, project.metadata), meta.filePath);
+      stream.on('error', () => res.destroy()).pipe(res);
     } catch {
+      if (res.headersSent) return void res.destroy();
       sendApiError(res, 404, 'FILE_NOT_FOUND', 'not found');
     }
   });
@@ -272,7 +284,7 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
     const actor = multiUserActorOf(res);
     const project = getProject(db, req.params.id);
     const file = typeof req.query.file === 'string' ? req.query.file : '';
-    if (!actor || !project || !owners.isOwnedBy(project.id, ownerId) || !file) {
+    if (!actor || !project || !projects.canView(project.id, ownerId) || !file) {
       return sendApiError(res, 404, 'NOT_FOUND', 'not found');
     }
     try {
@@ -294,7 +306,7 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
       const response: MultiUserPreviewUrlResponse = {
         url: `${input.previewOrigin}/api/multiuser/projects/${encodeURIComponent(project.id)}/preview/${scope}/${encodedPath(meta.name)}`,
         renewUrl: `/api/multiuser/projects/${encodeURIComponent(project.id)}/preview/${scope}/renew`,
-        expiresAt,
+        expiresAt, file: meta.name, csp: PREVIEW_CSP, iframeSandbox: 'allow-scripts allow-forms', opaqueOrigin: true,
       };
       res.setHeader('Cache-Control', 'no-store');
       res.json(response);
@@ -316,7 +328,7 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
     }
     if (!actor || !capability || capability.projectId !== req.params.id
         || capability.ownerAccountId !== ownerId || capability.sessionId !== actor.sessionId
-        || capability.expiresAt <= requestedAt || !owners.isOwnedBy(capability.projectId, ownerId)) {
+        || capability.expiresAt <= requestedAt || !projects.canView(capability.projectId, ownerId)) {
       if (capability?.expiresAt !== undefined && capability.expiresAt <= requestedAt) capabilities.delete(scope);
       return sendApiError(res, 404, 'NOT_FOUND', 'not found');
     }
@@ -342,7 +354,7 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
     const session = auth.getSessionById(capability.sessionId);
     const account = auth.getAccountById(capability.ownerAccountId);
     if (!session || session.accountId !== capability.ownerAccountId || session.expiresAt <= now()
-        || !account?.active || account.passwordState !== 'set' || !owners.isOwnedBy(capability.projectId, capability.ownerAccountId)) {
+        || !account?.active || account.passwordState !== 'set' || !projects.canView(capability.projectId, capability.ownerAccountId)) {
       capabilities.delete(scope);
       return sendApiError(res, 404, 'NOT_FOUND', 'not found');
     }
@@ -350,29 +362,24 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
     if (!project) return sendApiError(res, 404, 'NOT_FOUND', 'not found');
     try {
       const meta = await resolveProjectFilePath(projectsRoot, project.id, relativePath, project.metadata);
+      const stream = await openProjectReadStreamNoFollow(resolveProjectDir(projectsRoot, project.id, project.metadata), meta.filePath);
       setPreviewHeaders(res);
       res.setHeader('Content-Type', meta.mime);
-      fs.createReadStream(meta.filePath).on('error', () => res.destroy()).pipe(res);
+      stream.on('error', () => res.destroy()).pipe(res);
     } catch {
+      if (res.headersSent) return void res.destroy();
       sendApiError(res, 404, 'NOT_FOUND', 'not found');
     }
   });
 
   return {
     selection,
-    async composeStablePrompt({ conversationId, ownerId, projectId }) {
+    async composeStablePrompt({ conversationId, ownerId, projectId, userInstructions, memoryBody, memoryHooks, captured }) {
       const design = selection(conversationId, ownerId);
       const project = getProject(db, projectId);
-      if (!design || !project || !owners.isOwnedBy(projectId, ownerId)) return null;
-      const available = await catalog();
-      const skill = available.rawSkills.find((item) => item.source === 'built-in' && item.id === design.skillId);
-      const system = available.rawSystems.find((item) => item.source === 'built-in' && item.id === design.designSystemId);
-      if (!skill || !system) return null;
-      const [designSystemBody, assets] = await Promise.all([
-        input.readBuiltInDesignSystem(system.id),
-        input.readBuiltInDesignSystemAssets(system.id),
-      ]);
-      if (!designSystemBody) return null;
+      if (!design || !project || !projects.canWrite(projectId, ownerId)) return null;
+      if (captured.skill.id !== design.skillId || captured.design.id !== design.designSystemId || !captured.design.designSystemBody) return null;
+      const { id: _designId, ...designPrompt } = captured.design;
       const prompt = composeSystemPrompt({
         agentId: 'codex',
         streamFormat: 'json-event-stream',
@@ -381,19 +388,13 @@ export function registerMultiUserDesignRoutes(app: Express, input: {
         sessionMode: 'design',
         locale: design.locale,
         metadata: project.metadata,
-        skillBody: skill.body,
-        skillName: skill.name,
-        skillMode: skill.mode,
-        designSystemBody,
-        designSystemTitle: system.title,
-        designSystemUsageMd: assets.usageMd,
-        designSystemTokensCss: assets.tokensCss,
-        designSystemComponentsManifest: assets.componentsManifest,
-        designSystemFixtureHtml: assets.fixtureHtml,
-        designSystemPullIndex: assets.pullIndex,
-        designSystemImportMode: assets.importMode,
-        memoryBody: undefined,
-        userInstructions: undefined,
+        skillBody: captured.skill.body,
+        skillName: captured.skill.name,
+        skillMode: captured.skill.mode,
+        ...designPrompt,
+        memoryBody,
+        memoryHooks,
+        userInstructions,
         pluginBlock: undefined,
       });
       return { prompt, hash: createHash('sha256').update(prompt).digest('hex'), selection: design };

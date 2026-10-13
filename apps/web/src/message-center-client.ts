@@ -1,3 +1,4 @@
+import { studioFetch as fetch } from './runtime/studio-transport';
 export type MessageCenterFilter = 'all' | 'unread' | 'read';
 
 export interface MessageCenterMessage {

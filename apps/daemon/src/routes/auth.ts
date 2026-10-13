@@ -51,7 +51,8 @@ import express, {
   type RequestHandler,
   type Response,
 } from 'express';
-import type { ApiErrorCode } from '@open-design/contracts';
+import type { ApiErrorCode, AuthSessionResponse } from '@open-design/contracts';
+import { multiUserStudioCapabilities, studioMessageIdPrefix } from '../http/studio-parity.js';
 import { sendApiError } from '../http/api-errors.js';
 import {
   AuthError,
@@ -85,6 +86,9 @@ export type AuthRouteService = Pick<
   | 'resolveSession'
   | 'rotateSession'
   | 'getOwnAccount'
+  | 'getOwnStudioPilot'
+  | 'getStudioPilot'
+  | 'updateStudioPilot'
   | 'changeOwnPassword'
   | 'listAccounts'
   | 'createAccount'
@@ -99,6 +103,8 @@ export type AuthRouteService = Pick<
   | 'assertAdmin'
 >;
 
+export type AuthSessionRevocationReason = 'logout' | 'password-reset' | 'sessions-revoked' | 'account-changed';
+
 export interface RegisterAuthRoutesDeps {
   auth: AuthRouteService;
   /**
@@ -108,17 +114,24 @@ export interface RegisterAuthRoutesDeps {
   bootstrapSecret: string | null;
   /** Exact browser origins allowed to make state-changing requests. */
   allowedOrigins: readonly string[];
-  onAccountSessionsRevoked?: (accountId: string) => void;
+  onAccountSessionsRevoked?: (accountId: string, reason: AuthSessionRevocationReason) => void;
+  /** Server policy: whether personal-subscription runs can start at all. */
+  personalRunsEnabled?: boolean;
+  companyPoolAvailable?: () => boolean;
+  /** Accounts may run on their own encrypted provider key (#62/#63). */
+  personalApiKeysEnabled?: boolean;
+  renderedExportsAvailable?: () => boolean;
 }
 
 const STATUS_BY_AUTH_CODE: Record<AuthErrorCode, { status: number; code: ApiErrorCode }> = {
+  CONFLICT: { status: 409, code: 'CONFLICT' },
   VALIDATION: { status: 400, code: 'BAD_REQUEST' },
-  USERNAME_TAKEN: { status: 409, code: 'CONFLICT' },
+  USERNAME_TAKEN: { status: 409, code: 'USERNAME_TAKEN' },
   BOOTSTRAP_CLOSED: { status: 409, code: 'CONFLICT' },
   INVALID_CREDENTIALS: { status: 401, code: 'UNAUTHORIZED' },
   FORBIDDEN: { status: 403, code: 'FORBIDDEN' },
   NOT_FOUND: { status: 404, code: 'NOT_FOUND' },
-  LAST_ADMIN: { status: 409, code: 'CONFLICT' },
+  LAST_ADMIN: { status: 409, code: 'LAST_ADMIN' },
   SETUP_INVALID: { status: 401, code: 'UNAUTHORIZED' },
 };
 
@@ -380,6 +393,28 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
   app.use(p, createRequestHardening(allowedOrigins));
   app.use(p, express.json({ limit: AUTH_BODY_LIMIT_BYTES, strict: true, type: 'application/json' }));
 
+  const pilotPath = '/api/admin/users/:id/studio-pilot';
+  const hardenPilot = createRequestHardening(allowedOrigins);
+  app.get(pilotPath, hardenPilot, requireSession, handle((req, res) => {
+    res.json(auth.getStudioPilot(actorOf(res), String(req.params.id)));
+  }));
+  app.put(pilotPath, hardenPilot, requireSession,
+    express.json({ limit: AUTH_BODY_LIMIT_BYTES, strict: true, type: 'application/json',
+      verify(_req, _res, buffer, encoding) {
+        if (encoding !== 'utf-8') throw Object.assign(new Error('unsupported pilot encoding'), { status: 415 });
+        // This endpoint accepts a flat object of two primitive fields. Decode
+        // key spelling before rejecting duplicates, including escaped keys.
+        try {
+          const keys = [...buffer.toString('utf8').matchAll(/"(?:[^"\\]|\\.)*"\s*:/g)]
+            .map(([key]) => JSON.parse(key.slice(0, key.lastIndexOf(':')).trim()) as string);
+          if (new Set(keys).size !== keys.length) throw new Error('duplicate field');
+        } catch { throw Object.assign(new Error('invalid pilot body'), { status: 400 }); }
+      },
+    }),
+    handle((req, res) => {
+      res.json(auth.updateStudioPilot(actorOf(res), String(req.params.id), req.body));
+    }), authBodyErrorHandler);
+
   app.post(`${p}/bootstrap`, handle(async (req, res) => {
     if (bootstrapSecret === null) {
       sendApiError(res, 404, 'NOT_FOUND', 'not found');
@@ -419,14 +454,19 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
     const { token } = readSessionCookie(req.headers.cookie);
     const accountId = token ? auth.resolveSession(token)?.accountId : null;
     if (token) auth.logout(token);
-    if (accountId) deps.onAccountSessionsRevoked?.(accountId);
+    if (accountId) deps.onAccountSessionsRevoked?.(accountId, 'logout');
     res.setHeader('Set-Cookie', clearedSessionCookie());
     res.status(204).end();
   }));
 
   app.get(`${p}/me`, requireSession, handle((_req, res) => {
     const actor = actorOf(res);
-    res.status(200).json({ account: auth.getOwnAccount(actor), session: { expiresAt: actor.sessionExpiresAt } });
+    const pilot = auth.getOwnStudioPilot(actor);
+    res.status(200).json({ account: auth.getOwnAccount(actor), session: { expiresAt: actor.sessionExpiresAt },
+      studio: multiUserStudioCapabilities(pilot.studioPilot, { personalEnabled: deps.personalRunsEnabled === true, companyEnabled: deps.companyPoolAvailable?.() === true,
+        personalKeysEnabled: deps.personalApiKeysEnabled === true, renderedExports: deps.renderedExportsAvailable?.() === true }),
+      studioRevision: pilot.revision,
+      ...(pilot.studioPilot ? { studioMessageIdPrefix: studioMessageIdPrefix(actor.accountId) } : {}) } satisfies AuthSessionResponse);
   }));
 
   app.post(`${p}/session/rotate`, requireSession, handle((req, res) => {
@@ -448,7 +488,7 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
       currentPassword: stringField(body, 'currentPassword'),
       newPassword: stringField(body, 'newPassword'),
     });
-    deps.onAccountSessionsRevoked?.(accountId);
+    deps.onAccountSessionsRevoked?.(accountId, 'password-reset');
     setSession(res, auth, session);
     res.status(200).json({ session: { expiresAt: session.expiresAt } });
   }));
@@ -494,32 +534,39 @@ export function registerAuthRoutes(app: Express, deps: RegisterAuthRoutesDeps): 
     // Authorization first (non-admins get 403 regardless of body), then the
     // service validates the patch shape.
     const prior = auth.listAccounts(actor).find((entry) => entry.id === String(req.params.id));
+    if (!prior) throw new AuthError('NOT_FOUND');
+    if (!Number.isSafeInteger(body?.revision) || Number(body?.revision) < 0) throw new AuthError('VALIDATION');
     const account = auth.updateAccount(actor, String(req.params.id), (body ?? []) as UpdateAccountPatch);
     if (prior && (prior.role !== account.role || (prior.active && !account.active))) {
-      deps.onAccountSessionsRevoked?.(String(req.params.id));
+      deps.onAccountSessionsRevoked?.(String(req.params.id), 'account-changed');
     }
     res.status(200).json({ account });
   }));
 
   app.post(`${p}/users/:id/sessions/revoke`, requireSession, handle((req, res) => {
     const revoked = auth.revokeAccountSessions(actorOf(res), String(req.params.id));
-    deps.onAccountSessionsRevoked?.(String(req.params.id));
+    deps.onAccountSessionsRevoked?.(String(req.params.id), 'sessions-revoked');
     res.status(200).json({ revoked });
   }));
 
   app.post(`${p}/users/:id/password`, requireSession, handle(async (req, res) => {
     const body = bodyObject(req);
     const accountId = String(req.params.id);
+    // Authorization and existence precede request validation, as for access writes.
+    const actor = actorOf(res);
+    if (!auth.listAccounts(actor).some((account) => account.id === accountId)) throw new AuthError('NOT_FOUND');
+    if (!Number.isSafeInteger(body?.revision) || Number(body?.revision) < 0) throw new AuthError('VALIDATION');
+    const revision = Number(body?.revision);
     if (hasOwn(body, 'password')) {
       // LEGACY, TEST-ONLY: the admin sets the password directly (fixtures).
-      await auth.resetPassword(actorOf(res), accountId, stringField(body, 'password'));
-      deps.onAccountSessionsRevoked?.(accountId);
+      await auth.resetPassword(actor, accountId, stringField(body, 'password'), revision);
+      deps.onAccountSessionsRevoked?.(accountId, 'password-reset');
       res.status(204).end();
       return;
     }
-    const setup = auth.issueSetupCredential(actorOf(res), accountId);
+    const setup = auth.issueSetupCredential(actor, accountId, revision);
     // A reset retired the owner's sessions: cancel their queued/active work.
-    deps.onAccountSessionsRevoked?.(accountId);
+    deps.onAccountSessionsRevoked?.(accountId, 'password-reset');
     res.status(201).json({ setup });
   }));
 

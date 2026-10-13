@@ -1,3 +1,5 @@
+'use client';
+import { studioSetInterval as setInterval, studioFetch as fetch } from '../runtime/studio-transport';
 // xAI / SuperGrok OAuth control rendered inside the Grok provider row in
 // the Settings → Media Providers panel.
 //
@@ -11,7 +13,7 @@
 // TODO(i18n): the visible strings are hardcoded English for the PoC;
 // migrate to apps/web/src/i18n/types.ts before stable release.
 
-'use client';
+
 
 import { useEffect, useRef, useState } from 'react';
 

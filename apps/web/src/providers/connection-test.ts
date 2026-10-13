@@ -1,3 +1,4 @@
+import { studioFetch as fetch } from '../runtime/studio-transport';
 // Thin POST-and-decode wrappers around the daemon's /api/test/connection route.
 // The daemon always answers with HTTP 200 and a `ConnectionTestResponse`
 // body even on upstream-caused failures, so the only paths that throw here

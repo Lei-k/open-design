@@ -14130,6 +14130,17 @@ function baseLiveArtifactWorkspaceEntry(
 }
 
 describe('LiveArtifactViewer', () => {
+  it('disables manual refresh for a read-only project member', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      if (String(input).includes('/refreshes?')) return Response.json({ refreshes: [] });
+      return Response.json({ artifact: baseLiveArtifact() });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<LiveArtifactViewer viewerOnly projectId="proj_1" liveArtifact={baseLiveArtifactWorkspaceEntry()} />);
+    const refresh = await screen.findByRole('button', { name: /^Refresh$/ });
+    expect((refresh as HTMLButtonElement).disabled).toBe(true); fireEvent.click(refresh);
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('/refresh?'))).toBe(false);
+  });
   it('hides inactive live previews even when a device viewport sets display', () => {
     const css = readExpandedIndexCss();
     const rule = css.match(/\.live-artifact-preview-layer\.preview-viewport\[data-active='false'\]\s*\{[^}]+\}/)?.[0] ?? '';
@@ -14534,6 +14545,28 @@ describe('LiveArtifactViewer', () => {
 });
 
 describe('LiveArtifactRefreshHistoryPanel', () => {
+  it('shows the daemon-stamped accepted document origin and database history hint in Studio', () => {
+    const markup = renderToStaticMarkup(<LiveArtifactRefreshHistoryPanel
+      liveArtifact={baseLiveArtifact({ studioRevision: 2, studioProvenance: { origin: 'project_file', updatedAt: '2026-10-09T12:00:00Z',
+        source: { path: 'sales.json', sha256: 'a'.repeat(64), bytes: 12 } } })}
+      fallbackRefreshStatus="never" isRunning={false} sessionEvents={[]} />);
+    expect(markup).toContain('Refreshed from sales.json');
+    expect(markup).toContain('Refresh records saved by OpenDesign');
+    expect(markup).not.toContain('Entries loaded from refreshes.jsonl');
+    expect(markup).toContain('data-testid="studio-live-artifact-provenance"');
+  });
+  it('S62 shows the accepted connector/MCP source and each refresh entry\'s source kind', () => {
+    const entry = (refreshId: string, studioSource: Record<string, string>) => ({ schemaVersion: 1 as const, projectId: 'p', artifactId: 'a', refreshId, sequence: 0,
+      step: 'refresh:complete', status: 'succeeded' as const, startedAt: '2026-10-10T10:00:00Z', createdAt: '2026-10-10T10:00:01Z', studioSource: studioSource as never });
+    const markup = renderToStaticMarkup(<LiveArtifactRefreshHistoryPanel
+      liveArtifact={baseLiveArtifact({ studioRevision: 4, studioProvenance: { origin: 'mcp', updatedAt: '2026-10-10T10:00:01Z',
+        toolSource: { kind: 'mcp', id: 'mine', tool: 'lookup', actorAccountId: 'acct', bytes: 12, sha256: 'b'.repeat(64) } } })}
+      fallbackRefreshStatus="never" isRunning={false} sessionEvents={[]}
+      persistedEvents={[entry('r1', { kind: 'project_file' }), entry('r2', { kind: 'connector', id: 'github', tool: 'github.x' }), entry('r3', { kind: 'mcp', id: 'mine', tool: 'lookup' })]} />);
+    expect(markup).toContain('Refreshed from MCP server mine · lookup');
+    for (const label of ['Project file', 'Connected app github', 'MCP server mine']) expect(markup).toContain(label);
+    expect(markup.match(/data-testid="live-artifact-refresh-source-kind"/g)).toHaveLength(3);
+  });
   it('renders a human-readable status instead of raw JSON when no history exists', () => {
     const markup = renderToStaticMarkup(
       <LiveArtifactRefreshHistoryPanel

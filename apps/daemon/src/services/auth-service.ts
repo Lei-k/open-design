@@ -49,6 +49,7 @@ import {
   type ScryptParams,
 } from './auth-passwords.js';
 import type {
+  StudioPilotState,
   AuthAccount,
   AuthAccountListResponse,
   AuthAuditEvent,
@@ -97,9 +98,11 @@ export type AuthErrorCode =
   | 'FORBIDDEN'
   | 'NOT_FOUND'
   | 'LAST_ADMIN'
-  | 'SETUP_INVALID';
+  | 'SETUP_INVALID'
+  | 'CONFLICT';
 
 const AUTH_ERROR_MESSAGES: Record<AuthErrorCode, string> = {
+  CONFLICT: 'revision changed; read the current state and retry',
   VALIDATION: 'invalid request',
   USERNAME_TAKEN: 'username is already taken',
   BOOTSTRAP_CLOSED: 'bootstrap has already completed',
@@ -133,6 +136,7 @@ export interface AuthActor {
   role: AuthRole;
   sessionId: string;
   sessionExpiresAt: number;
+  studioRevision?: number;
 }
 
 /** A freshly issued session. `token` is the only copy of the secret. */
@@ -176,6 +180,8 @@ export interface AuditListInput {
 }
 
 export interface UpdateAccountPatch {
+  /** Optional only for trusted internal callers; HTTP requires it. */
+  revision?: number;
   role?: AuthRole;
   active?: boolean;
 }
@@ -386,7 +392,15 @@ export class AuthService {
       role: account.role,
       sessionId: session.id,
       sessionExpiresAt: session.expiresAt,
+      studioRevision: this.store.getStudioPilot(account.id).revision,
     };
+  }
+
+  /** Validate an open stream without extending the session's idle lifetime. */
+  isActorCurrent(actor: AuthActor): boolean {
+    try { return this.requireLiveAccount(actor).role === actor.role
+      && (actor.studioRevision === undefined || this.store.getStudioPilot(actor.accountId).revision === actor.studioRevision); }
+    catch { return false; }
   }
 
   /** Replace a live session with a new token; the absolute expiry is kept. */
@@ -409,6 +423,33 @@ export class AuthService {
   /** The caller's own account, re-read from persistence. */
   getOwnAccount(actor: AuthActor): AccountView {
     return toView(this.requireLiveAccount(actor));
+  }
+
+  getOwnStudioPilot(actor: AuthActor): StudioPilotState {
+    this.requireLiveAccount(actor);
+    return this.store.getStudioPilot(actor.accountId);
+  }
+
+  getStudioPilot(actor: AuthActor, accountId: string): StudioPilotState {
+    this.requireAdmin(actor);
+    if (!this.store.getAccountById(accountId)) throw new AuthError('NOT_FOUND');
+    return this.store.getStudioPilot(accountId);
+  }
+
+  updateStudioPilot(actor: AuthActor, accountId: string, input: StudioPilotState): StudioPilotState {
+    return this.store.transaction(() => {
+      const issuer = this.requireAdmin(actor);
+      if (!input || typeof input.studioPilot !== 'boolean' || !Number.isSafeInteger(input.revision) || input.revision < 0
+        || Object.keys(input).some((key) => !['studioPilot', 'revision'].includes(key))) throw new AuthError('VALIDATION');
+      if (!this.store.getAccountById(accountId)) throw new AuthError('NOT_FOUND');
+      const previous = this.store.getStudioPilot(accountId);
+      if (previous.revision !== input.revision) throw new AuthError('CONFLICT');
+      if (previous.studioPilot === input.studioPilot) return previous;
+      const next = { studioPilot: input.studioPilot, revision: previous.revision + 1 };
+      this.store.setStudioPilot(accountId, next);
+      this.audit(issuer.id, accountId, 'studio_pilot_update', { ...next }, this.now());
+      return next;
+    });
   }
 
   async changeOwnPassword(
@@ -498,21 +539,23 @@ export class AuthService {
    * retired in the same transaction (the caller then cancels the owner's runs)
    * and the owner chooses the replacement with the reset credential.
    */
-  issueSetupCredential(actor: AuthActor, accountId: string): IssuedSetupCredential {
+  issueSetupCredential(actor: AuthActor, accountId: string, revision: number): IssuedSetupCredential {
     this.requireAdmin(actor);
     return this.store.transaction(() => {
       const issuer = this.requireAdmin(actor);
       const target = this.store.getAccountById(accountId);
       if (!target) throw new AuthError('NOT_FOUND');
+      this.assertResetAllowed(issuer, target, revision);
       if (!target.active) throw new AuthError('VALIDATION', 'account is deactivated');
       const at = this.now();
-      let account = target;
       if (target.passwordState === 'set') {
-        if (target.role === 'admin' && this.store.countUsableAdmins() <= 1) throw new AuthError('LAST_ADMIN');
-        this.store.updatePassword(target.id, { passwordHash: NO_PASSWORD_HASH, passwordState: 'reset_required' }, at);
         this.store.deleteSessionsForAccount(target.id);
-        account = { ...target, passwordHash: NO_PASSWORD_HASH, passwordState: 'reset_required', updatedAt: at };
       }
+      // Every reissue supersedes a credential, including for pending accounts.
+      // Advance the revision for each such write, even within one clock tick.
+      this.store.updatePassword(target.id, { passwordHash: NO_PASSWORD_HASH,
+        passwordState: target.passwordState === 'set' ? 'reset_required' : target.passwordState }, at);
+      const account = this.store.getAccountById(target.id)!;
       return this.issueCredentialRow(issuer.id, account, at);
     });
   }
@@ -589,6 +632,7 @@ export class AuthService {
       const issuer = this.requireAdmin(actor);
       const target = this.store.getAccountById(accountId);
       if (!target) throw new AuthError('NOT_FOUND');
+      if (normalized.revision !== undefined && normalized.revision !== target.updatedAt) throw new AuthError('CONFLICT');
       const nextRole = normalized.role ?? target.role;
       const nextActive = normalized.active ?? target.active;
       const hasPassword = target.passwordState === 'set';
@@ -597,11 +641,13 @@ export class AuthService {
       if (wasUsableAdmin && !staysUsableAdmin && this.store.countUsableAdmins() <= 1) {
         throw new AuthError('LAST_ADMIN');
       }
+      if (issuer.id === target.id && (nextRole !== target.role || !nextActive)) throw new AuthError('FORBIDDEN', 'ask another administrator to change your own access');
       const roleChanged = nextRole !== target.role;
       const activeChanged = nextActive !== target.active;
       if (!roleChanged && !activeChanged) return toView(target);
       const at = this.now();
-      this.store.updateAccountFlags(target.id, { role: nextRole, active: nextActive }, at);
+      const updatedAt = Math.max(at, target.updatedAt + 1);
+      this.store.updateAccountFlags(target.id, { role: nextRole, active: nextActive }, updatedAt);
       // Any authority change invalidates existing sessions; the account must
       // sign in again to pick up its new role. A deactivated account keeps no
       // outstanding setup/reset credential.
@@ -609,7 +655,7 @@ export class AuthService {
       if (!nextActive) this.store.deleteSetupCredentialsForAccount(target.id);
       this.audit(issuer.id, target.id, 'account_update',
         { fromRole: target.role, toRole: nextRole, fromActive: target.active, toActive: nextActive }, at);
-      return toView({ ...target, role: nextRole, active: nextActive, updatedAt: at });
+      return toView({ ...target, role: nextRole, active: nextActive, updatedAt });
     });
   }
 
@@ -629,15 +675,18 @@ export class AuthService {
    * fixtures; recovery is `issueSetupCredential`. Withdraws any outstanding
    * setup/reset credential.
    */
-  async resetPassword(actor: AuthActor, accountId: string, newPassword: string): Promise<void> {
+  async resetPassword(actor: AuthActor, accountId: string, newPassword: string, revision: number): Promise<void> {
     this.requireAdmin(actor);
     const target = this.store.getAccountById(accountId);
     if (!target) throw new AuthError('NOT_FOUND');
+    this.assertResetAllowed(this.requireAdmin(actor), target, revision);
     assertPasswordPolicy(newPassword, target.username);
     const passwordHash = await hashPassword(newPassword, this.passwordParams);
     this.store.transaction(() => {
       const issuer = this.requireAdmin(actor);
-      if (!this.store.getAccountById(accountId)) throw new AuthError('NOT_FOUND');
+      const current = this.store.getAccountById(accountId);
+      if (!current) throw new AuthError('NOT_FOUND');
+      this.assertResetAllowed(issuer, current, revision);
       const at = this.now();
       this.store.updatePassword(accountId, { passwordHash, passwordState: 'set' }, at);
       this.store.deleteSetupCredentialsForAccount(accountId);
@@ -647,6 +696,13 @@ export class AuthService {
   }
 
   // ---- internals -------------------------------------------------------
+
+  private assertResetAllowed(issuer: AuthAccountRecord, target: AuthAccountRecord, revision: number): void {
+    if (!Number.isSafeInteger(revision) || revision < 0) throw new AuthError('VALIDATION');
+    if (revision !== target.updatedAt) throw new AuthError('CONFLICT');
+    if (target.role === 'admin' && target.active && target.passwordState === 'set' && this.store.countUsableAdmins() <= 1) throw new AuthError('LAST_ADMIN');
+    if (issuer.id === target.id) throw new AuthError('FORBIDDEN', 'use the own-password flow to change your password');
+  }
 
   private isSessionFresh(session: AuthSessionRecord, at: number): boolean {
     return at < session.expiresAt && at - session.lastSeenAt < this.sessionIdleTtlMs;
@@ -732,13 +788,17 @@ function normalizePatch(patch: unknown): UpdateAccountPatch {
   if (entries.length === 0) throw new AuthError('VALIDATION', 'patch must set role and/or active');
   const out: UpdateAccountPatch = {};
   for (const [key, value] of entries) {
-    if (key === 'role') out.role = requireRole(value);
+    if (key === 'revision') {
+      if (!Number.isSafeInteger(value) || Number(value) < 0) throw new AuthError('VALIDATION');
+      out.revision = Number(value);
+    } else if (key === 'role') out.role = requireRole(value);
     else if (key === 'active') {
       if (typeof value !== 'boolean') throw new AuthError('VALIDATION', 'active must be a boolean');
       out.active = value;
     } else {
-      throw new AuthError('VALIDATION', 'only role and active can be changed');
+      throw new AuthError('VALIDATION', 'only revision, role and active can be changed');
     }
   }
+  if (out.role === undefined && out.active === undefined) throw new AuthError('VALIDATION');
   return out;
 }

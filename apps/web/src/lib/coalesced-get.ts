@@ -1,3 +1,5 @@
+import { studioSetTimeout as setTimeout } from '../runtime/studio-transport';
+import { registerStudioReset } from '../runtime/studio-resources';
 // Client-side GET coalescer: collapse a burst of identical reads into one
 // network request.
 //
@@ -144,3 +146,5 @@ export function resetCoalescedGet(): void {
   entries.clear();
   forcedAt.clear();
 }
+
+registerStudioReset(resetCoalescedGet);

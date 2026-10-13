@@ -15,6 +15,7 @@ import {
   fetchSkillFiles,
   fetchSkills,
   importSkill,
+  importSkillFolder,
   updateSkill,
   type SkillFileEntry,
 } from '../providers/registry';
@@ -26,6 +27,9 @@ import {
 } from '../collab/useWorkspaceContext';
 import { useWorkspaceInvalidation } from '../collab/workspace-events';
 import { useWorkspaceSnapshotActivation } from '../collab/workspace-snapshot-activation';
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
+import { StudioCatalogShareButton } from '../runtime/StudioShareDialog';
+import { ProjectShareBadge } from './ProjectShareBadge';
 
 // Functional skills only — design templates render in EntryView's
 // Templates tab and are managed under their own daemon registry. See
@@ -135,6 +139,12 @@ export function SkillsSection({ cfg, setCfg, onSkillsRefresh, onSkillsChanged }:
   const skills = skillsCatalog.identity === workspaceCatalogIdentity
     ? skillsCatalog.items
     : [];
+  const studioCatalog = useStudioCapabilities();
+  // Studio accounts upload a folder as a private package; the desktop keeps its
+  // folder import in the Plugins view.
+  const folderImportAvailable = !studioCatalog.hostServices;
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const [folderImport, setFolderImport] = useState<{ busy: boolean; error: string | null }>({ busy: false, error: null });
   const [search, setSearch] = useState('');
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all');
   const [modeFilter, setModeFilter] = useState<string>('all');
@@ -674,7 +684,48 @@ export function SkillsSection({ cfg, setCfg, onSkillsRefresh, onSkillsChanged }:
             <Icon name="plus" size={14} />
             <span>{t('settings.skillsNew')}</span>
           </button>
+          {folderImportAvailable ? (
+            <>
+              <button
+                type="button"
+                className="ghost skills-add-btn"
+                onClick={() => folderInputRef.current?.click()}
+                disabled={workspaceWriteBlocked || folderImport.busy}
+                data-testid="skills-import-folder"
+              >
+                <Icon name="upload" size={14} />
+                <span>{t('pluginsView.uploadFolder')}</span>
+              </button>
+              <input
+                ref={folderInputRef}
+                type="file"
+                multiple
+                hidden
+                data-testid="skills-import-folder-input"
+                {...{ webkitdirectory: '' }}
+                onChange={(event) => {
+                  const files = Array.from(event.currentTarget.files ?? []);
+                  event.currentTarget.value = '';
+                  if (!files.length) return;
+                  setFolderImport({ busy: true, error: null });
+                  void importSkillFolder(files).then(async (result) => {
+                    if ('error' in result) {
+                      setFolderImport({ busy: false, error: result.error.message || t('pluginsView.uploadFailed') });
+                      return;
+                    }
+                    setFolderImport({ busy: false, error: null });
+                    await refresh();
+                    await onSkillsRefresh?.();
+                    setExpandedId(result.skill.id);
+                    void ensureBody(result.skill.id);
+                    void ensureFiles(result.skill.id);
+                  });
+                }}
+              />
+            </>
+          ) : null}
         </div>
+        {folderImport.error ? <div className="library-import-error" role="alert">{folderImport.error}</div> : null}
         {/* Row 2: filter dropdowns */}
         <div className="library-filter-selects">
           <label className="library-filter-select">
@@ -791,6 +842,7 @@ export function SkillsSection({ cfg, setCfg, onSkillsRefresh, onSkillsChanged }:
                 onCommitDelete={() => void commitDelete(skill.id)}
                 onCancelEdit={cancelDraft}
                 onSubmitEdit={() => void submitDraft()}
+                onSharingChanged={() => { void refresh(); onSkillsChanged?.(skill.id); }}
               />
             );
           })}
@@ -825,6 +877,8 @@ interface SkillRowProps {
   onCommitDelete: () => void;
   onCancelEdit: () => void;
   onSubmitEdit: () => void;
+  /** Team catalogs (#61/#65): grants changed or the actor left a shared skill. */
+  onSharingChanged: () => void;
 }
 
 function SkillRow({
@@ -852,12 +906,15 @@ function SkillRow({
   onCommitDelete,
   onCancelEdit,
   onSubmitEdit,
+  onSharingChanged,
 }: SkillRowProps) {
   const t = useT();
+  const studio = useStudioCapabilities();
   const { locale } = useI18n();
   const summaryName = localizeSkillName(locale, skill) || skill.id;
   const summaryDescription = localizeSkillDescription(locale, skill);
-  const isTeamMirror = skill.teamSynced === true;
+  // A skill another account shared with this actor is for use only (#61/#65).
+  const isTeamMirror = skill.teamSynced === true || skill.studioShare?.role === 'use';
   const canDelete = getSkillSource(skill) === 'user' && !isTeamMirror;
   // Editing a built-in skill does not modify it in place — it writes a
   // user-owned shadow copy. Frame the affordance as creating a user override
@@ -893,7 +950,7 @@ function SkillRow({
                   {humanizeCategory(skill.category)}
                 </span>
               ) : null}
-              {skill.source === 'user' ? (
+              {skill.source === 'user' && !skill.studioShare ? (
                 <span
                   className="skills-row-summary-source"
                   title="User-imported skill"
@@ -901,6 +958,7 @@ function SkillRow({
                   user
                 </span>
               ) : null}
+              <ProjectShareBadge project={skill} testId="catalog-share-badge" />
             </span>
             {summaryDescription ? (
               <span className="skills-row-summary-desc">{summaryDescription}</span>
@@ -931,7 +989,10 @@ function SkillRow({
             </span>
           ) : (
             <>
-              {!isTeamMirror ? (
+              {!studio.hostServices && getSkillSource(skill) === 'user' ? (
+                <StudioCatalogShareButton kind="skill" resourceId={skill.id} share={skill.studioShare} onChanged={onSharingChanged} />
+              ) : null}
+              {!isTeamMirror && (studio.hostServices || !isBuiltIn) ? (
                 <Button
                   size="icon"
                   onClick={onStartEdit}
@@ -957,7 +1018,7 @@ function SkillRow({
               ) : null}
             </>
           )}
-          <label
+          {studio.hostServices && <label
             className="toggle-switch toggle-switch-sm skills-row-enable"
             title={t('settings.libraryToggleLabel')}
           >
@@ -968,7 +1029,7 @@ function SkillRow({
               aria-label={t('settings.libraryToggleLabel')}
             />
             <span className="toggle-slider" />
-          </label>
+          </label>}
         </div>
       </div>
 

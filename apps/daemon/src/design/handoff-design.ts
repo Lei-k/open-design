@@ -30,6 +30,8 @@ import fs from 'node:fs';
 import { getProject } from '../db.js';
 import {
   callAnthropicWithRetry,
+  callFinalizeProviderWithRetry,
+  extractTokenUsage,
   DEFAULT_TIMEOUT_MS,
   extractDesignMd,
   FinalizeUpstreamError,
@@ -37,6 +39,7 @@ import {
   type AnthropicCallParams,
 } from './finalize-design.js';
 import { exportProjectTranscript } from '../transcript-export.js';
+import { assertStudioChatCompletion } from '../services/studio-synthesis.js';
 
 // Re-export the request/response types so the route handler and other
 // daemon-internal consumers reference the canonical contracts shape via
@@ -72,6 +75,9 @@ export interface HandoffOptions {
   now?: () => Date;
   fetchImpl?: typeof globalThis.fetch;
   signal?: AbortSignal;
+  /** Studio uses the same synthesis primitive on an admitted OpenAI source. */
+  protocol?: 'openai';
+  studioTranscript?: { jsonl: string; messageCount: number };
   /**
    * Override the helper-internal upstream-call timeout. Production
    * callers omit this so the helper bounds at DEFAULT_TIMEOUT_MS; tests
@@ -169,7 +175,7 @@ export async function synthesizeHandoffPrompt(
   const baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
   const maxTokens = options.maxTokens ?? DEFAULT_MAX_TOKENS;
 
-  const transcriptResult = exportProjectTranscript(db, projectsRoot, projectId, {
+  const transcriptResult = options.studioTranscript ?? exportProjectTranscript(db, projectsRoot, projectId, {
     now,
     conversationId: options.conversationId,
   });
@@ -181,7 +187,8 @@ export async function synthesizeHandoffPrompt(
       `conversation ${options.conversationId} has no messages to hand off`,
     );
   }
-  const transcriptJsonl = fs.readFileSync(transcriptResult.path, 'utf8');
+  const transcriptJsonl = 'jsonl' in transcriptResult && typeof transcriptResult.jsonl === 'string'
+    ? transcriptResult.jsonl : fs.readFileSync((transcriptResult as { path: string }).path, 'utf8');
   const truncatedJsonl = truncateTranscriptForPrompt(transcriptJsonl);
 
   const { systemPrompt, userPrompt } = buildHandoffPrompt({
@@ -215,7 +222,9 @@ export async function synthesizeHandoffPrompt(
 
     let response: Response;
     try {
-      response = await callAnthropicWithRetry(callParams);
+      response = options.protocol === 'openai'
+        ? await callFinalizeProviderWithRetry({ ...callParams, protocol: 'openai', ...(options.studioTranscript ? { studioOpenAI: true } : {}) })
+        : await callAnthropicWithRetry(callParams);
     } catch (err: unknown) {
       if (err instanceof FinalizeUpstreamError) throw err;
       const errName =
@@ -249,7 +258,10 @@ export async function synthesizeHandoffPrompt(
       );
     }
 
-    const prompt = extractDesignMd(payload);
+    if (options.studioTranscript && options.protocol === 'openai') assertStudioChatCompletion(payload);
+    const prompt = extractDesignMd(payload, options.protocol ?? 'anthropic');
+    if (options.protocol === 'openai') return { prompt, model: options.model,
+      ...extractTokenUsage(payload, 'openai'), transcriptMessageCount: transcriptResult.messageCount };
     const usage = (payload as {
       usage?: { input_tokens?: number; output_tokens?: number };
     }).usage ?? {};

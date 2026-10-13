@@ -1,3 +1,4 @@
+import { studioFetch as fetch } from '../runtime/studio-transport';
 // Plan G4 / spec §11.6 — Marketplace catalog grid.
 //
 // Lists every installed plugin as a card grid (the most reliable

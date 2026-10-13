@@ -42,6 +42,14 @@ describe('config resolution', () => {
     });
   });
 
+  it('enables the export renderer with an absolute Chromium path and optional policy', () => {
+    const resolved = resolveMultiUserServeConfig({ ...base, renderer: { chromium: '/usr/bin/chromium-browser', bwrap: '/usr/bin/bwrap', assetHosts: ['fonts.gstatic.com'],
+      sandbox: false, domToPptxBundle: '/app/apps/desktop/vendor/dom-to-pptx/dom-to-pptx.bundle.js.gz' } });
+    expect(resolved.multiUser.studioRenderer).toEqual({ executablePath: '/usr/bin/chromium-browser', bwrapPath: '/usr/bin/bwrap', assetHosts: ['fonts.gstatic.com'],
+      sandbox: false, domToPptxBundlePath: '/app/apps/desktop/vendor/dom-to-pptx/dom-to-pptx.bundle.js.gz' });
+    expect(resolveMultiUserServeConfig(base).multiUser.studioRenderer).toBeUndefined();
+  });
+
   it.each([
     ['a missing acknowledgement', { publicOrigin: base.publicOrigin }],
     ['the test-harness acknowledgement', { ...base, acknowledge: MULTIUSER_NOT_LAUNCH_READY_ACK }],
@@ -56,6 +64,9 @@ describe('config resolution', () => {
     ['a short bootstrap secret', { ...base, bootstrapSecretFile: '/run/secrets/bootstrap', short: true }],
     ['an unknown key', { ...base, bindHost: '0.0.0.0' }],
     ['a personalCodex without bwrap', { ...base, personalCodex: { binary: '/opt/codex/bin/codex' } }],
+    ['a relative renderer path', { ...base, renderer: { chromium: 'chromium' } }],
+    ['an unknown renderer key', { ...base, renderer: { chromium: '/usr/bin/chromium', proxy: 'x' } }],
+    ['a non-boolean renderer sandbox', { ...base, renderer: { chromium: '/usr/bin/chromium', sandbox: 'off' } }],
     ['a non-object config', ['nope']],
   ] as const)('refuses %s', (_name, raw) => {
     const short = (raw as { short?: boolean }).short === true;

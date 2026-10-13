@@ -18,7 +18,7 @@ const STEPS: { n: number; title: string; desc: string }[] = [
 // A calm, brand-agnostic palette — illustrative only.
 const SWATCHES = ['#4f46e5', '#0ea5e9', '#14b8a6', '#f59e0b', '#f43f5e'];
 
-export function DesignSystemCreateHero({ stacked = false }: { stacked?: boolean } = {}) {
+export function DesignSystemCreateHero({ stacked = false, intro }: { stacked?: boolean; intro?: { title: string; body: string } } = {}) {
   return (
     <section className={`${styles.hero}${stacked ? ` ${styles.heroStacked}` : ''}`}>
       <div className={styles.copy}>
@@ -26,11 +26,11 @@ export function DesignSystemCreateHero({ stacked = false }: { stacked?: boolean 
           <Icon name="sparkles" size={14} />
           Design system
         </span>
-        <h1 className={styles.title}>Design a system, in minutes</h1>
+        <h1 className={styles.title}>{intro?.title ?? 'Design a system, in minutes'}</h1>
         <p className={styles.lede}>
-          Turn a website or DESIGN.md — plus whatever context you already have — into a
-          complete, on-brand design system you can use right away.
+          {intro?.body ?? 'Turn a website or DESIGN.md — plus whatever context you already have — into a complete, on-brand design system you can use right away.'}
         </p>
+        {intro ? null : <>
         <div className={styles.meta}>
           <span className={styles.metaPill}>
             <strong>3</strong> steps
@@ -51,6 +51,7 @@ export function DesignSystemCreateHero({ stacked = false }: { stacked?: boolean 
             </li>
           ))}
         </ol>
+        </>}
       </div>
       <ShowcasePreview />
     </section>

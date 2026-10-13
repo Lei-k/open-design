@@ -1,0 +1,79 @@
+.note {
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border, #ebe8e1);
+  border-radius: 8px;
+  background: var(--surface-2, #f6f5f2);
+}
+
+.empty {
+  color: var(--text-muted, #6b6760);
+}
+
+.list {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0 20px;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border, #ebe8e1);
+  border-radius: 8px;
+}
+
+.rowHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.url {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.headers {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.form {
+  display: grid;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border, #ebe8e1);
+}
+
+.form h3 {
+  margin: 0;
+}
+
+.form label {
+  display: grid;
+  gap: 4px;
+}
+
+.headerRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.headerRow input {
+  flex: 1 1 200px;
+  min-width: 0;
+}

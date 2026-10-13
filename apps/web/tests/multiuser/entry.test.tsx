@@ -127,7 +127,8 @@ it('provisions without a password, dismisses the one-use link and reports a last
   expect(screen.queryByLabelText('One-time setup link', { selector: 'input' })).toBeNull();
   fireEvent.click(within(screen.getAllByRole('listitem')[1]!).getByRole('button', { name: 'Make user' }));
   await act(async () => fireEvent.click(screen.getByRole('button', { name: /^Confirm$/ })));
-  expect(screen.getByRole('alert').textContent).toContain('last usable administrator');
+  // The admin page also hosts the company-pool panel, which reports its own unmocked load as a separate alert.
+  expect(screen.getAllByRole('alert').some((alert) => alert.textContent?.includes('last usable administrator'))).toBe(true);
   expect(screen.queryByText('Change saved.')).toBeNull();
 });
 it('keeps unrelated preferences and withdraws account data on an in-progress cross-tab auth change', async () => {

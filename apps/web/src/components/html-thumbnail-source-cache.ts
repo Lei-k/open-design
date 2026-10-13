@@ -1,3 +1,4 @@
+import { registerStudioReset } from '../runtime/studio-resources';
 type HtmlThumbnailSourceIdentity = Readonly<{
   authorizationScopeKey: string;
   projectId: string;
@@ -88,3 +89,5 @@ export function resetHtmlThumbnailSourceCache(): void {
   inFlight.clear();
   totalUtf16Bytes = 0;
 }
+
+registerStudioReset(() => { resetHtmlThumbnailSourceCache(); });

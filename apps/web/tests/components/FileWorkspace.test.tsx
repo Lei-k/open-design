@@ -42,6 +42,39 @@ import {
 } from '../../src/collab/collab-context';
 import { IframeKeepAliveProvider } from '../../src/components/IframeKeepAlivePool';
 import { navigate } from '../../src/router';
+import * as studioCapabilities from '../../src/runtime/studio-capabilities';
+import type { LiveArtifactSummary } from '@open-design/contracts';
+
+it('persists and opens a newly created Live Artifact from the pre-refresh panel callback', async () => {
+  vi.spyOn(studioCapabilities, 'useStudioCapabilities').mockReturnValue({
+    actor: null, hostServices: false, capabilities: null, session: null, generation: 0,
+    available: () => true, reason: () => '', executionAgentId: null,
+  });
+  const artifact = { schemaVersion: 1, id: 'new-live', projectId: 'project-1', title: 'Sales', slug: 'sales', status: 'active', pinned: false,
+    refreshStatus: 'never', createdAt: '2026-10-13', updatedAt: '2026-10-13',
+    preview: { type: 'html', entry: 'index.html' }, document: { format: 'html_template_v1', templatePath: 'template.html',
+      generatedPreviewPath: 'index.html', dataPath: 'data.json', dataJson: { total: 3 } } } as const;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.endsWith('/refreshes?projectId=project-1')) return Response.json({ refreshes: [] });
+    if (url.startsWith('/api/live-artifacts')) return Response.json({ artifact }, { status: init?.method === 'POST' ? 201 : 200 });
+    return Response.json({ files: [], folders: [], connectors: [], mcpServers: [] });
+  }));
+  const savedTabs = vi.fn();
+  function Workspace() {
+    const [artifacts, setArtifacts] = useState<LiveArtifactSummary[]>([]);
+    const [tabs, setTabs] = useState<OpenTabsState>({ tabs: [], active: null });
+    return <FileWorkspace projectId="project-1" projectKind="prototype" files={[]} liveArtifacts={artifacts} isDeck={false} tabsState={tabs}
+      onTabsStateChange={(next) => { savedTabs(next); setTabs(next); }}
+      onRefreshFiles={async () => { setArtifacts([{ ...artifact, hasDocument: true }]); }} />;
+  }
+  render(<Workspace />);
+  fireEvent.click(screen.getByTestId('studio-create-live-artifact'));
+  fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Sales' } });
+  fireEvent.click(screen.getByRole('button', { name: /^Create$/ }));
+  await waitFor(() => expect(savedTabs).toHaveBeenCalledWith(expect.objectContaining({ tabs: ['live:new-live'], active: 'live:new-live' })));
+  expect(screen.getByRole('tab', { name: /Sales/ }).getAttribute('aria-selected')).toBe('true');
+  expect(document.querySelector('.live-artifact-viewer')).toBeTruthy();
+});
 
 describe('settleManualEditExit', () => {
   it.each([

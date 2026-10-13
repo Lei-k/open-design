@@ -1,3 +1,4 @@
+import { studioUsesLocalServices, studioSetTimeout as setTimeout, studioSetInterval as setInterval, studioFetch as fetch } from '../runtime/studio-transport';
 /**
  * Daemon provider — fetch-based SSE client for /api/runs. The daemon can
  * emit three event streams depending on the agent's streamFormat:
@@ -42,6 +43,7 @@ import type {
   WorkspaceCollabContext,
 } from '@open-design/contracts';
 import type { StreamHandlers } from './anthropic';
+import { PluginPipelineStageEventSchema } from '@open-design/contracts';
 
 /**
  * 取消来源的四个合法值。服务端说了才算,说不清就不认 —— UI 把 `user_stop`
@@ -1427,6 +1429,7 @@ export interface VelaLoginStatusRead {
 export function readVelaLoginStatus(
   options: { refresh?: boolean } = {},
 ): Promise<VelaLoginStatusRead> {
+  if (!studioUsesLocalServices()) return Promise.resolve({ ok: false, httpStatus: 503, body: null });
   const query = options.refresh ? '?refresh=1' : '';
   const url = `/api/integrations/vela/status${query}`;
   const accountGeneration = currentWorkspaceAccountGeneration();
@@ -1443,6 +1446,7 @@ export function readVelaLoginStatus(
 }
 
 export async function fetchVelaLoginStatus(options: { refresh?: boolean } = {}): Promise<VelaLoginStatus | null> {
+  if (!studioUsesLocalServices()) return null;
   try {
     const read = await readVelaLoginStatus(options);
     if (!read.ok) return null;
@@ -2550,8 +2554,16 @@ function normalizeAgentStatusLabel(label: string): string {
 // Translate a raw `agent` SSE payload (what apps/daemon/src/claude-stream.ts emits)
 // into the UI's AgentEvent union. Keep this liberal — unknown types just
 // return null so the UI ignores them instead of rendering garbage.
-function translateAgentEvent(data: DaemonAgentPayload): AgentEvent | null {
+export function translateAgentEvent(data: DaemonAgentPayload): AgentEvent | null {
+  const event = translateAgentEventBody(data);
+  return event && data.redacted ? { ...event, redacted: data.redacted } : event;
+}
+function translateAgentEventBody(data: DaemonAgentPayload): AgentEvent | null {
   const t = data.type;
+  if (t === 'pipeline_stage') {
+    const stage = PluginPipelineStageEventSchema.safeParse(data.stage);
+    return stage.success ? stage.data : null;
+  }
   if (t === 'status' && typeof data.label === 'string') {
     return {
       kind: 'status',
@@ -2774,6 +2786,7 @@ function translateAgentEvent(data: DaemonAgentPayload): AgentEvent | null {
       toolUseId: data.toolUseId,
       content: String(data.content ?? ''),
       isError: Boolean(data.isError),
+      ...(data.startupFailed === true ? { startupFailed: true } : {}),
       ...(typeof data.completedAt === 'number' ? { completedAt: data.completedAt } : {}),
     };
   }

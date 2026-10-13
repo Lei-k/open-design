@@ -164,6 +164,8 @@ it('provides content-free admin operations and refuses real provider slots', asy
   expect(summary.status).toBe(200);
   expect(JSON.stringify(summary.json)).not.toMatch(/private-a|private-b|secret-/);
   expect(summary.json.users[alice.id].usedMs).toBeGreaterThanOrEqual(0);
+  expect(summary.json.users[alice.id].username).toBe(alice.username);
+  expect(Object.keys(summary.json.users[alice.id]).sort()).toEqual(['budgetMs', 'remainingMs', 'usedMs', 'username']);
   const real = await daemon.request({ method: 'PUT', path: '/api/admin/pool/providers/claude', cookie: admin.cookie, body: { capacity: 1 } });
   expect(real.status).toBe(403);
   expect(real.json.error.code).toBe('MULTIUSER_PROVIDER_DISABLED');

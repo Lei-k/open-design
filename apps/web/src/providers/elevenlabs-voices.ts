@@ -1,3 +1,4 @@
+import { studioFetch as fetch } from '../runtime/studio-transport';
 import type { AudioVoiceOption } from '@open-design/contracts';
 
 type JsonRecord = Record<string, unknown>;

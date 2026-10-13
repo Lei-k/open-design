@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { MultiUserApp } from '../../src/multiuser/MultiUserApp';
 import { I18nProvider } from '../../src/i18n';
@@ -88,15 +88,15 @@ it.each(['logout', 'switch', 'pagehide', 'cross-tab', 'unmount'])('closes the op
   if (action === 'cross-tab') act(() => window.dispatchEvent(new StorageEvent('storage', { key: 'open-design:auth-change', newValue: 'pending:test' })));
   if (action === 'unmount') view.unmount();
   expect(oldSignal?.aborted).toBe(true);
-  await act(async () => { try { stream.enqueue(new TextEncoder().encode('id: 3\nevent: agent\ndata: {"text":"Late private A"}\n\n')); } catch { /* reader canceled */ } });
+  await act(async () => { try { stream.enqueue(new TextEncoder().encode('id: 3\nevent: agent\ndata: {"type":"text_delta","delta":"Late private A"}\n\n')); } catch { /* reader canceled */ } });
   expect(screen.queryByText('Late private A')).toBeNull();
 });
 it('deduplicates persisted replay and live events by sequence', async () => {
   runResponse = async () => json({ runs: [run] }); mount();
   await vi.waitFor(() => expect(streamSignal).toBeTruthy());
   await act(async () => {
-    stream.enqueue(new TextEncoder().encode('id: 1\nevent: queued\ndata: {}\n\nid: 2\nevent: start\ndata: {}\n\nid: 3\nevent: agent\ndata: {"text":"Only once"}\n\n'));
-    stream.enqueue(new TextEncoder().encode('id: 3\nevent: agent\ndata: {"text":"Only once"}\n\nid: 4\nevent: progress\ndata: {"kind":"command","name":"Bash","status":"completed"}\n\nid: 5\nevent: end\ndata: {"status":"succeeded"}\n\n'));
+    stream.enqueue(new TextEncoder().encode('id: 1\nevent: queued\ndata: {}\n\nid: 2\nevent: start\ndata: {}\n\nid: 3\nevent: agent\ndata: {"type":"text_delta","delta":"Only once"}\n\n'));
+    stream.enqueue(new TextEncoder().encode('id: 3\nevent: agent\ndata: {"type":"text_delta","delta":"Only once"}\n\nid: 4\nevent: agent\ndata: {"type":"tool_use","id":"cmd","name":"Bash","input":{}}\n\nid: 5\nevent: agent\ndata: {"type":"tool_result","toolUseId":"cmd","content":"[omitted]"}\n\nid: 6\nevent: end\ndata: {"status":"succeeded"}\n\n'));
   });
   expect(screen.getAllByText('Only once')).toHaveLength(1);
   expect(screen.getByText('Bash · completed')).toBeTruthy();
@@ -115,7 +115,7 @@ it('renders generated files with sandboxed HTML, image, text and download previe
     output: { text: 'Done', textTruncated: false, files: ['index.html'] } }], nextCursor: null });
   mount();
   const html = await screen.findByRole('button', { name: 'index.html •' });
-  expect(html.getAttribute('aria-current')).toBe('true');
+  await waitFor(() => expect(html.getAttribute('aria-current')).toBe('true'));
   const frame = await screen.findByTitle('index.html');
   expect(frame.getAttribute('sandbox')).toBe('allow-scripts allow-forms');
   expect(frame.getAttribute('referrerpolicy')).toBe('no-referrer');
@@ -142,7 +142,7 @@ it('submits question-form answers as the next turn in the same design conversati
   expect(post).toBeTruthy();
   expect(JSON.parse(String(post!.init?.body))).toMatchObject({
     projectId: 'p1', conversationId: 'c1', executionSource: 'personal_subscription',
-    skillId: 'builtin-skill', designSystemId: 'builtin-design',
+    skillId: 'builtin-skill', designSystemId: 'builtin-design', analyticsHints: { entryFrom: 'question_answer', sourceRunId: 'r1' },
   });
   expect(JSON.parse(String(post!.init?.body)).message).toContain('[form answers — brief]');
   expect(JSON.parse(String(post!.init?.body)).message).toContain('Platform: Mobile');

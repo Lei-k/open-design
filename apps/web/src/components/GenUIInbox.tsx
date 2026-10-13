@@ -1,3 +1,4 @@
+import { studioFetch as fetch } from '../runtime/studio-transport';
 // Plan §3.C3 / spec §10.3.4 — GenUI Inbox drawer.
 //
 // Lists every persisted surface for a project (project / conversation

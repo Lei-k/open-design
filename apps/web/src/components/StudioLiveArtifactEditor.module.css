@@ -1,0 +1,19 @@
+/* The shared Dialog is a column: only its fields scroll, so the title and
+   actions remain reachable on short screens and phone viewports. */
+.dialog {
+  box-sizing: border-box;
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
+}
+.header, .footer { flex: 0 0 auto; }
+.body { display: grid; gap: 12px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.body label { display: grid; gap: 6px; }
+.body input, .body textarea { width: 100%; }
+.body textarea { font-family: monospace; resize: vertical; }
+.body p { margin: 0; color: var(--text-secondary); }
+.body select { width: 100%; }
+.source { display: grid; gap: 10px; margin: 0; padding: 10px 12px; border: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.3)); border-radius: 8px; }
+.toolRow { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
+.body label.confirm { display: flex; gap: 8px; align-items: center; }
+.body label.confirm input { width: auto; }

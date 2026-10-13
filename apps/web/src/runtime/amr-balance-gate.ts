@@ -1,3 +1,4 @@
+import { studioFetch as fetch } from './studio-transport';
 import type {
   AmrWalletSnapshot,
   WorkspaceCollabContext,

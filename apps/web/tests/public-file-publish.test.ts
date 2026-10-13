@@ -6,6 +6,8 @@ import {
 } from '@open-design/contracts';
 import {
   canPublishPublicFile,
+  PublicFilePublishError,
+  publicFilePublishFailure,
   publicFilePublishFailureKey,
 } from '../src/collab/public-file-publish';
 
@@ -78,5 +80,32 @@ describe('publicFilePublishFailureKey', () => {
       'fileViewer.publishFileFailed',
     );
     expect(publicFilePublishFailureKey(null)).toBe('fileViewer.publishFileFailed');
+  });
+});
+
+describe('publicFilePublishFailure for a refused file (#119)', () => {
+  const refused = (data: unknown, code = 'PUBLIC_LINK_FILE_REFUSED') =>
+    new PublicFilePublishError('site/a.svg cannot be published (symlink)', 409, code, undefined, data as never);
+
+  it.each([
+    ['symlink', 'fileViewer.publishFileRefusedSymlink'],
+    ['hard_link', 'fileViewer.publishFileRefusedHardLink'],
+    ['not_regular', 'fileViewer.publishFileRefusedNotRegular'],
+    ['too_large', 'fileViewer.publishFileRefusedTooLarge'],
+    ['bundle_too_large', 'fileViewer.publishFileRefusedBundleTooLarge'],
+    ['changed', 'fileViewer.publishFileRefusedChanged'],
+    ['invalid_path', 'fileViewer.publishFileRefusedInvalidPath'],
+  ])('names the file and the %s reason instead of "try again later"', (reason, key) => {
+    const error = refused({ path: 'site/img/logo.svg', reason });
+    expect(publicFilePublishFailure(error)).toEqual({ key, path: 'site/img/logo.svg' });
+    expect(publicFilePublishFailureKey(error)).toBe(key);
+  });
+
+  it('falls back to the generic failure when the refusal is malformed or the code differs', () => {
+    for (const data of [undefined, null, { path: 'a.svg' }, { path: '', reason: 'symlink' }, { path: 'a.svg', reason: 'other' }, { path: 7, reason: 'symlink' }]) {
+      expect(publicFilePublishFailure(refused(data))).toEqual({ key: 'fileViewer.publishFileFailed' });
+    }
+    expect(publicFilePublishFailure(refused({ path: 'a.svg', reason: 'symlink' }, 'CONFLICT'))).toEqual({ key: 'fileViewer.publishFileFailed' });
+    expect(publicFilePublishFailure(new Error('PUBLIC_LINK_FILE_REFUSED'))).toEqual({ key: 'fileViewer.publishFileFailed' });
   });
 });

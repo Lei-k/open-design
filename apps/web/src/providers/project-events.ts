@@ -1,10 +1,13 @@
+import { studioEventSourceCtor } from '../runtime/studio-transport';
 import { useEffect, useRef } from 'react';
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
 import { BackoffController } from '../lib/backoff';
 import { bindStreamVisibility } from '../lib/stream-visibility';
 import {
   COLLAB_PROJECT_INVALIDATION_EVENTS,
   PROJECT_CONTENT_TRANSFER_STATE_EVENT,
   type ChatArtifactRefsChangedSsePayload,
+  type StudioChatMessagesChangedSsePayload,
   type CollabProjectInvalidationSsePayload,
   type LiveArtifactRefreshSsePayload,
   type LiveArtifactSsePayload,
@@ -51,6 +54,7 @@ export type ProjectEvent =
   | ProjectLiveArtifactEvent
   | ProjectCollabInvalidationEvent
   | ProjectChatArtifactRefsChangedEvent
+  | StudioChatMessagesChangedSsePayload
   | ProjectContentTransferStateSsePayload;
 
 export interface ProjectEventsConnectionOptions {
@@ -112,8 +116,7 @@ export function createProjectEventsConnection(
   options: ProjectEventsConnectionOptions = {},
   workspaceContext?: WorkspaceCollabContext | null,
 ): ProjectEventsConnection {
-  const Ctor = options.EventSourceCtor
-    ?? (typeof EventSource === 'undefined' ? null : EventSource);
+  const Ctor = options.EventSourceCtor ?? studioEventSourceCtor();
   if (!Ctor) return { close() { /* noop */ } };
 
   const setT = options.setTimeoutFn ?? setTimeout;
@@ -230,6 +233,14 @@ export function createProjectEventsConnection(
         }
       }
     });
+    es.addEventListener('chat-messages-changed', (evt) => {
+      try {
+        const data = JSON.parse((evt as MessageEvent).data) as StudioChatMessagesChangedSsePayload;
+        if (data.type !== 'chat-messages-changed' || data.projectId !== projectId
+          || typeof data.conversationId !== 'string' || !data.conversationId || !Number.isFinite(data.at)) return;
+        onChange(data);
+      } catch { /* Reconnect reconciles the transcript after a malformed signal. */ }
+    });
     es.addEventListener(PROJECT_CONTENT_TRANSFER_STATE_EVENT, (evt) => {
       try {
         // Thin invalidation only. The consumer must re-read exact-scoped
@@ -322,6 +333,7 @@ export function useProjectFileEvents(
   options: ProjectEventsConnectionOptions = {},
   workspaceContext?: WorkspaceCollabContext | null,
 ): void {
+  const studio = useStudioCapabilities();
   const onChangeRef = useRef(onChange);
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -354,8 +366,9 @@ export function useProjectFileEvents(
       },
       workspaceContext,
     );
+    const release = studio.session?.bindResource(() => conn.close(), studio.generation) ?? (() => conn.close());
     return () => {
-      conn.close();
+      release();
       // Reset to "not connected" on teardown so a consumer's poll resumes full
       // cadence between projects / when the stream is intentionally closed.
       onConnectedChangeRef.current?.(false);

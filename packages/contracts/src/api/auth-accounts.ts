@@ -1,3 +1,5 @@
+import type { StudioRuntimeCapabilities } from './studio-parity.js';
+
 /**
  * Multi-user account lifecycle (test-only multi-user mode, #2/#10).
  *
@@ -31,6 +33,20 @@ export interface AuthAccount {
   updatedAt: number;
 }
 
+/** PATCH /api/auth/users/:id. Revision is the observed account.updatedAt.
+ * Access writes advance this value monotonically, including within one clock tick. */
+export interface AuthUpdateAccountRequest {
+  revision: number;
+  role?: AuthRole;
+  active?: boolean;
+}
+
+/** GET /api/admin/pool: aggregate operational metadata, never project content. */
+export interface AdminPoolResponse {
+  providers: Record<string, { capacity: number; active: number; queued: number }>;
+  users: Record<string, { username: string; usedMs: number; budgetMs: number; remainingMs: number }>;
+}
+
 /** A freshly issued one-time credential. `token` is the only copy. */
 export interface AuthSetupCredential {
   token: string;
@@ -50,6 +66,11 @@ export interface AuthCreateAccountResponse {
 }
 
 /** `POST /api/auth/users/:id/password` with no password field: issue a setup/reset credential. */
+export interface AuthIssueSetupCredentialRequest {
+  /** Observed account.updatedAt; re-read and review after a conflict. */
+  revision: number;
+}
+
 export interface AuthIssueSetupCredentialResponse {
   setup: AuthSetupCredential;
 }
@@ -77,6 +98,7 @@ export interface AuthAccountListResponse {
 }
 
 export type AuthAuditAction =
+  | 'studio_pilot_update'
   | 'bootstrap'
   | 'account_create'
   | 'account_update'
@@ -100,4 +122,21 @@ export interface AuthAuditEvent {
 export interface AuthAuditListResponse {
   events: AuthAuditEvent[];
   nextBefore: number | null;
+}
+
+/** Admin-only GET/PUT /api/admin/users/:id/studio-pilot. PUT requires the last read revision. */
+export interface StudioPilotState {
+  studioPilot: boolean;
+  revision: number;
+}
+
+/** Cookie-authorized effective shell. Public version discovery never enables a pilot. */
+export interface AuthSessionResponse {
+  account: AuthAccount;
+  session: { expiresAt: number };
+  studio: StudioRuntimeCapabilities;
+  studioRevision: number;
+  /** Present for Studio pilot actors: the only namespace in which this actor may
+   * propose transcript ids (see `isStudioMessageIdInNamespace`). */
+  studioMessageIdPrefix?: string;
 }

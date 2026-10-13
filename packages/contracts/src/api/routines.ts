@@ -103,6 +103,8 @@ export interface Routine {
   lastRun: RoutineLastRunSummary | null;
   createdAt: number;
   updatedAt: number;
+  /** Bundled automation template the routine was created from, when recorded. */
+  templateId?: string | null;
 }
 
 export interface RoutineContextSelection extends RunContextSelection {
@@ -137,6 +139,8 @@ export interface CreateRoutineRequest {
   agentId?: string | null;
   context?: RoutineContextSelection;
   enabled?: boolean;
+  /** Bundled automation template this routine was created from (Studio validates and records it). */
+  templateId?: string | null;
 }
 
 export interface UpdateRoutineRequest {

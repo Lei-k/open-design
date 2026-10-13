@@ -461,6 +461,24 @@ describe('codex app-server -> OpenDesign event normalization', () => {
       ]);
     });
 
+    it('does not mark a returned MCP tool error as a startup failure', () => {
+      const { events } = drive([{
+        method: 'item/completed',
+        params: {
+          ...THREAD,
+          item: {
+            type: 'mcpToolCall', id: 'x2', server: 'echofacts', tool: 'echo_fact',
+            arguments: {}, status: 'failed',
+            result: { content: [{ type: 'text', text: 'invalid topic' }], isError: true },
+            error: { message: 'invalid topic' },
+          },
+        },
+      }]);
+      const result = events.find((event) => event.type === 'tool_result');
+      expect(result).toMatchObject({ type: 'tool_result', toolUseId: 'x2', isError: true });
+      expect(result).not.toHaveProperty('startupFailed');
+    });
+
     /*
      * 起始帧的 `query` 真的一直是空的(`action.type` 在这一刻是 `other`,
      * 搜索词只存在于 `item/completed`)。这条测试原本钉的是「没有搜索词的

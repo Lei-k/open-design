@@ -1,3 +1,5 @@
+import { StudioCapabilityMessage, useStudioCapabilityState } from '../../runtime/StudioCapabilityState';
+import { useStudioRequestAvailable } from '../../runtime/studio-capabilities';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { useAnalytics } from '../../analytics/provider';
@@ -52,6 +54,8 @@ const ACCENT_SWATCHES = [
 ];
 
 export function PetSettings({ cfg, setCfg }: Props) {
+  const communitySyncAvailable = useStudioRequestAvailable()('POST', '/api/codex-pets/sync');
+  const petState = useStudioCapabilityState('pet');
   const t = useT();
   const analytics = useAnalytics();
   const pet: PetConfig = cfg.pet ?? { ...DEFAULT_PET, custom: defaultCustomPet() };
@@ -530,6 +534,7 @@ export function PetSettings({ cfg, setCfg }: Props) {
 
   return (
     <section className="settings-section">
+      <StudioCapabilityMessage state={petState} />
       {petActionStatus ? (
         <p className="pet-action-status" role="status">
           <Icon name="check" size={14} />
@@ -982,7 +987,8 @@ export function PetSettings({ cfg, setCfg }: Props) {
                 </p>
               </div>
               <div className="pet-codex-head-actions">
-                <button
+                {/* The community sync writes the host's Codex home; Studio accounts only adopt bundled pets. */}
+                {communitySyncAvailable ? <button
                   type="button"
                   className="seg-btn small"
                   onClick={() => void handleCommunitySync()}
@@ -998,7 +1004,7 @@ export function PetSettings({ cfg, setCfg }: Props) {
                       ? t('pet.communitySyncing')
                       : t('pet.communitySync')}
                   </span>
-                </button>
+                </button> : null}
                 <button
                   type="button"
                   className="seg-btn small ghost"

@@ -1,3 +1,5 @@
+import { registerStudioReset } from '../runtime/studio-resources';
+import { studioFetch as fetch } from '../runtime/studio-transport';
 // The project-cover PIPELINE: how one project's cover decision is resolved,
 // verified and (for decks) preloaded — the half of the projects grid's cover
 // work that is pure and shareable.
@@ -402,3 +404,5 @@ function imageSampleRank(kind: unknown): number {
 function isRasterOrSvgImage(path: string): boolean {
   return /\.(svg|png|jpe?g|webp|gif)$/iu.test(path);
 }
+
+registerStudioReset(() => { deckCoverCache.clear(); deckCoverInflight.clear(); });

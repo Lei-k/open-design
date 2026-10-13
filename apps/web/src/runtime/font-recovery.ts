@@ -1,3 +1,4 @@
+import { studioSetTimeout as setTimeout, studioFetch as fetch } from './studio-transport';
 // Under the packaged od:// custom protocol, Chromium's font loader cannot
 // load ANY url()-sourced font: the request dies inside the renderer before
 // it even reaches resource timing (plain fetch() of the same URL returns

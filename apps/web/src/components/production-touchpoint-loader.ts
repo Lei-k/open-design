@@ -1,3 +1,4 @@
+import { studioFetch as fetch } from '../runtime/studio-transport';
 import {
 	touchpointOfflineReplayOf,
 	type TouchpointOfflineReplay,

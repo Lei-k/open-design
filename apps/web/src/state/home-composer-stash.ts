@@ -1,3 +1,4 @@
+import { registerStudioReset } from '../runtime/studio-resources';
 /**
  * Hand-off slot for Home composer attachments across the optimistic project
  * surface.
@@ -40,3 +41,5 @@ export function peekHomeComposerAttachments(): File[] {
 export function clearHomeComposerAttachments(): void {
   stashedAttachments = null;
 }
+
+registerStudioReset(clearHomeComposerAttachments);

@@ -1,3 +1,4 @@
+import { registerStudioReset } from '../runtime/studio-resources';
 // The Home -> project attachment hand-off, while the files are still going up.
 //
 // A batch picked on Home is uploaded AFTER the project row is persisted, which
@@ -168,3 +169,5 @@ export function subscribeHomeAttachmentUploads(listener: () => void): () => void
 export function resetHomeAttachmentUploads(): void {
   for (const projectId of [...entries.keys()]) endHomeAttachmentUploads(projectId);
 }
+
+registerStudioReset(resetHomeAttachmentUploads);

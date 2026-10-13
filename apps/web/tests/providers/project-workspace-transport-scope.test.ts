@@ -178,7 +178,7 @@ describe('persisted project Workspace transport scope', () => {
       {
         method: 'POST',
         cache: 'no-store',
-        headers: { 'x-od-preview-scope-renewal': '1' },
+        headers: { 'x-od-preview-scope-renewal': '1', 'preview-scope-renewal': '1' },
       },
     );
 
@@ -496,5 +496,25 @@ describe('persisted project Workspace transport scope', () => {
     for (const [, init] of fetchMock.mock.calls) {
       expect(requestScope(init)).toEqual(['workspace-a', 'member-a']);
     }
+  });
+
+  it('accepts a multi-user preview-origin capability and renews it on the app origin (#59)', async () => {
+    const expiresAt = Date.now() + 5 * 60 * 1000;
+    const fetchMock = vi.fn<typeof fetch>(async (url) => String(url).includes('preview-url')
+      ? Response.json({ url: 'https://preview.example.test/api/multiuser/projects/project-1/preview/scope-cap-0001/site/index.html',
+          renewUrl: '/api/multiuser/projects/project-1/preview/scope-cap-0001/renew', expiresAt, file: 'site/index.html',
+          csp: 'sandbox allow-scripts', iframeSandbox: 'allow-scripts allow-forms', opaqueOrigin: true })
+      : Response.json({ expiresAt }));
+    vi.stubGlobal('fetch', fetchMock);
+    const scope = await fetchProjectPreviewBaseHref('project-1', 'site/index.html');
+    expect(scope).toEqual({ href: 'https://preview.example.test/api/multiuser/projects/project-1/preview/scope-cap-0001/site/', expiresAt });
+    await expect(renewProjectPreviewBaseScope('project-1', scope!.href)).resolves.toBe(expiresAt);
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/multiuser/projects/project-1/preview/scope-cap-0001/renew',
+      { method: 'POST', cache: 'no-store', headers: { 'x-od-preview-scope-renewal': '1', 'preview-scope-renewal': '1' } });
+    // A capability for another project, or a non-https absolute URL, is refused.
+    fetchMock.mockImplementationOnce(async () => Response.json({ url: 'https://preview.example.test/api/multiuser/projects/other/preview/s/x.html', expiresAt }));
+    await expect(fetchProjectPreviewBaseHref('project-1', 'x.html')).resolves.toBeNull();
+    fetchMock.mockImplementationOnce(async () => Response.json({ url: 'http://evil.example/api/multiuser/projects/project-1/preview/s/x.html', expiresAt }));
+    await expect(fetchProjectPreviewBaseHref('project-1', 'x.html')).resolves.toBeNull();
   });
 });

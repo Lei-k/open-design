@@ -1,5 +1,5 @@
-import type { Express } from 'express';
-import { type ChatSessionMode } from '@open-design/contracts';
+import type { Express, Response } from 'express';
+import { parseStudioMessageFeedback, type ChatSessionMode, type Conversation } from '@open-design/contracts';
 import { readAnalyticsContext } from '../../analytics.js';
 import { nextForkedConversationTitle } from '../../conversation-fork-title.js';
 import { backfillBrandExtractionTranscriptForProject } from '../../brands/index.js';
@@ -11,6 +11,7 @@ import { strategyTaskTurnsForRunIds } from '../../strategies/task-store.js';
 
 import { registerProjectCommentRoutes } from './comments.js';
 import { cancelRunsOwnedBy } from './cancel-owned-runs.js';
+import type { ProjectOwnershipRouteHooks } from '../../http/multiuser-gate.js';
 import {
   compactAdjacentMessageAgentEvents,
   countMessages,
@@ -20,6 +21,7 @@ import {
 } from '../../db.js';
 
 export interface RegisterProjectConversationRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'conversations' | 'ids' | 'telemetry' | 'appConfig' | 'agents'> {
+  projectOwnership?: ProjectOwnershipRouteHooks | null;
   /**
    * Threaded straight through to `registerProjectCommentRoutes` — a comment
    * has no workspace binding of its own, so it borrows its PARENT PROJECT's
@@ -129,6 +131,10 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
     const conversation = getConversation(db, conversationId);
     return conversation?.projectId === projectId ? conversation : null;
   };
+  const projectConversation = (res: Response, conversation: Conversation | null): Conversation | null =>
+    conversation && ctx.projectOwnership ? { ...conversation,
+      studioCanWrite: ctx.projectOwnership.conversationCanWrite?.(res, conversation.projectId, conversation.id) === true,
+    } : conversation;
 
   // ---- Conversations --------------------------------------------------------
 
@@ -137,7 +143,7 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
       return res.status(404).json({ error: 'project not found' });
     }
     if (!await authorizeProjectRequest(req, res, req.params.id, { mode: 'read' })) return;
-    res.json({ conversations: listConversations(db, req.params.id) });
+    res.json({ conversations: listConversations(db, req.params.id).map((conversation: Conversation) => projectConversation(res, conversation)) });
   });
 
   app.post('/api/projects/:id/conversations', async (req, res) => {
@@ -166,6 +172,9 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
       typeof seedFromConversationId === 'string' && seedFromConversationId
         ? getRoutableConversation(req.params.id, seedFromConversationId)
         : null;
+    if (ctx.projectOwnership && typeof seedFromConversationId === 'string' && seedFromConversationId && !sourceConversation) {
+      return res.status(404).json({ error: 'source conversation not found' });
+    }
     // Keep accepting full snapshots from older clients. Current clients copy
     // persisted history first and retry with one compact fallback message only
     // when an in-memory fork point never reached the database.
@@ -262,59 +271,67 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
             ),
           )
         : null);
-    const conv = insertConversation(db, {
-      id: randomId(),
-      projectId: req.params.id,
-      title: resolvedTitle,
-      sessionMode,
-      createdAt: now,
-      updatedAt: now,
-    });
-    // TODO(native-session-clone): Add a runtime-capability-gated adapter contract
-    // that forks the source agent session at this exact message and persists the
-    // clone's independent handle for `conv.id`. Never copy/reuse the source
-    // `agent_sessions.session_id`, because branch turns could then advance the
-    // original conversation. Unsupported runtimes, historical fork-point
-    // mismatches, and clone failures must keep today's transcript-reseed path.
-    // Side Chat: inherit the source conversation's context by copying its
-    // messages into the fresh conversation. Be defensive — a missing or
-    // cross-project source id silently yields an empty conversation.
-    if (conv && seedMessages.length > 0) {
-      /*
-       * 分叉分界线落在**新会话**里,盖在带过来的最后一条上(交付稿第 38 格)。
-       *
-       * 为什么是新会话而不是源会话:点完分叉页面就跳到新会话,人此刻站在这里。
-       * 那行脚注写的是「上文已带过来,接着说就行」—— 这句只有对着**新会话**里
-       * 那一截复制过来的上下文说才成立;盖在源会话上等于对着原地没动的人说
-       * 「已经带过来了」。标题用**源会话**的标题:这条线回答的是「上面这些是从哪来的」。
-       *
-       * 只盖最后一条:线是那一截上下文的**下边界**,中间每条都盖就成了一堆线。
-       */
-      const boundaryAt = seedMessages.length - 1;
-      const inheritedTitle =
-        (typeof sourceConversation?.title === 'string' && sourceConversation.title.trim())
-          ? sourceConversation.title.trim()
-          : null;
-      seedMessages.forEach((m, index) => {
-        // Fresh id per copied message; upsertMessage assigns the next
-        // position so role/content ordering is preserved. Drop the source's
-        // run pointers (runId/lastRunEventId) but keep each turn's verdict —
-        // see `settledForkVerdict`.
-        upsertMessage(db, conv.id, {
-          ...m,
-          id: randomId(),
-          runId: undefined,
-          runStatus: settledForkVerdict(m.runStatus),
-          lastRunEventId: undefined,
-          /* 拿不到源标题就不盖 —— 没有标题的分界线是两条发丝线夹一行空白 */
-          forkedInto:
-            index === boundaryAt && inheritedTitle && seedFromConversationId
-              ? { title: inheritedTitle, conversationId: seedFromConversationId }
-              : undefined,
-        });
+    const writeConversation = () => {
+      const conv = insertConversation(db, {
+        id: randomId(),
+        projectId: req.params.id,
+        title: resolvedTitle,
+        sessionMode,
+        createdAt: now,
+        updatedAt: now,
       });
-    }
-    res.json({ conversation: conv });
+      if (conv) ctx.projectOwnership?.bindCreatedConversation(res, conv.id);
+      // TODO(native-session-clone): Add a runtime-capability-gated adapter contract
+      // that forks the source agent session at this exact message and persists the
+      // clone's independent handle for `conv.id`. Never copy/reuse the source
+      // `agent_sessions.session_id`, because branch turns could then advance the
+      // original conversation. Unsupported runtimes, historical fork-point
+      // mismatches, and clone failures must keep today's transcript-reseed path.
+      // Side Chat: inherit the source conversation's context by copying its
+      // messages into the fresh conversation. Be defensive — a missing or
+      // cross-project source id silently yields an empty conversation only for
+      // legacy single-user clients; multi-user sources were rejected above.
+      if (conv && seedMessages.length > 0) {
+        /*
+         * 分叉分界线落在**新会话**里,盖在带过来的最后一条上(交付稿第 38 格)。
+         *
+         * 为什么是新会话而不是源会话:点完分叉页面就跳到新会话,人此刻站在这里。
+         * 那行脚注写的是「上文已带过来,接着说就行」—— 这句只有对着**新会话**里
+         * 那一截复制过来的上下文说才成立;盖在源会话上等于对着原地没动的人说
+         * 「已经带过来了」。标题用**源会话**的标题:这条线回答的是「上面这些是从哪来的」。
+         *
+         * 只盖最后一条:线是那一截上下文的**下边界**,中间每条都盖就成了一堆线。
+         */
+        const boundaryAt = seedMessages.length - 1;
+        const inheritedTitle =
+          (typeof sourceConversation?.title === 'string' && sourceConversation.title.trim())
+            ? sourceConversation.title.trim()
+            : null;
+        seedMessages.forEach((m, index) => {
+          // Fresh id per copied message; upsertMessage assigns the next
+          // position so role/content ordering is preserved. Drop the source's
+          // run pointers (runId/lastRunEventId) but keep each turn's verdict —
+          // see `settledForkVerdict`.
+          upsertMessage(db, conv.id, {
+            ...m,
+            id: randomId(),
+            runId: undefined,
+            runStatus: settledForkVerdict(m.runStatus),
+            lastRunEventId: undefined,
+            /* 拿不到源标题就不盖 —— 没有标题的分界线是两条发丝线夹一行空白 */
+            forkedInto:
+              index === boundaryAt && inheritedTitle && seedFromConversationId
+                ? { title: inheritedTitle, conversationId: seedFromConversationId }
+                : undefined,
+          });
+        });
+      }
+      return conv;
+    };
+    // Keep the row and copied transcript together. A failed copy cannot leave
+    // a half-fork behind in an actor's managed project.
+    const conv = ctx.projectOwnership ? db.transaction(writeConversation)() : writeConversation();
+    res.json({ conversation: projectConversation(res, conv) });
   });
 
   app.patch('/api/projects/:id/conversations/:cid', async (req, res) => {
@@ -336,7 +353,7 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
       return sendApiError(res, 400, 'BAD_REQUEST', 'sessionMode must be one of design, chat, or plan');
     }
     const updated = updateConversation(db, req.params.cid, req.body || {});
-    res.json({ conversation: updated });
+    res.json({ conversation: projectConversation(res, updated) });
   });
 
   app.delete('/api/projects/:id/conversations/:cid', async (req, res) => {
@@ -352,8 +369,11 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
     }
     // Stop any live agent run for this conversation before the row is gone,
     // otherwise the CLI subprocess is orphaned and keeps billing (#5468).
-    await cancelRunsOwnedBy(design.runs, { conversationId: req.params.cid });
-    deleteConversationAndRepairTeamCommentAnchor(db, req.params.id, req.params.cid);
+    const release = await ctx.projectOwnership?.cancelOwnedRuns(res, req.params.id, req.params.cid);
+    try {
+      await cancelRunsOwnedBy(design.runs, { conversationId: req.params.cid });
+      deleteConversationAndRepairTeamCommentAnchor(db, req.params.id, req.params.cid);
+    } finally { release?.(); }
     res.json({ ok: true });
   });
 
@@ -698,6 +718,11 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
     // message with this id exists in ANOTHER conversation, reject rather than
     // rewrite the wrong row through this endpoint (looper review on #6418).
     const existing = getMessage(db, req.params.mid, req.params.cid);
+    // Multi-user transcript creation belongs to run admission. An arbitrary
+    // client-chosen id must not reveal whether a foreign message already exists.
+    if (ctx.projectOwnership && existing === null) {
+      return res.status(404).json({ error: 'message not found' });
+    }
     if (existing === null && getMessage(db, req.params.mid) !== null) {
       return res.status(404).json({ error: 'message not found' });
     }
@@ -712,7 +737,22 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
     if (m.createOnly === true && existing !== null) {
       return res.json({ message: existing });
     }
-    const normalizedMessage = Array.isArray(m.events)
+    if (ctx.projectOwnership && existing?.role === 'assistant') {
+      // The run engine is the single writer of assistant rows; the owner may
+      // only rate the turn. The gate has validated the feedback shape.
+      if (m.feedback === undefined || m.role !== 'assistant') return res.json({ message: existing });
+      const feedback = parseStudioMessageFeedback(m.feedback);
+      if (feedback === undefined) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid feedback');
+      db.prepare('UPDATE messages SET feedback_json = ? WHERE id = ? AND conversation_id = ?')
+        .run(feedback ? JSON.stringify(feedback) : null, req.params.mid, req.params.cid);
+      return res.json({ message: getMessage(db, req.params.mid, req.params.cid) });
+    }
+    if (ctx.projectOwnership && m.role !== existing?.role) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'message role is immutable');
+    }
+    const normalizedMessage = ctx.projectOwnership && existing
+      ? { ...existing, content: m.content }
+      : Array.isArray(m.events)
       ? { ...m, events: compactAdjacentMessageAgentEvents(m.events) }
       : m;
     const saved = upsertMessage(db, req.params.cid, {

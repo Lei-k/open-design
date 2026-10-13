@@ -1,3 +1,7 @@
+import { CustomInstructionsSection } from './CustomInstructionsSection';
+import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSetInterval, studioFetch as fetch } from '../runtime/studio-transport';
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
+import { StudioAccountSettings } from '../runtime/StudioAccountSettings';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, SetStateAction } from 'react';
 import { Button, VisuallyHidden } from '@open-design/components';
@@ -30,15 +34,13 @@ import {
   trackSettingsByokProviderOptionClick,
   trackSettingsConnectorAuthResult,
   trackSettingsDesignReviewClick,
-  trackSettingsLanguageClick,
   trackSettingsLocalCliClick,
   trackSettingsExecutionModeTabClick,
   trackSettingsMediaProvidersClick,
-  trackSettingsNotificationsClick,
   trackSettingsPrivacyClick,
   trackSettingsView,
 } from '../analytics/events';
-import { LOCALE_LABEL, LOCALES, useI18n } from '../i18n';
+import { useI18n } from '../i18n';
 import type { Locale } from '../i18n';
 import type { Dict } from '../i18n/types';
 import { AgentIcon } from './AgentIcon';
@@ -76,7 +78,6 @@ import {
 } from './modelOptions';
 import {
   BYOK_PROVIDER_PRESETS,
-  DEFAULT_NOTIFICATIONS,
   DEFAULT_ORBIT,
   defaultKnownProviderModel,
   isStoredMediaProviderEntryEmpty,
@@ -214,14 +215,10 @@ import {
   resolveAccentColor,
 } from '../state/appearance';
 import { isAutosaveDraftOnlyChange } from '../App';
-import {
-  FAILURE_SOUNDS,
-  SUCCESS_SOUNDS,
-  notificationPermission,
-  playSound,
-  requestNotificationPermission,
-  showCompletionNotification,
-} from '../utils/notifications';
+import { NotificationsSection } from './NotificationsSection';
+import { SettingsLanguageField } from './SettingsLanguageField';
+import { SettingsAppearanceField } from './SettingsAppearanceField';
+import { SettingsFrame, SettingsNavItem, SettingsSectionHeader } from './SettingsFrame';
 
 export type SettingsSection =
   | 'general'
@@ -1502,7 +1499,14 @@ export function switchApiProtocolConfig(
   );
 }
 
-export function SettingsDialog({
+export function SettingsDialog(props: Props) {
+  const studio = useStudioCapabilities();
+  return studio.hostServices ? <LocalSettingsDialog {...props} /> : <StudioAccountSettings presentation={props.presentation ?? 'modal'}
+    initialSection={normalizeSettingsSection(props.initialSection ?? 'general')} onClose={props.onClose}
+    initial={props.initial} onSkillsChanged={props.onSkillsChanged} onPersist={props.onPersist} appVersionInfo={props.appVersionInfo} />;
+}
+
+function LocalSettingsDialog({
   presentation = 'modal',
   initial,
   agents,
@@ -1673,8 +1677,6 @@ export function SettingsDialog({
     workspaceContextLoading
       ? null
       : workspaceUpgradeUrl(workspaceContext, workspaceBilling, { fallbackProfile: profile });
-  const [settingsSidebarCollapsed, setSettingsSidebarCollapsed] = useState(false);
-  const [settingsFullscreen, setSettingsFullscreen] = useState(true);
   // Scroll the right-hand content pane back to the top whenever the user
   // picks a different settings section. Without this, switching from a
   // long section the user had scrolled (e.g. Library) into a short one
@@ -2145,7 +2147,7 @@ export function SettingsDialog({
   // notice immediately, so this only affects "user moved on" cases.
   useEffect(() => {
     if (!agentRescanNotice) return;
-    const id = window.setTimeout(() => setAgentRescanNotice(null), 6000);
+    const id = studioWindowSetTimeout(() => setAgentRescanNotice(null), 6000);
     return () => window.clearTimeout(id);
   }, [agentRescanNotice]);
   useEffect(() => {
@@ -3116,7 +3118,7 @@ export function SettingsDialog({
     fields.map(byokRequiredLabel).join(', ');
   const focusByokRequiredField = (field: ByokRequiredField | undefined) => {
     if (!field) return;
-    window.setTimeout(() => {
+    studioWindowSetTimeout(() => {
       if (field === 'api_key') {
         apiKeyInputRef.current?.focus();
         return;
@@ -3297,7 +3299,7 @@ export function SettingsDialog({
       window.clearTimeout(autosaveTimerRef.current);
     }
     autosavePendingFlushRef.current = true;
-    autosaveTimerRef.current = window.setTimeout(() => {
+    autosaveTimerRef.current = studioWindowSetTimeout(() => {
       autosavePendingFlushRef.current = false;
       autosaveTimerRef.current = null;
       const snapshot = autosaveLatestRef.current;
@@ -3379,7 +3381,7 @@ export function SettingsDialog({
             setPendingMediaProviderEditIds(new Set());
           }
           settleAutosaveStatus(autosaveClaim, 'saved');
-          autosaveSavedTimerRef.current = window.setTimeout(() => {
+          autosaveSavedTimerRef.current = studioWindowSetTimeout(() => {
             autosaveSavedTimerRef.current = null;
             // Settle to idle after a moment so the indicator doesn't
             // stay on "Saved" forever and become noise.
@@ -3393,7 +3395,7 @@ export function SettingsDialog({
             && lastSyncedMediaProvidersVersionRef.current < mediaProvidersVersion
           ) {
             settleAutosaveStatus(autosaveClaim, 'pending');
-            autosaveRetryTimerRef.current = window.setTimeout(() => {
+            autosaveRetryTimerRef.current = studioWindowSetTimeout(() => {
               autosaveRetryTimerRef.current = null;
               if (
                 autosaveLatestRef.current !== snapshot
@@ -3724,7 +3726,7 @@ export function SettingsDialog({
         apiProtocol !== 'aihubmix' &&
         providerModelsCommittedKey !== providerModelsKey
       ) {
-        const timer = window.setTimeout(() => {
+        const timer = studioWindowSetTimeout(() => {
           setProviderModelsCommittedKey(providerModelsKey);
         }, 200);
         return () => window.clearTimeout(timer);
@@ -3744,7 +3746,7 @@ export function SettingsDialog({
     }
     const key = providerConnectionTestKey(apiProtocol, cfg);
     if (providerAutoTestKeyRef.current === key) return;
-    const timer = window.setTimeout(() => {
+    const timer = studioWindowSetTimeout(() => {
       handleAutoTestProvider();
     }, providerModelDiscoverySupported ? 0 : 500);
     return () => window.clearTimeout(timer);
@@ -3776,7 +3778,7 @@ export function SettingsDialog({
     // protocol waits until the key/baseUrl inputs are committed (on blur) so we
     // don't fire on each keystroke.
     if (apiProtocol !== 'aihubmix' && providerModelsCommittedKey !== providerModelsKey) return;
-    const timer = window.setTimeout(() => {
+    const timer = studioWindowSetTimeout(() => {
       void handleFetchProviderModels({ silent: true });
     }, 300);
     return () => window.clearTimeout(timer);
@@ -4245,31 +4247,12 @@ export function SettingsDialog({
     );
   };
 
-  const settingsSidebarToggleLabel = settingsSidebarCollapsed
-    ? 'Expand settings sidebar'
-    : 'Collapse settings sidebar';
-  const settingsFullscreenLabel = settingsFullscreen
-    ? t('common.exitFullscreen')
-    : t('common.fullscreen');
-  const pageMode = presentation === 'page';
-
-  const surface = (
-      <div
-        className={
-          'modal modal-settings' +
-          (pageMode ? ' settings-page-surface' : '') +
-          (settingsSidebarCollapsed ? ' settings-sidebar-collapsed' : '') +
-          (!pageMode && settingsFullscreen ? ' settings-fullscreen' : '')
-        }
-        role={pageMode ? 'region' : 'dialog'}
-        aria-modal={pageMode ? undefined : true}
-        aria-labelledby="settings-dialog-title"
-        onClick={pageMode ? undefined : (e) => e.stopPropagation()}
-      >
-        {/* Autosave feedback is viewport-level rather than part of the
-            top-right dialog chrome: it rides the app's own top chrome row, so
-            a passive status never covers the Local CLI pickers that occupy the
-            panel's upper band (OPEND-2148). */}
+  return (
+    <SettingsFrame
+      presentation={presentation}
+      onClose={onClose}
+      contentRef={settingsContentRef}
+      statusLayer={(
         <div className="settings-autosave-layer">
           <div
             className={`settings-autosave is-${autosaveStatus}`}
@@ -4294,37 +4277,9 @@ export function SettingsDialog({
             ) : null}
           </div>
         </div>
-        {/* Top-right chrome strip — anchored to the modal corner so the
-            close and fullscreen controls stay at a stable optical location
-            regardless of the header copy. */}
-        <div className="settings-chrome" aria-hidden={false}>
-          {pageMode ? null : (
-            <button
-              type="button"
-              className="settings-chrome-btn settings-fullscreen-toggle"
-              onClick={() => setSettingsFullscreen((current) => !current)}
-              aria-label={settingsFullscreenLabel}
-              aria-pressed={settingsFullscreen}
-              title={settingsFullscreenLabel}
-            >
-              <Icon
-                name={settingsFullscreen ? 'minimize' : 'maximize'}
-                size={15}
-                strokeWidth={2}
-              />
-            </button>
-          )}
-          <button
-            type="button"
-            className="settings-chrome-btn settings-close"
-            onClick={onClose}
-            aria-label={t('common.close')}
-            title={t('common.close')}
-          >
-            <Icon name="close" size={16} strokeWidth={2} />
-          </button>
-        </div>
-        <header className="modal-head" id="settings-dialog-title">
+      )}
+      header={(
+        <>
           {welcome ? (
             <>
               <span className="kicker">{t('settings.welcomeKicker')}</span>
@@ -4332,166 +4287,37 @@ export function SettingsDialog({
               <p className="subtitle">{t('settings.welcomeSubtitle')}</p>
             </>
           ) : (
-            <>
-              <span className="kicker">{t('settings.kicker')}</span>
-              <div className="modal-head-line">
-                <h2>{activeHeader.title}</h2>
-                <p className="subtitle">{activeHeader.subtitle}</p>
-              </div>
-            </>
+            <SettingsSectionHeader title={activeHeader.title} subtitle={activeHeader.subtitle} />
           )}
-        </header>
-
-        <div className="modal-body">
-          <button
-            type="button"
-            className="settings-sidebar-toggle"
-            onClick={() => setSettingsSidebarCollapsed((current) => !current)}
-            aria-label={settingsSidebarToggleLabel}
-            aria-pressed={settingsSidebarCollapsed}
-            aria-controls="settings-sidebar"
-            title={settingsSidebarToggleLabel}
-          >
-            <Icon
-              name={settingsSidebarCollapsed ? 'chevron-right' : 'chevron-left'}
-              size={15}
-              strokeWidth={2}
-            />
-          </button>
-          <aside
-            id="settings-sidebar"
-            className="settings-sidebar"
-            aria-label="Settings sections"
-            aria-hidden={settingsSidebarCollapsed ? true : undefined}
-          >
-            {pageMode ? (
-              <div className="settings-page-nav-head">
-                <button
-                  type="button"
-                  className="settings-page-back"
-                  onClick={onClose}
-                >
-                  <Icon name="arrow-left" size={15} />
-                  <span>{t('settings.pageBackToHome')}</span>
-                </button>
-              </div>
-            ) : null}
-            <button
-              type="button"
-              className={`settings-nav-item${activeSection === 'execution' ? ' active' : ''}`}
-              onClick={() => setActiveSection('execution')}
-              data-testid="settings-nav-execution"
-            >
-              <Icon name="sliders" size={18} />
-              <span>
-                <strong>{t('settings.envConfigure')}</strong>
-                <small>{`${t('settings.localCli')} / ${t('settings.modeApiMeta')}`}</small>
-              </span>
-            </button>
-            {agentAccounts ? (
-              <button
-                type="button"
-                className={`settings-nav-item${activeSection === 'agentAccounts' ? ' active' : ''}`}
-                onClick={() => setActiveSection('agentAccounts')}
-                data-testid="settings-nav-agent-accounts"
-              >
-                <Icon name="key" size={18} />
-                <span>
-                  <strong>{t('agentAccounts.navTitle')}</strong>
-                  <small>{t('agentAccounts.navHint')}</small>
-                </span>
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className={`settings-nav-item${activeSection === 'general' ? ' active' : ''}`}
-              onClick={() => setActiveSection('general')}
-            >
-              <Icon name="settings" size={18} />
-              <span>
-                <strong>{t('settings.general')}</strong>
-                <small>{t('settings.generalHint')}</small>
-              </span>
-            </button>
-            <button
-              type="button"
-              className={`settings-nav-item${activeSection === 'labs' ? ' active' : ''}`}
-              onClick={() => setActiveSection('labs')}
-            >
-              <Icon name="sparkles" size={18} />
-              <span>
-                <strong>{t('labs.title')}</strong>
-                <small>{t('labs.navHint')}</small>
-              </span>
-            </button>
-            <button
-              type="button"
-              className={`settings-nav-item${activeSection === 'instructions' ? ' active' : ''}`}
-              onClick={() => setActiveSection('instructions')}
-            >
-              <Icon name="edit" size={18} />
-              <span>
-                <strong>{t('settings.instructionsTitle')}</strong>
-                <small>{t('settings.instructionsNavSub')}</small>
-              </span>
-            </button>
-            <button
-              type="button"
-              className={`settings-nav-item${activeSection === 'memory' ? ' active' : ''}`}
-              onClick={() => setActiveSection('memory')}
-            >
-              <Icon name="brain" size={18} />
-              <span>
-                <strong>{t('settings.memory')}</strong>
-                <small>{t('settings.memoryHint')}</small>
-              </span>
-            </button>
-            <button
-              type="button"
-              className={`settings-nav-item${activeSection === 'media' ? ' active' : ''}`}
-              onClick={() => setActiveSection('media')}
-            >
-              <Icon name="image" size={18} />
-              <span>
-                <strong>{t('settings.mediaProviders')}</strong>
-                <small>Image / video / audio</small>
-              </span>
-            </button>
-            <button
-              type="button"
-              className={`settings-nav-item${activeSection === 'integrations' ? ' active' : ''}`}
-              onClick={() => setActiveSection('integrations')}
-            >
-              <Icon name="puzzle" size={18} />
-              <span>
-                <strong>{t('settings.mcpServerTitle')}</strong>
-                <small>{t('settings.mcpServerHint')}</small>
-              </span>
-            </button>
-            <button
-              type="button"
-              className={`settings-nav-item${activeSection === 'privacy' ? ' active' : ''}`}
-              onClick={() => setActiveSection('privacy')}
-            >
-              <Icon name="eye" size={18} />
-              <span>
-                <strong>{t('settings.privacy')}</strong>
-                <small>{t('settings.privacyHint')}</small>
-              </span>
-            </button>
-            <button
-              type="button"
-              className={`settings-nav-item${activeSection === 'about' ? ' active' : ''}`}
-              onClick={() => setActiveSection('about')}
-            >
-              <Icon name="settings" size={18} />
-              <span>
-                <strong>{t('settings.about')}</strong>
-                <small>{t('settings.aboutHint')}</small>
-              </span>
-            </button>
-          </aside>
-          <div className="settings-content" ref={settingsContentRef}>
+        </>
+      )}
+      nav={(
+        <>
+          <SettingsNavItem active={activeSection === 'execution'} onClick={() => setActiveSection('execution')} icon="sliders" title={t('settings.envConfigure')} hint={`${t('settings.localCli')} / ${t('settings.modeApiMeta')}`} testId="settings-nav-execution" />
+          {agentAccounts ? (
+            <SettingsNavItem active={activeSection === 'agentAccounts'} onClick={() => setActiveSection('agentAccounts')} icon="key" title={t('agentAccounts.navTitle')} hint={t('agentAccounts.navHint')} testId="settings-nav-agent-accounts" />
+          ) : null}
+          <SettingsNavItem active={activeSection === 'general'} onClick={() => setActiveSection('general')} icon="settings" title={t('settings.general')} hint={t('settings.generalHint')} />
+          <SettingsNavItem active={activeSection === 'labs'} onClick={() => setActiveSection('labs')} icon="sparkles" title={t('labs.title')} hint={t('labs.navHint')} />
+          <SettingsNavItem active={activeSection === 'instructions'} onClick={() => setActiveSection('instructions')} icon="edit" title={t('settings.instructionsTitle')} hint={t('settings.instructionsNavSub')} />
+          <SettingsNavItem active={activeSection === 'memory'} onClick={() => setActiveSection('memory')} icon="brain" title={t('settings.memory')} hint={t('settings.memoryHint')} />
+          <SettingsNavItem active={activeSection === 'media'} onClick={() => setActiveSection('media')} icon="image" title={t('settings.mediaProviders')} hint="Image / video / audio" />
+          <SettingsNavItem active={activeSection === 'integrations'} onClick={() => setActiveSection('integrations')} icon="puzzle" title={t('settings.mcpServerTitle')} hint={t('settings.mcpServerHint')} />
+          <SettingsNavItem active={activeSection === 'privacy'} onClick={() => setActiveSection('privacy')} icon="eye" title={t('settings.privacy')} hint={t('settings.privacyHint')} />
+          <SettingsNavItem active={activeSection === 'about'} onClick={() => setActiveSection('about')} icon="settings" title={t('settings.about')} hint={t('settings.aboutHint')} />
+        </>
+      )}
+      overlay={dshSetup ? (
+        <DeepSeekHarnessSetupDialog
+          busy={dshSetup.busy}
+          error={dshSetup.error}
+          onCancel={() => {
+            if (!dshSetup.busy) setDshSetup(null);
+          }}
+          onConfirm={() => void handleConfirmDshSetup()}
+        />
+      ) : null}
+    >
           {activeSection === 'execution' ? (
             <>
               {/* Sticky shell: the 本机 CLI / API 提供商 switch stays pinned
@@ -5670,7 +5496,7 @@ export function SettingsDialog({
                   }
                   onCustomize={() => {
                     updateApiConfig({ apiProviderBaseUrl: null });
-                    window.setTimeout(() => baseUrlInputRef.current?.focus(), 0);
+                    studioWindowSetTimeout(() => baseUrlInputRef.current?.focus(), 0);
                   }}
                   onFocus={() => {
                     const byokProviderId = byokProtocolToTracking(apiProtocol);
@@ -5976,36 +5802,8 @@ export function SettingsDialog({
               there is no longer a standalone render block for any of them. */}
           {activeSection === 'general' ? (
             <section className="settings-section settings-general-section">
-              <div className="settings-general-block">
-                <div className="settings-general-field">
-                  <span className="settings-general-label">{t('settings.language')}</span>
-                  <label className="settings-general-select">
-                    <select
-                      value={locale}
-                      aria-label={t('settings.language')}
-                      onChange={(event) => {
-                        const next = event.target.value as Locale;
-                        // P1 ui_click area=language — record the locale id
-                        // that was picked, regardless of whether it differs
-                        // from the current one (user clicked = signal).
-                        trackSettingsLanguageClick(analytics.track, {
-                          page_name: 'settings',
-                          area: 'language',
-                          element: next,
-                        });
-                        setLocale(next);
-                      }}
-                    >
-                      {LOCALES.map((code) => (
-                        <option key={code} value={code}>
-                          {LOCALE_LABEL[code]} · {code}
-                        </option>
-                      ))}
-                    </select>
-                    <Icon name="chevron-down" size={14} />
-                  </label>
-                </div>
-              </div>
+              <SettingsLanguageField />
+              <SettingsAppearanceField cfg={cfg} setCfg={setCfg} />
 
               <div className="settings-general-block">
                 <div className="settings-general-block-head">
@@ -6052,31 +5850,7 @@ export function SettingsDialog({
           ) : null}
 
           {activeSection === 'instructions' ? (
-            <section className="settings-section settings-section-card instructions-rules-section">
-              <div className="memory-field-block instructions-rules-card">
-                <div className="memory-block-head">
-                  <div>
-                    <h4>{t('settings.customInstructionsTitle')}</h4>
-                    <p className="hint">
-                      {t('settings.customInstructionsDesc')}
-                    </p>
-                  </div>
-                </div>
-                <textarea
-                  className="custom-instructions-input memory-global-rules-input instructions-rules-input"
-                  rows={5}
-                  maxLength={5000}
-                  placeholder={t('settings.customInstructionsPlaceholder')}
-                  value={cfg.customInstructions ?? ''}
-                  onChange={(event) =>
-                    setCfg({
-                      ...cfg,
-                      customInstructions: event.target.value || undefined,
-                    })
-                  }
-                />
-              </div>
-            </section>
+            <CustomInstructionsSection value={cfg.customInstructions ?? ''} onChange={(value) => setCfg({ ...cfg, customInstructions: value || undefined })} />
           ) : null}
 
           {activeSection === 'memory' ? (
@@ -6213,7 +5987,7 @@ export function SettingsDialog({
                           if (autosaveSavedTimerRef.current != null) {
                             window.clearTimeout(autosaveSavedTimerRef.current);
                           }
-                          autosaveSavedTimerRef.current = window.setTimeout(() => {
+                          autosaveSavedTimerRef.current = studioWindowSetTimeout(() => {
                             autosaveSavedTimerRef.current = null;
                             settleAutosaveStatus(autosaveClaim, 'idle');
                           }, 1800);
@@ -6302,43 +6076,7 @@ export function SettingsDialog({
               onDismiss={() => setAboutToast(null)}
             />
           ) : null}
-          </div>
-        </div>
-      </div>
-  );
-
-  if (pageMode) {
-    return (
-      <div className="settings-page-shell">
-        {surface}
-        {dshSetup ? (
-          <DeepSeekHarnessSetupDialog
-            busy={dshSetup.busy}
-            error={dshSetup.error}
-            onCancel={() => {
-              if (!dshSetup.busy) setDshSetup(null);
-            }}
-            onConfirm={() => void handleConfirmDshSetup()}
-          />
-        ) : null}
-      </div>
-    );
-  }
-
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      {surface}
-      {dshSetup ? (
-        <DeepSeekHarnessSetupDialog
-          busy={dshSetup.busy}
-          error={dshSetup.error}
-          onCancel={() => {
-            if (!dshSetup.busy) setDshSetup(null);
-          }}
-          onConfirm={() => void handleConfirmDshSetup()}
-        />
-      ) : null}
-    </div>
+    </SettingsFrame>
   );
 }
 
@@ -6477,7 +6215,7 @@ export function ConnectorSection({
         window.clearTimeout(keySavedTimerRef.current);
       }
       setKeySaveStatus('saved');
-      keySavedTimerRef.current = window.setTimeout(() => {
+      keySavedTimerRef.current = studioWindowSetTimeout(() => {
         setKeySaveStatus('idle');
       }, 2000);
     } catch {
@@ -6533,11 +6271,11 @@ export function ConnectorSection({
       return;
     }
     setClearArmed(false);
-    const timer = window.setTimeout(() => setClearArmed(true), 700);
+    const timer = studioWindowSetTimeout(() => setClearArmed(true), 700);
     // Pull focus to the final confirm button so keyboard users can
     // see the arming animation finish and choose deliberately rather
     // than tabbing through stale focus state.
-    const focusTimer = window.setTimeout(() => {
+    const focusTimer = studioWindowSetTimeout(() => {
       finalConfirmButtonRef.current?.focus({ preventScroll: true });
     }, 720);
     return () => {
@@ -7010,7 +6748,7 @@ function OrbitSection({
 
   useEffect(() => {
     if (!status?.running) return undefined;
-    const interval = window.setInterval(() => {
+    const interval = studioWindowSetInterval(() => {
       void refreshStatus();
     }, 3000);
     return () => window.clearInterval(interval);
@@ -7157,7 +6895,7 @@ function OrbitSection({
     try {
       await navigator.clipboard.writeText(lastRun.markdown);
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
+      studioWindowSetTimeout(() => setCopied(false), 1600);
     } catch {
       // Clipboard access may be denied in some browsing contexts; silently skip.
     }
@@ -7837,7 +7575,7 @@ function MediaProvidersSection({
   // attention.
   useEffect(() => {
     if (reloadNotice?.kind !== 'success') return;
-    const handle = window.setTimeout(() => setReloadNotice(null), 2000);
+    const handle = studioWindowSetTimeout(() => setReloadNotice(null), 2000);
     return () => window.clearTimeout(handle);
   }, [reloadNotice]);
 
@@ -9017,277 +8755,4 @@ function CritiqueTheaterSectionContent({
       </button>
     </section>
   );
-}
-
-// Map the runtime SoundId (hyphenated, used by utils/notifications.ts) onto
-// the contract's underscored enum. Sounds that don't have a tracking entry
-// drop to undefined so we never emit an off-enum value.
-function soundIdToTracking(
-  id: string,
-):
-  | 'ding'
-  | 'chime'
-  | 'two_tone_up'
-  | 'pluck'
-  | 'buzz'
-  | 'two_tone_down'
-  | 'thud'
-  | undefined {
-  switch (id) {
-    case 'ding':
-      return 'ding';
-    case 'chime':
-      return 'chime';
-    case 'two-tone-up':
-      return 'two_tone_up';
-    case 'pluck':
-      return 'pluck';
-    case 'buzz':
-      return 'buzz';
-    case 'two-tone-down':
-      return 'two_tone_down';
-    case 'thud':
-      return 'thud';
-    default:
-      return undefined;
-  }
-}
-
-function NotificationsSection({
-  cfg,
-  setCfg,
-}: {
-  cfg: AppConfig;
-  setCfg: Dispatch<SetStateAction<AppConfig>>;
-}) {
-  const { t } = useI18n();
-  const analytics = useAnalytics();
-  const notif = cfg.notifications ?? DEFAULT_NOTIFICATIONS;
-  const [permission, setPermission] = useState<NotificationPermission | 'unsupported'>(
-    () => notificationPermission(),
-  );
-  const [testStatus, setTestStatus] = useState<ReturnType<typeof testNotificationStatusText> | null>(null);
-
-  const updateNotif = (
-    patch: Partial<NonNullable<AppConfig['notifications']>>,
-  ) => {
-    setCfg((c) => ({
-      ...c,
-      notifications: { ...DEFAULT_NOTIFICATIONS, ...(c.notifications ?? {}), ...patch },
-    }));
-  };
-
-  const toggleSound = () => {
-    const next = !notif.soundEnabled;
-    // P1 ui_click area=notifications element=completion_sound — the toggle
-    // emits the post-click state on `completion_sound_status` so a single
-    // event captures intent + outcome.
-    trackSettingsNotificationsClick(analytics.track, {
-      page_name: 'settings',
-      area: 'notifications',
-      element: 'completion_sound',
-      completion_sound_status: next ? 'on' : 'off',
-    });
-    updateNotif({ soundEnabled: next });
-    // Give the user immediate audible feedback when turning the master
-    // switch on so they know which sound they're signing up for. Resuming
-    // the AudioContext also bakes in their gesture for later auto-plays.
-    if (next) playSound(notif.successSoundId);
-  };
-
-  const toggleDesktop = async () => {
-    if (notif.desktopEnabled) {
-      trackSettingsNotificationsClick(analytics.track, {
-        page_name: 'settings',
-        area: 'notifications',
-        element: 'desktop_notification',
-        desktop_notification_status: 'off',
-      });
-      updateNotif({ desktopEnabled: false });
-      return;
-    }
-    const result = await requestNotificationPermission();
-    setPermission(result);
-    if (result === 'granted') {
-      trackSettingsNotificationsClick(analytics.track, {
-        page_name: 'settings',
-        area: 'notifications',
-        element: 'desktop_notification',
-        desktop_notification_status: 'on',
-      });
-      updateNotif({ desktopEnabled: true });
-    } else {
-      trackSettingsNotificationsClick(analytics.track, {
-        page_name: 'settings',
-        area: 'notifications',
-        element: 'desktop_notification',
-        desktop_notification_status: 'off',
-      });
-      updateNotif({ desktopEnabled: false });
-    }
-  };
-
-  const sendTestNotification = async () => {
-    const result = await showCompletionNotification({
-      status: 'succeeded',
-      title: t('notify.successTitle'),
-      body: t('notify.successBody'),
-    });
-    setPermission(notificationPermission());
-    setTestStatus(testNotificationStatusText(result));
-  };
-
-  return (
-    <section className="settings-section">
-      <div className="settings-subsection">
-        <div className="settings-notify-card">
-          <div className="settings-notify-card-header">
-            <h4>{t('settings.notifyCompletionSound')}</h4>
-            <div className="section-head-actions">
-              <div className="seg-control" role="group" aria-label={t('settings.notifyCompletionSound')} style={{ '--seg-cols': 2 } as React.CSSProperties}>
-                <button
-                  type="button"
-                  className={'seg-btn seg-btn--on' + (notif.soundEnabled ? ' active' : '')}
-                  aria-pressed={notif.soundEnabled}
-                  onClick={() => { if (!notif.soundEnabled) toggleSound(); }}
-                >
-                  <span className="seg-title">{t('common.active')}</span>
-                </button>
-                <button
-                  type="button"
-                  className={'seg-btn' + (!notif.soundEnabled ? ' active' : '')}
-                  aria-pressed={!notif.soundEnabled}
-                  onClick={() => { if (notif.soundEnabled) toggleSound(); }}
-                >
-                  <span className="seg-title">{t('common.inactive')}</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {notif.soundEnabled ? (
-          <>
-            <div className="settings-field">
-              <label>{t('settings.notifySuccessSound')}</label>
-              <div className="seg-control" role="group" aria-label={t('settings.notifySuccessSound')} style={{ '--seg-cols': SUCCESS_SOUNDS.length } as React.CSSProperties}>
-                {SUCCESS_SOUNDS.map((sound) => (
-                  <button
-                    key={sound.id}
-                    type="button"
-                    className={'seg-btn' + (notif.successSoundId === sound.id ? ' active' : '')}
-                    aria-pressed={notif.successSoundId === sound.id}
-                    onClick={() => {
-                      const trackingSoundId = soundIdToTracking(sound.id);
-                      trackSettingsNotificationsClick(analytics.track, {
-                        page_name: 'settings',
-                        area: 'notifications',
-                        element: 'success_sound',
-                        ...(trackingSoundId ? { sound_id: trackingSoundId } : {}),
-                      });
-                      updateNotif({ successSoundId: sound.id });
-                      playSound(sound.id);
-                    }}
-                  >
-                    <span className="seg-title">{t(sound.labelKey)}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="settings-field">
-              <label>{t('settings.notifyFailureSound')}</label>
-              <div className="seg-control" role="group" aria-label={t('settings.notifyFailureSound')} style={{ '--seg-cols': FAILURE_SOUNDS.length } as React.CSSProperties}>
-                {FAILURE_SOUNDS.map((sound) => (
-                  <button
-                    key={sound.id}
-                    type="button"
-                    className={'seg-btn' + (notif.failureSoundId === sound.id ? ' active' : '')}
-                    aria-pressed={notif.failureSoundId === sound.id}
-                    onClick={() => {
-                      const trackingSoundId = soundIdToTracking(sound.id);
-                      trackSettingsNotificationsClick(analytics.track, {
-                        page_name: 'settings',
-                        area: 'notifications',
-                        element: 'failure_sound',
-                        ...(trackingSoundId ? { sound_id: trackingSoundId } : {}),
-                      });
-                      updateNotif({ failureSoundId: sound.id });
-                      playSound(sound.id);
-                    }}
-                  >
-                    <span className="seg-title">{t(sound.labelKey)}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </>
-        ) : null}
-      </div>
-
-      <div className="settings-subsection">
-        <div className="settings-notify-card">
-          <div className="settings-notify-card-header">
-            <h4>{t('settings.notifyDesktop')}</h4>
-            <div className="section-head-actions">
-              <div className="seg-control" role="group" aria-label={t('settings.notifyDesktop')} style={{ '--seg-cols': 2 } as React.CSSProperties}>
-                <button
-                  type="button"
-                  className={'seg-btn seg-btn--on' + (notif.desktopEnabled ? ' active' : '')}
-                  aria-pressed={notif.desktopEnabled}
-                  disabled={permission === 'unsupported'}
-                  onClick={() => { if (!notif.desktopEnabled) void toggleDesktop(); }}
-                >
-                  <span className="seg-title">{t('common.active')}</span>
-                </button>
-                <button
-                  type="button"
-                  className={'seg-btn' + (!notif.desktopEnabled ? ' active' : '')}
-                  aria-pressed={!notif.desktopEnabled}
-                  disabled={permission === 'unsupported'}
-                  onClick={() => { if (notif.desktopEnabled) void toggleDesktop(); }}
-                >
-                  <span className="seg-title">{t('common.inactive')}</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-        {permission === 'unsupported' ? (
-          <p className="hint">{t('settings.notifyDesktopUnsupported')}</p>
-        ) : null}
-        {permission === 'denied' ? (
-          <p className="hint">{t('settings.notifyDesktopBlocked')}</p>
-        ) : null}
-        {notif.desktopEnabled && permission === 'granted' ? (
-          <>
-            <Button variant="ghost" onClick={() => {
-              trackSettingsNotificationsClick(analytics.track, {
-                page_name: 'settings',
-                area: 'notifications',
-                element: 'send_test',
-              });
-              void sendTestNotification();
-            }}>
-              {t('settings.notifyTest')}
-            </Button>
-            {testStatus ? <p className="hint" role="status">{t(testStatus)}</p> : null}
-          </>
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
-function testNotificationStatusText(
-  result: Awaited<ReturnType<typeof showCompletionNotification>>,
-):
-  | 'settings.notifyTestSent'
-  | 'settings.notifyDesktopBlocked'
-  | 'settings.notifyDesktopUnsupported'
-  | 'settings.notifyTestFailed' {
-  if (result === 'shown') return 'settings.notifyTestSent';
-  if (result === 'permission-denied') return 'settings.notifyDesktopBlocked';
-  if (result === 'unsupported') return 'settings.notifyDesktopUnsupported';
-  return 'settings.notifyTestFailed';
 }

@@ -32,6 +32,7 @@ afterAll(() => {
 });
 
 class LocalResponse extends EventEmitter {
+  locals: Record<string, unknown> = {};
   statusCode = 200;
   headers: Record<string, string> = {};
   body = '';

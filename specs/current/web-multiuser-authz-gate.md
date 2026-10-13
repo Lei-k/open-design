@@ -4,6 +4,18 @@ Status: local, test-only slice on top of the #2 auth foundation. Tracking: Lei-k
 
 Plan context: `specs/current/web-multiuser-ec2-plan.md` (milestone 2). Data paths follow the root `AGENTS.md` "Daemon data directory contract"; this note does not restate them.
 
+Studio parity extends this historical minimum slice under #51. The current
+architecture and phase acceptance ledger is `web-studio-parity.md`; the route
+registry remains the authorization source of truth. The additions are bounded
+conversation create/patch and message-write policies, owner-scoped conversation
+delete, tabs read/write, and project SSE. Message creation is daemon-issued at
+run admission, assistant output remains daemon-owned, and deletion waits for
+workers while preventing new admission to the deleting target. Run and project
+streams continuously revalidate persisted session/role/resource authority and
+close idle revoked streams within one second without extending the idle TTL.
+The blocked/known-gap statements below describe the original slice; they do
+not override reviewed additions in the registry or mark complete Studio parity.
+
 ## Mode switch
 
 - Default **off**. Off composes the daemon exactly as before: no auth routes, no gate, no auth store, no ownership table. Desktop/local single-user behaviour is unchanged.

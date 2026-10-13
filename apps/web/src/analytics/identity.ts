@@ -6,6 +6,9 @@
 
 import type { AnalyticsClientType } from '@open-design/contracts/analytics';
 import { detectOpenDesignHostClientType } from '@open-design/host';
+// Studio actors keep analytics identity and counters in generation-scoped
+// memory (#74): a shared device must not link accounts or keep project ids.
+import { studioWindowLocalStorage, studioWindowSessionStorage } from '../runtime/studio-transport';
 
 const ANONYMOUS_ID_KEY = 'open-design:analytics.anonymous_id';
 const SESSION_ID_KEY = 'open-design:analytics.session_id';
@@ -31,10 +34,10 @@ function randomUuid(): string {
 export function getAnonymousId(): string {
   if (typeof window === 'undefined') return 'ssr';
   try {
-    const existing = window.localStorage.getItem(ANONYMOUS_ID_KEY);
+    const existing = studioWindowLocalStorage().getItem(ANONYMOUS_ID_KEY);
     if (existing) return existing;
     const fresh = randomUuid();
-    window.localStorage.setItem(ANONYMOUS_ID_KEY, fresh);
+    studioWindowLocalStorage().setItem(ANONYMOUS_ID_KEY, fresh);
     return fresh;
   } catch {
     // Privacy mode or quota — fall back to a per-load id; we'd rather lose
@@ -46,10 +49,10 @@ export function getAnonymousId(): string {
 export function getSessionId(): string {
   if (typeof window === 'undefined') return 'ssr';
   try {
-    const existing = window.sessionStorage.getItem(SESSION_ID_KEY);
+    const existing = studioWindowSessionStorage().getItem(SESSION_ID_KEY);
     if (existing) return existing;
     const fresh = randomUuid();
-    window.sessionStorage.setItem(SESSION_ID_KEY, fresh);
+    studioWindowSessionStorage().setItem(SESSION_ID_KEY, fresh);
     return fresh;
   } catch {
     return randomUuid();
@@ -77,7 +80,7 @@ const FIRST_SESSION_ID_KEY = 'open-design:analytics.first_session_id';
 export function isFirstSession(): boolean {
   if (typeof window === 'undefined') return false;
   try {
-    const pinned = window.localStorage.getItem(FIRST_SESSION_ID_KEY);
+    const pinned = studioWindowLocalStorage().getItem(FIRST_SESSION_ID_KEY);
     if (!pinned) return true;
     return pinned === getSessionId();
   } catch {
@@ -93,8 +96,8 @@ export function isFirstSession(): boolean {
 export function pinFirstSessionForCapture(): void {
   if (typeof window === 'undefined') return;
   try {
-    if (window.localStorage.getItem(FIRST_SESSION_ID_KEY)) return;
-    window.localStorage.setItem(FIRST_SESSION_ID_KEY, getSessionId());
+    if (studioWindowLocalStorage().getItem(FIRST_SESSION_ID_KEY)) return;
+    studioWindowLocalStorage().setItem(FIRST_SESSION_ID_KEY, getSessionId());
   } catch {
     // Privacy mode / quota — losing the pin only risks a later session being
     // mislabeled first; never throw out of an analytics path.
@@ -111,10 +114,10 @@ export function pinFirstSessionForCapture(): void {
 export function claimRunTurnIndex(): { turnIndex: number; isFirstRun: boolean } | null {
   if (typeof window === 'undefined') return null;
   try {
-    const raw = window.sessionStorage.getItem(RUN_TURN_INDEX_KEY);
+    const raw = studioWindowSessionStorage().getItem(RUN_TURN_INDEX_KEY);
     const current = raw ? Number.parseInt(raw, 10) : 0;
     const turnIndex = Number.isFinite(current) && current >= 0 ? current : 0;
-    window.sessionStorage.setItem(RUN_TURN_INDEX_KEY, String(turnIndex + 1));
+    studioWindowSessionStorage().setItem(RUN_TURN_INDEX_KEY, String(turnIndex + 1));
     return { turnIndex, isFirstRun: turnIndex === 0 };
   } catch {
     return null;
@@ -137,10 +140,10 @@ export function claimProjectTurnIndex(
   if (!projectId) return null;
   try {
     const key = `${PROJECT_TURN_INDEX_KEY_PREFIX}${projectId}`;
-    const raw = window.localStorage.getItem(key);
+    const raw = studioWindowLocalStorage().getItem(key);
     const current = raw ? Number.parseInt(raw, 10) : 0;
     const projectTurnIndex = Number.isFinite(current) && current >= 0 ? current : 0;
-    window.localStorage.setItem(key, String(projectTurnIndex + 1));
+    studioWindowLocalStorage().setItem(key, String(projectTurnIndex + 1));
     return { projectTurnIndex };
   } catch {
     return null;

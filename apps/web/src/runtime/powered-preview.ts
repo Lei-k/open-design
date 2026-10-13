@@ -1,3 +1,4 @@
+import { studioFetch as fetch } from './studio-transport';
 /**
  * "Powered preview" — render an HTML artifact in a cross-origin-isolated
  * iframe so it can use capabilities the default opaque-origin preview sandbox

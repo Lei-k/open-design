@@ -1,3 +1,7 @@
+import { registerStudioReset } from '../runtime/studio-resources';
+import { useStudioCapabilities } from '../runtime/studio-capabilities';
+import { StudioAccountMenu } from '../runtime/StudioAccountMenu';
+import { studioWindowSetTimeout, studioFetch as fetch, studioWindowLocalStorage } from '../runtime/studio-transport';
 import { CodingPlanUsage } from './CodingPlanUsage';
 import planCardStyles from './PersonalPlanCard.module.css';
 // Team-edition entry navigation rail (Lovart/Manus-style labeled column).
@@ -386,7 +390,7 @@ function readStoredRecentOpen(): boolean {
   try {
     // Default OPEN: the section is new and a collapsed-by-default disclosure
     // reads as a missing feature.
-    return window.localStorage.getItem(RECENT_SECTION_STORAGE_KEY) !== 'false';
+    return studioWindowLocalStorage().getItem(RECENT_SECTION_STORAGE_KEY) !== 'false';
   } catch {
     return true;
   }
@@ -549,7 +553,7 @@ function RailRecentSection({
     setOpen((wasOpen) => {
       const next = !wasOpen;
       try {
-        window.localStorage.setItem(RECENT_SECTION_STORAGE_KEY, String(next));
+        studioWindowLocalStorage().setItem(RECENT_SECTION_STORAGE_KEY, String(next));
       } catch {
         // Private mode / storage disabled: the section still toggles, it just
         // forgets. Never let a storage failure swallow the interaction.
@@ -1054,7 +1058,11 @@ interface EntryTopRightClusterProps {
  * `WorkspaceTopRightAccountCluster`) on the project route — those routes are
  * mutually exclusive.
  */
-export function EntryTopRightCluster({
+export function EntryTopRightCluster(props: Parameters<typeof LocalEntryTopRightCluster>[0]) {
+  return useStudioCapabilities().hostServices ? <LocalEntryTopRightCluster {...props} /> : null;
+}
+
+function LocalEntryTopRightCluster({
   page,
   context,
   billing,
@@ -1184,7 +1192,7 @@ export function EntryTopRightCluster({
   };
   const scheduleCreditsPanelClose = () => {
     if (creditsCloseTimer.current !== null) window.clearTimeout(creditsCloseTimer.current);
-    creditsCloseTimer.current = window.setTimeout(() => {
+    creditsCloseTimer.current = studioWindowSetTimeout(() => {
       creditsCloseTimer.current = null;
       // Pointer exit must not unmount actions a keyboard user is navigating.
       if (!creditsAnchorRef.current?.contains(document.activeElement)) {
@@ -1243,7 +1251,7 @@ export function EntryTopRightCluster({
   };
   const scheduleAccountClose = () => {
     cancelAccountClose();
-    accountCloseTimer.current = window.setTimeout(() => {
+    accountCloseTimer.current = studioWindowSetTimeout(() => {
       setAccountMenuMode((mode) => (mode === 'hover' ? 'closed' : mode));
     }, 220);
   };
@@ -1379,7 +1387,7 @@ export function EntryTopRightCluster({
   function openBillingUpgrade() {
     if (!billingUpgradeUrl) return;
     window.open(billingUpgradeUrl, '_blank', 'noopener,noreferrer');
-    window.setTimeout(() => {
+    studioWindowSetTimeout(() => {
       notifyWorkspaceBillingRefresh();
       notifyWorkspaceContextRefresh();
     }, 3000);
@@ -2109,6 +2117,7 @@ export function EntryNavRail({
   // but renders down here. State, not a ref: the cluster has to re-render once
   // the node exists or the portal would have nowhere to land on first paint.
   const [accountHost, setAccountHost] = useState<HTMLDivElement | null>(null);
+  const railStudio = useStudioCapabilities();
   const communityLabel = t('pluginsHome.title');
   // #5517 renamed the rail's first item from 最近 (Recents) to 首页 (Home) —
   // the key keeps its historical name, the VALUE now reads Home in every
@@ -2721,7 +2730,8 @@ export function EntryNavRail({
             the account module into. `display: contents` keeps the account
             dock itself a flex child of this group, so its own `order: 99` +
             `margin-top: auto` still push it below the nav items. */}
-        {context ? <div ref={setAccountHost} className="entry-nav-rail__account-host" /> : null}
+        {context ? <div ref={setAccountHost} className="entry-nav-rail__account-host" />
+          : railStudio.hostServices ? null : <StudioAccountMenu placement="rail" />}
       </div>
       {/* Signed in, the social links ride the account dock above the identity
           row (see `EntryTopRightCluster`), so the footer only renders when it
@@ -2861,3 +2871,5 @@ export function EntryNavRail({
     </nav>
   );
 }
+
+registerStudioReset(() => { resetWorkspaceDirectoryCache(); });

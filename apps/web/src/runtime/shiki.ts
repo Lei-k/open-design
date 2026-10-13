@@ -1,9 +1,11 @@
+import { registerStudioReset } from './studio-resources';
 import type { HighlighterGeneric } from 'shiki';
 
 let highlighterPromise: Promise<HighlighterGeneric<any, any>> | null = null;
 
 const cache = new Map<string, string>();
 const CACHE_MAX = 128;
+let generation = 0;
 
 function getHighlighter(): Promise<HighlighterGeneric<any, any>> {
   if (!highlighterPromise) {
@@ -36,7 +38,9 @@ export async function highlightCode(code: string, lang: string): Promise<string>
   const cached = cache.get(cacheKey);
   if (cached) return cached;
 
+  const issued = generation;
   const highlighter = await getHighlighter();
+  if (issued !== generation) return '';
   const loadedLangs = highlighter.getLoadedLanguages();
   if (!loadedLangs.includes(lang as any)) {
     return '';
@@ -54,3 +58,5 @@ export async function highlightCode(code: string, lang: string): Promise<string>
   cache.set(cacheKey, html);
   return html;
 }
+
+registerStudioReset(() => { generation++; cache.clear(); });

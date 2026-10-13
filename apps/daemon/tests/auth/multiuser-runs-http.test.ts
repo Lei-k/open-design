@@ -1,3 +1,4 @@
+import { currentAccountRevision } from './helpers.js';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, statSync } from 'node:fs';
 import path from 'node:path';
@@ -202,10 +203,10 @@ describe('multi-user run isolation over HTTP', () => {
     const second = await daemon.request({ method: 'POST', path: '/api/runs', cookie: alice.cookie,
       body: { projectId: a.id, conversationId: a.conversationId, agentId: 'test-mock', message: 'disabled', delayMs: 2000 } });
     expect(second.status).toBe(202);
-    const disabled = await daemon.request({ method: 'PATCH', path: `/api/auth/users/${alice.id}`, cookie: admin.cookie, body: { active: false } });
+    const disabled = await daemon.request({ method: 'PATCH', path: `/api/auth/users/${alice.id}`, cookie: admin.cookie, body: { revision: await currentAccountRevision(daemon.request, alice.id, admin.cookie),  active: false } });
     expect(disabled.status).toBe(200);
     expect((await daemon.request({ path: `/api/runs/${second.json.run.id}`, cookie: alice.cookie })).status).toBe(401);
-    const enabled = await daemon.request({ method: 'PATCH', path: `/api/auth/users/${alice.id}`, cookie: admin.cookie, body: { active: true } });
+    const enabled = await daemon.request({ method: 'PATCH', path: `/api/auth/users/${alice.id}`, cookie: admin.cookie, body: { revision: await currentAccountRevision(daemon.request, alice.id, admin.cookie),  active: true } });
     expect(enabled.status).toBe(200);
     alice.cookie = await login(daemon, alice.username, alice.password);
     expect((await daemon.request({ path: `/api/runs/${second.json.run.id}`, cookie: alice.cookie })).json.status).toBe('canceled');

@@ -164,7 +164,8 @@ async function scanRoot(
 }
 
 export async function listCodexPets(
-  options: { baseUrl?: string; bundledRoot?: string } = {},
+  /** `userRoot: false` lists only the bundled set (multi-user Studio: no host CODEX_HOME). */
+  options: { baseUrl?: string; bundledRoot?: string; userRoot?: boolean } = {},
 ): Promise<CodexPetListResult> {
   const baseUrl = options.baseUrl ?? '';
   const userRoot = resolveCodexPetsRoot();
@@ -179,7 +180,7 @@ export async function listCodexPets(
     : new Set<string>();
   // User pets first so a locally re-baked copy preempts the bundled
   // one (same id ⇒ user wins for sprite content).
-  await scanRoot(userRoot, baseUrl, false, bundledIds, out, seen);
+  if (options.userRoot !== false) await scanRoot(userRoot, baseUrl, false, bundledIds, out, seen);
   if (options.bundledRoot) {
     await scanRoot(options.bundledRoot, baseUrl, true, bundledIds, out, seen);
   }
@@ -187,7 +188,7 @@ export async function listCodexPets(
   // "recently hatched" framing in the UI honest — a bundled pet from
   // 2024 still sinks below a fresh user-hatched pet from this morning.
   out.sort((a, b) => b.hatchedAt - a.hatchedAt);
-  return { pets: out, rootDir: userRoot };
+  return { pets: out, rootDir: options.userRoot === false ? '' : userRoot };
 }
 
 // Returns { absPath, ext } for the resolved spritesheet of a given pet
@@ -197,11 +198,11 @@ export async function listCodexPets(
 // arbitrary folders under their home directory or the bundled assets.
 export async function readCodexPetSpritesheet(
   id: string,
-  options: { bundledRoot?: string } = {},
+  options: { bundledRoot?: string; userRoot?: boolean } = {},
 ): Promise<SpritesheetPick | null> {
   const safeId = sanitizeId(id);
   if (!safeId) return null;
-  const roots: string[] = [resolveCodexPetsRoot()];
+  const roots: string[] = options.userRoot === false ? [] : [resolveCodexPetsRoot()];
   if (options.bundledRoot) roots.push(options.bundledRoot);
   for (const root of roots) {
     const dir = path.join(root, safeId);

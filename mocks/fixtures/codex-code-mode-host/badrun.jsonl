@@ -1,0 +1,6 @@
+{"method":"turn/started","params":{"threadId":"fixture-thread","turn":{"id":"fixture-turn","status":"inProgress","error":null}}}
+{"method":"item/started","params":{"item":{"type":"userMessage","id":"fixture-item-2","clientId":null,"content":[{"type":"text","text":"write a file","text_elements":[]}]},"threadId":"fixture-thread","turnId":"fixture-turn","startedAtMs":1791814352580}}
+{"method":"item/completed","params":{"item":{"type":"userMessage","id":"fixture-item-2","clientId":null,"content":[{"type":"text","text":"write a file","text_elements":[]}]},"threadId":"fixture-thread","turnId":"fixture-turn","completedAtMs":1791814352580}}
+{"method":"item/started","params":{"item":{"type":"agentMessage","id":"fixture-item-3","text":"Done.","phase":null,"memoryCitation":null,"delivery":null,"questions":null},"threadId":"fixture-thread","turnId":"fixture-turn","startedAtMs":1791814352602}}
+{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"fixture-item-3","text":"Done.","phase":null,"memoryCitation":null,"delivery":null,"questions":null},"threadId":"fixture-thread","turnId":"fixture-turn","completedAtMs":1791814352602}}
+{"method":"turn/completed","params":{"threadId":"fixture-thread","turn":{"id":"fixture-turn","status":"completed","error":null}}}

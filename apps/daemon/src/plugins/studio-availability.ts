@@ -1,0 +1,241 @@
+// Studio (multi-user Web) plugin availability, #61 / S41.
+//
+// One capability registry (`STUDIO_WEB_PLUGIN_CAPABILITIES`, contracts) is
+// evaluated against what a plugin declares. The pipeline evaluated is the one
+// desktop apply would run: the declared pipeline, or the bundled scenario it
+// falls back to, plus the core plan/critique stages apply adds
+// (`ensureCoreQualityStages`). A plugin is applicable only when every step,
+// atom, capability and context item it declares runs in a Studio turn; nothing
+// is keyed by plugin id. Declarations that do not parse fail closed.
+//
+// Studio executes finite ordered stages on the turn's pinned provider (S42).
+// Devloops require a provable bound and Studio-produced signals (S70).
+// Non-abort failure policies and unrecognised stage fields remain unavailable.
+
+import type {
+  InstalledPluginRecord,
+  PluginPipeline,
+  StudioPluginAvailability,
+  StudioPluginRequirements,
+  StudioPluginUnavailableReason,
+  StudioWebPluginCapabilities,
+} from '@open-design/contracts';
+import { isStudioPluginAssetReferences, isStudioPluginCraftReferences, isStudioPluginDesignSystemReference, parseStudioPluginSkillReferences,
+  STUDIO_PLUGIN_EXECUTION_SOURCES, STUDIO_WEB_PLUGIN_CAPABILITIES, studioPluginDeclaredMediaAtom, studioPluginSourceRestrictions } from '@open-design/contracts';
+import { resolveAppliedPipeline, type ScenarioRegistryEntry } from '@open-design/plugin-runtime';
+import { studioDevloop } from './studio-devloop.js';
+import { captureStudioCraft } from './studio-craft.js';
+import { isKnownAtom } from './atoms.js';
+import { deriveAutoAtomSurfaces } from './atoms/auto-surfaces.js';
+import { ensureCoreQualityStages } from './ensure-core-stages.js';
+import { isInternalBundledStrategyV2 } from './strategy-provenance.js';
+import { detectStudioDesktopSteps, STUDIO_PLUGIN_PACKAGE_UNREADABLE, type StudioPluginDocument } from './studio-desktop-steps.js';
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === 'string');
+
+/** The declared pipeline, or the field name that does not parse. */
+function declaredPipeline(od: Record<string, unknown>): PluginPipeline | undefined | 'invalid' {
+  if (od.pipeline === undefined) return undefined;
+  if (!isRecord(od.pipeline) || !Array.isArray(od.pipeline.stages)) return 'invalid';
+  const valid = od.pipeline.stages.every((stage) => isRecord(stage) && typeof stage.id === 'string' && stage.id.length > 0
+    && isStringArray(stage.atoms) && (stage.repeat === undefined || typeof stage.repeat === 'boolean')
+    && (stage.until === undefined || typeof stage.until === 'string'));
+  return valid ? od.pipeline as PluginPipeline : 'invalid';
+}
+
+/**
+ * `documents` is the plugin package's Markdown as `readStudioPluginDocuments`
+ * returns it (S67 repair 1): the desktop-step detector closes plugins whose
+ * captured instructions need a step no Studio turn performs, and `null` (an
+ * unreadable package) fails closed. Routes always pass it; omitting it checks
+ * declarations only, as pure unit fixtures without a package do.
+ */
+export function evaluateStudioPluginAvailability(
+  plugin: InstalledPluginRecord,
+  scenarios: ReadonlyArray<ScenarioRegistryEntry>,
+  web: StudioWebPluginCapabilities = STUDIO_WEB_PLUGIN_CAPABILITIES,
+  documents?: readonly StudioPluginDocument[] | null,
+  craftRoot?: string,
+): StudioPluginAvailability {
+  return evaluateStudioPlugin(plugin, scenarios, web, documents, craftRoot).availability;
+}
+
+/**
+ * What an applicable plugin needs from each turn's execution source (S67).
+ * Apply pins this with the application; admission re-decides it against the
+ * turn's pinned source with `studioPluginSourceReasons`.
+ */
+export function evaluateStudioPluginRequirements(
+  plugin: InstalledPluginRecord,
+  scenarios: ReadonlyArray<ScenarioRegistryEntry>,
+  web: StudioWebPluginCapabilities = STUDIO_WEB_PLUGIN_CAPABILITIES,
+  documents?: readonly StudioPluginDocument[] | null,
+  craftRoot?: string,
+): StudioPluginRequirements {
+  return evaluateStudioPlugin(plugin, scenarios, web, documents, craftRoot).requirements;
+}
+
+function evaluateStudioPlugin(
+  plugin: InstalledPluginRecord,
+  scenarios: ReadonlyArray<ScenarioRegistryEntry>,
+  web: StudioWebPluginCapabilities,
+  documents?: readonly StudioPluginDocument[] | null,
+  craftRoot?: string,
+): { availability: StudioPluginAvailability; requirements: StudioPluginRequirements } {
+  const neededAtoms = new Set<string>();
+  const neededCapabilities = new Set<string>();
+  if (!web.sourceKinds.includes(plugin.sourceKind)) {
+    return { availability: { applicable: false, reasons: [{ code: 'source', subject: plugin.sourceKind }] }, requirements: { atoms: [], capabilities: [] } };
+  }
+  const reasons = new Map<string, StudioPluginUnavailableReason>();
+  const add = (reason: StudioPluginUnavailableReason) => {
+    reasons.set(`${reason.code}\0${reason.subject ?? ''}`, reason);
+  };
+  /** A first-party atom the plugin needs: unknown fails closed, known ones are recorded per source. */
+  const needAtom = (atom: string) => {
+    if (!isKnownAtom(atom)) add({ code: 'unknown-atom', subject: atom });
+    else { neededAtoms.add(atom); if (!web.atoms.includes(atom)) add({ code: 'atom', subject: atom }); }
+  };
+  const od = plugin.manifest?.od as unknown;
+  if (od !== undefined && !isRecord(od)) add({ code: 'manifest', subject: 'od' });
+  const decl: Record<string, unknown> = isRecord(od) ? od : {};
+  // A declared image/video/audio surface dispatches the media contract (S67).
+  const mediaAtom = studioPluginDeclaredMediaAtom(decl);
+  if (mediaAtom) needAtom(mediaAtom);
+  // Desktop-only core steps in the captured package (S67 repair 1): typed
+  // `capability` reasons, pinned with the application like declared ones.
+  if (documents === null) add(STUDIO_PLUGIN_PACKAGE_UNREADABLE);
+  for (const step of documents ? detectStudioDesktopSteps(documents) : []) {
+    neededCapabilities.add(step.subject!);
+    if (!web.capabilities.includes(step.subject!)) add(step);
+  }
+
+  if (!web.strategy && (decl.strategy !== undefined || isInternalBundledStrategyV2(plugin))) add({ code: 'strategy' });
+
+  if (decl.capabilities !== undefined) {
+    if (!isStringArray(decl.capabilities)) add({ code: 'manifest', subject: 'capabilities' });
+    else for (const capability of decl.capabilities) {
+      neededCapabilities.add(capability);
+      if (!web.capabilities.includes(capability)) add({ code: 'capability', subject: capability });
+    }
+  }
+
+  if (decl.context !== undefined) {
+    if (!isRecord(decl.context)) add({ code: 'manifest', subject: 'context' });
+    else {
+      const context = decl.context;
+      const list = (key: string) => context[key] === undefined ? [] : Array.isArray(context[key]) ? context[key] as unknown[] : null;
+      const skills = list('skills'); const assets = list('assets'); const craft = list('craft');
+      const claudePlugins = list('claudePlugins'); const mcp = list('mcp'); const atoms = list('atoms');
+      if (!skills || !assets || !craft || !claudePlugins || !mcp || !atoms
+        || (context.designSystem !== undefined && !isRecord(context.designSystem))) add({ code: 'manifest', subject: 'context' });
+      const skillReferences = parseStudioPluginSkillReferences(skills ?? []);
+      if (skills && !skillReferences) add({ code: 'manifest', subject: 'context.skills' });
+      for (const ref of skillReferences ?? []) {
+        const local = ref.kind === 'local';
+        if (local ? !web.context.localSkills : !web.context.skillRefs) add({ code: 'context', subject: local ? 'local-skill' : 'skill-ref' });
+      }
+      if (assets?.length && !web.context.assets) add({ code: 'context', subject: 'assets' });
+      if (assets && !isStudioPluginAssetReferences(assets)) add({ code: 'manifest', subject: 'context.assets' });
+      if (craft?.length && !web.context.craft) add({ code: 'context', subject: 'craft' });
+      if (craft && !isStudioPluginCraftReferences(craft)) add({ code: 'manifest', subject: 'context.craft' });
+      // Production package evaluation must prove the same bounded rulebook
+      // capture apply uses. Declaration-only fixtures omit `documents`.
+      if (documents !== undefined && isStudioPluginCraftReferences(craft) && craft.length) {
+        try { captureStudioCraft(craftRoot, craft); }
+        catch { add({ code: 'context', subject: 'craft' }); }
+      }
+      if (claudePlugins?.length && !web.context.claudePlugins) add({ code: 'context', subject: 'claude-plugin' });
+      if (context.designSystem !== undefined && !web.context.designSystem) add({ code: 'context', subject: 'design-system' });
+      if (context.designSystem !== undefined && !isStudioPluginDesignSystemReference(context.designSystem)) add({ code: 'manifest', subject: 'context.designSystem' });
+      for (const server of mcp ?? []) {
+        if (!isRecord(server) || typeof server.name !== 'string') add({ code: 'manifest', subject: 'context' });
+        else if (!web.mcp) add({ code: 'mcp', subject: server.name });
+      }
+      for (const atom of atoms ?? []) {
+        if (typeof atom !== 'string') add({ code: 'manifest', subject: 'context' });
+        else needAtom(atom);
+      }
+    }
+  }
+
+  if (decl.connectors !== undefined) {
+    if (!isRecord(decl.connectors)) add({ code: 'manifest', subject: 'connectors' });
+    else for (const key of ['required', 'optional']) {
+      const refs = decl.connectors[key];
+      if (refs === undefined) continue;
+      if (!Array.isArray(refs)) { add({ code: 'manifest', subject: 'connectors' }); continue; }
+      for (const ref of refs) {
+        if (!isRecord(ref) || typeof ref.id !== 'string') add({ code: 'manifest', subject: 'connectors' });
+        else if (!web.connectors) add({ code: 'connector', subject: ref.id });
+      }
+    }
+  }
+
+  if (decl.genui !== undefined) {
+    const surfaces = isRecord(decl.genui) ? decl.genui.surfaces : null;
+    if (surfaces !== undefined && !Array.isArray(surfaces)) add({ code: 'manifest', subject: 'genui' });
+    for (const surface of Array.isArray(surfaces) ? surfaces : []) {
+      if (!isRecord(surface) || typeof surface.id !== 'string') add({ code: 'manifest', subject: 'genui' });
+      else if (!web.genui) add({ code: 'genui', subject: surface.id });
+    }
+  }
+
+  // The pipeline apply would run: declared, or the bundled scenario fallback,
+  // with the core plan/critique floor apply adds.
+  const declared = declaredPipeline(decl);
+  if (declared === 'invalid') add({ code: 'manifest', subject: 'pipeline' });
+  else {
+    const resolution = resolveAppliedPipeline({ manifest: plugin.manifest, scenarios });
+    const pipeline = ensureCoreQualityStages({
+      pipeline: resolution.pipeline,
+      taskKind: typeof decl.taskKind === 'string' ? decl.taskKind : 'new-generation',
+      mode: typeof decl.mode === 'string' ? decl.mode : undefined,
+      source: resolution.source,
+    });
+    if ((pipeline?.stages.length ?? 0) > 0 && !web.pipelines) add({ code: 'pipeline' });
+    if (pipeline && (pipeline.stages.length > 32 || new Set(pipeline.stages.map((stage) => stage.id)).size !== pipeline.stages.length
+      || Object.keys(pipeline).some((key) => key !== 'stages'))) add({ code: 'manifest', subject: 'pipeline' });
+    for (const stage of pipeline?.stages ?? []) {
+      if (!/^[\w.-]{1,128}$/.test(stage.id) || stage.atoms.length > 32
+        || (stage.onFailure !== undefined && stage.onFailure !== 'abort')
+        || Object.keys(stage).some((key) => !['id', 'atoms', 'repeat', 'until', 'onFailure'].includes(key))) {
+        add({ code: 'manifest', subject: 'pipeline' });
+      }
+      if (stage.repeat || stage.until !== undefined) {
+        if (!web.pipelineDevloop) add({ code: 'pipeline-devloop', subject: stage.id });
+        else for (const reason of studioDevloop(stage).reasons) add(reason);
+      }
+      for (const atom of stage.atoms ?? []) needAtom(atom);
+    }
+    if (!web.genui) for (const surface of deriveAutoAtomSurfaces({ pipeline })) add({ code: 'genui', subject: surface.id });
+  }
+
+  const list = [...reasons.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([, reason]) => reason);
+  const requirements = { atoms: [...neededAtoms].sort(), capabilities: [...neededCapabilities].sort() };
+  const restrictions = list.length === 0 ? studioPluginSourceRestrictions(requirements, web) : [];
+  // Every source refused is no source at all: never advertise an unrunnable plugin.
+  if (restrictions.length === STUDIO_PLUGIN_EXECUTION_SOURCES.length) {
+    return { availability: { applicable: false, reasons: restrictions[0]!.reasons }, requirements };
+  }
+  return { availability: { applicable: list.length === 0, reasons: list, ...(restrictions.length ? { sourceRestrictions: restrictions } : {}) }, requirements };
+}
+
+/** Counts for reporting: applicable/unavailable and how many plugins carry each reason. */
+export function studioPluginReasonSummary(items: ReadonlyArray<StudioPluginAvailability>): {
+  total: number; applicable: number; unavailable: number; byReason: Record<string, number>;
+} {
+  const byReason: Record<string, number> = {};
+  for (const item of items) {
+    for (const reason of item.reasons) {
+      const key = reason.subject ? `${reason.code}:${reason.subject}` : reason.code;
+      byReason[key] = (byReason[key] ?? 0) + 1;
+    }
+  }
+  const applicable = items.filter((item) => item.applicable).length;
+  return { total: items.length, applicable, unavailable: items.length - applicable,
+    byReason: Object.fromEntries(Object.entries(byReason).sort(([a], [b]) => (a < b ? -1 : 1))) };
+}

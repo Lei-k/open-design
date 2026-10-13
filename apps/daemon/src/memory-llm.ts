@@ -1498,3 +1498,11 @@ export async function extractWithLLM(dataDir, input, options) {
 
   return written;
 }
+
+// Shared with the Studio account extractor (#62), which calls the turn's own
+// OpenAI source instead of `pickProvider` and keeps its own account history.
+export const MEMORY_EXTRACTION_SYSTEM_PROMPT = SYSTEM_PROMPT;
+export const renderMemoryExtractionPayload = renderUserPayload;
+export const parseMemoryExtractionEntries = parseEntries;
+export const memoryCandidateKnown = alreadyKnown;
+export const memoryDraftFromCandidate = toMemoryDraft;

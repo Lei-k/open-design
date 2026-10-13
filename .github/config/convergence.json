@@ -42,6 +42,7 @@
       "packages/agui-adapter/",
       "packages/contracts/",
       "packages/diagnostics/",
+      "packages/artifact-capture/",
       "packages/launcher-proto/",
       "packages/platform/",
       "packages/plugin-runtime/",

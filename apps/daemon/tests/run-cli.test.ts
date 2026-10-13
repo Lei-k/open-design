@@ -37,7 +37,7 @@ afterEach(async () => {
   tempDir = null;
 });
 
-async function startRunStubServer(resumable: boolean): Promise<StubServer> {
+async function startRunStubServer(resumable: boolean, connectorRefusal = false): Promise<StubServer> {
   const requests: CapturedRequest[] = [];
   let taskFollowEnabled = false;
   const server = http.createServer((req, res) => {
@@ -54,6 +54,13 @@ async function startRunStubServer(resumable: boolean): Promise<StubServer> {
       };
       requests.push(captured);
       res.setHeader('content-type', 'application/json');
+
+      if ((captured.method === 'POST' && captured.url === '/api/routines')
+        || (captured.method === 'PATCH' && captured.url === '/api/routines/routine-1')) {
+        res.statusCode = captured.method === 'POST' ? 201 : 200;
+        res.end(JSON.stringify({ routine: { id: 'routine-1', ...JSON.parse(raw) } }));
+        return;
+      }
 
       if (captured.method === 'GET' && captured.url === '/api/runs/run-1') {
         res.statusCode = 200;
@@ -111,6 +118,11 @@ async function startRunStubServer(resumable: boolean): Promise<StubServer> {
       }
 
       if (captured.method === 'POST' && captured.url === '/api/runs') {
+        if (connectorRefusal) {
+          res.statusCode = 403;
+          res.end(JSON.stringify({ error: { code: 'CONNECTOR_NOT_GRANTED', message: 'selected account connectors are unavailable' } }));
+          return;
+        }
         const body = JSON.parse(captured.body || '{}') as { taskExecutionId?: string };
         taskFollowEnabled = body.taskExecutionId === 'task-1';
         res.statusCode = 200;
@@ -188,6 +200,42 @@ async function runCli(args: string[]): Promise<{ stdout: string; stderr: string;
 }
 
 describe('od run CLI', () => {
+  it('S61 routine create/update --mcp-server uses canonical context and --json', async () => {
+    stub = await startRunStubServer(false);
+    for (const args of [
+      ['automation', 'create', '--name', 'MCP routine', '--prompt', 'Read tools', '--schedule', 'daily:09:30:UTC'],
+      ['automation', 'update', 'routine-1'],
+    ]) {
+      const result = await runCli([...args, '--mcp-server', 'docs,issues,docs', '--json', '--daemon-url', stub.baseUrl]);
+      expect(result.code, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout).routine.context.mcpServerIds).toEqual(['docs', 'issues']);
+    }
+    expect(stub.requests.map((request) => `${request.method} ${request.url}`)).toEqual(['POST /api/routines', 'PATCH /api/routines/routine-1']);
+    const cleared = await runCli(['automation', 'update', 'routine-1', '--mcp-server', '', '--json', '--daemon-url', stub.baseUrl]);
+    expect(cleared.code, cleared.stderr).toBe(0);
+    expect(JSON.parse(cleared.stdout).routine.context.mcpServerIds).toEqual([]);
+  });
+  it('S59 --json keeps connector admission refusals machine-readable', async () => {
+    stub = await startRunStubServer(true, true);
+    const result = await runCli(['run', 'start', '--project', 'project-1', '--connector', 'notion', '--json', '--daemon-url', stub.baseUrl]);
+    expect(result.code).not.toBe(0);
+    expect(JSON.parse(result.stderr).error.code).toBe('CONNECTOR_NOT_GRANTED');
+    expect(result.stdout).toBe('');
+  });
+  it('S61 --mcp-server sends canonical account selection alongside connectors with --json', async () => {
+    stub = await startRunStubServer(false);
+    const result = await runCli(['run', 'start', '--project', 'project-1', '--mcp-server', 'docs,issues,docs', '--connector', 'github', '--json', '--daemon-url', stub.baseUrl]);
+    expect(result.code, result.stderr).toBe(0);
+    const request = stub.requests.find((request) => request.method === 'POST' && request.url === '/api/runs');
+    expect(JSON.parse(request!.body).context).toEqual({ mcpServerIds: ['docs', 'issues'], connectorIds: ['github'] });
+  });
+  it('S59 --connector sends canonical selection to run admission with --json', async () => {
+    stub = await startRunStubServer(true);
+    const result = await runCli(['run', 'start', '--project', 'project-1', '--connector', 'github,notion,github', '--json', '--daemon-url', stub.baseUrl]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ runId: 'run-2' });
+    expect(JSON.parse(stub.requests[0]!.body).context).toEqual({ connectorIds: ['github', 'notion'] });
+  });
   it('keeps one --skill backward compatible and sends multiple ids canonically', async () => {
     stub = await startRunStubServer(true);
     const single = await runCli([

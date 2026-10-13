@@ -28,6 +28,16 @@ function labelFor(chipId: string): string {
 }
 
 describe('TemplatePicker', () => {
+  it('keeps unavailable types discoverable with a reason and prevents selection', () => {
+    const onPick = vi.fn();
+    render(<TemplatePicker templates={templates} activeChipId={null} labelFor={labelFor} onPick={onPick}
+      unavailableReason={(chip) => chip.id === 'image' ? 'Media service pending' : undefined} />);
+    fireEvent.click(screen.getByTestId('home-hero-template-trigger').querySelector('button')!);
+    const image = screen.getByRole('option', { name: labelFor('image') });
+    expect(image).toBeDisabled(); expect(image).toHaveAttribute('title', 'Media service pending');
+    fireEvent.click(image); expect(onPick).not.toHaveBeenCalled();
+    expect(screen.getByRole('option', { name: labelFor('deck') })).toBeEnabled();
+  });
   it('opens all categories and switches the committed template', () => {
     const onPick = vi.fn();
     render(

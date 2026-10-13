@@ -11,6 +11,7 @@ interface Props {
   activeChipId: string | null;
   onPick?: (chip: HomeHeroChip) => void;
   disabled?: boolean;
+  unavailableReason?: (chip: HomeHeroChip) => string | undefined;
   // Localized label for a chip id (reuses HomeHero's chip copy).
   labelFor: (chipId: string) => string;
 }
@@ -20,6 +21,7 @@ export function TemplatePicker({
   activeChipId,
   onPick,
   disabled = false,
+  unavailableReason,
   labelFor,
 }: Props) {
   const t = useT();
@@ -83,6 +85,8 @@ export function TemplatePicker({
         className="home-hero__footer-select-menu" data-testid="home-hero-template-menu">
         {templates.map((chip) => <button key={chip.id} type="button" role="option" data-chip={chip.id}
           aria-selected={chip.id === activeChipId}
+          disabled={Boolean(unavailableReason?.(chip))}
+          title={unavailableReason?.(chip)}
           className={`home-hero__footer-select-item${chip.id === activeChipId ? ' is-selected' : ''}`}
           onClick={() => { setOpen(false); if (chip.id !== activeChipId) onPick?.(chip); triggerRef.current?.focus(); }}>
           <Icon name={chip.icon} size={16} />

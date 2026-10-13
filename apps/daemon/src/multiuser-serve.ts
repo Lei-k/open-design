@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { closeHttpServer } from './daemon-startup.js';
+import { assertPersonalCodexHost } from './services/personal-codex-version.js';
 import {
   MULTIUSER_NOT_LAUNCH_READY_ACK, MULTIUSER_STAGING_DEPLOYMENT_ACK, PERSONAL_CODEX_REAL_PROVIDER_ACK,
   type MultiUserModeOptions,
@@ -39,6 +40,12 @@ export interface MultiUserServeConfigFile {
   bootstrapSecretFile?: string;
   /** Real Codex for personal subscriptions; omitted means personal subscriptions are off. */
   personalCodex?: { binary: string; bwrap: string };
+  /**
+   * Server-side PDF/PPTX/PNG export rendering (#66). `chromium` is the browser
+   * executable; `assetHosts` are the public font/CDN hosts render pages may GET
+   * (omitted = built-in list, [] = none); `domToPptxBundle` enables editable PPTX.
+   */
+  renderer?: { chromium: string; bwrap?: string; assetHosts?: string[]; sandbox?: boolean; domToPptxBundle?: string };
 }
 
 export interface ResolvedMultiUserServe {
@@ -55,7 +62,7 @@ export class MultiUserServeConfigError extends Error {
   }
 }
 
-const KEYS = new Set(['acknowledge', 'publicOrigin', 'previewOrigin', 'port', 'bootstrapSecretFile', 'personalCodex']);
+const KEYS = new Set(['acknowledge', 'publicOrigin', 'previewOrigin', 'port', 'bootstrapSecretFile', 'personalCodex', 'renderer']);
 const MIN_BOOTSTRAP_SECRET = 32;
 
 /** Validate a parsed config file and turn it into `startServer` options. Throws on anything off. */
@@ -104,6 +111,16 @@ export function resolveMultiUserServeConfig(raw: unknown,
     }
   }
   const codex = personal as { binary: string; bwrap: string } | undefined;
+  const rendererConfig = config.renderer as Record<string, unknown> | undefined | null;
+  if (rendererConfig !== undefined && (!rendererConfig || typeof rendererConfig !== 'object' || Array.isArray(rendererConfig)
+      || typeof rendererConfig.chromium !== 'string' || !path.isAbsolute(rendererConfig.chromium)
+      || Object.keys(rendererConfig).some((key) => !['chromium', 'bwrap', 'assetHosts', 'sandbox', 'domToPptxBundle'].includes(key))
+      || (rendererConfig.bwrap !== undefined && (typeof rendererConfig.bwrap !== 'string' || !path.isAbsolute(rendererConfig.bwrap)))
+      || (rendererConfig.domToPptxBundle !== undefined && (typeof rendererConfig.domToPptxBundle !== 'string' || !path.isAbsolute(rendererConfig.domToPptxBundle)))
+      || (rendererConfig.sandbox !== undefined && typeof rendererConfig.sandbox !== 'boolean')
+      || (rendererConfig.assetHosts !== undefined && (!Array.isArray(rendererConfig.assetHosts) || rendererConfig.assetHosts.some((host) => typeof host !== 'string'))))) {
+    throw new MultiUserServeConfigError('"renderer" must be { "chromium": <absolute path>, "bwrap"?: <absolute path>, "assetHosts"?: [<host>], "sandbox"?: <boolean>, "domToPptxBundle"?: <absolute path> }');
+  }
   return {
     port,
     publicOrigin: origin.origin,
@@ -117,6 +134,13 @@ export function resolveMultiUserServeConfig(raw: unknown,
         testPersonalCodexRealBinary: { path: codex.binary, acknowledge: PERSONAL_CODEX_REAL_PROVIDER_ACK },
         personalSandbox: { bwrapPath: codex.bwrap },
       } : {}),
+      ...(rendererConfig ? { studioRenderer: {
+        executablePath: rendererConfig.chromium as string,
+        ...(rendererConfig.bwrap ? { bwrapPath: rendererConfig.bwrap as string } : {}),
+        ...(rendererConfig.assetHosts ? { assetHosts: rendererConfig.assetHosts as string[] } : {}),
+        ...(rendererConfig.sandbox !== undefined ? { sandbox: rendererConfig.sandbox as boolean } : {}),
+        ...(rendererConfig.domToPptxBundle ? { domToPptxBundlePath: rendererConfig.domToPptxBundle as string } : {}),
+      } } : {}),
     },
   };
 }
@@ -140,6 +164,9 @@ async function main(): Promise<void> {
     throw new MultiUserServeConfigError(`cannot read a JSON config from ${configPath}`);
   }
   const resolved = resolveMultiUserServeConfig(parsed);
+  if (resolved.multiUser.testPersonalCodexRealBinary) {
+    await assertPersonalCodexHost(resolved.multiUser.testPersonalCodexRealBinary.path);
+  }
   // Links the daemon builds for the browser point at the public origin, not at loopback.
   process.env.OD_PUBLIC_BASE_URL ??= resolved.publicOrigin;
   // server.ts resolves the data root when it is imported, so it is imported only now.

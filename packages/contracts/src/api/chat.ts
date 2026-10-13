@@ -988,7 +988,15 @@ export interface AgentEventPayloadTruncation {
   originalBytes: number;
 }
 
-export type PersistedAgentEvent =
+/** Multi-user events retain timing/identity but deliberately omit private tool data. */
+export interface AgentEventRedaction {
+  policy: 'personal-subscription' | 'company-pool';
+  fields: string[];
+}
+
+export type PersistedAgentEvent = PersistedAgentEventBody & { redacted?: AgentEventRedaction };
+type PersistedAgentEventBody =
+  | import('../plugins/events.js').PluginPipelineStageEvent
   // `code` carries the structured API error code for `label: 'error'`
   // status events (e.g. AGENT_AUTH_REQUIRED, RATE_LIMITED). Clients use it to
   // decide error-specific affordances such as the hosted-AMR nudge.
@@ -1173,6 +1181,8 @@ export type PersistedAgentEvent =
       toolUseId: string;
       content: string;
       isError: boolean;
+      /** Provider or host reported that the workspace tool could not start. */
+      startupFailed?: boolean;
       /** See {@link AgentEventPayloadTruncation}. */
       truncated?: AgentEventPayloadTruncation;
       /**
@@ -1419,6 +1429,12 @@ export interface ChatMessage {
    */
   sendFailed?: boolean;
   /**
+   * The typed refusal code of a failed send (e.g. a personal account that must
+   * be re-linked), so the line under the bubble can name the fix. Client state:
+   * set only together with `sendFailed`.
+   */
+  sendFailureCode?: string;
+  /**
    * 这条消息之后**原地分叉**过一次(点了「新开会话」)。
    *
    * 设计稿第 38 格:分叉不是跳走 —— 上面是老会话说完的话,线以下是新会话,
@@ -1483,4 +1499,9 @@ export interface ChatTaskExecutionAnalytics {
   taskRunIndex: number;
   recoveryActionType?: TrackingRunRecoveryActionType;
   recoveryActionInstanceId?: string;
+}
+
+/** A workspace-tool startup failure may settle successfully only with verified changed files or an artifact. */
+export function workspaceToolsUnavailable(startupFailed: boolean, changedFileCount: number, artifactCount: number): boolean {
+  return startupFailed && changedFileCount === 0 && artifactCount === 0;
 }

@@ -1,3 +1,5 @@
+import { studioSetTimeout as setTimeout, studioSetInterval as setInterval, studioFetch as fetch } from '../runtime/studio-transport';
+import { registerStudioReset } from '../runtime/studio-resources';
 import type {
   CollabCloudMemberDirectoryEntry,
   CollabCloudMembersResponse,
@@ -283,3 +285,5 @@ export function resetTeamMembersStores(): void {
   for (const store of teamMembersStores.values()) store.dispose();
   teamMembersStores.clear();
 }
+
+registerStudioReset(resetTeamMembersStores);

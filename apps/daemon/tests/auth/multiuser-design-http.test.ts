@@ -146,7 +146,10 @@ describe('multi-user design boundary', () => {
     expect(rendered.headers['cache-control']).toBe('no-store');
     expect(rendered.headers['x-content-type-options']).toBe('nosniff');
     expect(rendered.headers['set-cookie']).toBeUndefined();
-    expect(rendered.headers['access-control-allow-origin']).toBeUndefined();
+    // Cookie-free bearer bytes: the Studio's opaque srcDoc frame needs CORS for
+    // fonts and relative fetches (#59); credentials are never allowed.
+    expect(rendered.headers['access-control-allow-origin']).toBe('*');
+    expect(rendered.headers['access-control-allow-credentials']).toBeUndefined();
 
     const missingRenewalProof = await daemon.request({
       method: 'POST', path: issued.json.renewUrl as string, cookie: alice.cookie, body: {},

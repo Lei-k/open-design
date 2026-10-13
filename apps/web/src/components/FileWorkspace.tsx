@@ -1,3 +1,4 @@
+import { studioSetTimeout as setTimeout, studioFetch as fetch } from '../runtime/studio-transport';
 import { useExperienceError } from '../observability/use-experience-error';
 import type { RecoveryActionBlockReason } from '../runtime/chat/recovery-gating';
 import {
@@ -373,6 +374,8 @@ interface Props {
   // portal that targets the same actions container.
   fileActionsBefore?: ReactNode;
   headerActions?: ReactNode;
+  /** Project delivery content has its own row, outside fixed-height tab chrome. */
+  deliveryActions?: ReactNode;
   /**
    * Read-only view of a team-shared project. A member who received a project
    * shared to the team sees it single-writer/read-only (they can view and
@@ -1397,6 +1400,7 @@ export function FileWorkspace({
   conversationId,
   fileActionsBefore,
   headerActions,
+  deliveryActions,
   viewerOnly = false,
   materializationPending = false,
   filesAuthoritative = true,
@@ -4205,6 +4209,7 @@ export function FileWorkspace({
           ) : null}
         </div>
       </div>
+      {!initialMaterializationPending ? deliveryActions : null}
       {!initialMaterializationPending && launcherOpen ? (
         <TabLauncherMenu
           anchor={launcherBtnRef.current}
@@ -4405,7 +4410,11 @@ export function FileWorkspace({
               }
               openFile(name);
             }}
-            onOpenLiveArtifact={(tabId) => openFile(tabId)}
+            onOpenLiveArtifact={(tabId) => {
+              // Creation opens a server-accepted id before this callback's
+              // entry snapshot includes it. Persist that explicit tab now.
+              openFile(tabId, { forcePersist: true });
+            }}
             onRenameFile={handleRename}
             onDeleteFile={(name) => {
               trackFileManagerClick(analytics.track, {
@@ -4578,6 +4587,8 @@ export function FileWorkspace({
           />
         ) : activeLiveArtifact ? (
           <LiveArtifactViewer
+            key={`${projectId}:${activeLiveArtifact.artifactId}`}
+            viewerOnly={viewerOnly}
             projectId={projectId}
             liveArtifact={activeLiveArtifact}
             liveArtifactEvents={liveArtifactEvents}
@@ -4972,12 +4983,12 @@ function DesignSystemProjectPanel({
     notifyKitLoading(t('ds.download'));
     try {
       await refreshKitDependencies({ finalizeBrand: true });
-      const ok =
-        await downloadProjectArchive({
-          projectId,
-          fallbackTitle: system.title,
-          workspaceContext,
-        }) ||
+      const projectArchive = await downloadProjectArchive({
+        projectId,
+        fallbackTitle: system.title,
+        workspaceContext,
+      });
+      const ok = projectArchive.status === 'started' ||
         await downloadDesignSystemArchive({
           designSystemId: system.id,
           fallbackTitle: system.title,

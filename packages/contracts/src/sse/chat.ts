@@ -1,6 +1,7 @@
 import type { LiveArtifactRefreshStatus } from '../api/live-artifacts.js';
 import type {
   AgentEventPayloadTruncation,
+  AgentEventRedaction,
   RunFailureAction,
   RunFailureCategory,
   RunFailureDetail,
@@ -13,6 +14,7 @@ import type {
 import type { StrategyTaskProjectionV2 } from '../plugins/strategy-v2.js';
 import type { SseErrorPayload } from '../errors.js';
 import type { SseTransportEvent } from './common.js';
+import type { PluginPipelineStageEvent } from '../plugins/events.js';
 
 export type LiveArtifactSseAction = 'created' | 'updated' | 'deleted';
 export type LiveArtifactRefreshSsePhase = 'started' | 'succeeded' | 'failed';
@@ -98,6 +100,14 @@ export interface ChatArtifactRefsChangedSsePayload {
   at?: number;
 }
 
+/** A committed Studio transcript changed. Members re-read messages through project authority. */
+export interface StudioChatMessagesChangedSsePayload {
+  type: 'chat-messages-changed';
+  projectId: string;
+  conversationId: string;
+  at: number;
+}
+
 export const CHAT_SSE_PROTOCOL_VERSION = 1;
 
 export interface ChatSseStartPayload {
@@ -168,8 +178,10 @@ export interface ChatSseEndPayload {
   strategyTask?: StrategyTaskProjectionV2;
 }
 
-export type DaemonAgentPayload =
-  | { type: 'status'; label: string; model?: string; ttftMs?: number; detail?: string }
+export type DaemonAgentPayload = DaemonAgentPayloadBody & { redacted?: AgentEventRedaction };
+type DaemonAgentPayloadBody =
+  | { type: 'pipeline_stage'; stage: PluginPipelineStageEvent }
+  | { type: 'status'; label: string; model?: string; ttftMs?: number; detail?: string; sessionId?: string }
   | { type: 'text_delta'; delta: string }
   /**
    * This turn's one-time done key, emitted once before any model output. See
@@ -405,7 +417,7 @@ export type DaemonAgentPayload =
       /** Bounded preview of the output produced so far, when the agent streams it. */
       output?: string;
     }
-  | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean; completedAt?: number }
+  | { type: 'tool_result'; toolUseId: string; content: string; isError?: boolean; startupFailed?: boolean; completedAt?: number }
   | { type: 'usage'; usage?: { input_tokens?: number; output_tokens?: number }; costUsd?: number; durationMs?: number; stopReason?: string | null }
   /**
    * Per-request token usage for one model request inside a run. Emitted once
@@ -501,6 +513,7 @@ export interface StrategyTaskContinuationDiagnostic extends ChatSseDiagnosticPay
 }
 
 export type ChatSseEvent =
+  | SseTransportEvent<'queued', { runId: string }>
   | SseTransportEvent<'start', ChatSseStartPayload>
   | SseTransportEvent<'run_retry_attempted', ChatSseRunRetryAttemptedPayload>
   | SseTransportEvent<'agent', DaemonAgentPayload>

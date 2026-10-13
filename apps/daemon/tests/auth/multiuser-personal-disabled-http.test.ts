@@ -46,13 +46,13 @@ it('reports the feature as not enabled and refuses every personal action', async
   expect((await daemon.request({ path: '/api/version' })).json.version.capabilities.multiUser).toBe(true);
 });
 
-it('keeps company runs unchanged when executionSource is omitted or company_pool', async () => {
+it('preserves company source and legacy fields while adding standard transcript ids', async () => {
   for (const extra of [{}, { executionSource: 'company_pool' }]) {
     const res = await daemon.request({ method: 'POST', path: '/api/runs', cookie: alice.cookie, body: {
       projectId: project.id, conversationId: project.conversationId, agentId: 'test-mock', message: 'company', ...extra } });
     expect(res.status, res.text).toBe(202);
     expect(Object.keys(res.json.run).sort()).toEqual(
-      ['agentId', 'conversationId', 'createdAt', 'id', 'message', 'output', 'projectId', 'queuePosition', 'status', 'updatedAt']);
+      ['agentId', 'assistantMessageId', 'conversationId', 'createdAt', 'id', 'message', 'output', 'projectId', 'queuePosition', 'status', 'updatedAt', 'userMessageId']);
     expect(res.json.run.message).toBe('company');
   }
   const bogus = await daemon.request({ method: 'POST', path: '/api/runs', cookie: alice.cookie, body: {

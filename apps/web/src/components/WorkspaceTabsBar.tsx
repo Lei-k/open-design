@@ -1,3 +1,4 @@
+import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowLocalStorage } from '../runtime/studio-transport';
 import { reportProjectFailure } from '../observability/experience-diagnostics';
 import {
   type DragEvent,
@@ -528,7 +529,7 @@ function readPersistedTabsStore(): PersistedWorkspaceTabsStore {
   };
   if (typeof window === 'undefined') return empty;
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = studioWindowLocalStorage().getItem(STORAGE_KEY);
     if (!raw) return empty;
     const parsed = JSON.parse(raw) as unknown;
     if (parsed === null || typeof parsed !== 'object') return empty;
@@ -583,7 +584,7 @@ function persistTabsStore(
         .slice(0, MAX_PERSISTED_TAB_SCOPES),
     );
     const payloadScopeKey = currentScopeKey ?? store.scopeKey;
-    window.localStorage.setItem(
+    studioWindowLocalStorage().setItem(
       STORAGE_KEY,
       JSON.stringify({
         ...normalizeTabsState(current),
@@ -1909,7 +1910,7 @@ export function WorkspaceTabsBar({
     openEntryView('home');
     // Hand the pick to the hero once the home tab has mounted/activated —
     // HomeHero applies the chip exactly as if its own picker was clicked.
-    window.setTimeout(() => {
+    studioWindowSetTimeout(() => {
       window.dispatchEvent(
         new CustomEvent(HOME_APPLY_TEMPLATE_EVENT, { detail: { chipId: chip.id } }),
       );
@@ -2066,7 +2067,7 @@ export function WorkspaceTabsBar({
     dragHapticTargetRef.current = null;
     setDragOverTarget(null);
     setDraggingTabId(null);
-    window.setTimeout(() => {
+    studioWindowSetTimeout(() => {
       dragSuppressClickRef.current = false;
     }, 0);
   }
@@ -2082,7 +2083,7 @@ export function WorkspaceTabsBar({
     dragHapticTargetRef.current = null;
     setDragOverTarget(null);
     setDraggingTabId(null);
-    window.setTimeout(() => {
+    studioWindowSetTimeout(() => {
       dragSuppressClickRef.current = false;
     }, 0);
   }

@@ -1,3 +1,4 @@
+import { registerStudioReset } from './studio-resources';
 // Bridge that lets non-browser code (the chat "I solved the Cloudflare wall"
 // confirm handler) run scripts against a specific in-app browser tab's live
 // Electron <webview>, without threading a webview ref through the whole
@@ -68,3 +69,5 @@ export function getBrandBrowser(
 ): BrandBrowserHandle | null {
   return registry.get(key(projectId, tabId)) ?? null;
 }
+
+registerStudioReset(() => { registry.clear(); });

@@ -131,3 +131,24 @@ describe('MentionNode atomic behaviour', () => {
     });
   });
 });
+
+
+it('restores occurrence identity across newlines without a loaded catalog', () => {
+  const own: InlineMentionEntity = { id: 'own', kind: 'skill', label: 'Same name', token: '@Same name' };
+  const shared = { ...own, id: 'shared' };
+  const editor = makeEditor();
+  const text = 'Use @Same name\nthen @Same name';
+  setComposerFromText(editor, text, [own, shared], [shared, own]);
+  const saved = serializeComposer(editor.getEditorState());
+  expect(saved.present.map((entity) => entity.id)).toEqual(['shared', 'own']);
+  const restored = makeEditor();
+  setComposerFromText(restored, saved.text, [], [], saved.mentions);
+  expect(serializeComposer(restored.getEditorState()).present.map((entity) => entity.id)).toEqual(['shared', 'own']);
+  expect(serializeComposer(restored.getEditorState()).text).toBe(text);
+});
+
+it('ignores persisted occurrence ranges whose token no longer matches the draft', () => {
+  const editor = makeEditor();
+  setComposerFromText(editor, 'plain draft', [], [], [{ id: 'stale', kind: 'skill', label: 'Same name', token: '@Same name', start: 0, end: 10 }]);
+  expect(serializeComposer(editor.getEditorState()).present).toEqual([]);
+});

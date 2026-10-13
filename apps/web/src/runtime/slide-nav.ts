@@ -1,3 +1,4 @@
+import { registerStudioReset } from './studio-resources';
 // Dedupe deck slide-navigation requests across HtmlViewer remounts.
 //
 // A queued chat send arms a `slideNavRequest` that lives in parent (ProjectView)
@@ -63,3 +64,5 @@ export function deliverableSlideNavForActiveFile(
   if (request.nonce !== deliverableNonce) return null;
   return { slideIndex: request.slideIndex, nonce: request.nonce };
 }
+
+registerStudioReset(() => { consumedSlideNavNonces.clear(); });

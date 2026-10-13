@@ -1,3 +1,5 @@
+import { registerStudioReset } from '../runtime/studio-resources';
+import { studioUsesLocalServices, studioFetch as fetch } from '../runtime/studio-transport';
 // Live AIHubMix model catalogues for the media pickers.
 //
 // The static IMAGE_MODELS / VIDEO_MODELS / AUDIO_MODELS_BY_KIND registries only
@@ -42,6 +44,7 @@ export async function fetchAIHubMixModels(
   type: AIHubMixCatalogType,
   signal?: AbortSignal,
 ): Promise<MediaModel[]> {
+  if (!studioUsesLocalServices()) return [];
   const res = await fetch(
     `/api/media/providers/aihubmix/models?type=${type}`,
     { signal },
@@ -218,3 +221,5 @@ export function useByokSpeechModelOptions(
     return speechSeeds.filter((m) => m.provider === provider);
   }, [provider, dynamic, speechSeeds]);
 }
+
+registerStudioReset(() => { cachedModels.clear(); inFlight.clear(); });

@@ -1,3 +1,4 @@
+import { studioFetch } from '../runtime/studio-transport';
 import type { AnchorWriteBack } from '../comments';
 import type { WorkspaceCollabContext } from '@open-design/contracts';
 import { workspaceProjectHeaders } from './workspace-identity';
@@ -19,7 +20,7 @@ export interface PersistCommentAnchorArgs {
  * durability write must never break rendering.
  */
 export async function persistCommentAnchor(args: PersistCommentAnchorArgs): Promise<void> {
-  const fetchImpl = args.fetch ?? globalThis.fetch.bind(globalThis);
+  const fetchImpl = args.fetch ?? ((...fetchArgs: Parameters<typeof fetch>) => studioFetch(...fetchArgs));
   const base = args.baseUrl ?? '';
   const url =
     `${base}/api/projects/${encodeURIComponent(args.projectId)}` +
