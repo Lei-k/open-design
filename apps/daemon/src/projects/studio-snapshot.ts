@@ -154,7 +154,12 @@ export function openStudioProjectSelection(projectsRoot: string, projectId: stri
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     root = null;
   }
-  if (root !== null && realpathSync(fdPath(root)) !== expected) { closeSync(root); throw new Error('Project directory changed'); }
+  // The caller only owns `root` once the selection is returned: any failed
+  // validation, thrown or returned, releases it here.
+  if (root !== null) {
+    try { if (realpathSync(fdPath(root)) !== expected) throw new Error('Project directory changed'); }
+    catch (error) { closeSync(root); throw error; }
+  }
   let total = 0;
   // A path that cannot exist on this filesystem (missing, under a file, or a
   // component longer than NAME_MAX) is simply unavailable, like a missing one.

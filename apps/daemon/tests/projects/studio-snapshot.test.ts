@@ -2,10 +2,10 @@ import { execFileSync } from 'node:child_process';
 import type { Dir, Dirent } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Deterministic fault injection (#119 review F3/F4): fail the Nth realpath of
-// a held descriptor, and walk directories in name order. Everything else is
-// the real filesystem.
-const hooks = vi.hoisted(() => ({ failHeldRealpathAt: 0, heldRealpathCalls: 0, sortedDirs: false }));
+// Deterministic fault injection (#119 review F3/F4/F6): fail the Nth realpath
+// of a held descriptor, walk directories in name order, and count descriptors
+// opened and closed. Everything else is the real filesystem.
+const hooks = vi.hoisted(() => ({ failHeldRealpathAt: 0, heldRealpathCalls: 0, sortedDirs: false, opened: 0, closed: 0 }));
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
   const realpathSync = Object.assign((target: Parameters<typeof actual.realpathSync>[0], options?: Parameters<typeof actual.realpathSync>[1]) => {
@@ -24,7 +24,9 @@ vi.mock('node:fs', async (importOriginal) => {
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     return { readSync: () => entries.shift() ?? null, closeSync: () => undefined } as unknown as Dir;
   };
-  return { ...actual, realpathSync, opendirSync };
+  const openSync = ((...args: Parameters<typeof actual.openSync>) => { const fd = actual.openSync(...args); hooks.opened++; return fd; }) as typeof actual.openSync;
+  const closeSync = ((fd: number) => { actual.closeSync(fd); hooks.closed++; }) as typeof actual.closeSync;
+  return { ...actual, realpathSync, opendirSync, openSync, closeSync };
 });
 
 const { linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } = await import('node:fs');
@@ -80,6 +82,14 @@ describe('selected-file capture', () => {
         expect(hooks.heldRealpathCalls).toBe(call);
       } finally { selected.close(); }
     });
+});
+
+it('releases the project descriptor when its path cannot be resolved while opening a selection (F6)', () => {
+  Object.assign(hooks, { opened: 0, closed: 0, failHeldRealpathAt: 1 }); // the root check is the first held realpath
+  expect(thrown(() => selection())).toMatchObject({ code: 'ENOENT' });
+  expect(hooks.heldRealpathCalls).toBe(1);
+  expect(hooks.opened).toBe(1);
+  expect(hooks.closed).toBe(hooks.opened);
 });
 
 describe('whole-project capture keeps its original errors (F4)', () => {
