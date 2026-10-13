@@ -261,6 +261,8 @@ export function NewAutomationModal({
   const { locale } = useI18n();
   const { context: workspaceContext } = useWorkspaceContext();
   const editingId = initial?.routine?.id ?? null;
+  const initialIdentity = initial?.routine ? `routine:${initial.routine.id}`
+    : initial?.template ? `template:${initial.template.id}` : 'blank';
   const [form, setForm] = useState<FormState>(emptyForm);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -313,6 +315,8 @@ export function NewAutomationModal({
 
   useEffect(() => {
     if (!open) return;
+    // Parent refreshes recreate the wrapper (and may refetch the same record).
+    // Seed only on opening or a different selection, preserving edits/errors.
     // Capture the opening choice; a later policy update must not reset an
     // edited draft or silently move its source to a newly enabled provider.
     setExecutionAgent(initial?.routine?.agentId ?? studio.executionAgentId);
@@ -337,7 +341,7 @@ export function NewAutomationModal({
     setPopover(null);
     setMentionTab('all');
     setMention(null);
-  }, [open, initial]);
+  }, [open, initialIdentity]);
 
   useEffect(() => {
     if (!open) return;
