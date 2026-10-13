@@ -9,6 +9,13 @@ import styles from './StudioSynthesisActions.module.css';
 /** Shared project/header and FileViewer delivery controls. Authority comes from the daemon. */
 interface Props {
   projectId: string; conversationId?: string | null; canWrite?: boolean;
+  /**
+   * S74: the source of the actor's own current Composer conversation. It only
+   * preselects (never spends) and only when the daemon says it can synthesize;
+   * otherwise the actor-owned server default applies. Callers must not pass a
+   * source read from another account's conversation.
+   */
+  composerSource?: RunExecutionSource | null;
 }
 export function StudioSynthesisActions(props: Props) {
   const studio = useStudioCapabilities();
@@ -16,7 +23,7 @@ export function StudioSynthesisActions(props: Props) {
   // or project transition. Old in-flight responses are also aborted below.
   return <StudioSynthesisPanel key={JSON.stringify([studio.actor?.id, studio.generation, props.projectId, props.conversationId, props.canWrite])} {...props} />;
 }
-function StudioSynthesisPanel({ projectId, conversationId, canWrite = true }: Props) {
+function StudioSynthesisPanel({ projectId, conversationId, canWrite = true, composerSource = null }: Props) {
   const studio = useStudioCapabilities(); const t = useT(); const description = useId();
   const [state, setState] = useState<StudioSynthesisState | null>(null);
   const [selection, setSelection] = useState<RunExecutionSource | null>(null);
@@ -26,7 +33,8 @@ function StudioSynthesisPanel({ projectId, conversationId, canWrite = true }: Pr
   const lifetime = useRef<AbortController | null>(null);
   const revision = useRef(0);
   const performing = useRef(false);
-  const selected = selection ?? state?.defaultSource ?? null;
+  const composerDefault = composerSource && state?.sources.some((item) => item.executionSource === composerSource && item.available) ? composerSource : null;
+  const selected = selection ?? composerDefault ?? state?.defaultSource ?? null;
   useEffect(() => { setReceipt(null); }, [selected]);
   const usable = !studio.hostServices && studio.available('delivery');
   const endpoint = `/api/projects/${encodeURIComponent(projectId)}`;

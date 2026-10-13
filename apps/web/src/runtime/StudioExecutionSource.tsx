@@ -22,23 +22,31 @@ export function StudioExecutionSource({ agentId, onChange, modelChoice, onModelC
   const selected = agentId ?? studio.executionAgentId;
   const label = (id: string) => t(id === 'openai' ? 'multiuser.executionSourceCompanyOpenAI'
     : id === 'openai-byok' ? 'multiuser.executionSourcePersonalKey' : 'multiuser.executionSourcePersonalCodex');
-  const codex = studioCodexModelChoice(modelChoice);
-  const option = (value: string) => value === 'default' ? t('common.default') : value;
   return <span className={styles.source} data-testid="studio-execution-source">
     {onChange && choices.length > 1 ? <select className={styles.label} aria-label={t('multiuserRuns.source')}
       value={selected ?? ''} onChange={(event) => onChange(event.target.value)}>
       {!choices.some((choice) => choice.agentId === selected) && <option value={selected ?? ''} disabled>{t('multiuser.companySourceUnavailable')}</option>}
       {choices.map((choice) => <option key={choice.source} value={choice.agentId}>{label(choice.agentId)}</option>)}
     </select> : <span className={styles.label}>{label(selected ?? choices[0]!.agentId)}</span>}
-    {selected === 'codex' && onModelChange ? <>
-      <select className={styles.picker} aria-label={t('settings.model')} data-testid="studio-codex-model"
-        value={codex.model} onChange={(event) => onModelChange({ ...modelChoice, model: event.target.value })}>
-        {STUDIO_CODEX_MODELS.map((model) => <option key={model} value={model}>{option(model)}</option>)}
-      </select>
-      <select className={styles.picker} aria-label={t('settings.reasoningPicker')} data-testid="studio-codex-reasoning"
-        value={codex.reasoning} onChange={(event) => onModelChange({ ...modelChoice, reasoning: event.target.value })}>
-        {STUDIO_CODEX_REASONING.map((effort) => <option key={effort} value={effort}>{option(effort)}</option>)}
-      </select>
-    </> : null}
+    {selected === 'codex' && onModelChange ? <StudioCodexPickers modelChoice={modelChoice} onModelChange={onModelChange} /> : null}
+  </span>;
+}
+
+/** Per-turn personal Codex model/effort; an account preference, never a source change. */
+export function StudioCodexPickers({ modelChoice, onModelChange }: {
+  modelChoice?: AgentModelChoice | undefined; onModelChange: (choice: AgentModelChoice) => void;
+}) {
+  const t = useT();
+  const codex = studioCodexModelChoice(modelChoice);
+  const option = (value: string) => value === 'default' ? t('common.default') : value;
+  return <span className={styles.pickers}>
+    <select className={styles.picker} aria-label={t('settings.model')} data-testid="studio-codex-model"
+      value={codex.model} onChange={(event) => onModelChange({ ...modelChoice, model: event.target.value })}>
+      {STUDIO_CODEX_MODELS.map((model) => <option key={model} value={model}>{option(model)}</option>)}
+    </select>
+    <select className={styles.picker} aria-label={t('settings.reasoningPicker')} data-testid="studio-codex-reasoning"
+      value={codex.reasoning} onChange={(event) => onModelChange({ ...modelChoice, reasoning: event.target.value })}>
+      {STUDIO_CODEX_REASONING.map((effort) => <option key={effort} value={effort}>{option(effort)}</option>)}
+    </select>
   </span>;
 }

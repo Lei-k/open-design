@@ -11,6 +11,12 @@ export function notifyStudioProviderKeysChanged(): void {
   for (const listener of [...listeners]) listener();
 }
 
+/** Re-read account key state after Settings saves or removes a key. */
+export function subscribeStudioProviderKeysChanged(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+
 /**
  * Whether this Studio account can run research now (#63): the server
  * advertises research on the account's own Tavily key and the account has

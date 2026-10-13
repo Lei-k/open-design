@@ -4,7 +4,8 @@ import { studioWindowSetTimeout, studioSetTimeout as setTimeout, studioWindowSet
 import { StudioDesignJury } from './Theater/StudioDesignJury';
 import { StudioLane, useStudioCapabilities, useStudioRequestAvailable } from '../runtime/studio-capabilities';
 import { useStudioResearchReady } from '../runtime/studio-research';
-import { StudioExecutionSource } from '../runtime/StudioExecutionSource';
+import { StudioComposerSource } from '../runtime/StudioComposerSource';
+import { studioAgentExecutionSource } from '../runtime/studio-source-options';
 import { readRetriedErrorSurface, retriedErrorSurfaceKey, writeRetriedErrorSurface } from '../runtime/chat/retried-error-surface';
 import {
   startTransition,
@@ -11889,6 +11890,13 @@ export function ProjectView({
     projectMutationReadOnly,
   ]);
 
+  // S74: the App's next-conversation source changes first, so the fresh
+  // (unpinned) conversation opens preselected with it.
+  const handleNewConversationWithSource = useCallback((agentId: string) => {
+    onAgentChange(agentId);
+    void handleNewConversation();
+  }, [onAgentChange, handleNewConversation]);
+
   const handleSelectConversation = useCallback((id: string) => {
     if (id === activeConversationId && failedMessagesConversationId !== id) return;
     setMessages([]);
@@ -13662,8 +13670,12 @@ export function ProjectView({
   // not in the top-right header.
   // Choosing an agent needs the host agent catalog (settings lane); without it
   // the server-fixed execution source is shown instead.
-  const executionControls = !studio.hostServices ? <StudioExecutionSource agentId={executionAgentId} onChange={studioPinnedAgentId ? undefined : onAgentChange}
-    mediaOnly={studioMediaProject}
+  // S74 (#111): the Studio source picker always lives here. A conversation's
+  // first run pins its source (native thread and billing); switching means a
+  // new conversation preselected with the other source, never a mid-thread swap.
+  const executionControls = !studio.hostServices ? <StudioComposerSource agentId={executionAgentId} pinned={Boolean(studioPinnedAgentId)}
+    mediaOnly={studioMediaProject} onChange={onAgentChange} onOpenSettings={onOpenSettings}
+    onNewConversation={projectMutationReadOnly ? undefined : handleNewConversationWithSource}
     modelChoice={config.agentModels?.codex} onModelChange={(choice) => onAgentModelChange('codex', choice)} /> : (
     <>
       <AvatarMenu
@@ -14220,7 +14232,9 @@ export function ProjectView({
           // Synthesis has one project-owned row, independent of the open file.
           deliveryActions={!studio.hostServices ? (
             <StudioSynthesisActions projectId={project.id} conversationId={activeConversationId}
-              canWrite={!projectMutationReadOnly} />
+              canWrite={!projectMutationReadOnly}
+              // S74: only the actor's own writable conversation lends its Composer source.
+              composerSource={currentConversationReadOnly ? null : studioAgentExecutionSource(executionAgentId)} />
           ) : undefined}
           // Studio sharing stays with the compact project actions.
           headerActions={studioSharing.access ? (

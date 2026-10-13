@@ -168,3 +168,35 @@ it('layout: controls and private handoff output occupy separate rows outside fil
   expect(controls!.contains(prompt)).toBe(false);
   expect(screen.getByTestId('studio-synthesis-actions').contains(prompt)).toBe(true);
 });
+
+// S74: the synthesis source follows the actor's own Composer source when that source can synthesize.
+it('S74: defaults to the Composer source when it can synthesize, and still sends only on an explicit action', async () => {
+  snapshot.defaultSource = 'personal_api_key';
+  render(<StudioSynthesisActions projectId="p" conversationId="c" composerSource="company_pool" />);
+  await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('company_pool'));
+  expect(mock.fetch.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(0);
+  fireEvent.click(screen.getByRole('button', { name: 'Finalize with AI' }));
+  await waitFor(() => expect(mock.fetch.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(1));
+  expect(JSON.parse(mock.fetch.mock.calls.find((call) => call[1]?.method === 'POST')![1].body)).toEqual({ executionSource: 'company_pool', digest });
+});
+it.each([
+  ['personal Codex', 'personal_subscription' as const],
+  ['an unavailable OpenAI source', 'company_pool' as const],
+])('S74: keeps the existing default when the Composer source is %s', async (_label, composerSource) => {
+  snapshot.defaultSource = 'personal_api_key';
+  if (composerSource === 'company_pool') snapshot.sources[1] = { executionSource: 'company_pool', available: false, reason: 'quota-exhausted' };
+  render(<StudioSynthesisActions projectId="p" conversationId="c" composerSource={composerSource} />);
+  await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('personal_api_key'));
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Finalize with AI' }) as HTMLButtonElement).disabled).toBe(false));
+});
+it('S74: an explicit synthesis choice wins over a later Composer source change', async () => {
+  snapshot.defaultSource = null;
+  const view = render(<StudioSynthesisActions projectId="p" conversationId="c" composerSource="personal_api_key" />);
+  await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('personal_api_key'));
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'company_pool' } });
+  view.rerender(<StudioSynthesisActions projectId="p" conversationId="c" composerSource="personal_api_key" />);
+  expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('company_pool');
+  // A new Composer source without an explicit synthesis choice is followed again.
+  view.rerender(<StudioSynthesisActions projectId="q" conversationId="c" composerSource="company_pool" />);
+  await waitFor(() => expect((screen.getByRole('combobox') as HTMLSelectElement).value).toBe('company_pool'));
+});
