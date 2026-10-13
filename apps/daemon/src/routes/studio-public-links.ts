@@ -3,10 +3,10 @@ import { constants, closeSync, fstatSync, mkdirSync, openSync, readFileSync, rea
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Express, Request, Response } from 'express';
-import type { PublicProjectFilePublication, StudioPublicLinksResponse } from '@open-design/contracts';
+import { PUBLIC_LINK_FILE_REFUSED, type PublicLinkFileRefusedResponse, type PublicProjectFilePublication, type StudioPublicLinksResponse } from '@open-design/contracts';
 import { getProject } from '../db.js';
 import { mimeFor, validateProjectPath } from '../projects.js';
-import { captureStudioProject } from '../projects/studio-snapshot.js';
+import { STUDIO_SNAPSHOT_LIMITS, StudioCaptureRefusal, openStudioProjectSelection } from '../projects/studio-snapshot.js';
 import { ProjectAccessStore } from '../storage/project-access.js';
 import { AuthStore } from '../storage/auth-store.js';
 import { multiUserActorOf } from '../http/multiuser-gate.js';
@@ -15,6 +15,7 @@ import { sendApiError } from '../http/api-errors.js';
 export const PUBLIC_LINKS_TABLE = 'multiuser_public_links';
 const LINKS_PER_ACCOUNT = 100;
 const BUNDLE_BYTES = 32 * 1024 * 1024;
+const ASSETS_PER_LINK = 200;
 const ASSET_REF = /(?:src|href|poster)\s*=\s*["']([^"'#?]+)(?:[?#][^"']*)?["']|url\(\s*["']?([^"')#?]+)/giu;
 /** Public bytes run on the preview origin under a sandbox; no cookies, no session, no app access. */
 const PUBLIC_CSP = ["sandbox allow-scripts allow-forms allow-popups", "default-src 'self' data: blob:", "img-src 'self' data: blob: https:",
@@ -23,8 +24,10 @@ const PUBLIC_CSP = ["sandbox allow-scripts allow-forms allow-popups", "default-s
 
 interface LinkRow { slug: string; project_id: string; owner_account_id: string; file_name: string; digest: string; size: number; created_at: number }
 
-/** Relative same-project files an HTML entry references explicitly; nothing else is published with it. */
-function referencedAssets(entry: string, html: string, available: ReadonlyMap<string, Buffer>): string[] {
+/** Relative same-project paths an HTML entry references explicitly, in
+ * document order; nothing else is ever read or published with it. Paths that
+ * leave the project or are not valid project paths are dropped here. */
+function referencedPaths(entry: string, html: string): string[] {
   const base = path.posix.dirname(entry);
   const found = new Set<string>();
   for (const match of html.matchAll(ASSET_REF)) {
@@ -33,9 +36,24 @@ function referencedAssets(entry: string, html: string, available: ReadonlyMap<st
     let decoded: string;
     try { decoded = decodeURIComponent(ref); } catch { continue; }
     const name = path.posix.normalize(path.posix.join(base === '.' ? '' : base, decoded));
-    if (!name.startsWith('../') && name !== entry && available.has(name)) found.add(name);
+    if (name.startsWith('../') || name === '..' || name === entry) continue;
+    try { if (validateProjectPath(name) !== name) continue; } catch { continue; }
+    found.add(name);
   }
-  return [...found].slice(0, 200);
+  return [...found];
+}
+
+/** A referenced file that may not be published refuses the whole publish,
+ * naming that project-relative file and why; a page is never published with
+ * assets silently missing. Size refusals are 413, the rest 409. */
+function sendFileRefused(res: Response, refusal: StudioCaptureRefusal): void {
+  const size = refusal.reason === 'too_large' || refusal.reason === 'bundle_too_large';
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(size ? 413 : 409).json({ error: {
+    code: PUBLIC_LINK_FILE_REFUSED,
+    message: `${refusal.path} cannot be published (${refusal.reason})`,
+    data: { path: refusal.path, reason: refusal.reason },
+  } } satisfies PublicLinkFileRefusedResponse);
 }
 
 /**
@@ -100,16 +118,27 @@ export function registerStudioPublicLinkRoutes(app: Express, input: {
   app.post(`${base}/:path`, (req, res) => {
     const target = owner(req, res); if (!target) return;
     const fileName = fileParam(req); if (!fileName) return sendApiError(res, 400, 'BAD_REQUEST', 'invalid file path');
-    let files: Map<string, Buffer>;
-    try { files = new Map(captureStudioProject(input.projectsRoot, target.projectId).map((file) => [file.name, file.bytes])); }
-    catch { return sendApiError(res, 409, 'CONFLICT', 'the project could not be captured safely'); }
-    const entry = files.get(fileName);
-    if (!entry) return sendApiError(res, 404, 'FILE_NOT_FOUND', 'file not found');
-    const html = /\.html?$/iu.test(fileName) ? entry.toString('utf8') : null;
-    const assets = html === null ? [] : referencedAssets(fileName, html, files);
-    const bundle = [[fileName, entry] as const, ...assets.map((name) => [name, files.get(name)!] as const)];
+    // Only the entry and the assets it references are read (#119): another
+    // file in the project can neither block publishing nor be published.
+    const bundle: Array<readonly [string, Buffer]> = [];
+    let selection: ReturnType<typeof openStudioProjectSelection> | undefined;
+    try {
+      selection = openStudioProjectSelection(input.projectsRoot, target.projectId,
+        { fileBytes: STUDIO_SNAPSHOT_LIMITS.fileBytes, bytes: BUNDLE_BYTES, depth: STUDIO_SNAPSHOT_LIMITS.depth });
+      const entry = selection.read(fileName);
+      if (!entry) return sendApiError(res, 404, 'FILE_NOT_FOUND', 'file not found');
+      bundle.push([fileName, entry]);
+      const html = /\.html?$/iu.test(fileName) ? entry.toString('utf8') : null;
+      for (const name of html === null ? [] : referencedPaths(fileName, html)) {
+        if (bundle.length > ASSETS_PER_LINK) break;
+        const bytes = selection.read(name);
+        if (bytes) bundle.push([name, bytes]);
+      }
+    } catch (error) {
+      if (error instanceof StudioCaptureRefusal) return sendFileRefused(res, error);
+      return sendApiError(res, 409, 'CONFLICT', 'the project could not be captured safely');
+    } finally { selection?.close(); }
     const size = bundle.reduce((sum, [, bytes]) => sum + bytes.length, 0);
-    if (size > BUNDLE_BYTES) return sendApiError(res, 413, 'PAYLOAD_TOO_LARGE', 'the published file and its assets are too large');
     const count = (db.prepare(`SELECT COUNT(*) AS n FROM ${PUBLIC_LINKS_TABLE} WHERE owner_account_id = ?`).get(target.accountId) as { n: number }).n;
     const previous = db.prepare(`SELECT slug FROM ${PUBLIC_LINKS_TABLE} WHERE project_id = ? AND file_name = ?`).all(target.projectId, fileName) as Array<{ slug: string }>;
     if (count - previous.length >= LINKS_PER_ACCOUNT) return sendApiError(res, 409, 'CONFLICT', 'public link limit reached; revoke one first');
